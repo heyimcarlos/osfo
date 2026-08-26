@@ -39,7 +39,7 @@ it.effect("does not replace the current Session when authority changes before re
   });
 });
 
-it.effect("rolls back the replacement when authority changes before activation", () => {
+it.effect("leaves the replacement resumable when authority changes before activation", () => {
   const events: Array<string> = [];
   const deletedSessionId = SessionId.make("session-1");
   const replacementSessionId = SessionId.make("session-2");
@@ -79,8 +79,63 @@ it.effect("rolls back the replacement when authority changes before activation",
     ).pipe(Effect.result);
 
     expect(Result.isFailure(result)).toBe(true);
-    expect(currentSessionId).toBe(deletedSessionId);
-    expect(events).toEqual(["recheck", "replace", "recheck", "rollback"]);
+    if (Result.isSuccess(result)) return;
+    expect(result.failure).toBeInstanceOf(TestAuthorityChanged);
+    expect(currentSessionId).toBe(replacementSessionId);
+    expect(events).toEqual(["recheck", "replace", "recheck"]);
+  });
+});
+
+it.effect("leaves the replacement resumable when authority changes before compensation", () => {
+  const events: Array<string> = [];
+  const deletedSessionId = SessionId.make("session-1");
+  const replacementSessionId = SessionId.make("session-2");
+  let checks = 0;
+  let currentSessionId = deletedSessionId;
+
+  return Effect.gen(function* () {
+    const result = yield* deleteLocalSession(
+      { replacementSessionId, sessionId: deletedSessionId },
+      {
+        activateCurrentSession: record(events, "activate").pipe(
+          Effect.andThen(
+            Effect.fail<TestActivationUnavailable | TestAuthorityChanged>(
+              new TestActivationUnavailable(),
+            ),
+          ),
+        ),
+        authorizeDeletion: () =>
+          Effect.suspend(() => {
+            events.push("recheck");
+            checks += 1;
+            return checks < 3 ? Effect.void : Effect.fail(new TestAuthorityChanged());
+          }),
+        clearMessages: () => record(events, "clear"),
+        inspect: Effect.succeed({
+          currentSessionId,
+          routeId: ConversationRouteId.make("route-1"),
+        }),
+        ownsSession: () => Effect.succeed(true),
+        replacedAt: Effect.succeed(DbTimestamp.make("2026-08-25T12:00:00.000Z")),
+        replaceCurrentSession: () =>
+          Effect.sync(() => {
+            currentSessionId = replacementSessionId;
+            events.push("replace");
+          }),
+        rollbackCurrentSessionReplacement: () =>
+          Effect.sync(() => {
+            currentSessionId = deletedSessionId;
+            events.push("rollback");
+          }),
+        settle: () => record(events, "settle"),
+      },
+    ).pipe(Effect.result);
+
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) return;
+    expect(result.failure).toBeInstanceOf(TestAuthorityChanged);
+    expect(currentSessionId).toBe(replacementSessionId);
+    expect(events).toEqual(["recheck", "replace", "recheck", "activate", "recheck"]);
   });
 });
 
@@ -121,7 +176,7 @@ it.effect("rolls back the replacement when activation fails", () => {
 
     expect(Result.isFailure(result)).toBe(true);
     expect(currentSessionId).toBe(deletedSessionId);
-    expect(events).toEqual(["recheck", "replace", "recheck", "activate", "rollback"]);
+    expect(events).toEqual(["recheck", "replace", "recheck", "activate", "recheck", "rollback"]);
   });
 });
 
@@ -185,6 +240,7 @@ it.effect(
         "activate",
         "recheck-retained-authorization",
         "clear-1",
+        "recheck-retained-authorization",
         "rollback",
         "recheck-retained-authorization",
         "replace",
@@ -246,6 +302,7 @@ it.effect("rolls back the current Session replacement when durable settlement fa
       "clear",
       "recheck",
       "settle",
+      "recheck",
       "rollback",
     ]);
   });

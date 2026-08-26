@@ -53,9 +53,8 @@ export const isDeletionOrDataRightsIntent: CapabilityIntentPredicate = (task) =>
   ].some((pattern) => pattern.test(normalized));
 };
 
-const matchesSessionDeleteIntent = everyIntentGroup(
-  ["clear", "delete", "erase", "remove", "wipe"],
-  ["chat history", "conversation history", "current session", "session"],
+const matchesSessionDeleteIntent = matchesClosedIntent(
+  /^(?:(?:can|could|would|will) you (?:please )?(?:just )?|i (?:need|want|would like) (?:you )?to |please (?:just )?|just )?(?:clear|delete|erase|remove|wipe) (?:all (?:of )?)?(?:(?:my|the|this|that) )?(?:chat history|conversation history|current session|session)(?:(?: for me| now| permanently| please))*$/,
 );
 
 const matchesSessionRecallIntent = anyIntentPhrase(

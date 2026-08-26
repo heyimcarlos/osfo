@@ -1678,7 +1678,7 @@ it.effect("rechecks before replacing, clearing, and settling the current Session
   ),
 );
 
-it.effect("atomically rolls back a replacement when authority changes before activation", () =>
+it.effect("retains the exact replacement when authority changes before activation", () =>
   withDatabase(({ storage }) =>
     Effect.gen(function* () {
       const store = makeAgentStore(makeAgentDb(asDurableObjectStorage(storage)));
@@ -1724,8 +1724,11 @@ it.effect("atomically rolls back a replacement when authority changes before act
       ).pipe(Effect.result);
 
       expect(Result.isFailure(result)).toBe(true);
-      expect(yield* store.inspect()).toMatchObject({ currentSessionId: "session-1" });
-      expect(yield* store.readSessionIds).toEqual([SessionId.make("session-1")]);
+      expect(yield* store.inspect()).toMatchObject({ currentSessionId: "session-2" });
+      expect(yield* store.readSessionIds).toEqual([
+        SessionId.make("session-1"),
+        SessionId.make("session-2"),
+      ]);
     }),
   ),
 );

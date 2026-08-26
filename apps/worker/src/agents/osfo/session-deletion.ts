@@ -62,19 +62,27 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
       routeId: agent.routeId,
     };
     yield* dependencies.replaceCurrentSession(replacement);
-    const deletion = yield* Effect.gen(function* () {
-      yield* dependencies.authorizeDeletion();
-      yield* dependencies.activateCurrentSession;
-      yield* dependencies.authorizeDeletion();
-      yield* dependencies.clearMessages(input.sessionId);
-      yield* dependencies.authorizeDeletion();
-      return yield* dependencies.settle(input.sessionId, replacement);
-    }).pipe(Effect.result);
-    if (Result.isFailure(deletion)) {
-      yield* dependencies.rollbackCurrentSessionReplacement(replacement);
-      return yield* Effect.fail(deletion.failure);
+    const rollbackAfter = (failure: E) =>
+      Effect.gen(function* () {
+        yield* dependencies.authorizeDeletion();
+        yield* dependencies.rollbackCurrentSessionReplacement(replacement);
+        return yield* Effect.fail(failure);
+      });
+
+    yield* dependencies.authorizeDeletion();
+    const activation = yield* dependencies.activateCurrentSession.pipe(Effect.result);
+    if (Result.isFailure(activation)) return yield* rollbackAfter(activation.failure);
+
+    yield* dependencies.authorizeDeletion();
+    const clearing = yield* dependencies.clearMessages(input.sessionId).pipe(Effect.result);
+    if (Result.isFailure(clearing)) return yield* rollbackAfter(clearing.failure);
+
+    yield* dependencies.authorizeDeletion();
+    const settlement = yield* dependencies.settle(input.sessionId, replacement).pipe(Effect.result);
+    if (Result.isFailure(settlement)) {
+      return yield* rollbackAfter(settlement.failure);
     }
-    return deletion.success;
+    return settlement.success;
   }
   if (
     isSessionDeletionReplacement(agent.currentSessionId) &&
