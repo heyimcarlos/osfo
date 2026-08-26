@@ -1,4 +1,10 @@
-import { type AccountDeletionActionPresentation, AccountDeletionReplayToken } from "@osfo/api";
+import {
+  AccountDeletionActionPresentation,
+  type AccountDeletionPresentationVersion,
+  AccountDeletionReplayToken,
+  AccountDeletionRequest,
+  accountDeletionPresentationDefinitions,
+} from "@osfo/api";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { eq } from "drizzle-orm";
 import { Crypto, DateTime, Effect, Encoding, Option, Predicate, Redacted, Schema } from "effect";
@@ -56,7 +62,7 @@ export const make = Effect.gen(function* () {
       presentation,
       presentationVersion: accountDeletionPresentationVersion,
       replayToken,
-    };
+    } as const;
   });
   const request = Effect.fn("AccountDeletionRequest.request")(function* (input: {
     readonly approval: {
@@ -71,14 +77,11 @@ export const make = Effect.gen(function* () {
   }) {
     const userId = UserId.make(input.userId);
     const authSessionId = AuthSessionId.make(input.authSessionId);
-    const exactPresentation = decodeExactPresentation(input.approval.presentation);
-    if (
-      input.confirmation !== accountDeletionActionDefinition.confirmation ||
-      Option.isNone(exactPresentation)
-    ) {
+    const exactRequest = decodeExactRequest(input);
+    if (Option.isNone(exactRequest)) {
       return yield* unavailable("approvalPresentation");
     }
-    const expectedPresentation = exactPresentation.value;
+    const expectedPresentation = exactRequest.value.approval.presentation;
     const presentation = ApprovalPresentation.make(
       encodeAccountDeletionPresentation(expectedPresentation),
     );
@@ -131,10 +134,10 @@ export const make = Effect.gen(function* () {
       {
         actionId: operation.actionId,
         presentation,
-        presentationVersion: input.presentationVersion,
+        presentationVersion: exactRequest.value.presentationVersion,
         replayTokenHash: yield* DeletionCase.hashReplayToken(
           crypto,
-          Redacted.make(input.replayToken),
+          Redacted.make(exactRequest.value.replayToken),
         ),
       },
       {
@@ -171,25 +174,13 @@ export const make = Effect.gen(function* () {
 
 type AccountDeletionPresentation = AccountDeletionActionPresentation;
 
-const accountDeletionActionDefinition = {
-  confirmation: "delete-my-account",
-  consequence: "Permanently delete this account and all of its data.",
-  operation: "account.delete",
-  title: "Delete Account",
-} as const;
-
-export const accountDeletionPresentationVersion = "account-deletion-v2";
-
-const ExactAccountDeletionActionPresentation = Schema.Struct({
-  actionId: Schema.String,
-  confirmation: Schema.Literal(accountDeletionActionDefinition.confirmation),
-  consequence: Schema.Literal(accountDeletionActionDefinition.consequence),
-  operation: Schema.Literal(accountDeletionActionDefinition.operation),
-  title: Schema.Literal(accountDeletionActionDefinition.title),
-});
+export const accountDeletionPresentationVersion =
+  "account-deletion-v2" satisfies AccountDeletionPresentationVersion;
+const accountDeletionActionDefinition =
+  accountDeletionPresentationDefinitions[accountDeletionPresentationVersion];
 
 const encodeAccountDeletionPresentation = Schema.encodeSync(
-  Schema.fromJsonString(ExactAccountDeletionActionPresentation),
+  Schema.fromJsonString(AccountDeletionActionPresentation),
 );
 
 export const accountDeletionPresentation = (actionId: ActionId) => ({
@@ -197,32 +188,27 @@ export const accountDeletionPresentation = (actionId: ActionId) => ({
   ...accountDeletionActionDefinition,
 });
 
-export const isExactApproval = (received: {
-  readonly approval: { readonly presentation: AccountDeletionPresentation };
-  readonly confirmation: string;
-  readonly presentationVersion: string;
-}) =>
-  received.confirmation === accountDeletionActionDefinition.confirmation &&
-  received.presentationVersion === accountDeletionPresentationVersion &&
-  Option.isSome(decodeExactPresentation(received.approval.presentation));
-
 /** Decode the exact retained approval fields allowed to authenticate a post-revocation retry. */
-export const replayApproval = (received: {
-  readonly approval: { readonly presentation: AccountDeletionPresentation };
+interface AccountDeletionReplayCandidate {
+  readonly approval: {
+    readonly presentation: AccountDeletionActionPresentation;
+  };
   readonly confirmation: string;
   readonly presentationVersion: string;
   readonly replayToken: string;
-}) =>
-  Option.map(decodeExactPresentation(received.approval.presentation), (presentation) => ({
-    actionId: ActionId.make(presentation.actionId),
-    presentation: ApprovalPresentation.make(encodeAccountDeletionPresentation(presentation)),
-    presentationVersion: received.presentationVersion,
-    replayToken: received.replayToken,
-  })).pipe(
-    Option.filter(() => received.confirmation === accountDeletionActionDefinition.confirmation),
-  );
+}
 
-const decodeExactPresentation = Schema.decodeUnknownOption(ExactAccountDeletionActionPresentation);
+export const replayApproval = (received: AccountDeletionReplayCandidate) =>
+  Option.map(decodeExactRequest(received), (exact) => ({
+    actionId: ActionId.make(exact.approval.presentation.actionId),
+    presentation: ApprovalPresentation.make(
+      encodeAccountDeletionPresentation(exact.approval.presentation),
+    ),
+    presentationVersion: exact.presentationVersion,
+    replayToken: exact.replayToken,
+  }));
+
+const decodeExactRequest = Schema.decodeUnknownOption(AccountDeletionRequest);
 
 const unavailable = (operation: string) =>
   new AccountDeletion.AccountDeletionUnavailable({
@@ -231,4 +217,4 @@ const unavailable = (operation: string) =>
     operation,
   });
 
-export * as AccountDeletionRequest from "./account-deletion-request";
+export * as AccountDeletionRequestService from "./account-deletion-request";

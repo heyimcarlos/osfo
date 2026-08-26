@@ -1,5 +1,7 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-fetch -- Worker journeys intentionally exercise raw HTTP and provider boundaries. */
 import { exports } from "cloudflare:workers";
+import { AccountDeletionAction } from "@osfo/api";
+import type { AccountDeletionActionPresentation } from "@osfo/api";
 import { Schema } from "effect";
 import { inject } from "vitest";
 
@@ -30,20 +32,7 @@ const SupermemoryLedger = Schema.Array(
 );
 const SupermemoryContainers = Schema.Array(Schema.String);
 const SupermemorySeedResponse = Schema.Struct({ containerTag: Schema.String });
-const AccountDeletionPresentation = Schema.Struct({
-  actionId: Schema.String,
-  confirmation: Schema.Literal("delete-my-account"),
-  consequence: Schema.Literal("Permanently delete this account and all of its data."),
-  operation: Schema.Literal("account.delete"),
-  title: Schema.Literal("Delete Account"),
-});
-type AccountDeletionPresentation = typeof AccountDeletionPresentation.Type;
-const AccountDeletionAction = Schema.Struct({
-  presentation: AccountDeletionPresentation,
-  presentationVersion: Schema.String,
-  replayToken: Schema.String,
-});
-type AccountDeletionAction = AccountDeletionPresentation & {
+type PresentedAccountDeletionAction = AccountDeletionActionPresentation & {
   readonly presentationVersion: string;
   readonly replayToken: string;
 };
@@ -101,7 +90,7 @@ type JsonRequestBody =
   | {
       readonly approval: {
         readonly decision: "approved";
-        readonly presentation: AccountDeletionPresentation;
+        readonly presentation: AccountDeletionActionPresentation;
       };
       readonly confirmation: "delete-my-account";
       readonly presentationVersion: string;
@@ -168,7 +157,7 @@ export const spawnApp = async () => {
   return {
     fetch: request,
     account: {
-      delete: (action: AccountDeletionAction) =>
+      delete: (action: PresentedAccountDeletionAction) =>
         jsonRequest(request, "/v1/account", "DELETE", {
           approval: {
             decision: "approved",

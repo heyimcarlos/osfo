@@ -25,14 +25,18 @@ export { HealthGroup, HealthResponse } from "./groups/health";
 export {
   AccountDeletionAction,
   AccountDeletionActionPresentation,
+  AccountDeletionActionPresentationV1,
+  AccountDeletionActionPresentationV2,
   AccountDeletionAuth,
   AccountDeletionCaller,
   type AccountDeletionCallerValue,
   AccountDeletionRequest,
   AccountDeletionReplayToken,
+  AccountDeletionPresentationVersion,
   AccountDeletionResponse,
   AccountDeletionUnavailable,
   AccountGroup,
+  accountDeletionPresentationDefinitions,
 } from "./groups/account";
 export {
   ChannelLinkAcceptanceResponse,

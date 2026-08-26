@@ -27,16 +27,53 @@ export class AccountDeletionAuth extends HttpApiMiddleware.Service<
 
 const BoundedActionText = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_000));
 
-/** Bounded wire representation of a server-owned account-deletion Action. */
-export const AccountDeletionActionPresentation = Schema.Struct({
+/** Every presentation version that remains safe to submit or replay across a deployment rollover. */
+export const accountDeletionPresentationDefinitions = {
+  "account-deletion-v1": {
+    confirmation: "delete-my-account",
+    consequence: "Permanently delete this account and all of its data.",
+    operation: "account.delete",
+    title: "Delete Account",
+  },
+  "account-deletion-v2": {
+    confirmation: "delete-my-account",
+    consequence: "Permanently delete this account and all of its data.",
+    operation: "account.delete",
+    title: "Delete Account",
+  },
+} as const;
+
+export const AccountDeletionPresentationVersion = Schema.Literals([
+  "account-deletion-v1",
+  "account-deletion-v2",
+]);
+export type AccountDeletionPresentationVersion = typeof AccountDeletionPresentationVersion.Type;
+
+const presentationV1 = accountDeletionPresentationDefinitions["account-deletion-v1"];
+const presentationV2 = accountDeletionPresentationDefinitions["account-deletion-v2"];
+
+export const AccountDeletionActionPresentationV1 = Schema.Struct({
   actionId: BoundedActionText,
-  confirmation: BoundedActionText,
-  consequence: BoundedActionText,
-  operation: BoundedActionText,
-  title: BoundedActionText,
+  confirmation: Schema.Literal(presentationV1.confirmation),
+  consequence: Schema.Literal(presentationV1.consequence),
+  operation: Schema.Literal(presentationV1.operation),
+  title: Schema.Literal(presentationV1.title),
+});
+export const AccountDeletionActionPresentationV2 = Schema.Struct({
+  actionId: BoundedActionText,
+  confirmation: Schema.Literal(presentationV2.confirmation),
+  consequence: Schema.Literal(presentationV2.consequence),
+  operation: Schema.Literal(presentationV2.operation),
+  title: Schema.Literal(presentationV2.title),
 });
 
-/** Bounded wire representation of a server-owned account-deletion Action. */
+/** Exact supported wire representation of a server-owned account-deletion Action. */
+export const AccountDeletionActionPresentation = Schema.Union([
+  AccountDeletionActionPresentationV1,
+  AccountDeletionActionPresentationV2,
+]);
+
+/** Exact supported wire representation of a server-owned account-deletion Action. */
 export type AccountDeletionActionPresentation = typeof AccountDeletionActionPresentation.Type;
 
 /** Opaque bearer retained only to resume the exact consumed deletion Action while its Case exists. */
@@ -45,24 +82,57 @@ export const AccountDeletionReplayToken = Schema.String.check(
 );
 export type AccountDeletionReplayToken = typeof AccountDeletionReplayToken.Type;
 
+const actionSchema = <
+  const Version extends AccountDeletionPresentationVersion,
+  const Presentation extends Schema.Top,
+>(
+  version: Version,
+  presentation: Presentation,
+) =>
+  Schema.Struct({
+    presentation,
+    presentationVersion: Schema.Literal(version),
+    replayToken: AccountDeletionReplayToken,
+  });
+
+const requestSchema = <
+  const Version extends AccountDeletionPresentationVersion,
+  const Presentation extends Schema.Top,
+>(
+  version: Version,
+  presentation: Presentation,
+  confirmation: (typeof accountDeletionPresentationDefinitions)[Version]["confirmation"],
+) =>
+  Schema.Struct({
+    approval: Schema.Struct({
+      decision: Schema.Literal("approved"),
+      presentation,
+    }),
+    confirmation: Schema.Literal(confirmation),
+    presentationVersion: Schema.Literal(version),
+    replayToken: AccountDeletionReplayToken,
+  });
+
 /** Exact presented Action plus its opaque retained-replay bearer. */
-export const AccountDeletionAction = Schema.Struct({
-  presentation: AccountDeletionActionPresentation,
-  presentationVersion: BoundedActionText,
-  replayToken: AccountDeletionReplayToken,
-});
+export const AccountDeletionAction = Schema.Union([
+  actionSchema("account-deletion-v1", AccountDeletionActionPresentationV1),
+  actionSchema("account-deletion-v2", AccountDeletionActionPresentationV2),
+]);
 export type AccountDeletionAction = typeof AccountDeletionAction.Type;
 
 /** Exact caller decision over the last server-owned account-deletion presentation. */
-export const AccountDeletionRequest = Schema.Struct({
-  approval: Schema.Struct({
-    decision: Schema.Literal("approved"),
-    presentation: AccountDeletionActionPresentation,
-  }),
-  confirmation: BoundedActionText,
-  presentationVersion: BoundedActionText,
-  replayToken: AccountDeletionReplayToken,
-});
+export const AccountDeletionRequest = Schema.Union([
+  requestSchema(
+    "account-deletion-v1",
+    AccountDeletionActionPresentationV1,
+    accountDeletionPresentationDefinitions["account-deletion-v1"].confirmation,
+  ),
+  requestSchema(
+    "account-deletion-v2",
+    AccountDeletionActionPresentationV2,
+    accountDeletionPresentationDefinitions["account-deletion-v2"].confirmation,
+  ),
+]);
 export type AccountDeletionRequest = typeof AccountDeletionRequest.Type;
 
 /** Accepted account deletion that has already fenced normal access. */

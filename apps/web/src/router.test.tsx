@@ -210,13 +210,13 @@ describe("Osfo route tree", () => {
         decision: "approved",
         presentation: {
           actionId: "account-delete:retained-action",
-          confirmation: "DELETE ACCOUNT",
+          confirmation: "delete-my-account",
           consequence: "Permanently delete this account and all of its data.",
           operation: "account.delete",
           title: "Delete Account",
         },
       },
-      confirmation: "DELETE ACCOUNT",
+      confirmation: "delete-my-account",
       presentationVersion: "account-deletion-v1",
       replayToken: "a".repeat(43),
     });

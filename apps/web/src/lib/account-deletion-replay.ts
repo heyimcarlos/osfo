@@ -31,6 +31,9 @@ export const loadAccountDeletionReplay = (
     }).pipe(
       Effect.map((stored) => {
         if (stored === null) return { status: "missing" } as const;
+        // The browser can prove only the supported immutable presentation shape. The opaque
+        // Action identity and replay bearer remain untrusted until the Worker matches them to
+        // the exact consumed Action and fenced Deletion Case.
         return Option.match(decodeStoredReplay(stored), {
           onNone: () => ({ status: "invalid" }) as const,
           onSome: ({ request }) => ({ request, status: "available" }) as const,

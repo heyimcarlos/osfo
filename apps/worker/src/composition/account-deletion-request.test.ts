@@ -3,13 +3,9 @@ import { AccountDeletionRequest } from "@osfo/api";
 import { Option, Schema } from "effect";
 
 import { ActionId } from "../domain/action-execution";
-import {
-  accountDeletionPresentation,
-  isExactApproval,
-  replayApproval,
-} from "./account-deletion-request";
+import { accountDeletionPresentation, replayApproval } from "./account-deletion-request";
 
-it("keeps presentation versioning in the Worker while the API accepts bounded transport", () => {
+it("accepts only exact supported server-owned presentation envelopes", () => {
   const expected = accountDeletionPresentation(ActionId.make("account-delete-random-1"));
   const exact = {
     approval: { decision: "approved" as const, presentation: expected },
@@ -25,21 +21,26 @@ it("keeps presentation versioning in the Worker while the API accepts bounded tr
     },
   };
 
-  expect(Option.isSome(Schema.decodeOption(AccountDeletionRequest)(exact))).toBe(true);
+  expect(Option.isSome(Schema.decodeUnknownOption(AccountDeletionRequest)(exact))).toBe(true);
   const withoutReplayToken = { approval: exact.approval, confirmation: exact.confirmation };
   expect(
     Option.isNone(Schema.decodeUnknownOption(AccountDeletionRequest)(withoutReplayToken)),
   ).toBe(true);
   expect(
     Option.isNone(
-      Schema.decodeOption(AccountDeletionRequest)({ ...exact, replayToken: "guessable" }),
+      Schema.decodeUnknownOption(AccountDeletionRequest)({ ...exact, replayToken: "guessable" }),
     ),
   ).toBe(true);
-  expect(Option.isSome(Schema.decodeOption(AccountDeletionRequest)(drifted))).toBe(true);
+  expect(Option.isNone(Schema.decodeUnknownOption(AccountDeletionRequest)(drifted))).toBe(true);
+  expect(
+    Option.isNone(
+      Schema.decodeUnknownOption(AccountDeletionRequest)({
+        ...exact,
+        presentationVersion: "account-deletion-v3",
+      }),
+    ),
+  ).toBe(true);
   expect(expected.consequence).toBe("Permanently delete this account and all of its data.");
-  expect(isExactApproval(exact)).toBe(true);
-  expect(isExactApproval(drifted)).toBe(false);
-  expect(isExactApproval({ ...exact, confirmation: "delete-account" })).toBe(false);
 });
 
 it("retains the presented version across a later server-version rollover", () => {
@@ -51,6 +52,7 @@ it("retains the presented version across a later server-version rollover", () =>
     replayToken: "a".repeat(43),
   };
 
+  expect(Option.isSome(Schema.decodeUnknownOption(AccountDeletionRequest)(retainedV1))).toBe(true);
   expect(replayApproval(retainedV1)).toEqual(
     expect.objectContaining({
       value: expect.objectContaining({ presentationVersion: "account-deletion-v1" }),
@@ -58,9 +60,5 @@ it("retains the presented version across a later server-version rollover", () =>
   );
   expect(
     replayApproval({ ...retainedV1, presentationVersion: "account-deletion-tampered" }),
-  ).toEqual(
-    expect.objectContaining({
-      value: expect.objectContaining({ presentationVersion: "account-deletion-tampered" }),
-    }),
-  );
+  ).toEqual(Option.none());
 });

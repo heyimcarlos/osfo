@@ -93,6 +93,9 @@ export const presentAccountDeletion = Effect.gen(function* () {
 export const requestAccountDeletion = (request: AccountDeletionRequest) =>
   Effect.gen(function* () {
     const client = yield* apiClient;
+    if (request.presentationVersion === "account-deletion-v1") {
+      return yield* client.account.deleteAccount({ payload: request });
+    }
     return yield* client.account.deleteAccount({ payload: request });
   });
 

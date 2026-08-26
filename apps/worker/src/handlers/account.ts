@@ -2,14 +2,14 @@ import { AccountDeletionCaller, AccountDeletionUnavailable, Api, CurrentUser } f
 import { Effect, Layer } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { AccountDeletionRequest } from "../composition/account-deletion-request";
+import { AccountDeletionRequestService } from "../composition/account-deletion-request";
 
 /* oxlint-disable eslint/no-underscore-dangle -- The caller union uses the _tag discriminator. */
 
 /** Implement the authenticated account-deletion contract. */
 export const layer = Layer.unwrap(
   Effect.gen(function* () {
-    const deletion = yield* AccountDeletionRequest.make;
+    const deletion = yield* AccountDeletionRequestService.make;
     return HttpApiBuilder.group(Api, "account", (handlers) =>
       handlers
         .handle("presentAccountDeletion", () =>
