@@ -746,6 +746,91 @@ it.effect(
   },
 );
 
+it.effect("does not revoke a confirmed integration target after provider rediscovery", () => {
+  const calls: Array<string> = [];
+  const candidate = {
+    _tag: "SelfService" as const,
+    agentId: AgentId.make("agent-1"),
+    approvalActionId: ActionId.make("account-delete-1"),
+    approvalPresentation: ApprovalPresentation.make("Delete Account"),
+    deletionCaseId: DeletionCaseId.make("deletion-case-1"),
+    userId: UserId.make("user-1"),
+  };
+  const firstTarget = {
+    connectionId: AccountDeletion.IntegrationAuthorityTargetId.make("connection-1"),
+    userId: candidate.userId,
+  };
+  const secondTarget = {
+    connectionId: AccountDeletion.IntegrationAuthorityTargetId.make("connection-2"),
+    userId: candidate.userId,
+  };
+  const progress = new Map<
+    AccountDeletion.IntegrationAuthorityTargetId,
+    AccountDeletion.IntegrationAuthorityTargetProgress
+  >();
+  let failSecondRevocation = true;
+  const port = AccountDeletion.Port.of({
+    inspectAuthorization: () => Effect.succeed(activeFacts(candidate.userId)),
+    agents: {
+      quiesce: () => Effect.void,
+      remove: () => Effect.void,
+    },
+    integrations: {
+      pending: () => Effect.succeed([firstTarget, secondTarget]),
+      revoke: (target) =>
+        Effect.suspend(() => {
+          calls.push(`revoke:${target.connectionId}`);
+          if (target.connectionId === secondTarget.connectionId && failSecondRevocation) {
+            failSecondRevocation = false;
+            return Effect.fail(
+              new AccountDeletion.AccountDeletionUnavailable({
+                cause: target,
+                message: "Second integration revocation remains pending",
+                operation: "deleteIntegrationAuthority",
+              }),
+            );
+          }
+          return Effect.void;
+        }),
+    },
+    objects: { remove: (_, authorizeDelete) => authorizeDelete },
+    persistence: {
+      confirmIntegrationTarget: (_, target) =>
+        Effect.sync(() => {
+          calls.push(`confirm:${target.connectionId}`);
+          progress.set(target.connectionId, { ...target, status: "confirmed" });
+        }),
+      ensureAccessFence: () => Effect.void,
+      pending: Effect.succeed([candidate]),
+      removeUser: () => Effect.void,
+      stageIntegrationTargets: (_, discovered) =>
+        Effect.sync(() => {
+          for (const target of discovered) {
+            if (!progress.has(target.connectionId)) {
+              progress.set(target.connectionId, { ...target, status: "pending" });
+            }
+          }
+          return [...progress.values()].flatMap(({ connectionId, status, userId }) =>
+            status === "pending" ? [{ connectionId, userId }] : [],
+          );
+        }),
+    },
+  });
+
+  return Effect.gen(function* () {
+    const reconcile = AccountDeletion.Service.pipe(
+      Effect.flatMap((deletion) => deletion.reconcileOne(candidate)),
+      Effect.provide(accountDeletionLayer(port, calls, () => "deleted")),
+    );
+    expect(Result.isFailure(yield* reconcile.pipe(Effect.result))).toBe(true);
+    yield* reconcile;
+    expect(calls.filter((call) => call === "revoke:connection-1")).toHaveLength(1);
+    expect(calls.filter((call) => call === "confirm:connection-1")).toHaveLength(1);
+    expect(calls.filter((call) => call === "revoke:connection-2")).toHaveLength(2);
+    expect(calls.filter((call) => call === "confirm:connection-2")).toHaveLength(1);
+  });
+});
+
 it.effect("rechecks a retained administrative case through every protected stage", () => {
   const calls: Array<string> = [];
   const userId = UserId.make("user-1");

@@ -736,14 +736,40 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
       ).toEqual([firstTarget, secondTarget]);
       yield* accountDeletion.confirmIntegrationTarget(candidate, firstTarget);
       expect(yield* accountDeletion.stageIntegrationTargets(candidate, [])).toEqual([secondTarget]);
-      expect(yield* accountDeletion.stageIntegrationTargets(candidate, [firstTarget])).toEqual([
-        firstTarget,
-        secondTarget,
-      ]);
+      expect(
+        yield* accountDeletion.stageIntegrationTargets(candidate, [firstTarget, secondTarget]),
+      ).toEqual([secondTarget]);
       const retainedProgress = [
-        { ...firstTarget, status: "pending" as const },
+        { ...firstTarget, status: "confirmed" as const },
         { ...secondTarget, status: "pending" as const },
       ];
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select({ targets: deletionCases.integration_targets })
+            .from(deletionCases)
+            .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId))
+            .limit(1),
+        ),
+      ).toEqual([{ targets: retainedProgress }]);
+      const metadataDriftedStage = yield* accountDeletion
+        .stageIntegrationTargets(candidate, [
+          {
+            connectionId: firstTarget.connectionId,
+            userId: UserId.make("another-user"),
+          },
+        ])
+        .pipe(Effect.result);
+      expect(Result.isFailure(metadataDriftedStage)).toBe(true);
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select({ targets: deletionCases.integration_targets })
+            .from(deletionCases)
+            .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId))
+            .limit(1),
+        ),
+      ).toEqual([{ targets: retainedProgress }]);
       yield* Effect.promise(() =>
         database
           .update(deletionCases)

@@ -281,8 +281,23 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
     ) {
       return yield* updateIntegrationTargets("stageIntegrationTargets", candidate, (retained) => {
         const targets = new Map(retained.map((target) => [target.connectionId, target]));
+        if (
+          targets.size !== retained.length ||
+          retained.some((target) => target.userId !== candidate.userId)
+        ) {
+          return Result.fail(new Error("Retained integration targets have ambiguous ownership"));
+        }
         for (const target of discovered) {
-          targets.set(target.connectionId, { ...target, status: "pending" });
+          if (target.userId !== candidate.userId) {
+            return Result.fail(new Error("Discovered integration target crossed the User fence"));
+          }
+          const existing = targets.get(target.connectionId);
+          if (existing !== undefined && existing.userId !== target.userId) {
+            return Result.fail(new Error("Integration target ownership changed during discovery"));
+          }
+          if (existing === undefined) {
+            targets.set(target.connectionId, { ...target, status: "pending" });
+          }
         }
         const progress = [...targets.values()];
         return Result.succeed({
