@@ -1,4 +1,4 @@
-import { sessions } from "@osfo/db/schema/auth";
+import { sessions, users } from "@osfo/db/schema/auth";
 import { administrativeAuthorities, deletionCases } from "@osfo/db/schema/user-lifecycle";
 import { and, eq, sql } from "drizzle-orm";
 
@@ -32,6 +32,19 @@ export type ExactDeletionCaseAuthority = ExactDeletionAuthority & {
   readonly deletionCaseId: DeletionCaseId;
 };
 
+type DeletionTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+/** Acquire the canonical first lock for every authoritative User/Deletion Case transaction. */
+export const lockDeletionCaseUser = async (transaction: DeletionTransaction, userId: UserId) => {
+  const [user] = await transaction
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1)
+    .for("update");
+  return user;
+};
+
 /** Match only the retained case shape and exact authority that may advance deletion progress. */
 export const exactDeletionAuthority = (authority: ExactDeletionAuthority) =>
   authority._tag === "SelfService"
@@ -57,6 +70,9 @@ export const fenceDeletionCaseAccess = (
   candidate: ExactDeletionCaseAuthority,
 ) =>
   database.transaction(async (transaction) => {
+    // User is the canonical first lock for every authoritative User/Deletion Case transaction.
+    const user = await lockDeletionCaseUser(transaction, candidate.userId);
+    if (user === undefined) return false;
     if (candidate._tag === "Administrative") {
       // Serialize revocation with the whole fence transaction; the case lock alone cannot
       // keep a distinct Administrative Authority current through session deletion.

@@ -1,6 +1,8 @@
 /* oxlint-disable effecttsgo/strict-effect-provide, vitest/no-standalone-expect -- The PostgreSQL contract test owns its concrete database Layer and assertions execute inside it.effect. */
 /* oxlint-disable eslint/no-underscore-dangle -- Assertions inspect canonical tagged outcomes. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/run-effect-inside-effect -- Drizzle requires Promise transaction callbacks; the deadlock regression bridges one scoped Effect latch into the independently blocked client transaction. */
 import { env } from "cloudflare:workers";
+import { createDb } from "@osfo/db";
 import { agents } from "@osfo/db/schema/agents";
 import { sessions, users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
@@ -12,8 +14,9 @@ import {
 } from "@osfo/db/schema/user-lifecycle";
 import { expect, it } from "@effect/vitest";
 import { BrowserCrypto } from "@effect/platform-browser";
-import { eq, sql } from "drizzle-orm";
-import { DateTime, Effect, Layer, Result } from "effect";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { DateTime, Effect, Fiber, Latch, Layer, Result } from "effect";
+import postgres, { type Sql } from "postgres";
 
 import { Db } from "../../src/db";
 import { PlanPolicyVersion, UserId } from "../../src/domain";
@@ -26,6 +29,7 @@ import { DeletionCase } from "../../src/services/deletion-case";
 import { AccountDeletion } from "../../src/services/account-deletion";
 import { AccountAuthorities } from "../../src/composition/account-authorities";
 import { AccountDeletionPostgres } from "../../src/integrations/postgres/account-deletion";
+import { lockDeletionCaseUser } from "../../src/integrations/postgres/deletion-case-authority";
 import { DeletionCasePostgres } from "../../src/integrations/postgres/deletion-case";
 import { spawnApp } from "../support/spawn-app";
 
@@ -330,6 +334,159 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
       return undefined;
     }).pipe(Effect.provide(Db.layer({ db: env.DB }))),
   ),
+);
+
+it.effect(
+  "serializes retained replay and final removal without a User/Deletion Case deadlock",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
+          Effect.promise(client.dispose),
+        );
+        const userId = yield* registerUser(app, "+15550002540");
+        const database = yield* Db.database;
+        const lockObserver = yield* Effect.acquireRelease(
+          Effect.sync(() => postgres(env.DB.connectionString, { max: 1, prepare: false })),
+          (client) => Effect.promise(() => client.end()),
+        );
+        const blockerClient = yield* Effect.acquireRelease(
+          Effect.sync(() => postgres(env.DB.connectionString, { max: 1, prepare: false })),
+          (client) => Effect.promise(() => client.end()),
+        );
+        const removalClient = yield* Effect.acquireRelease(
+          Effect.sync(() => postgres(env.DB.connectionString, { max: 1, prepare: false })),
+          (client) => Effect.promise(() => client.end()),
+        );
+        const replayClient = yield* Effect.acquireRelease(
+          Effect.sync(() => postgres(env.DB.connectionString, { max: 1, prepare: false })),
+          (client) => Effect.promise(() => client.end()),
+        );
+        yield* Effect.promise(async () => {
+          await lockObserver`select 1`;
+          await blockerClient`select 1`;
+          await removalClient`select 1`;
+          await replayClient`select 1`;
+        });
+        const persistence = yield* DeletionCasePostgres.make;
+        const [authSession] = yield* Effect.promise(() =>
+          database
+            .select({ id: sessions.id })
+            .from(sessions)
+            .where(eq(sessions.userId, userId))
+            .limit(1),
+        );
+        if (authSession === undefined) {
+          return yield* Effect.die(new Error("Concurrent deletion AuthSession missing"));
+        }
+        const approval = selfDeletionApproval("concurrent-remove-replay");
+        const authority = {
+          authSessionId: AuthSessionId.make(authSession.id),
+          plan: "free" as const,
+          planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+        };
+        const deletionCaseId = DeletionCaseId.make("concurrent-remove-replay-case");
+        yield* persistence.presentSelf(userId, {
+          ...approval,
+          authSessionId: authority.authSessionId,
+          expiresAt: retrySessionExpiresAt,
+        });
+        expect(yield* persistence.requestSelf(userId, deletionCaseId, approval, authority)).toEqual(
+          { _tag: "Created" },
+        );
+        const accountDeletion = AccountDeletionPostgres.make(database);
+        const [candidate] = yield* accountDeletion.pending;
+        if (
+          candidate === undefined ||
+          candidate._tag !== "SelfService" ||
+          candidate.deletionCaseId !== deletionCaseId
+        ) {
+          return yield* Effect.die(new Error("Concurrent deletion candidate missing"));
+        }
+        const blockerDatabase = createDb(blockerClient);
+        const removalDatabase = createDb(removalClient);
+        const replayDatabase = createDb(replayClient);
+
+        const caseLocked = Latch.makeUnsafe();
+        const releaseCase = Latch.makeUnsafe();
+        const blocker = yield* Effect.acquireRelease(
+          Effect.forkScoped(
+            Effect.promise(() =>
+              blockerDatabase.transaction(async (transaction) => {
+                await transaction
+                  .select({ deletionCaseId: deletionCases.deletion_case_id })
+                  .from(deletionCases)
+                  .where(eq(deletionCases.deletion_case_id, deletionCaseId))
+                  .for("update");
+                caseLocked.openUnsafe();
+                await Effect.runPromise(releaseCase.await);
+              }),
+            ),
+          ),
+          (fiber) => releaseCase.open.pipe(Effect.andThen(Fiber.join(fiber)), Effect.ignore),
+        );
+        yield* caseLocked.await.pipe(Effect.timeout("5 seconds"));
+
+        const exactCase = and(
+          eq(deletionCases.deletion_case_id, candidate.deletionCaseId),
+          eq(deletionCases.user_id, candidate.userId),
+          eq(deletionCases.requested_by_user_id, candidate.userId),
+          isNull(deletionCases.requested_by_admin_id),
+          eq(deletionCases.approval_action_id, candidate.approvalActionId),
+          eq(deletionCases.approval_presentation, candidate.approvalPresentation),
+          isNotNull(deletionCases.access_fenced_at),
+        );
+        const removal = yield* Effect.forkScoped(
+          Effect.promise(() =>
+            removalDatabase.transaction(async (transaction) => {
+              if ((await lockDeletionCaseUser(transaction, candidate.userId)) === undefined) {
+                return "MissingUser" as const;
+              }
+              const [retained] = await transaction
+                .select({ deletionCaseId: deletionCases.deletion_case_id })
+                .from(deletionCases)
+                .where(exactCase)
+                .for("update")
+                .limit(1);
+              if (retained === undefined) return "AuthorityChanged" as const;
+              await transaction.delete(users).where(eq(users.id, candidate.userId));
+              return "Removed" as const;
+            }),
+          ),
+        );
+        yield* awaitPostgresLockWaiters(lockObserver, 1);
+        const replay = yield* Effect.forkScoped(
+          Effect.promise(() =>
+            replayDatabase.transaction(async (transaction) => {
+              if ((await lockDeletionCaseUser(transaction, candidate.userId)) === undefined) {
+                return "MissingUser" as const;
+              }
+              const [retained] = await transaction
+                .select({ deletionCaseId: deletionCases.deletion_case_id })
+                .from(deletionCases)
+                .where(exactCase)
+                .for("update")
+                .limit(1);
+              return retained === undefined ? ("AuthorityChanged" as const) : ("Existing" as const);
+            }),
+          ),
+        );
+        yield* awaitPostgresLockWaiters(lockObserver, 2);
+        yield* releaseCase.open;
+
+        const [removalResult, replayResult] = yield* Effect.all(
+          [Fiber.join(removal), Fiber.join(replay)],
+          { concurrency: "unbounded" },
+        );
+        yield* Fiber.join(blocker);
+        expect(removalResult).toBe("Removed");
+        expect(replayResult).toBe("MissingUser");
+        expect(
+          yield* Effect.promise(() => database.select().from(users).where(eq(users.id, userId))),
+        ).toEqual([]);
+        return undefined;
+      }).pipe(Effect.provide(Db.layer({ db: env.DB }))),
+    ),
 );
 
 it.effect("consumes only one exact current server-owned self-service deletion Action", () =>
@@ -1030,3 +1187,32 @@ const retrySessionExpiresAt = DateTime.toDateUtc(DateTime.makeUnsafe("2027-08-25
 const retrySessionUpdatedAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:04:00.000Z"));
 const expiredActionCreatedAt = DateTime.toDateUtc(DateTime.makeUnsafe("2025-08-25T12:00:00.000Z"));
 const expiredActionExpiresAt = DateTime.toDateUtc(DateTime.makeUnsafe("2025-08-25T12:05:00.000Z"));
+
+const awaitPostgresLockWaiters = (
+  client: Sql,
+  expected: number,
+  attemptsRemaining = 500,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const [row] = yield* Effect.promise(
+      () =>
+        client<Array<{ readonly waiting_count: number }>>`
+        select count(*)::integer as waiting_count
+        from pg_stat_activity
+        where datname = current_database()
+          and pid <> pg_backend_pid()
+          and wait_event_type = 'Lock'
+      `,
+    );
+    if (row !== undefined && row.waiting_count >= expected) return undefined;
+    if (attemptsRemaining === 0) {
+      return yield* Effect.die(
+        new Error(
+          `Expected ${expected} PostgreSQL lock waiters, observed ${row?.waiting_count ?? 0}`,
+        ),
+      );
+    }
+    yield* Effect.yieldNow;
+    yield* awaitPostgresLockWaiters(client, expected, attemptsRemaining - 1);
+    return undefined;
+  });

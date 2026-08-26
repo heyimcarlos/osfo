@@ -10,6 +10,8 @@ type BoundaryClass =
   | "read";
 type Protection =
   | "accountDeletionFence"
+  | "deletionOrchestration"
+  | "directoryGate"
   | "fencedSessionExecution"
   | "initializationLifecycle"
   | "none"
@@ -56,6 +58,20 @@ const publicBoundaryPolicy = {
   uploadFile: ["ordinaryMutation", "accountDeletionFence"],
 } as const satisfies Record<string, readonly [BoundaryClass, Protection]>;
 
+const directoryBoundaryPolicy = {
+  chatWithMessengerContext: ["ordinaryMutation", "directoryGate"],
+  configureChannels: ["initialization", "initializationLifecycle"],
+  deleteAgent: ["cancellationReconciliationDeletion", "deletionOrchestration"],
+  ensureAgent: ["initialization", "initializationLifecycle"],
+  getModel: ["read", "none"],
+  initializeAgent: ["initialization", "initializationLifecycle"],
+  inspectAgent: ["read", "none"],
+  listAgents: ["read", "none"],
+  onBeforeSubAgent: ["read", "none"],
+  probeAgent: ["read", "none"],
+  quiesceAgentAccountDeletion: ["cancellationReconciliationDeletion", "deletionOrchestration"],
+} as const satisfies Record<string, readonly [BoundaryClass, Protection]>;
+
 it("classifies every public Osfo Agent method under the account deletion boundary policy", () => {
   const source = readFileSync(new URL("./agent.ts", import.meta.url), "utf8");
   const discovered = Array.from(
@@ -71,4 +87,23 @@ it("classifies every public Osfo Agent method under the account deletion boundar
       .every(([, [, protection]]) => protection !== "none"),
   ).toBe(true);
   expect(publicBoundaryPolicy.inspectCoreMemory).toEqual(["read", "fencedSessionExecution"]);
+});
+
+it("classifies every public Osfo Directory method under the account deletion boundary policy", () => {
+  const source = readFileSync(new URL("./directory.ts", import.meta.url), "utf8");
+  const discovered = Array.from(
+    source.matchAll(/^  (?:override )?(?:async )?([A-Za-z][A-Za-z0-9_]*)\(/gm),
+    (match) => match[1] ?? "",
+  );
+
+  expect(new Set(discovered)).toEqual(new Set(Object.keys(directoryBoundaryPolicy)));
+  expect(discovered).toHaveLength(Object.keys(directoryBoundaryPolicy).length);
+  expect(directoryBoundaryPolicy.deleteAgent).toEqual([
+    "cancellationReconciliationDeletion",
+    "deletionOrchestration",
+  ]);
+  expect(directoryBoundaryPolicy.quiesceAgentAccountDeletion).toEqual([
+    "cancellationReconciliationDeletion",
+    "deletionOrchestration",
+  ]);
 });

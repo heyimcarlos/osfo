@@ -22,7 +22,11 @@ import { DeletionCaseId } from "../../domain/deletion-case";
 import { retainedCatalog } from "../../domain/plan-policy";
 import { AccountDeletion } from "../../services/account-deletion";
 import { ApprovalPresentation } from "../../services/authorization";
-import { exactDeletionAuthority, fenceDeletionCaseAccess } from "./deletion-case-authority";
+import {
+  exactDeletionAuthority,
+  fenceDeletionCaseAccess,
+  lockDeletionCaseUser,
+} from "./deletion-case-authority";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transaction boundaries require async functions. */
 /* oxlint-disable eslint/no-underscore-dangle -- Durable candidate variants use the canonical _tag discriminator. */
@@ -106,6 +110,9 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
   ) {
     const removed = yield* attempt("removeUser", () =>
       database.transaction(async (transaction) => {
+        // Every authoritative User/Deletion Case transaction locks the User first.
+        // Retained replay uses the same order, so scheduled removal cannot deadlock it.
+        if ((await lockDeletionCaseUser(transaction, candidate.userId)) === undefined) return false;
         if (candidate._tag === "Administrative") {
           // Hold current administrative authority until the User graph deletion commits.
           const [administrator] = await transaction
@@ -134,8 +141,7 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
           .select({ email: users.email, phoneNumber: users.phoneNumber })
           .from(users)
           .where(eq(users.id, candidate.userId))
-          .limit(1)
-          .for("update");
+          .limit(1);
         if (user === undefined) return false;
         if (candidate._tag === "SelfService") {
           const [subscription] = await transaction
@@ -225,6 +231,13 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
     ) {
       const outcome = yield* attempt(operation, () =>
         database.transaction(async (transaction) => {
+          const user = await lockDeletionCaseUser(transaction, candidate.userId);
+          if (user === undefined) {
+            return {
+              _tag: "ProgressInvalid" as const,
+              cause: new Error("Deletion Case User is missing"),
+            };
+          }
           const caseIdentity = sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
             and ${deletionCases.user_id} = ${candidate.userId}
             and ${exactDeletionAuthority(candidate)}`;

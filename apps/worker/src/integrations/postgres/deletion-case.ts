@@ -13,7 +13,7 @@ import { Db } from "../../db";
 import { UserId } from "../../domain";
 import { DeletionCaseId } from "../../domain/deletion-case";
 import { DeletionCase } from "../../services/deletion-case";
-import { fenceDeletionCaseAccess } from "./deletion-case-authority";
+import { fenceDeletionCaseAccess, lockDeletionCaseUser } from "./deletion-case-authority";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transaction boundaries require async functions. */
 
@@ -69,12 +69,7 @@ export const make = Effect.gen(function* () {
   ) {
     return yield* Db.execute("requestDeletion", () =>
       database.transaction(async (transaction) => {
-        const [user] = await transaction
-          .select({ id: users.id })
-          .from(users)
-          .where(eq(users.id, userId))
-          .for("update")
-          .limit(1);
+        const user = await lockDeletionCaseUser(transaction, userId);
         if (user === undefined) return { _tag: "MissingUser" } as const;
         const [authSession] = await transaction
           .select({ id: sessions.id })
@@ -289,6 +284,8 @@ export const make = Effect.gen(function* () {
     request: (command, deletion_case_id) =>
       Db.execute("requestDeletion", () =>
         database.transaction(async (transaction) => {
+          const user = await lockDeletionCaseUser(transaction, command.userId);
+          if (user === undefined) return { _tag: "MissingUser" } as const;
           const [administrator] = await transaction
             .select({ adminActorId: administrativeAuthorities.admin_actor_id })
             .from(administrativeAuthorities)
@@ -301,13 +298,6 @@ export const make = Effect.gen(function* () {
             .for("update")
             .limit(1);
           if (administrator === undefined) return { _tag: "AuthorityChanged" } as const;
-          const [user] = await transaction
-            .select({ id: users.id })
-            .from(users)
-            .where(eq(users.id, command.userId))
-            .for("update")
-            .limit(1);
-          if (user === undefined) return { _tag: "MissingUser" } as const;
           const [existing] = await transaction
             .select({ deletionCaseId: deletionCases.deletion_case_id })
             .from(deletionCases)
