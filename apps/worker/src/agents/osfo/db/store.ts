@@ -750,6 +750,9 @@ export const makeAgentStore = (db: AgentDb) => {
           .limit(1)
           .get();
         if (owned === undefined) {
+          const retained = inspectRetainedSessionDeletionTransaction(transaction, input);
+          if (retained === "Exact") return "AlreadyDeleted";
+          if (retained === "Mismatch") return "Invalid";
           return enqueueMemoryProviderDeletionTransaction(transaction, {
             enqueuedAt: input.deletedAt,
             outboxId: input.outboxId,
@@ -956,6 +959,28 @@ const deleteSessionPayload = (
   sessionId: input.sessionId,
   userId: input.userId,
 });
+
+const inspectRetainedSessionDeletionTransaction = (
+  transaction: AgentTransaction,
+  input: DeleteHistoricalSessionInput,
+) => {
+  const retained = transaction
+    .select({
+      operationType: memoryProviderOutbox.operation_type,
+      orderingKey: memoryProviderOutbox.ordering_key,
+      payloadJson: memoryProviderOutbox.payload_json,
+    })
+    .from(memoryProviderOutbox)
+    .where(eq(memoryProviderOutbox.outbox_id, input.outboxId))
+    .limit(1)
+    .get();
+  if (retained === undefined) return "Missing" as const;
+  return retained.operationType === "deleteSessionConversation" &&
+    retained.orderingKey === `user:${input.userId}` &&
+    retained.payloadJson === JSON.stringify(deleteSessionPayload(input))
+    ? ("Exact" as const)
+    : ("Mismatch" as const);
+};
 
 interface RecordCommittedTurnTransactionInput {
   readonly enqueuedAt: DbTimestamp;

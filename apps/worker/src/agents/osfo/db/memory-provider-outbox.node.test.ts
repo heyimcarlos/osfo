@@ -33,6 +33,7 @@ import { ApprovalPresentation } from "../../../services/authorization";
 import { makeAgentDb } from "./client";
 import { agentMigrations, applyAgentMigrations, applyMigrationChain } from "./migrate";
 import {
+  type ClaimedMemoryProviderWork,
   makeMemoryProviderOutboxStore,
   MemoryProviderDeletionProgress,
   MemoryProviderOutboxId,
@@ -1271,7 +1272,7 @@ it.effect("retains accepted Session cleanup until a processing provider document
 
       yield* reconcileMemoryProviderOutbox(
         makeMemoryProviderOutboxStore(db),
-        permittedDeletionOptions,
+        productionSessionDeletionOptions(store),
       ).pipe(
         Effect.provideService(MemoryProvider.Service, provider),
         Effect.provideService(Db.Service, unavailableDatabase),
@@ -1292,7 +1293,7 @@ it.effect("retains accepted Session cleanup until a processing provider document
       );
       yield* reconcileMemoryProviderOutbox(
         makeMemoryProviderOutboxStore(db),
-        permittedDeletionOptions,
+        productionSessionDeletionOptions(store),
       ).pipe(
         Effect.provideService(MemoryProvider.Service, provider),
         Effect.provideService(Db.Service, unavailableDatabase),
@@ -1379,7 +1380,7 @@ it.effect(
 
         yield* reconcileMemoryProviderOutbox(
           makeMemoryProviderOutboxStore(db),
-          permittedDeletionOptions,
+          productionSessionDeletionOptions(store),
         ).pipe(
           Effect.provideService(MemoryProvider.Service, provider),
           Effect.provideService(Db.Service, unavailableDatabase),
@@ -1400,7 +1401,7 @@ it.effect(
         );
         yield* reconcileMemoryProviderOutbox(
           makeMemoryProviderOutboxStore(makeAgentDb(asDurableObjectStorage(storage))),
-          permittedDeletionOptions,
+          productionSessionDeletionOptions(store),
         ).pipe(
           Effect.provideService(MemoryProvider.Service, provider),
           Effect.provideService(Db.Service, unavailableDatabase),
@@ -1418,6 +1419,75 @@ it.effect(
         ).toEqual({ status: "completed" });
       }),
     ),
+);
+
+it.effect("rejects a nonexact retry without changing retained Session deletion progress", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const store = makeAgentStore(db);
+      yield* store.initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId: ConversationRouteId.make("route-1"),
+        sessionId: SessionId.make("session-1"),
+      });
+      yield* store.replaceCurrentSession({
+        expectedCurrentSessionId: SessionId.make("session-1"),
+        replacedAt: now,
+        replacementSessionId: SessionId.make("session-2"),
+        routeId: ConversationRouteId.make("route-1"),
+      });
+      yield* store.recordCommittedTurn(
+        committedTurn("assistant-1", "request-1"),
+        conversationProjection("assistant-1"),
+      );
+      database
+        .prepare(
+          `UPDATE osfo_memory_provider_outbox
+            SET provider_accepted_at = ?, provider_document_id = 'document-1',
+              provider_status = 'processing',
+              usage_json = '{"completedNonModelCost":[{"activity":"conversationsAndMemory","ratedCostUsdMicros":"10","resourcePriceVersion":"resource-prices-2026-08-22"}]}'
+            WHERE operation_type = 'saveConversation'`,
+        )
+        .run(now);
+      const exact = authorizedDeletion("delete-session-1", "session-1");
+      yield* store.deleteHistoricalSession({
+        authorization: exact.payload.authorization,
+        deletedAt: now,
+        outboxId: exact.outboxId,
+        sessionId: SessionId.make("session-1"),
+        userId: UserId.make("user-1"),
+      });
+      const retainedBefore = database
+        .prepare(
+          `SELECT claim_expires_at, claim_token, deletion_progress_json, payload_json, status
+            FROM osfo_memory_provider_outbox WHERE outbox_id = 'delete-session-1'`,
+        )
+        .get();
+
+      const mismatch = yield* store
+        .deleteHistoricalSession({
+          authorization: authorizedDeletion("different-action", "session-1").payload.authorization,
+          deletedAt: now,
+          outboxId: exact.outboxId,
+          sessionId: SessionId.make("session-1"),
+          userId: UserId.make("user-1"),
+        })
+        .pipe(Effect.result);
+
+      expect(Result.isFailure(mismatch)).toBe(true);
+      expect(
+        database
+          .prepare(
+            `SELECT claim_expires_at, claim_token, deletion_progress_json, payload_json, status
+              FROM osfo_memory_provider_outbox WHERE outbox_id = 'delete-session-1'`,
+          )
+          .get(),
+      ).toEqual(retainedBefore);
+    }),
+  ),
 );
 
 it.effect("rechecks before replacing, clearing, and settling the current Session", () =>
@@ -2533,6 +2603,45 @@ const permittedDeletionOptions = {
   authorizeDeletion: () => Effect.succeed({ _tag: "Permitted" as const }),
   prepareDeletion: () => Effect.void,
 };
+
+const productionSessionDeletionOptions = (store: ReturnType<typeof makeAgentStore>) => ({
+  authorizeDeletion: permittedDeletionOptions.authorizeDeletion,
+  prepareDeletion: (claim: ClaimedMemoryProviderWork) => {
+    const payload = claim.payload;
+    if (payload._tag !== "DeleteSessionConversation") return Effect.void;
+    return deleteLocalSession(
+      {
+        replacementSessionId: SessionId.make(`session-delete-${payload.authorization.actionId}`),
+        sessionId: payload.sessionId,
+      },
+      {
+        activateCurrentSession: Effect.die(
+          new Error("Already-deleted Session preparation activated a Session"),
+        ),
+        authorizeDeletion: () => Effect.void,
+        clearMessages: () =>
+          Effect.die(new Error("Already-deleted Session preparation cleared history")),
+        inspect: Effect.die(new Error("Already-deleted Session preparation inspected ownership")),
+        ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+        replacedAt: Effect.succeed(now),
+        replaceCurrentSession: () =>
+          Effect.die(new Error("Already-deleted Session preparation created a replacement")),
+        rollbackCurrentSessionReplacement: () =>
+          Effect.die(new Error("Already-deleted Session preparation rolled back a replacement")),
+        settle: (sessionId) =>
+          store
+            .deleteHistoricalSession({
+              authorization: payload.authorization,
+              deletedAt: now,
+              outboxId: claim.outboxId,
+              sessionId,
+              userId: payload.userId,
+            })
+            .pipe(Effect.orDie),
+      },
+    ).pipe(Effect.asVoid);
+  },
+});
 
 const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvider.Interface => ({
   checkConversationSearchability: () => Effect.succeed(true),
