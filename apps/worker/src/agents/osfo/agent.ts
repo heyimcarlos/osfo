@@ -244,6 +244,7 @@ import {
 } from "./action-presentation";
 import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-authorization";
 import {
+  makeAccountDeletionFencedSessionExecution,
   makeAccountDeletionFence,
   requireAccountDeletionQuiescence,
 } from "./account-deletion-fence";
@@ -628,6 +629,10 @@ export class OsfoAgent extends Think<Env> {
       this.listSubmissions({ limit: 1, status: ["pending", "running"] }),
     ).pipe(Effect.map((submissions) => submissions.length > 0)),
   });
+  readonly #accountDeletionFencedSessionExecution = makeAccountDeletionFencedSessionExecution(
+    this.#sessionExecution,
+    this.#accountDeletionFence,
+  );
   readonly #providerConversationSaveGate = makeProviderConversationSaveGate();
   readonly #migrationsReady = this.ctx.blockConcurrencyWhile(() =>
     Effect.runPromise(applyAgentMigrations(this.ctx.storage)),
@@ -2217,7 +2222,7 @@ export class OsfoAgent extends Think<Env> {
     await this.#migrationsReady;
     const userId = await Effect.runPromise(Schema.decodeEffect(UserId)(encodedUserId));
     const quiescence = await runRpc(
-      this.#sessionExecution.run(
+      this.#accountDeletionFencedSessionExecution.closeAfter(
         Effect.tryPromise({
           try: () => this.#cancelActiveSubmissionsForAccountDeletion(),
           catch: (cause) =>
@@ -2226,7 +2231,7 @@ export class OsfoAgent extends Think<Env> {
               message: "Ordinary Agent executions could not be cancelled for account deletion",
               operation: "quiesceAccountDeletion",
             }),
-        }).pipe(Effect.andThen(this.#accountDeletionFence.close)),
+        }),
       ),
     );
     requireAccountDeletionQuiescence(quiescence);
@@ -2497,10 +2502,17 @@ export class OsfoAgent extends Think<Env> {
       if (!Predicate.isTagged(admission, "ManagedConversationAdmitted")) return admission;
       return yield* callThinkSubmission("runTurn", () => submitTurn(admission));
     });
+    const fenced = this.#accountDeletionFencedSessionExecution;
+    const onClosed = () =>
+      new ThinkSubmissionUnavailable({
+        cause: decoded.success.submissionId,
+        message: "Account deletion fenced this managed conversation",
+        operation: "submitManagedConversation",
+      });
     return runRpc(
       decoded.success.message.trim() === "/new"
-        ? this.#sessionExecution.runWhenIdle(operation)
-        : this.#sessionExecution.run(operation),
+        ? fenced.runWhenIdle(operation, onClosed)
+        : fenced.run(operation, onClosed),
     );
   }
 

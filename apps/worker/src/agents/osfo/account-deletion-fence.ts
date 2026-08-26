@@ -1,6 +1,8 @@
 import { Deferred, Effect, Semaphore } from "effect";
 
-/** Agent-local fence that drains R2 writers before account cleanup starts. */
+import type { SessionExecution } from "./session-execution";
+
+/** Agent-local fence that rejects ordinary mutation and drains tracked work before cleanup starts. */
 export const makeAccountDeletionFence = () => {
   const semaphore = Semaphore.makeUnsafe(1);
   const trackedExecutions = new Map<AbortController, Deferred.Deferred<void>>();
@@ -65,6 +67,20 @@ export const makeAccountDeletionFence = () => {
       }),
   };
 };
+
+/** Keep Session serialization outside the deletion fence so quiescence and mutation share one lock order. */
+export const makeAccountDeletionFencedSessionExecution = <E, R>(
+  sessionExecution: SessionExecution<E, R>,
+  fence: ReturnType<typeof makeAccountDeletionFence>,
+) => ({
+  close: sessionExecution.run(fence.close),
+  closeAfter: <A, E2, R2>(before: Effect.Effect<A, E2, R2>) =>
+    sessionExecution.run(before.pipe(Effect.andThen(fence.close))),
+  run: <A, E2, R2, E3>(effect: Effect.Effect<A, E2, R2>, onClosed: () => E3) =>
+    sessionExecution.run(fence.run(effect, onClosed)),
+  runWhenIdle: <A, E2, R2, E3>(effect: Effect.Effect<A, E2, R2>, onClosed: () => E3) =>
+    sessionExecution.runWhenIdle(fence.run(effect, onClosed)),
+});
 
 /** Reject a typed RPC failure returned as a value from an otherwise void quiescence call. */
 export const requireAccountDeletionQuiescence = (result: void | Error): void => {

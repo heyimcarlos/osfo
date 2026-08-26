@@ -3,9 +3,11 @@ import { expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber } from "effect";
 
 import {
+  makeAccountDeletionFencedSessionExecution,
   makeAccountDeletionFence,
   requireAccountDeletionQuiescence,
 } from "./account-deletion-fence";
+import { makeSessionExecution } from "./session-execution";
 
 it("rejects a Think quiescence failure returned through the RPC value channel", () => {
   const failure = Object.assign(new Error("Think quiescence failed"), {
@@ -124,5 +126,87 @@ it.effect("waits for an already-started messenger provider call to observe cance
     yield* Fiber.join(admittedTurn);
 
     expect(events).toEqual(["provider-aborted", "closed"]);
+  }),
+);
+
+it.effect(
+  "rejects an authenticated managed request when deletion closes before Agent mutation",
+  () =>
+    Effect.gen(function* () {
+      const fence = makeAccountDeletionFence();
+      const sessionExecution = makeSessionExecution({ hasPendingOrRunning: Effect.succeed(false) });
+      const execution = makeAccountDeletionFencedSessionExecution(sessionExecution, fence);
+      const authenticated = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      const mutations = {
+        currentSession: new Array<string>(),
+        localMessages: new Array<string>(),
+        outbox: new Array<string>(),
+        provider: new Array<string>(),
+        sessions: new Array<string>(),
+      };
+      const request = yield* Deferred.succeed(authenticated, undefined).pipe(
+        Effect.andThen(Deferred.await(resume)),
+        Effect.andThen(
+          execution.run(
+            Effect.sync(() => {
+              mutations.currentSession.push("changed");
+              mutations.localMessages.push("written");
+              mutations.outbox.push("enqueued");
+              mutations.provider.push("sent");
+              mutations.sessions.push("created");
+            }),
+            () => "account deletion fenced" as const,
+          ),
+        ),
+        Effect.flip,
+        Effect.forkChild,
+      );
+
+      yield* Deferred.await(authenticated);
+      yield* execution.close;
+      yield* Deferred.succeed(resume, undefined);
+
+      expect(yield* Fiber.join(request)).toBe("account deletion fenced");
+      expect(mutations).toEqual({
+        currentSession: [],
+        localMessages: [],
+        outbox: [],
+        provider: [],
+        sessions: [],
+      });
+    }),
+);
+
+it.effect("drains a managed request already inside the fence before quiescence closes", () =>
+  Effect.gen(function* () {
+    const fence = makeAccountDeletionFence();
+    const sessionExecution = makeSessionExecution({ hasPendingOrRunning: Effect.succeed(false) });
+    const execution = makeAccountDeletionFencedSessionExecution(sessionExecution, fence);
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const events: Array<string> = [];
+    const request = yield* execution
+      .run(
+        Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(Effect.sync(() => events.push("request-complete"))),
+        ),
+        () => "account deletion fenced" as const,
+      )
+      .pipe(Effect.forkChild);
+
+    yield* Deferred.await(started);
+    const closing = yield* execution.close.pipe(
+      Effect.andThen(Effect.sync(() => events.push("fence-closed"))),
+      Effect.forkChild,
+    );
+    yield* Effect.yieldNow;
+    expect(events).toEqual([]);
+
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(request);
+    yield* Fiber.join(closing);
+    expect(events).toEqual(["request-complete", "fence-closed"]);
   }),
 );
