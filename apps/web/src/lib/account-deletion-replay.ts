@@ -101,9 +101,11 @@ export const prepareAccountDeletionSubmission = <A, E, R>(
   storage: Pick<Storage, "removeItem" | "setItem">,
   request: AccountDeletionReplayRequest,
   submit: (request: AccountDeletionReplayRequest) => Effect.Effect<A, E, R>,
+  onSuccess: () => void,
 ): PreparedAccountDeletionSubmission<A, E, R> => ({
   effect: Effect.suspend(() => submit(request)).pipe(
     Effect.tap(() => Effect.sync(() => clearAccountDeletionReplay(storage))),
+    Effect.tap(() => Effect.sync(onSuccess)),
   ),
   replayAvailable: saveAccountDeletionReplay(storage, request) === "saved",
 });

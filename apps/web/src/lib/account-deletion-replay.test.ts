@@ -116,6 +116,7 @@ it("leaves opaque Action identity and bearer authentication to the Worker", () =
 it.effect("submits exactly once when replay storage is entirely unavailable", () =>
   Effect.gen(function* () {
     let submissions = 0;
+    let signedOut = false;
     const unavailableStorage = {
       getItem: () => {
         throw new Error("getItem blocked");
@@ -127,39 +128,54 @@ it.effect("submits exactly once when replay storage is entirely unavailable", ()
         throw new Error("setItem blocked");
       },
     };
-    const submission = prepareAccountDeletionSubmission(unavailableStorage, request, (submitted) =>
-      Effect.sync(() => {
-        submissions += 1;
-        expect(submitted).toEqual(request);
-        return { status: "deletion-pending" as const };
-      }),
+    const submission = prepareAccountDeletionSubmission(
+      unavailableStorage,
+      request,
+      (submitted) =>
+        Effect.sync(() => {
+          submissions += 1;
+          expect(submitted).toEqual(request);
+          return { status: "deletion-pending" as const };
+        }),
+      () => {
+        signedOut = true;
+      },
     );
 
     expect(submission.replayAvailable).toBe(false);
     expect(loadAccountDeletionReplay(unavailableStorage)).toEqual({ status: "unavailable" });
     expect(yield* submission.effect).toEqual({ status: "deletion-pending" });
     expect(submissions).toBe(1);
+    expect(signedOut).toBe(true);
   }),
 );
 
 it.effect("does not let a post-success replay clear failure override deletion", () =>
   Effect.gen(function* () {
     let submissions = 0;
+    let signedOut = false;
     const storage = {
       removeItem: () => {
         throw new Error("removeItem blocked");
       },
       setItem: () => undefined,
     };
-    const submission = prepareAccountDeletionSubmission(storage, request, () =>
-      Effect.sync(() => {
-        submissions += 1;
-        return { status: "deletion-pending" as const };
-      }),
+    const submission = prepareAccountDeletionSubmission(
+      storage,
+      request,
+      () =>
+        Effect.sync(() => {
+          submissions += 1;
+          return { status: "deletion-pending" as const };
+        }),
+      () => {
+        signedOut = true;
+      },
     );
 
     expect(submission.replayAvailable).toBe(true);
     expect(yield* submission.effect).toEqual({ status: "deletion-pending" });
     expect(submissions).toBe(1);
+    expect(signedOut).toBe(true);
   }),
 );

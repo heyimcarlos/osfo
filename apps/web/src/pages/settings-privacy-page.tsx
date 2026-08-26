@@ -147,17 +147,16 @@ function DeleteAccountControl() {
       globalThis.localStorage,
       request,
       requestAccountDeletion,
+      () => globalThis.location.assign("/"),
     );
-    void Effect.runPromise(submission.effect)
-      .then(() => globalThis.location.assign("/"))
-      .catch(() => {
-        if (submission.replayAvailable) {
-          globalThis.location.assign("/account-deletion/recovery");
-          return;
-        }
-        setBusy(false);
-        setError(true);
-      });
+    void Effect.runPromise(submission.effect).catch(() => {
+      if (submission.replayAvailable) {
+        globalThis.location.assign("/account-deletion/recovery");
+        return;
+      }
+      setBusy(false);
+      setError(true);
+    });
   };
   return (
     <div className="rounded-2xl border border-white/80 bg-white/68 px-3 py-3">
