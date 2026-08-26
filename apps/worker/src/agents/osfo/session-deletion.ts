@@ -12,15 +12,16 @@ export interface SessionReplacementGeneration {
 }
 
 export interface LocalSessionDeletionDependencies<A, E> {
-  readonly activateCurrentSession: Effect.Effect<void, E>;
+  readonly activateSession: (sessionId: SessionId) => Effect.Effect<void, E>;
   // oxlint-disable-next-line effecttsgo/lazy-effect -- Each destructive boundary must construct and execute a fresh current-authority recheck.
   readonly authorizeDeletion: () => Effect.Effect<void, E>;
   readonly clearMessages: (sessionId: SessionId) => Effect.Effect<void, E>;
-  readonly inspect: Effect.Effect<
-    { readonly currentSessionId: SessionId; readonly routeId: ConversationRouteId },
+  readonly inspectSession: (
+    sessionId: SessionId,
+  ) => Effect.Effect<
+    { readonly currentSessionId: SessionId; readonly routeId: ConversationRouteId } | undefined,
     E
   >;
-  readonly ownsSession: (sessionId: SessionId) => Effect.Effect<boolean, E>;
   readonly readReplacementGeneration?: (
     historicalSessionId: SessionId,
     replacementSessionId: SessionId,
@@ -49,28 +50,32 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
   input: { readonly replacementSessionId: SessionId; readonly sessionId: SessionId },
   dependencies: LocalSessionDeletionDependencies<A, E>,
 ) {
-  const owned = yield* dependencies.ownsSession(input.sessionId);
-  if (!owned) return yield* dependencies.settle(input.sessionId);
-  const agent = yield* dependencies.inspect;
-  if (agent.currentSessionId === input.sessionId) {
+  const target = yield* dependencies.inspectSession(input.sessionId);
+  if (target === undefined) return yield* dependencies.settle(input.sessionId);
+  if (target.currentSessionId === input.sessionId) {
     const replacedAt = yield* dependencies.replacedAt;
     yield* dependencies.authorizeDeletion();
     const replacement = {
       expectedCurrentSessionId: input.sessionId,
       replacedAt,
       replacementSessionId: input.replacementSessionId,
-      routeId: agent.routeId,
+      routeId: target.routeId,
     };
     yield* dependencies.replaceCurrentSession(replacement);
     const rollbackAfter = (failure: E) =>
       Effect.gen(function* () {
         yield* dependencies.authorizeDeletion();
         yield* dependencies.rollbackCurrentSessionReplacement(replacement);
+        // SQLite is now safely resumable even if authority changes before Think can follow it.
+        yield* dependencies.authorizeDeletion();
+        yield* dependencies.activateSession(input.sessionId);
         return yield* Effect.fail(failure);
       });
 
     yield* dependencies.authorizeDeletion();
-    const activation = yield* dependencies.activateCurrentSession.pipe(Effect.result);
+    const activation = yield* dependencies
+      .activateSession(input.replacementSessionId)
+      .pipe(Effect.result);
     if (Result.isFailure(activation)) return yield* rollbackAfter(activation.failure);
 
     yield* dependencies.authorizeDeletion();
@@ -85,33 +90,35 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
     return settlement.success;
   }
   if (
-    isSessionDeletionReplacement(agent.currentSessionId) &&
-    agent.currentSessionId !== input.replacementSessionId
+    isSessionDeletionReplacement(target.currentSessionId) &&
+    target.currentSessionId !== input.replacementSessionId
   ) {
     return yield* new CurrentSessionReplacementConflict({
-      actualCurrentSessionId: agent.currentSessionId,
+      actualCurrentSessionId: target.currentSessionId,
       expectedCurrentSessionId: input.sessionId,
       message: "A different deletion Action owns the current replacement Session",
-      replacementOwnerRouteId: agent.routeId,
+      replacementOwnerRouteId: target.routeId,
       replacementSessionId: input.replacementSessionId,
-      routeId: agent.routeId,
+      routeId: target.routeId,
     });
   }
-  if (agent.currentSessionId === input.replacementSessionId) {
+  if (target.currentSessionId === input.replacementSessionId) {
     if (dependencies.readReplacementGeneration === undefined) {
       return yield* new CurrentSessionReplacementConflict({
-        actualCurrentSessionId: agent.currentSessionId,
+        actualCurrentSessionId: target.currentSessionId,
         expectedCurrentSessionId: input.sessionId,
         message: "The exact replacement generation is unavailable",
-        replacementOwnerRouteId: agent.routeId,
+        replacementOwnerRouteId: target.routeId,
         replacementSessionId: input.replacementSessionId,
-        routeId: agent.routeId,
+        routeId: target.routeId,
       });
     }
     const replacementGeneration = yield* dependencies.readReplacementGeneration(
       input.sessionId,
       input.replacementSessionId,
     );
+    yield* dependencies.authorizeDeletion();
+    yield* dependencies.activateSession(input.replacementSessionId);
     yield* dependencies.authorizeDeletion();
     yield* dependencies.clearMessages(input.sessionId);
     yield* dependencies.authorizeDeletion();

@@ -311,6 +311,11 @@ const RouteSessionRecord = Schema.Struct({
   sessionId: SessionId,
 });
 
+const SessionDeletionFactsRecord = Schema.Struct({
+  currentSessionId: SessionId,
+  routeId: ConversationRouteId,
+});
+
 const SessionIdRecord = Schema.Struct({ sessionId: SessionId });
 const RouteSessionPageRecord = Schema.Struct({
   ownershipSequence: Schema.Int.check(Schema.isGreaterThan(0)),
@@ -695,6 +700,41 @@ export const makeAgentStore = (db: AgentDb) => {
       ),
     );
 
+  const readSessionDeletionFacts = Effect.fn("AgentStore.readSessionDeletionFacts")(function* (
+    sessionId: SessionId,
+  ) {
+    const facts = yield* execute("readSessionOwnership", () =>
+      db.transaction((transaction) => {
+        const target = transaction
+          .select({ routeId: sessionOwnership.route_id })
+          .from(sessionOwnership)
+          .where(eq(sessionOwnership.session_id, sessionId))
+          .limit(1)
+          .get();
+        if (target === undefined) return undefined;
+        const current = transaction
+          .select({ currentSessionId: sessionOwnership.session_id })
+          .from(sessionOwnership)
+          .where(
+            and(
+              eq(sessionOwnership.route_id, target.routeId),
+              isNull(sessionOwnership.replaced_at),
+            ),
+          )
+          .limit(1)
+          .get();
+        return {
+          currentSessionId: current?.currentSessionId ?? null,
+          routeId: target.routeId,
+        };
+      }),
+    );
+    if (facts === undefined) return undefined;
+    return yield* Schema.decodeUnknownEffect(SessionDeletionFactsRecord)(facts).pipe(
+      Effect.mapError(() => invalidStoreRecord("readSessionOwnership")),
+    );
+  });
+
   const readSessionReplacementGeneration = Effect.fn("AgentStore.readSessionReplacementGeneration")(
     function* (historicalSessionId: SessionId, replacementSessionId: SessionId) {
       const generation = yield* execute("readSessionOwnership", () => {
@@ -792,7 +832,7 @@ export const makeAgentStore = (db: AgentDb) => {
     const outcome = yield* execute("deleteSession", () =>
       db.transaction((transaction) => {
         const owned = transaction
-          .select({ replacedAt: sessionOwnership.replaced_at })
+          .select({ replacedAt: sessionOwnership.replaced_at, routeId: sessionOwnership.route_id })
           .from(sessionOwnership)
           .where(eq(sessionOwnership.session_id, input.sessionId))
           .limit(1)
@@ -813,7 +853,9 @@ export const makeAgentStore = (db: AgentDb) => {
         const current = transaction
           .select({ routeId: sessionOwnership.route_id, sessionId: sessionOwnership.session_id })
           .from(sessionOwnership)
-          .where(isNull(sessionOwnership.replaced_at))
+          .where(
+            and(eq(sessionOwnership.route_id, owned.routeId), isNull(sessionOwnership.replaced_at)),
+          )
           .limit(1)
           .get();
         if (current === undefined) return "Invalid";
@@ -1007,6 +1049,7 @@ export const makeAgentStore = (db: AgentDb) => {
     readPrimarySessionId,
     readRoute,
     readRouteSessionPage,
+    readSessionDeletionFacts,
     readSessionIds,
     readSessionReplacementGeneration,
     recordCommittedTurn,

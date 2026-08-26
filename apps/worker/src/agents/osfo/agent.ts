@@ -1855,10 +1855,11 @@ export class OsfoAgent extends Think<Env> {
             sessionId: input.sessionId,
           },
           {
-            activateCurrentSession: Effect.tryPromise({
-              try: () => this.#activateCurrentSession(),
-              catch: sessionDeletionFailure("The replacement Session could not be activated"),
-            }),
+            activateSession: (sessionId) =>
+              Effect.tryPromise({
+                try: () => this.#activateSession(sessionId),
+                catch: sessionDeletionFailure("The selected Session could not be activated"),
+              }),
             authorizeDeletion: () =>
               this.#managedActionAuthorization
                 .recheck(
@@ -1879,16 +1880,13 @@ export class OsfoAgent extends Think<Env> {
                 try: () => Session.create(this).forSession(sessionId).clearMessages(),
                 catch: sessionDeletionFailure("Think Session history could not be deleted"),
               }),
-            inspect: this.#store
-              .inspect()
-              .pipe(
-                Effect.mapError(sessionDeletionFailure("Current Session ownership is unavailable")),
-              ),
-            ownsSession: (sessionId) =>
+            inspectSession: (sessionId) =>
               this.#store
-                .ownsSession(sessionId)
+                .readSessionDeletionFacts(sessionId)
                 .pipe(
-                  Effect.mapError(sessionDeletionFailure("Session ownership could not be checked")),
+                  Effect.mapError(
+                    sessionDeletionFailure("Target Session ownership is unavailable"),
+                  ),
                 ),
             readReplacementGeneration: (historicalSessionId, replacementSessionId) =>
               this.#store
@@ -1920,12 +1918,7 @@ export class OsfoAgent extends Think<Env> {
                 ),
                 Effect.flatMap((rolledBack) =>
                   rolledBack
-                    ? Effect.tryPromise({
-                        try: () => this.#activateCurrentSession(),
-                        catch: sessionDeletionFailure(
-                          "The restored current Session could not be activated after rollback",
-                        ),
-                      })
+                    ? Effect.void
                     : Effect.fail(
                         sessionDeletionFailure(
                           "The replacement Session no longer matched the rollback request",

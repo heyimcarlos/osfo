@@ -796,11 +796,11 @@ it.effect("terminalizes claimed append work while deleting historical Session ow
           sessionId: SessionId.make("session-1"),
         },
         {
-          activateCurrentSession: Effect.die(new Error("Historical deletion activated Session")),
+          activateSession: () => Effect.die(new Error("Historical deletion activated Session")),
           authorizeDeletion: () => Effect.void,
           clearMessages: () => Effect.promise(() => historical.clearMessages()),
-          inspect: store.inspect().pipe(Effect.orDie),
-          ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+          inspectSession: (sessionId) =>
+            store.readSessionDeletionFacts(sessionId).pipe(Effect.orDie),
           replacedAt: Effect.succeed(now),
           replaceCurrentSession: () =>
             Effect.die(new Error("Historical deletion replaced current Session")),
@@ -945,11 +945,11 @@ it.effect("does not save a claimed append after historical Session deletion term
           sessionId: SessionId.make("session-1"),
         },
         {
-          activateCurrentSession: Effect.die(new Error("Historical deletion activated Session")),
+          activateSession: () => Effect.die(new Error("Historical deletion activated Session")),
           authorizeDeletion: () => Effect.void,
           clearMessages: () => Effect.void,
-          inspect: store.inspect().pipe(Effect.orDie),
-          ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+          inspectSession: (sessionId) =>
+            store.readSessionDeletionFacts(sessionId).pipe(Effect.orDie),
           replacedAt: Effect.succeed(now),
           replaceCurrentSession: () =>
             Effect.die(new Error("Historical deletion replaced current Session")),
@@ -1062,13 +1062,12 @@ it.effect("drains an in-flight provider save before terminalizing Session append
                 sessionId: SessionId.make("session-1"),
               },
               {
-                activateCurrentSession: Effect.die(
-                  new Error("Historical deletion activated Session"),
-                ),
+                activateSession: () =>
+                  Effect.die(new Error("Historical deletion activated Session")),
                 authorizeDeletion: () => Effect.void,
                 clearMessages: () => Effect.void,
-                inspect: store.inspect().pipe(Effect.orDie),
-                ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+                inspectSession: (sessionId) =>
+                  store.readSessionDeletionFacts(sessionId).pipe(Effect.orDie),
                 replacedAt: Effect.succeed(now),
                 replaceCurrentSession: () =>
                   Effect.die(new Error("Historical deletion replaced current Session")),
@@ -1625,14 +1624,14 @@ it.effect("rechecks before replacing, clearing, and settling the current Session
           sessionId: SessionId.make("session-1"),
         },
         {
-          activateCurrentSession: Effect.sync(() => events.push("activate")).pipe(Effect.asVoid),
+          activateSession: () => Effect.sync(() => events.push("activate")).pipe(Effect.asVoid),
           authorizeDeletion: () => Effect.sync(() => events.push("recheck")),
           clearMessages: () =>
             Effect.sync(() => events.push("clear")).pipe(
               Effect.andThen(Effect.promise(() => current.clearMessages())),
             ),
-          inspect: store.inspect().pipe(Effect.orDie),
-          ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+          inspectSession: (sessionId) =>
+            store.readSessionDeletionFacts(sessionId).pipe(Effect.orDie),
           replacedAt: Effect.succeed(now),
           replaceCurrentSession: (replacement) =>
             Effect.sync(() => events.push("replace")).pipe(
@@ -1678,6 +1677,97 @@ it.effect("rechecks before replacing, clearing, and settling the current Session
   ),
 );
 
+it.effect("replaces the target route current Session without treating it as historical", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const store = makeAgentStore(makeAgentDb(asDurableObjectStorage(storage)));
+      const primarySessionId = SessionId.make("session-primary");
+      const targetSessionId = SessionId.make("session-route-2");
+      const replacementSessionId = SessionId.make("session-delete-route-2");
+      const targetRouteId = ConversationRouteId.make("route-2");
+      yield* store.initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId: ConversationRouteId.make("route-1"),
+        sessionId: primarySessionId,
+      });
+      database
+        .prepare(
+          "INSERT INTO osfo_conversation_routes (is_primary, route_id) VALUES (0, 'route-2')",
+        )
+        .run();
+      database
+        .prepare(
+          `INSERT INTO osfo_session_ownership
+            (became_current_at, ownership_sequence, replaced_at, route_id, session_id)
+           VALUES (?, 2, NULL, 'route-2', 'session-route-2')`,
+        )
+        .run(now);
+      const primary = Session.create(thinkSqlProvider(database)).forSession(primarySessionId);
+      const target = Session.create(thinkSqlProvider(database)).forSession(targetSessionId);
+      yield* seedThinkHistory(primary, "primary");
+      yield* seedThinkHistory(target, "target");
+      const activated: Array<SessionId> = [];
+
+      yield* deleteLocalSession(
+        { replacementSessionId, sessionId: targetSessionId },
+        {
+          activateSession: (sessionId) =>
+            Effect.sync(() => {
+              activated.push(sessionId);
+            }),
+          authorizeDeletion: () => Effect.void,
+          clearMessages: (sessionId) =>
+            Effect.promise(() =>
+              Session.create(thinkSqlProvider(database)).forSession(sessionId).clearMessages(),
+            ),
+          inspectSession: (sessionId) =>
+            store.readSessionDeletionFacts(sessionId).pipe(Effect.orDie),
+          replacedAt: Effect.succeed(now),
+          replaceCurrentSession: (replacement) =>
+            store.replaceCurrentSession(replacement).pipe(Effect.orDie),
+          rollbackCurrentSessionReplacement: (replacement) =>
+            store.rollbackCurrentSessionReplacement(replacement).pipe(Effect.asVoid, Effect.orDie),
+          settle: (sessionId, replacementGeneration) => {
+            if (replacementGeneration === undefined) {
+              return Effect.die(new Error("Current target route lost replacement generation"));
+            }
+            return store
+              .deleteHistoricalSession({
+                authorization: authorizedDeletion("delete-session-route-2", sessionId).payload
+                  .authorization,
+                deletedAt: now,
+                outboxId: MemoryProviderOutboxId.make("delete-session-route-2"),
+                replacementGeneration,
+                sessionId,
+                userId: UserId.make("user-1"),
+              })
+              .pipe(Effect.orDie);
+          },
+        },
+      );
+
+      expect(activated).toEqual([replacementSessionId]);
+      expect(yield* store.inspect()).toMatchObject({ currentSessionId: primarySessionId });
+      expect(yield* store.readRoute(targetRouteId)).toMatchObject({
+        currentSessionId: replacementSessionId,
+        historicalSessionIds: [],
+      });
+      expect(thinkSessionCounts(database, primarySessionId)).toEqual({
+        compactions: 1,
+        fts: 2,
+        messages: 2,
+      });
+      expect(thinkSessionCounts(database, targetSessionId)).toEqual({
+        compactions: 0,
+        fts: 0,
+        messages: 0,
+      });
+    }),
+  ),
+);
+
 it.effect("retains the exact replacement when authority changes before activation", () =>
   withDatabase(({ storage }) =>
     Effect.gen(function* () {
@@ -1696,17 +1786,16 @@ it.effect("retains the exact replacement when authority changes before activatio
           sessionId: SessionId.make("session-1"),
         },
         {
-          activateCurrentSession: Effect.die(
-            new Error("Authority-changed replacement was activated"),
-          ),
+          activateSession: () =>
+            Effect.die(new Error("Authority-changed replacement was activated")),
           authorizeDeletion: () =>
             Effect.suspend(() => {
               checks += 1;
               return checks === 1 ? Effect.void : Effect.fail("authority changed" as const);
             }),
           clearMessages: () => Effect.die(new Error("Authority-changed Session was cleared")),
-          inspect: store.inspect().pipe(Effect.orDie),
-          ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+          inspectSession: (sessionId) =>
+            store.readSessionDeletionFacts(sessionId).pipe(Effect.orDie),
           replacedAt: Effect.succeed(now),
           replaceCurrentSession: (replacement) =>
             store.replaceCurrentSession(replacement).pipe(Effect.orDie),
@@ -1753,7 +1842,7 @@ it.effect("removes a failed replacement and recreates it on current Session dele
             sessionId: SessionId.make("session-1"),
           },
           {
-            activateCurrentSession: Effect.void,
+            activateSession: () => Effect.void,
             authorizeDeletion: () => Effect.void,
             clearMessages: () =>
               Effect.suspend(() => {
@@ -1762,8 +1851,8 @@ it.effect("removes a failed replacement and recreates it on current Session dele
                   ? Effect.fail("clear unavailable" as const)
                   : Effect.void;
               }),
-            inspect: currentStore.inspect().pipe(Effect.orDie),
-            ownsSession: (sessionId) => currentStore.ownsSession(sessionId).pipe(Effect.orDie),
+            inspectSession: (sessionId) =>
+              currentStore.readSessionDeletionFacts(sessionId).pipe(Effect.orDie),
             replacedAt: Effect.succeed(now),
             replaceCurrentSession: (replacement) =>
               currentStore.replaceCurrentSession(replacement).pipe(Effect.orDie),
@@ -1827,14 +1916,13 @@ it.effect(
             sessionId: SessionId.make("session-1"),
           },
           {
-            activateCurrentSession: Effect.die(
-              new Error("Crashed replacement was unexpectedly activated"),
-            ),
+            activateSession: () =>
+              Effect.die(new Error("Crashed replacement was unexpectedly activated")),
             authorizeDeletion: () => Effect.void,
             clearMessages: () =>
               Effect.die(new Error("Crashed replacement unexpectedly cleared history")),
-            inspect: store.inspect().pipe(Effect.orDie),
-            ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+            inspectSession: (sessionId) =>
+              store.readSessionDeletionFacts(sessionId).pipe(Effect.orDie),
             replacedAt: Effect.succeed(now),
             replaceCurrentSession: (replacement) =>
               store
@@ -1858,14 +1946,14 @@ it.effect(
             sessionId: SessionId.make("session-1"),
           },
           {
-            activateCurrentSession: Effect.void,
+            activateSession: () => Effect.void,
             authorizeDeletion: () => Effect.void,
             clearMessages: () =>
               Effect.sync(() => {
                 mismatchedEffects += 1;
               }),
-            inspect: restarted.inspect().pipe(Effect.orDie),
-            ownsSession: (sessionId) => restarted.ownsSession(sessionId).pipe(Effect.orDie),
+            inspectSession: (sessionId) =>
+              restarted.readSessionDeletionFacts(sessionId).pipe(Effect.orDie),
             readReplacementGeneration: (historicalSessionId, replacementSessionId) =>
               restarted
                 .readSessionReplacementGeneration(historicalSessionId, replacementSessionId)
@@ -1891,11 +1979,11 @@ it.effect(
             sessionId: SessionId.make("session-1"),
           },
           {
-            activateCurrentSession: Effect.void,
+            activateSession: () => Effect.void,
             authorizeDeletion: () => Effect.void,
             clearMessages: () => Effect.void,
-            inspect: restarted.inspect().pipe(Effect.orDie),
-            ownsSession: (sessionId) => restarted.ownsSession(sessionId).pipe(Effect.orDie),
+            inspectSession: (sessionId) =>
+              restarted.readSessionDeletionFacts(sessionId).pipe(Effect.orDie),
             readReplacementGeneration: (historicalSessionId, replacementSessionId) =>
               restarted
                 .readSessionReplacementGeneration(historicalSessionId, replacementSessionId)
@@ -2080,11 +2168,11 @@ it.effect("removes the exact replacement when current Session settlement fails",
           sessionId: SessionId.make("session-1"),
         },
         {
-          activateCurrentSession: Effect.void,
+          activateSession: () => Effect.void,
           authorizeDeletion: () => Effect.void,
           clearMessages: () => Effect.void,
-          inspect: store.inspect().pipe(Effect.orDie),
-          ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+          inspectSession: (sessionId) =>
+            store.readSessionDeletionFacts(sessionId).pipe(Effect.orDie),
           replacedAt: Effect.succeed(now),
           replaceCurrentSession: (replacement) =>
             store.replaceCurrentSession(replacement).pipe(Effect.orDie),
@@ -2137,11 +2225,11 @@ it.effect("retains SQLite Session ownership when authority changes after history
             sessionId: SessionId.make("session-1"),
           },
           {
-            activateCurrentSession: Effect.die(new Error("Historical Session was activated")),
+            activateSession: () => Effect.die(new Error("Historical Session was activated")),
             authorizeDeletion,
             clearMessages: () => Effect.promise(() => historical.clearMessages()),
-            inspect: store.inspect().pipe(Effect.orDie),
-            ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+            inspectSession: (sessionId) =>
+              store.readSessionDeletionFacts(sessionId).pipe(Effect.orDie),
             replacedAt: Effect.succeed(now),
             replaceCurrentSession: () =>
               Effect.die(new Error("Historical Session was replaced as current")),
@@ -3121,14 +3209,12 @@ const productionSessionDeletionOptions = (store: ReturnType<typeof makeAgentStor
         sessionId: payload.sessionId,
       },
       {
-        activateCurrentSession: Effect.die(
-          new Error("Already-deleted Session preparation activated a Session"),
-        ),
+        activateSession: () =>
+          Effect.die(new Error("Already-deleted Session preparation activated a Session")),
         authorizeDeletion: () => Effect.void,
         clearMessages: () =>
           Effect.die(new Error("Already-deleted Session preparation cleared history")),
-        inspect: Effect.die(new Error("Already-deleted Session preparation inspected ownership")),
-        ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+        inspectSession: (sessionId) => store.readSessionDeletionFacts(sessionId).pipe(Effect.orDie),
         replacedAt: Effect.succeed(now),
         replaceCurrentSession: () =>
           Effect.die(new Error("Already-deleted Session preparation created a replacement")),
