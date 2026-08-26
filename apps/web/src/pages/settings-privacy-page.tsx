@@ -31,7 +31,7 @@ const privacyPreferences = [
 
 /** Route-owned privacy controls and policy access. */
 export function SettingsPrivacyPage() {
-  return <SettingsPrivacyContent onDelete={deleteAccount} onPresent={presentDeletion} />;
+  return <SettingsPrivacyContent />;
 }
 
 const presentDeletion = () => Effect.runPromise(presentAccountDeletion);
@@ -41,14 +41,7 @@ const deleteAccount = (presentation: AccountDeletionActionPresentation) =>
     globalThis.location.assign("/");
   });
 
-/** Privacy settings content with an injectable destructive boundary for focused UI tests. */
-export function SettingsPrivacyContent({
-  onDelete,
-  onPresent,
-}: {
-  readonly onDelete: (presentation: AccountDeletionActionPresentation) => Promise<void>;
-  readonly onPresent: () => Promise<AccountDeletionActionPresentation>;
-}) {
+function SettingsPrivacyContent() {
   return (
     <div className="space-y-6">
       <section aria-labelledby="data-controls-title">
@@ -78,7 +71,7 @@ export function SettingsPrivacyContent({
             icon={Download}
             label="Export My Data"
           />
-          <DeleteAccountControl onDelete={onDelete} onPresent={onPresent} />
+          <DeleteAccountControl />
         </div>
       </section>
 
@@ -128,20 +121,14 @@ export function SettingsPrivacyContent({
 }
 
 /** One explicit confirmation before the irreversible account deletion request. */
-export function DeleteAccountControl({
-  onDelete,
-  onPresent,
-}: {
-  readonly onDelete: (presentation: AccountDeletionActionPresentation) => Promise<void>;
-  readonly onPresent: () => Promise<AccountDeletionActionPresentation>;
-}) {
+function DeleteAccountControl() {
   const [presentation, setPresentation] = useState<AccountDeletionActionPresentation | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const begin = () => {
     setBusy(true);
     setError(false);
-    void onPresent()
+    void presentDeletion()
       .then((presented) => {
         setPresentation(presented);
         setBusy(false);
@@ -155,7 +142,7 @@ export function DeleteAccountControl({
     if (presentation === null) return;
     setBusy(true);
     setError(false);
-    void onDelete(presentation).catch(() => {
+    void deleteAccount(presentation).catch(() => {
       setBusy(false);
       setError(true);
     });
