@@ -882,6 +882,7 @@ const testStore = (
         awaited.push(status);
         return true;
       }),
+    beginProviderSubmission: () => Effect.succeed(true),
     claimNext: () =>
       Effect.sync(() => {
         if (!available) return Option.none<ClaimedMemoryProviderWork>();

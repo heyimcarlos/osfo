@@ -487,6 +487,8 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
         }
         const claimIsCurrent = yield* store.isClaimCurrent(claim);
         if (!claimIsCurrent) return undefined;
+        const submissionStarted = yield* store.beginProviderSubmission(claim);
+        if (!submissionStarted) return undefined;
         const saved = yield* provider
           .saveConversation({
             conversation: projection.conversation,

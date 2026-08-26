@@ -12,7 +12,7 @@ import { Session, type SqlProvider } from "agents/experimental/memory/session";
 
 import { expect, it } from "@effect/vitest";
 import { BrowserCrypto } from "@effect/platform-browser";
-import { Deferred, Effect, Fiber, Option, Result } from "effect";
+import { Deferred, Effect, Fiber, Option, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
 
 import { Db, DbTimestamp } from "../../../db";
@@ -32,7 +32,11 @@ import { AuthSessionId } from "../../../domain/auth-session";
 import { ApprovalPresentation } from "../../../services/authorization";
 import { makeAgentDb } from "./client";
 import { agentMigrations, applyAgentMigrations, applyMigrationChain } from "./migrate";
-import { makeMemoryProviderOutboxStore, MemoryProviderOutboxId } from "./memory-provider-outbox";
+import {
+  makeMemoryProviderOutboxStore,
+  MemoryProviderDeletionProgress,
+  MemoryProviderOutboxId,
+} from "./memory-provider-outbox";
 import { makeAgentStore } from "./store";
 import { ConversationSnapshotProjection } from "../memory-provider-projection";
 import { MemoryProvider } from "../../../services/memory-provider";
@@ -1008,6 +1012,191 @@ it.effect("drains an in-flight provider save before terminalizing Session append
           )
           .get(),
       ).toEqual({ status: "completed" });
+    }),
+  ),
+);
+
+it.effect("hands a cross-isolate late provider acceptance to durable Session deletion", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const durableStorage = asDurableObjectStorage(storage);
+      const originalDb = makeAgentDb(durableStorage);
+      const originalStore = makeAgentStore(originalDb);
+      yield* originalStore.initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId: ConversationRouteId.make("route-1"),
+        sessionId: SessionId.make("session-1"),
+      });
+      yield* originalStore.replaceCurrentSession({
+        expectedCurrentSessionId: SessionId.make("session-1"),
+        replacedAt: now,
+        replacementSessionId: SessionId.make("session-2"),
+        routeId: ConversationRouteId.make("route-1"),
+      });
+      yield* originalStore.recordCommittedTurn(
+        committedTurn("assistant-1", "request-1"),
+        conversationProjection("assistant-1"),
+      );
+      yield* originalStore.recordCommittedTurn(
+        committedTurn("assistant-2", "request-2"),
+        conversationProjection("assistant-2"),
+      );
+      database.exec(
+        "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+      );
+
+      const providerSaveStarted = yield* Deferred.make<void>();
+      const releaseProviderSave = yield* Deferred.make<void>();
+      const providerDocuments = new Set(["unrelated-document"]);
+      const deleted: Array<string> = [];
+      let deleteAttempts = 0;
+      const provider = providerStub({
+        deleteSessionConversation: ({ documentId }) =>
+          Effect.suspend(() => {
+            deleteAttempts += 1;
+            if (deleteAttempts === 1) {
+              return Effect.fail(
+                new MemoryProvider.MemoryProviderUnavailable({
+                  message: "Injected delete outage",
+                  operation: "deleteSessionConversation",
+                }),
+              );
+            }
+            deleted.push(documentId);
+            providerDocuments.delete(documentId);
+            return Effect.succeed({ _tag: "Deleted" as const });
+          }),
+        findSessionConversation: () => Effect.succeed({ _tag: "AlreadyAbsent" as const }),
+        saveConversation: () =>
+          Deferred.succeed(providerSaveStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseProviderSave)),
+            Effect.tap(() => Effect.sync(() => providerDocuments.add("late-document"))),
+            Effect.as(conversationSaveResult("late-document", "done")),
+          ),
+        verifySessionConversation: ({ documentId }) =>
+          Effect.sync(() =>
+            providerDocuments.has(documentId)
+              ? ({ _tag: "Verified" } as const)
+              : ({ _tag: "AlreadyAbsent" } as const),
+          ),
+      });
+      const originalReconciliation = Effect.scoped(
+        reconcileMemoryProviderOutbox(makeMemoryProviderOutboxStore(originalDb), {
+          ...permittedDeletionOptions,
+        }),
+      ).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+      const originalIsolate = yield* originalReconciliation.pipe(Effect.forkChild);
+      yield* Deferred.await(providerSaveStarted);
+      database.exec(
+        `UPDATE osfo_memory_provider_outbox SET claim_expires_at = '1960-01-01T00:00:00.000Z'
+        WHERE operation_type = 'saveConversation' AND status = 'claimed'`,
+      );
+      expect(
+        database
+          .prepare(
+            `SELECT provider_submission_ambiguous, status FROM osfo_memory_provider_outbox
+            WHERE operation_type = 'saveConversation' ORDER BY sequence`,
+          )
+          .all(),
+      ).toEqual([
+        { provider_submission_ambiguous: 1, status: "claimed" },
+        { provider_submission_ambiguous: 0, status: "pending" },
+      ]);
+
+      const deletionDb = makeAgentDb(durableStorage);
+      yield* makeAgentStore(deletionDb).deleteHistoricalSession({
+        authorization: authorizedDeletion("delete-session-1", "session-1").payload.authorization,
+        deletedAt: now,
+        outboxId: MemoryProviderOutboxId.make("delete-session-1"),
+        sessionId: SessionId.make("session-1"),
+        userId: UserId.make("user-1"),
+      });
+      database.exec(
+        "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+      );
+
+      yield* reconcileMemoryProviderOutbox(
+        makeMemoryProviderOutboxStore(deletionDb),
+        permittedDeletionOptions,
+      ).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+      expect(
+        database
+          .prepare(
+            "SELECT status FROM osfo_memory_provider_outbox WHERE operation_type = 'deleteSessionConversation'",
+          )
+          .get(),
+      ).toEqual({ status: "pending" });
+
+      yield* Deferred.succeed(releaseProviderSave, undefined);
+      yield* Fiber.join(originalIsolate);
+      const handedOff = database
+        .prepare(
+          `SELECT deletion_progress_json, status FROM osfo_memory_provider_outbox
+          WHERE operation_type = 'deleteSessionConversation'`,
+        )
+        .get();
+      if (handedOff === undefined || typeof handedOff.deletion_progress_json !== "string") {
+        throw new Error("Session deletion progress was not retained");
+      }
+      const handedOffProgress = yield* Schema.decodeEffect(
+        Schema.fromJsonString(MemoryProviderDeletionProgress),
+      )(handedOff.deletion_progress_json).pipe(Effect.orDie);
+      expect(handedOffProgress).toEqual({
+        _tag: "DeleteSessionConversation",
+        awaitingDiscovery: false,
+        targets: [{ documentId: "late-document", status: "observed" }],
+      });
+      expect(handedOff.status).toBe("pending");
+      expect(providerDocuments).toEqual(new Set(["late-document", "unrelated-document"]));
+
+      database.exec(
+        "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+      );
+      yield* reconcileMemoryProviderOutbox(
+        makeMemoryProviderOutboxStore(makeAgentDb(durableStorage)),
+        permittedDeletionOptions,
+      ).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+
+      expect(deleted).toEqual(["late-document"]);
+      expect(providerDocuments).toEqual(new Set(["unrelated-document"]));
+      expect(
+        database
+          .prepare(
+            `SELECT operation_type, provider_submission_ambiguous, status
+            FROM osfo_memory_provider_outbox ORDER BY sequence`,
+          )
+          .all(),
+      ).toEqual([
+        {
+          operation_type: "saveConversation",
+          provider_submission_ambiguous: 0,
+          status: "completed",
+        },
+        {
+          operation_type: "saveConversation",
+          provider_submission_ambiguous: 0,
+          status: "completed",
+        },
+        {
+          operation_type: "deleteSessionConversation",
+          provider_submission_ambiguous: 0,
+          status: "completed",
+        },
+      ]);
     }),
   ),
 );
