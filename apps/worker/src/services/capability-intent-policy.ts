@@ -53,6 +53,31 @@ export const isDeletionOrDataRightsIntent: CapabilityIntentPredicate = (task) =>
   ].some((pattern) => pattern.test(normalized));
 };
 
+const matchesSessionDeleteIntent = everyIntentGroup(
+  ["clear", "delete", "erase", "remove", "wipe"],
+  ["chat history", "conversation history", "current session", "session"],
+);
+
+const matchesSessionRecallIntent = anyIntentPhrase(
+  "did i tell you",
+  "do you remember",
+  "earlier",
+  "history",
+  "last time",
+  "last week",
+  "previous conversation",
+  "previous session",
+  "recall",
+  "told you",
+  "what did i mention",
+  "what did i say",
+  "what did we discuss",
+  "what did we talk about",
+  "what i said",
+  "what i told you",
+  "what were we talking about",
+);
+
 export const capabilityIntentPolicy = {
   conversation: { matches: () => true, taskKinds: ["conversation"] },
   "core-memory": {
@@ -86,37 +111,27 @@ export const capabilityIntentPolicy = {
   "knowledge-forget": {
     matches: everyIntentGroup(
       ["delete", "erase", "forget", "remove", "wipe"],
-      ["knowledge", "memories", "memory", "remembered knowledge", "remember about me"],
+      [
+        "knowledge",
+        "memories",
+        "memory",
+        "remembered knowledge",
+        "remember about me",
+        "what you know about me",
+        "everything you know about me",
+        "what you remember about me",
+        "everything you remember about me",
+        "everything about me",
+      ],
     ),
     taskKinds: ["memory"],
   },
   "session-delete": {
-    matches: everyIntentGroup(
-      ["clear", "delete", "erase", "remove", "wipe"],
-      ["chat history", "conversation history", "current session", "session"],
-    ),
+    matches: matchesSessionDeleteIntent,
     taskKinds: ["memory"],
   },
   "session-recall": {
-    matches: anyIntentPhrase(
-      "did i tell you",
-      "do you remember",
-      "earlier",
-      "history",
-      "last time",
-      "last week",
-      "previous conversation",
-      "previous session",
-      "recall",
-      "told you",
-      "what did i mention",
-      "what did i say",
-      "what did we discuss",
-      "what did we talk about",
-      "what i said",
-      "what i told you",
-      "what were we talking about",
-    ),
+    matches: (task) => !matchesSessionDeleteIntent(task) && matchesSessionRecallIntent(task),
     taskKinds: ["memory"],
   },
   "file-read": {

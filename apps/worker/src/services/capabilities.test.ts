@@ -358,20 +358,33 @@ it.effect("publishes only the requested Core Memory operation", () =>
     ).toEqual(["osfoClearCoreMemory"]);
     expect(forgetIndex.selectedCapabilityIds).toEqual(["memory-clear"]);
 
-    const forgetKnowledgeIndex = yield* capabilities.eligibleIndex({
-      ...baseInput,
-      plan: "adventurer",
-      taskDescription: "Please forget what you remember about me",
-      taskKinds: ["memory"],
-    });
+    const forgetKnowledgeRequests = [
+      "Please forget what you know about me",
+      "Delete everything you know about me",
+      "Please remove what you remember about me",
+      "Erase everything you remember about me",
+    ];
+    const forgetKnowledgeIndexes = yield* Effect.forEach(forgetKnowledgeRequests, (request) =>
+      capabilities.eligibleIndex({
+        ...baseInput,
+        plan: "adventurer",
+        taskDescription: request,
+        taskKinds: ["memory"],
+      }),
+    );
     expect(
-      capabilities.assembleToolBundle({
-        availableToolNames: baseInput.availableToolNames,
-        index: forgetKnowledgeIndex,
-        loadedSkills: [],
-      }).activeToolNames,
-    ).toEqual(["osfoForgetKnowledge"]);
-    expect(forgetKnowledgeIndex.selectedCapabilityIds).toEqual(["knowledge-forget"]);
+      forgetKnowledgeIndexes.map(
+        (index) =>
+          capabilities.assembleToolBundle({
+            availableToolNames: baseInput.availableToolNames,
+            index,
+            loadedSkills: [],
+          }).activeToolNames,
+      ),
+    ).toEqual(forgetKnowledgeRequests.map(() => ["osfoForgetKnowledge"]));
+    expect(
+      forgetKnowledgeIndexes.map(({ selectedCapabilityIds }) => selectedCapabilityIds),
+    ).toEqual(forgetKnowledgeRequests.map(() => ["knowledge-forget"]));
 
     const deleteSessionIndex = yield* capabilities.eligibleIndex({
       ...baseInput,
@@ -388,13 +401,56 @@ it.effect("publishes only the requested Core Memory operation", () =>
     ).toEqual(["osfoDeleteSession"]);
     expect(deleteSessionIndex.selectedCapabilityIds).toEqual(["session-delete"]);
 
-    const discussionIndex = yield* capabilities.eligibleIndex({
+    const deleteHistoryIndex = yield* capabilities.eligibleIndex({
       ...baseInput,
       plan: "adventurer",
-      taskDescription: "Explain how session deletion works",
+      taskDescription: "Delete my chat history",
       taskKinds: ["memory"],
     });
-    expect(discussionIndex.selectedCapabilityIds).toEqual([]);
+    expect(deleteHistoryIndex.selectedCapabilityIds).toEqual(["session-delete"]);
+    expect(
+      capabilities.assembleToolBundle({
+        availableToolNames: baseInput.availableToolNames,
+        index: deleteHistoryIndex,
+        loadedSkills: [],
+      }).activeToolNames,
+    ).toEqual(["osfoDeleteSession"]);
+
+    const recallHistoryIndexes = yield* Effect.forEach(
+      ["Show my history", "Search my history", "Recall my history"],
+      (request) =>
+        capabilities.eligibleIndex({
+          ...baseInput,
+          plan: "adventurer",
+          taskDescription: request,
+          taskKinds: ["memory"],
+        }),
+    );
+    expect(recallHistoryIndexes.map(({ selectedCapabilityIds }) => selectedCapabilityIds)).toEqual([
+      ["session-recall"],
+      ["session-recall"],
+      ["session-recall"],
+    ]);
+
+    const discussionIndexes = yield* Effect.forEach(
+      [
+        "Explain how session deletion works",
+        "Tell me what you know about me",
+        "Write a story about forgetting everything you know about me",
+      ],
+      (request) =>
+        capabilities.eligibleIndex({
+          ...baseInput,
+          plan: "adventurer",
+          taskDescription: request,
+          taskKinds: ["memory"],
+        }),
+    );
+    expect(discussionIndexes.map(({ selectedCapabilityIds }) => selectedCapabilityIds)).toEqual([
+      [],
+      [],
+      [],
+    ]);
   }),
 );
 
