@@ -25,6 +25,7 @@ import type {
 } from "./db/memory-provider-outbox";
 import { MemoryProviderOutboxId } from "./db/memory-provider-outbox";
 import {
+  ProviderDeletionDeferred,
   quiesceProcessingConversations,
   reconcileMemoryProviderOutbox,
 } from "./memory-provider-reconciliation";
@@ -80,7 +81,7 @@ it.effect("does not execute legacy deletion work without retained authorization"
     },
   });
 
-  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
     Effect.provideService(MemoryProvider.Service, provider),
     Effect.provideService(Db.Service, unavailableDatabase),
     Effect.provide(BrowserCrypto.layer),
@@ -109,7 +110,7 @@ it.effect("does not execute legacy User deletion outside the PostgreSQL Deletion
     },
   });
 
-  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
     Effect.provideService(MemoryProvider.Service, provider),
     Effect.provideService(Db.Service, unavailableDatabase),
     Effect.provide(BrowserCrypto.layer),
@@ -193,6 +194,44 @@ it.effect("rechecks retained Approval around idempotent local deletion preparati
           "provider",
         ]);
         expect(completed).toEqual([claim.outboxId]);
+      }),
+    ),
+  );
+});
+
+it.effect("retries retained deletion when asynchronous local preparation rejects", () => {
+  const claim = authorizedDeletionClaim();
+  let providerCalled = false;
+  const { completed, retried, store } = testStore(claim);
+  const provider = providerStub({
+    deleteSessionConversation: () => {
+      providerCalled = true;
+      return Effect.succeed({ _tag: "Deleted" as const });
+    },
+  });
+
+  return Effect.scoped(
+    reconcileMemoryProviderOutbox(store, {
+      authorizeDeletion: () => Effect.succeed({ _tag: "Permitted" as const }),
+      prepareDeletion: () =>
+        Effect.tryPromise({
+          try: () => Promise.reject(new Error("Injected Session settlement rejection")),
+          catch: (cause) =>
+            new ProviderDeletionDeferred({
+              cause,
+              message: "Local Session deletion remains pending",
+            }),
+        }),
+    }),
+  ).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(providerCalled).toBe(false);
+        expect(retried).toEqual([claim.outboxId]);
+        expect(completed).toEqual([]);
       }),
     ),
   );
@@ -285,7 +324,13 @@ it.effect("rechecks authority between Session discovery and ownership verificati
           "list",
           "authorize:4",
         ]);
-        expect(deletionProgress).toEqual([{ _tag: "DeleteSessionConversation", documentId }]);
+        expect(deletionProgress).toEqual([
+          {
+            _tag: "DeleteSessionConversation",
+            awaitingDiscovery: false,
+            targets: [{ documentId, status: "observed" }],
+          },
+        ]);
         expect(retried).toEqual([claim.outboxId]);
         expect(completed).toEqual([]);
       }),
@@ -362,7 +407,7 @@ it.effect("retains the exact conversation snapshot after an ambiguous provider o
     },
   });
 
-  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
     Effect.provideService(MemoryProvider.Service, provider),
     Effect.provideService(Db.Service, unavailableDatabase),
     Effect.provide(BrowserCrypto.layer),
@@ -402,6 +447,7 @@ it.effect("does not start a provider append after account deletion fences the Us
 
   return Effect.scoped(
     reconcileMemoryProviderOutbox(store, {
+      ...permittedDeletionOptions,
       canSaveConversation: () => Effect.succeed(false),
     }),
   ).pipe(
@@ -438,6 +484,7 @@ it.effect("rechecks a claimed append after Session deletion terminalizes it", ()
     });
     const reconciliation = Effect.scoped(
       reconcileMemoryProviderOutbox(store, {
+        ...permittedDeletionOptions,
         canSaveConversation: () =>
           Deferred.succeed(checkedDeletionFence, undefined).pipe(
             Effect.andThen(Deferred.await(continueAfterDeletion)),
@@ -485,7 +532,7 @@ it.effect("configures organization and User guidance before first ingest", () =>
       }),
   });
 
-  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
     Effect.provideService(MemoryProvider.Service, provider),
     Effect.provideService(Db.Service, unavailableDatabase),
     Effect.provide(BrowserCrypto.layer),
@@ -527,7 +574,7 @@ it.effect("does not ingest when the User container cannot be configured", () => 
     },
   });
 
-  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
     Effect.provideService(MemoryProvider.Service, provider),
     Effect.provideService(Db.Service, unavailableDatabase),
     Effect.provide(BrowserCrypto.layer),
@@ -554,7 +601,7 @@ it.effect("retains an ambiguous provider submission until its claim lease expire
       ),
   });
 
-  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
     Effect.provideService(MemoryProvider.Service, provider),
     Effect.provideService(Db.Service, unavailableDatabase),
     Effect.provide(BrowserCrypto.layer),
@@ -628,7 +675,7 @@ it.effect("repairs organization guidance for a conversation accepted before migr
       }),
   });
 
-  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
     Effect.provideService(MemoryProvider.Service, provider),
     Effect.provideService(Db.Service, unavailableDatabase),
     Effect.provide(BrowserCrypto.layer),
@@ -660,7 +707,7 @@ it.effect("retains an indexed conversation until hybrid search returns its docum
     },
   });
 
-  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
     Effect.provideService(MemoryProvider.Service, provider),
     Effect.provideService(Db.Service, unavailableDatabase),
     Effect.provide(BrowserCrypto.layer),
@@ -689,7 +736,7 @@ it.effect("terminalizes an accepted conversation whose provider status is invali
       ),
   });
 
-  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
     Effect.provideService(MemoryProvider.Service, provider),
     Effect.provideService(Db.Service, unavailableDatabase),
     Effect.provide(BrowserCrypto.layer),
@@ -715,7 +762,7 @@ it.effect("stops when a stale conversation claim loses settlement ownership", ()
       }),
   });
 
-  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
     Effect.provideService(MemoryProvider.Service, provider),
     Effect.provideService(Db.Service, unavailableDatabase),
     Effect.provide(BrowserCrypto.layer),

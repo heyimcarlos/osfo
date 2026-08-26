@@ -456,9 +456,17 @@ it.effect("keeps Knowledge deletion leased until immediate Core Memory correctio
           ...forgetKnowledgeDeletion("forget-preparing"),
           claimExpiresAt: liveLease,
           claimToken: "initial-correction",
+          deletionProgress: {
+            _tag: "ForgetKnowledge",
+            completedMemoryIds: [MemoryProvider.KnowledgeMemoryId.make("memory-1")],
+          },
         }),
       );
 
+      expect(preparation.deletionProgress).toEqual({
+        _tag: "ForgetKnowledge",
+        completedMemoryIds: ["memory-1"],
+      });
       expect(yield* outbox.claimNext(now, extendedLease, "provider-too-early")).toEqual(
         Option.none(),
       );
@@ -470,6 +478,10 @@ it.effect("keeps Knowledge deletion leased until immediate Core Memory correctio
       );
       expect(providerClaim.outboxId).toBe("forget-preparing");
       expect(providerClaim.payload._tag).toBe("ForgetKnowledge");
+      expect(providerClaim.deletionProgress).toEqual({
+        _tag: "ForgetKnowledge",
+        completedMemoryIds: ["memory-1"],
+      });
     }),
   ),
 );
@@ -743,6 +755,7 @@ it.effect("does not save a claimed append after historical Session deletion term
       });
       const reconciliation = Effect.scoped(
         reconcileMemoryProviderOutbox(outbox, {
+          ...permittedDeletionOptions,
           canSaveConversation: () =>
             Deferred.succeed(reachedDeletionFence, undefined).pipe(
               Effect.andThen(Deferred.await(resumeAfterDeletion)),
@@ -854,6 +867,7 @@ it.effect("drains an in-flight provider save before terminalizing Session append
       });
       const reconciliation = Effect.scoped(
         reconcileMemoryProviderOutbox(outbox, {
+          ...permittedDeletionOptions,
           runSaveConversation: saveGate.runSave,
         }),
       ).pipe(
@@ -1398,7 +1412,10 @@ it.effect("keeps a later conversation snapshot blocked while the accepted docume
         },
       });
 
-      yield* reconcileMemoryProviderOutbox(makeMemoryProviderOutboxStore(db)).pipe(
+      yield* reconcileMemoryProviderOutbox(
+        makeMemoryProviderOutboxStore(db),
+        permittedDeletionOptions,
+      ).pipe(
         Effect.provideService(MemoryProvider.Service, provider),
         Effect.provideService(Db.Service, unavailableDatabase),
         Effect.provide(BrowserCrypto.layer),
@@ -1455,7 +1472,7 @@ it.effect(
         });
         const outbox = makeMemoryProviderOutboxStore(db);
 
-        yield* reconcileMemoryProviderOutbox(outbox).pipe(
+        yield* reconcileMemoryProviderOutbox(outbox, permittedDeletionOptions).pipe(
           Effect.provideService(MemoryProvider.Service, provider),
           Effect.provideService(Db.Service, unavailableDatabase),
           Effect.provide(BrowserCrypto.layer),
@@ -1468,7 +1485,7 @@ it.effect(
           )
           .run(past);
 
-        yield* reconcileMemoryProviderOutbox(outbox).pipe(
+        yield* reconcileMemoryProviderOutbox(outbox, permittedDeletionOptions).pipe(
           Effect.provideService(MemoryProvider.Service, provider),
           Effect.provideService(Db.Service, failingUsageDatabase),
           Effect.provide(BrowserCrypto.layer),
@@ -1499,6 +1516,124 @@ it.effect(
         ]);
       }),
     ),
+);
+
+it.effect("deletes every accepted Session document across delayed surfacing and restart", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const store = makeAgentStore(db);
+      yield* store.initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId: ConversationRouteId.make("route-1"),
+        sessionId: SessionId.make("session-1"),
+      });
+      yield* store.replaceCurrentSession({
+        expectedCurrentSessionId: SessionId.make("session-1"),
+        replacedAt: now,
+        replacementSessionId: SessionId.make("session-2"),
+        routeId: ConversationRouteId.make("route-1"),
+      });
+      yield* store.recordCommittedTurn(
+        committedTurn("assistant-1", "request-1"),
+        conversationProjection("assistant-1"),
+      );
+      yield* store.recordCommittedTurn(
+        committedTurn("assistant-2", "request-2"),
+        conversationProjection("assistant-2"),
+      );
+      database
+        .prepare(
+          `UPDATE osfo_memory_provider_outbox
+            SET completed_at = ?, provider_accepted_at = ?, provider_document_id = 'document-1',
+              provider_status = 'done', status = 'completed',
+              usage_json = '{"completedNonModelCost":[{"activity":"conversationsAndMemory","ratedCostUsdMicros":"10","resourcePriceVersion":"resource-prices-2026-08-22"}]}'
+            WHERE sequence = 1`,
+        )
+        .run(now, now);
+      database
+        .prepare(
+          `UPDATE osfo_memory_provider_outbox
+            SET provider_accepted_at = ?, provider_document_id = 'document-2',
+              provider_status = 'processing',
+              usage_json = '{"completedNonModelCost":[{"activity":"conversationsAndMemory","ratedCostUsdMicros":"10","resourcePriceVersion":"resource-prices-2026-08-22"}]}'
+            WHERE sequence = 2`,
+        )
+        .run(now);
+
+      yield* store.deleteHistoricalSession({
+        authorization: authorizedDeletion("delete-session-1", "session-1").payload.authorization,
+        deletedAt: now,
+        outboxId: MemoryProviderOutboxId.make("delete-session-1"),
+        sessionId: SessionId.make("session-1"),
+        userId: UserId.make("user-1"),
+      });
+      database.exec(
+        "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+      );
+
+      const providerDocuments = new Set(["document-1", "unrelated-document"]);
+      const deleted: Array<string> = [];
+      const provider = providerStub({
+        deleteSessionConversation: ({ documentId }) =>
+          Effect.sync(() => {
+            deleted.push(documentId);
+            providerDocuments.delete(documentId);
+            return { _tag: "Deleted" as const };
+          }),
+        findSessionConversation: () =>
+          Effect.die(new Error("Accepted documents must use their retained exact IDs")),
+        verifySessionConversation: ({ documentId }) =>
+          Effect.sync(() =>
+            providerDocuments.has(documentId)
+              ? ({ _tag: "Verified" } as const)
+              : ({ _tag: "AlreadyAbsent" } as const),
+          ),
+      });
+
+      yield* reconcileMemoryProviderOutbox(
+        makeMemoryProviderOutboxStore(db),
+        permittedDeletionOptions,
+      ).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+      expect(deleted).toEqual(["document-1"]);
+      expect(
+        database
+          .prepare(
+            "SELECT status FROM osfo_memory_provider_outbox WHERE operation_type = 'deleteSessionConversation'",
+          )
+          .get(),
+      ).toEqual({ status: "pending" });
+
+      providerDocuments.add("document-2");
+      database.exec(
+        "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+      );
+      yield* reconcileMemoryProviderOutbox(
+        makeMemoryProviderOutboxStore(makeAgentDb(asDurableObjectStorage(storage))),
+        permittedDeletionOptions,
+      ).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+
+      expect(deleted).toEqual(["document-1", "document-2"]);
+      expect(providerDocuments).toEqual(new Set(["unrelated-document"]));
+      expect(
+        database
+          .prepare(
+            "SELECT status FROM osfo_memory_provider_outbox WHERE operation_type = 'deleteSessionConversation'",
+          )
+          .get(),
+      ).toEqual({ status: "completed" });
+    }),
+  ),
 );
 
 it.effect("resumes status polling after restart without resending an accepted snapshot", () =>
@@ -1533,7 +1668,10 @@ it.effect("resumes status polling after restart without resending an accepted sn
         },
       });
 
-      yield* reconcileMemoryProviderOutbox(makeMemoryProviderOutboxStore(db)).pipe(
+      yield* reconcileMemoryProviderOutbox(
+        makeMemoryProviderOutboxStore(db),
+        permittedDeletionOptions,
+      ).pipe(
         Effect.provideService(MemoryProvider.Service, provider),
         Effect.provideService(Db.Service, unavailableDatabase),
         Effect.provide(BrowserCrypto.layer),
@@ -1543,7 +1681,7 @@ it.effect("resumes status polling after restart without resending an accepted sn
       );
 
       const restarted = makeMemoryProviderOutboxStore(db);
-      yield* reconcileMemoryProviderOutbox(restarted).pipe(
+      yield* reconcileMemoryProviderOutbox(restarted, permittedDeletionOptions).pipe(
         Effect.provideService(MemoryProvider.Service, provider),
         Effect.provideService(Db.Service, unavailableDatabase),
         Effect.provide(BrowserCrypto.layer),
@@ -1603,12 +1741,12 @@ it.effect("terminalizes an accepted document with an invalid status without rese
       });
       const outbox = makeMemoryProviderOutboxStore(db);
 
-      yield* reconcileMemoryProviderOutbox(outbox).pipe(
+      yield* reconcileMemoryProviderOutbox(outbox, permittedDeletionOptions).pipe(
         Effect.provideService(MemoryProvider.Service, provider),
         Effect.provideService(Db.Service, unavailableDatabase),
         Effect.provide(BrowserCrypto.layer),
       );
-      yield* reconcileMemoryProviderOutbox(outbox).pipe(
+      yield* reconcileMemoryProviderOutbox(outbox, permittedDeletionOptions).pipe(
         Effect.provideService(MemoryProvider.Service, provider),
         Effect.provideService(Db.Service, unavailableDatabase),
         Effect.provide(BrowserCrypto.layer),
@@ -1681,7 +1819,7 @@ it.effect("keeps a terminal provider failure durable without releasing later wor
       });
       const outbox = makeMemoryProviderOutboxStore(db);
 
-      yield* reconcileMemoryProviderOutbox(outbox).pipe(
+      yield* reconcileMemoryProviderOutbox(outbox, permittedDeletionOptions).pipe(
         Effect.provideService(MemoryProvider.Service, provider),
         Effect.provideService(Db.Service, unavailableDatabase),
         Effect.provide(BrowserCrypto.layer),
@@ -1689,7 +1827,7 @@ it.effect("keeps a terminal provider failure durable without releasing later wor
       database.exec(
         "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
       );
-      yield* reconcileMemoryProviderOutbox(outbox).pipe(
+      yield* reconcileMemoryProviderOutbox(outbox, permittedDeletionOptions).pipe(
         Effect.provideService(MemoryProvider.Service, provider),
         Effect.provideService(Db.Service, unavailableDatabase),
         Effect.provide(BrowserCrypto.layer),

@@ -61,10 +61,13 @@ export const MemoryProviderDeletionProgress = Schema.Union([
     completedMemoryIds: Schema.Array(MemoryProvider.KnowledgeMemoryId),
   }),
   Schema.TaggedStruct("DeleteSessionConversation", {
-    documentId: MemoryProvider.ProviderDocumentId,
-  }),
-  Schema.TaggedStruct("AwaitSessionConversation", {
-    documentId: Schema.optionalKey(MemoryProvider.ProviderDocumentId),
+    awaitingDiscovery: Schema.Boolean,
+    targets: Schema.Array(
+      Schema.Struct({
+        documentId: MemoryProvider.ProviderDocumentId,
+        status: Schema.Literals(["accepted", "observed", "deleted"]),
+      }),
+    ),
   }),
 ]);
 export type MemoryProviderDeletionProgress = typeof MemoryProviderDeletionProgress.Type;
@@ -425,6 +428,10 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
               available_at: input.enqueuedAt,
               claim_expires_at: input.claimExpiresAt,
               claim_token: input.claimToken,
+              deletion_progress_json:
+                input.deletionProgress === undefined
+                  ? null
+                  : encodeDeletionProgress(input.deletionProgress),
               enqueued_at: input.enqueuedAt,
               operation_type: operationType(input.payload),
               ordering_key: userOrderingKey(input.payload.userId),
@@ -882,12 +889,7 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
     return yield* invalidRecord();
   }
   if (
-    (deletionProgress !== null &&
-      deletionProgress._tag !== payload._tag &&
-      !(
-        payload._tag === "DeleteSessionConversation" &&
-        deletionProgress._tag === "AwaitSessionConversation"
-      )) ||
+    (deletionProgress !== null && deletionProgress._tag !== payload._tag) ||
     (deletionProgress !== null && payload._tag === "SaveConversation") ||
     (deletionProgress !== null && payload._tag === "DeleteUserKnowledge") ||
     (deletionProgress?._tag === "ForgetKnowledge" &&
@@ -896,7 +898,11 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
         deletionProgress.completedMemoryIds.length ||
         deletionProgress.completedMemoryIds.some(
           (memoryId) => !payload.memoryIds.includes(memoryId),
-        )))
+        ))) ||
+    (deletionProgress?._tag === "DeleteSessionConversation" &&
+      ((deletionProgress.targets.length === 0 && !deletionProgress.awaitingDiscovery) ||
+        new Set(deletionProgress.targets.map((target) => target.documentId)).size !==
+          deletionProgress.targets.length))
   ) {
     return yield* invalidRecord();
   }

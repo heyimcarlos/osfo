@@ -1859,9 +1859,15 @@ export class OsfoAgent extends Think<Env> {
                 ),
               ),
             settle: (sessionId) =>
-              Effect.promise(() =>
-                this.#settleDeletedSession(sessionId, deletionAuthorization, owner),
-              ).pipe(
+              Effect.tryPromise({
+                try: () => this.#settleDeletedSession(sessionId, deletionAuthorization, owner),
+                catch: (cause) =>
+                  new DeletionActionUnavailable({
+                    cause,
+                    message: "Session deletion settlement remains pending",
+                    operation: "deleteSession",
+                  }),
+              }).pipe(
                 Effect.flatMap((result) =>
                   Predicate.isTagged(result, "DeletionActionUnavailable")
                     ? Effect.fail(result)
@@ -2157,13 +2163,19 @@ export class OsfoAgent extends Think<Env> {
     }
     if (payload._tag === "DeleteSessionConversation" && payload.authorization !== undefined) {
       const deletionAuthorization = payload.authorization;
-      return Effect.promise(() =>
-        this.#deleteSessionLocally(
-          { sessionId: payload.sessionId },
-          deletionAuthorization,
-          payload.userId,
-        ),
-      ).pipe(
+      return Effect.tryPromise({
+        try: () =>
+          this.#deleteSessionLocally(
+            { sessionId: payload.sessionId },
+            deletionAuthorization,
+            payload.userId,
+          ),
+        catch: (cause) =>
+          new ProviderDeletionDeferred({
+            cause,
+            message: "Local Session deletion remains pending",
+          }),
+      }).pipe(
         Effect.flatMap((result) =>
           Predicate.isTagged(result, "DeletionActionUnavailable") ||
           Predicate.isTagged(result, "Denied")

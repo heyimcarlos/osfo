@@ -779,7 +779,10 @@ export const makeAgentStore = (db: AgentDb) => {
           .select({
             providerAcceptedAt: memoryProviderOutbox.provider_accepted_at,
             providerDocumentId: memoryProviderOutbox.provider_document_id,
+            providerStatus: memoryProviderOutbox.provider_status,
             providerSubmissionAmbiguous: memoryProviderOutbox.provider_submission_ambiguous,
+            sequence: memoryProviderOutbox.sequence,
+            status: memoryProviderOutbox.status,
           })
           .from(memoryProviderOutbox)
           .where(
@@ -788,38 +791,55 @@ export const makeAgentStore = (db: AgentDb) => {
               sql`json_extract(${memoryProviderOutbox.payload_json}, '$.projection.sessionId') = ${input.sessionId}`,
             ),
           )
+          .orderBy(asc(memoryProviderOutbox.sequence))
           .all()
           .filter((row) => row.providerAcceptedAt !== null || row.providerSubmissionAmbiguous);
         if (
           providerSubmissionEvidence.some(
             (row) =>
-              (row.providerAcceptedAt !== null) !== (row.providerDocumentId !== null) ||
+              (row.providerAcceptedAt !== null) !==
+                (row.providerDocumentId !== null && row.providerStatus !== null) ||
               (row.providerAcceptedAt !== null && row.providerSubmissionAmbiguous),
           ) ||
           providerSubmissionEvidence.filter((row) => row.providerSubmissionAmbiguous).length > 1
         )
           return "Invalid";
-        const acceptedDocumentIds = providerSubmissionEvidence.flatMap((row) =>
+        const acceptedTargets = providerSubmissionEvidence.flatMap((row) =>
           row.providerDocumentId === null
             ? []
-            : [Schema.decodeOption(MemoryProvider.ProviderDocumentId)(row.providerDocumentId)],
+            : [
+                {
+                  documentId: Schema.decodeOption(MemoryProvider.ProviderDocumentId)(
+                    row.providerDocumentId,
+                  ),
+                  status:
+                    row.status === "completed" && row.providerStatus === "done"
+                      ? ("observed" as const)
+                      : ("accepted" as const),
+                },
+              ],
         );
-        if (acceptedDocumentIds.some(Option.isNone)) return "Invalid";
-        const distinctAcceptedDocumentIds = new Set(
-          acceptedDocumentIds.map((documentId) => Option.getOrThrow(documentId)),
-        );
-        if (distinctAcceptedDocumentIds.size > 1) return "Invalid";
-        const retainedDocumentId = providerSubmissionEvidence.some(
+        if (acceptedTargets.some((target) => Option.isNone(target.documentId))) return "Invalid";
+        const targetStatusByDocumentId = acceptedTargets.reduce((statuses, target) => {
+          const documentId = Option.getOrThrow(target.documentId);
+          const retainedStatus = statuses.get(documentId);
+          statuses.set(
+            documentId,
+            retainedStatus === "accepted" || target.status === "accepted" ? "accepted" : "observed",
+          );
+          return statuses;
+        }, new Map<MemoryProvider.ProviderDocumentId, "accepted" | "observed">());
+        const awaitingDiscovery = providerSubmissionEvidence.some(
           (row) => row.providerSubmissionAmbiguous,
-        )
-          ? undefined
-          : distinctAcceptedDocumentIds.values().next().value;
+        );
+        const targets = [...targetStatusByDocumentId].map(([documentId, status]) => ({
+          documentId,
+          status,
+        }));
         const deletionProgress: MemoryProviderDeletionProgress | undefined =
-          providerSubmissionEvidence.length === 0
+          targets.length === 0 && !awaitingDiscovery
             ? undefined
-            : retainedDocumentId === undefined
-              ? { _tag: "AwaitSessionConversation" }
-              : { _tag: "AwaitSessionConversation", documentId: retainedDocumentId };
+            : { _tag: "DeleteSessionConversation", awaitingDiscovery, targets };
         transaction
           .update(memoryProviderOutbox)
           .set({
