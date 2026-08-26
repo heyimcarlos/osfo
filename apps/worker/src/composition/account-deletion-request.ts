@@ -137,16 +137,9 @@ export const make = Effect.gen(function* () {
       Predicate.isTagged(requested, "DeletionAuthorityChanged")
     )
       return yield* unavailable("fence");
-    if (Predicate.isTagged(requested, "DeletionAlreadyRequested")) return undefined;
-    yield* deletion
-      .reconcileUser(userId)
-      .pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("Account deletion remains pending").pipe(
-            Effect.annotateLogs({ cause }),
-          ),
-        ),
-      );
+    // The exact fenced Deletion Case is the durable work schedule. Returning before
+    // reconciliation preserves replay authority if this HTTP response is lost; the
+    // production scheduled entry point owns eventual destructive completion.
     return undefined;
   });
   const reconcileRetained = Effect.fn("AccountDeletionRequest.reconcileRetained")(function* (

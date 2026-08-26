@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 
+import { App } from "../../src/app";
 import { OSFO_DIRECTORY_NAME } from "../../src/agents/osfo/identity";
 import { spawnApp } from "../support/spawn-app";
 
@@ -90,7 +91,6 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
       user_exists: true,
     });
 
-    yield* Effect.promise(() => app.supermemory.failDeletes(1));
     const response = yield* Effect.promise(() => app.account.delete(presentation));
     expect(response.status).toBe(200);
     expect(yield* Effect.promise(() => response.json())).toEqual({ status: "deletion-pending" });
@@ -100,6 +100,7 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
       deletion_case_exists: true,
       user_exists: true,
     });
+    expect(yield* Effect.promise(app.supermemory.ledger)).toEqual([]);
     const fencedOrdinaryEndpoint = yield* Effect.promise(() => app.billing.checkout());
     expect(fencedOrdinaryEndpoint.response.status).toBe(401);
     const mismatchedReplay = yield* Effect.promise(() =>
@@ -116,7 +117,7 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
     });
     expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toBeNull();
     expect(yield* Effect.promise(app.supermemory.ledger)).toEqual(
-      Array.from({ length: 2 }, () => ({
+      Array.from({ length: 1 }, () => ({
         method: "DELETE",
         path: `/v3/container-tags/${encodeURIComponent(seededProvider.containerTag)}`,
       })),
@@ -137,6 +138,44 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
     expect(session.status).toBe(200);
     expect(yield* Effect.promise(() => session.json())).toBeNull();
     yield* Effect.promise(() => env.FILES.delete(unrelatedR2Key));
+    return undefined;
+  }),
+);
+
+it.effect("completes a fenced deletion through the production scheduled entry point", () =>
+  Effect.gen(function* () {
+    const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
+      Effect.promise(client.dispose),
+    );
+    const identity = yield* Effect.promise(() =>
+      app.auth.mintVerifiedUser({ phoneNumber: "+15550001921" }),
+    );
+    const seededProvider = yield* Effect.promise(() => app.supermemory.seedUser(identity.userId));
+    const presented = yield* Effect.promise(app.account.present);
+    if (presented.body === undefined) {
+      return yield* Effect.die(new Error("Scheduled deletion Action was not presented"));
+    }
+    const presentation = presented.body;
+
+    const accepted = yield* Effect.promise(() => app.account.delete(presentation));
+    expect(accepted.status).toBe(200);
+    expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toEqual({
+      agent_exists: true,
+      auth_session_exists: false,
+      deletion_case_exists: true,
+      user_exists: true,
+    });
+    expect(yield* Effect.promise(app.supermemory.ledger)).toEqual([]);
+
+    yield* Effect.promise(() => App.reconcileAccountDeletions(env));
+
+    expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toBeNull();
+    expect(yield* Effect.promise(app.supermemory.ledger)).toEqual([
+      {
+        method: "DELETE",
+        path: `/v3/container-tags/${encodeURIComponent(seededProvider.containerTag)}`,
+      },
+    ]);
     return undefined;
   }),
 );

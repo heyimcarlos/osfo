@@ -87,7 +87,7 @@ export const AccountGroup = HttpApiGroup.make("account")
       .annotateMerge(
         OpenApi.annotations({
           description:
-            "Fence and delete an account from a current session, or resume one exact retained lost-response request after that session is revoked.",
+            "Fence and schedule permanent deletion from a current session, or resume one exact retained lost-response request after that session is revoked.",
           identifier: "account.delete",
           summary: "Delete Account",
         }),

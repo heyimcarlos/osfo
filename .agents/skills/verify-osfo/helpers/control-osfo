@@ -20,6 +20,7 @@ usage() {
     '  control-osfo observe <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay>' \
     '  control-osfo channel-invite <run-id>' \
     '  control-osfo seed-account-deletion <run-id>' \
+    '  control-osfo reconcile-account-deletion <run-id>' \
     '  control-osfo evidence <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay> finish' \
     '  control-osfo cleanup <run-id>'
 }
@@ -760,6 +761,31 @@ seed_account_deletion() {
     "$user_id" "$agent_id" "$channel_link_id" "$target_tag" "$target_key"
 }
 
+reconcile_account_deletion() {
+  local run_id state_dir container_id worker_origin user_id attempt user_exists
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  state_dir="$(state_dir_for "$run_id")"
+  container_id="$(state_value "$run_id" container-id)"
+  worker_origin="$(state_value "$run_id" worker-origin)"
+  user_id="$(state_value "$run_id" account-deletion-user-id)"
+  require_owned_identifier 'User ID' "$user_id"
+  curl --fail --silent --show-error "$worker_origin/cdn-cgi/handler/scheduled" >/dev/null
+  for attempt in {1..120}; do
+    user_exists="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+      psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+      --command "select exists(select 1 from users where id = '$user_id');")"
+    if [[ "$user_exists" == f ]]; then
+      printf 'scheduled_account_deletion_complete user=%s\n' "$user_id"
+      return 0
+    fi
+    sleep 0.5
+  done
+  printf 'Production scheduled reconciliation did not complete account deletion for %s\n' \
+    "$user_id" >&2
+  exit 1
+}
+
 observe_channel_linking() {
   local run_id feature_dir container_id provider_origin phone telegram_author invite_url state_json
   run_id="$1"
@@ -1104,6 +1130,10 @@ case "$command_name" in
   seed-account-deletion)
     require_run_id "${2:-}"
     seed_account_deletion "$2"
+    ;;
+  reconcile-account-deletion)
+    require_run_id "${2:-}"
+    reconcile_account_deletion "$2"
     ;;
   cleanup)
     require_run_id "${2:-}"
