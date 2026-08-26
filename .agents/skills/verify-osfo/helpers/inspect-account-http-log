@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+worker_log="${1:-}"
+if [[ ! -f "$worker_log" ]]; then
+  printf 'Worker log does not exist: %s\n' "$worker_log" >&2
+  exit 1
+fi
+
+count_matches() {
+  local pattern count
+  pattern="$1"
+  count="$(rg --count-matches "$pattern" "$worker_log" || true)"
+  printf '%s\n' "${count:-0}"
+}
+
+presentation_requests="$(count_matches '^\[wrangler:info\] GET /v1/account/deletion-action [0-9]{3}( |$)')"
+presentation_successes="$(count_matches '^\[wrangler:info\] GET /v1/account/deletion-action 200 OK$')"
+delete_requests="$(count_matches '^\[wrangler:info\] DELETE /v1/account [0-9]{3}( |$)')"
+delete_successes="$(count_matches '^\[wrangler:info\] DELETE /v1/account 200 OK$')"
+
+counts="$(jq --null-input \
+  --argjson presentationRequests "$presentation_requests" \
+  --argjson presentationSuccesses "$presentation_successes" \
+  --argjson deleteRequests "$delete_requests" \
+  --argjson deleteSuccesses "$delete_successes" \
+  '{
+    presentationRequests: $presentationRequests,
+    presentationSuccesses: $presentationSuccesses,
+    deleteRequests: $deleteRequests,
+    deleteSuccesses: $deleteSuccesses
+  }')"
+
+if ! jq --exit-status '
+  .presentationRequests == 1 and .presentationSuccesses == 1 and
+  .deleteRequests == 1 and .deleteSuccesses == 1
+' <<<"$counts" >/dev/null; then
+  printf 'Account deletion HTTP evidence is not exact-once: %s\n' \
+    "$(jq --compact-output . <<<"$counts")" >&2
+  exit 1
+fi
+
+printf '%s\n' "$counts"

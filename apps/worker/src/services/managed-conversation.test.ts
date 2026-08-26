@@ -100,9 +100,11 @@ it.effect("keeps the supported deletion and data-rights launch surface reachable
       ),
     );
 
-    expect(results.map((result) => result._tag)).toEqual(
-      messages.map(() => "ManagedConversationAdmitted"),
-    );
+    expect(
+      results.map((result) =>
+        result._tag === "ManagedConversationAdmitted" ? result.metadata.executionMode : result._tag,
+      ),
+    ).toEqual(messages.map(() => "exhaustedConversation"));
   }),
 );
 

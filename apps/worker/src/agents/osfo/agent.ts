@@ -988,7 +988,8 @@ export class OsfoAgent extends Think<Env> {
       ],
       availableToolNames: Object.keys(tools),
     } as const;
-    const prompt = await this.#assemblePrompt(context, metadata, system);
+    const promptPolicy = PromptAssembly.policyForManagedExecution(metadata.executionMode);
+    const prompt = await this.#assemblePrompt(context, metadata, system, promptPolicy.recallMode);
     const capabilityContext = CapabilityContext.projectTurn(context.messages, {
       pendingFileAnalysis: capabilityTurnState.pendingFileAnalyses.length > 0,
     });
@@ -1027,7 +1028,7 @@ export class OsfoAgent extends Think<Env> {
     this.#activeCapabilityTurn = activeCapabilityTurn;
     const capabilityStep = activeCapabilityTurn.step();
     this.#recordCapabilityAccounting(capabilityStep.bundle, index);
-    if (prompt.usage !== null) {
+    if (promptPolicy.recordProviderRecallUsage && prompt.usage !== null) {
       this.ctx.waitUntil(this.#recordProviderRecallCompanyCost(metadata, prompt.usage));
     }
     this.#completedModelSteps.clear();
@@ -1312,6 +1313,7 @@ export class OsfoAgent extends Think<Env> {
     context: TurnContext,
     metadata: ManagedTurnMetadata,
     agentInstructions: string,
+    recallMode: MemoryProvider.RecallMode,
   ): Promise<PromptAssembly.ModelTurnResult> {
     const config = loadConfig(this.env);
     const memoryProviderOutbox = this.#memoryProviderOutbox;
@@ -1332,6 +1334,7 @@ export class OsfoAgent extends Think<Env> {
           agentInstructions,
           continuation: context.continuation,
           messages: context.messages,
+          mode: recallMode,
           recentTurns,
           submissionId: metadata.submissionId,
           userId: metadata.authorityIdentity.userId,
