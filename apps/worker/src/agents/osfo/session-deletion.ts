@@ -2,6 +2,7 @@ import { Effect, Result } from "effect";
 
 import type { ConversationRouteId, SessionId } from "../../domain";
 import type { DbTimestamp } from "../../db";
+import { CurrentSessionReplacementConflict } from "../../services/session-replacement";
 
 export interface LocalSessionDeletionDependencies<A, E> {
   readonly activateCurrentSession: Effect.Effect<void, E>;
@@ -61,10 +62,26 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
     }
     return deletion.success;
   }
+  if (
+    isSessionDeletionReplacement(agent.currentSessionId) &&
+    agent.currentSessionId !== input.replacementSessionId
+  ) {
+    return yield* new CurrentSessionReplacementConflict({
+      actualCurrentSessionId: agent.currentSessionId,
+      expectedCurrentSessionId: input.sessionId,
+      message: "A different deletion Action owns the current replacement Session",
+      replacementOwnerRouteId: agent.routeId,
+      replacementSessionId: input.replacementSessionId,
+      routeId: agent.routeId,
+    });
+  }
   yield* dependencies.authorizeDeletion();
   yield* dependencies.clearMessages(input.sessionId);
   yield* dependencies.authorizeDeletion();
   return yield* dependencies.settle(input.sessionId);
 });
+
+const isSessionDeletionReplacement = (sessionId: SessionId) =>
+  sessionId.startsWith("session-delete-");
 
 export * as SessionDeletion from "./session-deletion";

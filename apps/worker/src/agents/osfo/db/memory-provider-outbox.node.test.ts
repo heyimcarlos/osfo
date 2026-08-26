@@ -41,7 +41,10 @@ import {
 import { makeAgentStore } from "./store";
 import { ConversationSnapshotProjection } from "../memory-provider-projection";
 import { MemoryProvider } from "../../../services/memory-provider";
-import { reconcileMemoryProviderOutbox } from "../memory-provider-reconciliation";
+import {
+  ProviderDeletionDeferred,
+  reconcileMemoryProviderOutbox,
+} from "../memory-provider-reconciliation";
 import { makeProviderConversationSaveGate } from "../provider-conversation-save-gate";
 import { deleteLocalSession } from "../session-deletion";
 
@@ -1797,6 +1800,191 @@ it.effect("removes a failed replacement and recreates it on current Session dele
   ),
 );
 
+it.effect(
+  "resumes the exact current Session deletion after replacement commits before settlement",
+  () =>
+    withDatabase(({ database, storage }) =>
+      Effect.gen(function* () {
+        const db = makeAgentDb(asDurableObjectStorage(storage));
+        const store = makeAgentStore(db);
+        yield* store.initialize(AgentId.make("agent-1"), {
+          agentId: AgentId.make("agent-1"),
+          initializationId: AgentInitializationId.make("initialization-1"),
+          initializedAt: now,
+          routeId: ConversationRouteId.make("route-1"),
+          sessionId: SessionId.make("session-1"),
+        });
+        const crash = yield* deleteLocalSession(
+          {
+            replacementSessionId: SessionId.make("session-delete-action-1"),
+            sessionId: SessionId.make("session-1"),
+          },
+          {
+            activateCurrentSession: Effect.die(
+              new Error("Crashed replacement was unexpectedly activated"),
+            ),
+            authorizeDeletion: () => Effect.void,
+            clearMessages: () =>
+              Effect.die(new Error("Crashed replacement unexpectedly cleared history")),
+            inspect: store.inspect().pipe(Effect.orDie),
+            ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+            replacedAt: Effect.succeed(now),
+            replaceCurrentSession: (replacement) =>
+              store
+                .replaceCurrentSession(replacement)
+                .pipe(Effect.andThen(Effect.fail("process crashed" as const))),
+            rollbackCurrentSessionReplacement: () =>
+              Effect.die(new Error("Process crash must not run compensation")),
+            settle: () => Effect.die(new Error("Process crash unexpectedly settled deletion")),
+          },
+        ).pipe(Effect.result);
+        expect(Result.isFailure(crash)).toBe(true);
+        expect(yield* store.inspect()).toMatchObject({
+          currentSessionId: "session-delete-action-1",
+        });
+
+        const restarted = makeAgentStore(makeAgentDb(asDurableObjectStorage(storage)));
+        let mismatchedEffects = 0;
+        const mismatch = yield* deleteLocalSession(
+          {
+            replacementSessionId: SessionId.make("session-delete-action-2"),
+            sessionId: SessionId.make("session-1"),
+          },
+          {
+            activateCurrentSession: Effect.void,
+            authorizeDeletion: () => Effect.void,
+            clearMessages: () =>
+              Effect.sync(() => {
+                mismatchedEffects += 1;
+              }),
+            inspect: restarted.inspect().pipe(Effect.orDie),
+            ownsSession: (sessionId) => restarted.ownsSession(sessionId).pipe(Effect.orDie),
+            replacedAt: Effect.succeed(DbTimestamp.make("2026-08-24T12:00:00.000Z")),
+            replaceCurrentSession: () =>
+              Effect.die(new Error("Mismatched retry must not replace the current Session")),
+            rollbackCurrentSessionReplacement: () =>
+              Effect.die(new Error("Mismatched retry must not compensate another Action")),
+            settle: () =>
+              Effect.sync(() => {
+                mismatchedEffects += 1;
+                return "settled" as const;
+              }),
+          },
+        ).pipe(Effect.result);
+        expect(Result.isFailure(mismatch)).toBe(true);
+        expect(mismatchedEffects).toBe(0);
+
+        yield* deleteLocalSession(
+          {
+            replacementSessionId: SessionId.make("session-delete-action-1"),
+            sessionId: SessionId.make("session-1"),
+          },
+          {
+            activateCurrentSession: Effect.void,
+            authorizeDeletion: () => Effect.void,
+            clearMessages: () => Effect.void,
+            inspect: restarted.inspect().pipe(Effect.orDie),
+            ownsSession: (sessionId) => restarted.ownsSession(sessionId).pipe(Effect.orDie),
+            replacedAt: Effect.succeed(DbTimestamp.make("2026-08-24T12:00:00.000Z")),
+            replaceCurrentSession: () =>
+              Effect.die(new Error("Exact restart must resume the committed replacement")),
+            rollbackCurrentSessionReplacement: () =>
+              Effect.die(new Error("Exact restart must not compensate successful settlement")),
+            settle: (sessionId) =>
+              restarted.deleteHistoricalSession({
+                authorization: authorizedDeletion("action-1", sessionId).payload.authorization,
+                deletedAt: DbTimestamp.make("2026-08-24T12:00:00.000Z"),
+                outboxId: MemoryProviderOutboxId.make("delete-session-restart"),
+                sessionId,
+                userId: UserId.make("user-1"),
+              }),
+          },
+        );
+
+        expect(yield* restarted.readSessionIds).toEqual([
+          SessionId.make("session-delete-action-1"),
+        ]);
+        expect(
+          database
+            .prepare(
+              `SELECT operation_type, outbox_id, status
+                 FROM osfo_memory_provider_outbox
+                WHERE outbox_id = 'delete-session-restart'`,
+            )
+            .get(),
+        ).toEqual({
+          operation_type: "deleteSessionConversation",
+          outbox_id: "delete-session-restart",
+          status: "pending",
+        });
+
+        const wrongAction = yield* restarted
+          .deleteHistoricalSession({
+            authorization: authorizedDeletion("action-2", "session-1").payload.authorization,
+            deletedAt: DbTimestamp.make("2026-08-24T12:00:00.000Z"),
+            outboxId: MemoryProviderOutboxId.make("delete-session-restart"),
+            sessionId: SessionId.make("session-1"),
+            userId: UserId.make("user-1"),
+          })
+          .pipe(Effect.result);
+        const wrongUser = yield* restarted
+          .deleteHistoricalSession({
+            authorization: authorizedDeletion("action-1", "session-1").payload.authorization,
+            deletedAt: DbTimestamp.make("2026-08-24T12:00:00.000Z"),
+            outboxId: MemoryProviderOutboxId.make("delete-session-restart"),
+            sessionId: SessionId.make("session-1"),
+            userId: UserId.make("user-2"),
+          })
+          .pipe(Effect.result);
+        expect(Result.isFailure(wrongAction)).toBe(true);
+        expect(Result.isFailure(wrongUser)).toBe(true);
+
+        database.exec(
+          "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+        );
+        const providerDocuments = new Set(["document-1", "unrelated-document"]);
+        const deleted: Array<string> = [];
+        const provider = providerStub({
+          deleteSessionConversation: ({ documentId }) =>
+            Effect.sync(() => {
+              deleted.push(documentId);
+              providerDocuments.delete(documentId);
+              return { _tag: "Deleted" as const };
+            }),
+          findSessionConversation: () =>
+            Effect.succeed({
+              _tag: "Found" as const,
+              documentIds: [MemoryProvider.ProviderDocumentId.make("document-1")],
+            }),
+          verifySessionConversation: ({ documentId }) =>
+            Effect.sync(() =>
+              providerDocuments.has(documentId)
+                ? ({ _tag: "Verified" } as const)
+                : ({ _tag: "AlreadyAbsent" } as const),
+            ),
+        });
+        yield* reconcileMemoryProviderOutbox(
+          makeMemoryProviderOutboxStore(makeAgentDb(asDurableObjectStorage(storage))),
+          productionSessionDeletionOptions(restarted),
+        ).pipe(
+          Effect.provideService(MemoryProvider.Service, provider),
+          Effect.provideService(Db.Service, unavailableDatabase),
+          Effect.provide(BrowserCrypto.layer),
+        );
+
+        expect(deleted).toEqual(["document-1"]);
+        expect(providerDocuments).toEqual(new Set(["unrelated-document"]));
+        expect(
+          database
+            .prepare(
+              "SELECT status FROM osfo_memory_provider_outbox WHERE outbox_id = 'delete-session-restart'",
+            )
+            .get(),
+        ).toEqual({ status: "completed" });
+      }),
+    ),
+);
+
 it.effect("removes the exact replacement when current Session settlement fails", () =>
   withDatabase(({ storage }) =>
     Effect.gen(function* () {
@@ -2875,7 +3063,16 @@ const productionSessionDeletionOptions = (store: ReturnType<typeof makeAgentStor
             })
             .pipe(Effect.orDie),
       },
-    ).pipe(Effect.asVoid);
+    ).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderDeletionDeferred({
+            cause,
+            message: "The exact local Session deletion could not be resumed",
+          }),
+      ),
+      Effect.asVoid,
+    );
   },
 });
 

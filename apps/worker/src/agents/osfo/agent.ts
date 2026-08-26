@@ -1802,9 +1802,16 @@ export class OsfoAgent extends Think<Env> {
     const deleted = await this.#deleteSessionLocally(input, deletionAuthorization, owner);
     if (
       Predicate.isTagged(deleted, "DeletionActionUnavailable") ||
-      Predicate.isTagged(deleted, "Denied")
+      Predicate.isTagged(deleted, "Denied") ||
+      Predicate.isTagged(deleted, "CurrentSessionReplacementConflict")
     )
-      return deleted;
+      return Predicate.isTagged(deleted, "CurrentSessionReplacementConflict")
+        ? new DeletionActionUnavailable({
+            cause: deleted,
+            message: "A different deletion Action owns the replacement Session",
+            operation: "deleteSession",
+          })
+        : deleted;
     this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
     return { _tag: "SessionDeletionPending", sessionId: input.sessionId } as const;
   }
@@ -2226,7 +2233,8 @@ export class OsfoAgent extends Think<Env> {
       }).pipe(
         Effect.flatMap((result) =>
           Predicate.isTagged(result, "DeletionActionUnavailable") ||
-          Predicate.isTagged(result, "Denied")
+          Predicate.isTagged(result, "Denied") ||
+          Predicate.isTagged(result, "CurrentSessionReplacementConflict")
             ? Effect.fail(
                 new ProviderDeletionDeferred({
                   cause: result,
