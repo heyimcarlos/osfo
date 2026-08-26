@@ -102,6 +102,7 @@ export const memoryProviderOutbox = sqliteTable(
     payload_json: text().notNull(),
     provider_accepted_at: timestamp(),
     provider_document_id: text(),
+    provider_submission_ambiguous: integer({ mode: "boolean" }).notNull().default(false),
     provider_status: text({
       enum: ["processing", "done", "failed"],
     }),

@@ -154,11 +154,16 @@ const processDeletionClaim = Effect.fn("MemoryProviderOutbox.processDeletionClai
     return true;
   }
   if (payload._tag === "DeleteSessionConversation" && payload.authorization !== undefined) {
+    const awaitingConversation =
+      claim.deletionProgress?._tag === "AwaitSessionConversation"
+        ? claim.deletionProgress
+        : undefined;
+    let documentWasObserved = claim.deletionProgress?._tag === "DeleteSessionConversation";
     let documentId =
       claim.deletionProgress?._tag === "DeleteSessionConversation"
         ? claim.deletionProgress.documentId
-        : undefined;
-    if (documentId === undefined) {
+        : awaitingConversation?.documentId;
+    if (!documentWasObserved) {
       const permitted = yield* authorizeProviderRequest(
         store,
         claim,
@@ -172,13 +177,37 @@ const processDeletionClaim = Effect.fn("MemoryProviderOutbox.processDeletionClai
         yield* retryClaim(store, claim, discovered.failure.message, retryDelaySeconds);
         return false;
       }
-      if (discovered.success._tag === "AlreadyAbsent") return true;
-      documentId = discovered.success.documentId;
-      const retained = yield* store.recordDeletionProgress(claim, {
-        _tag: "DeleteSessionConversation",
-        documentId,
-      });
-      if (!retained) return false;
+      if (discovered.success._tag === "Found") {
+        if (documentId !== undefined && discovered.success.documentId !== documentId) {
+          yield* retryClaim(
+            store,
+            claim,
+            "The provider surfaced a different Session conversation target",
+            retryDelaySeconds,
+          );
+          return false;
+        }
+        documentId = discovered.success.documentId;
+        const retained = yield* store.recordDeletionProgress(claim, {
+          _tag: "DeleteSessionConversation",
+          documentId,
+        });
+        if (!retained) return false;
+        documentWasObserved = true;
+      } else if (awaitingConversation === undefined) {
+        return true;
+      } else if (documentId === undefined) {
+        yield* retryClaim(
+          store,
+          claim,
+          "A possibly accepted Session conversation is not yet discoverable",
+          retryDelaySeconds,
+        );
+        return false;
+      }
+    }
+    if (documentId === undefined) {
+      return yield* Effect.die(new Error("Session deletion lost its provider document target"));
     }
     const target = { documentId, sessionId: payload.sessionId, userId: payload.userId };
     const canVerify = yield* authorizeProviderRequest(
@@ -194,7 +223,23 @@ const processDeletionClaim = Effect.fn("MemoryProviderOutbox.processDeletionClai
       yield* retryClaim(store, claim, verified.failure.message, retryDelaySeconds);
       return false;
     }
-    if (verified.success._tag === "AlreadyAbsent") return true;
+    if (verified.success._tag === "AlreadyAbsent") {
+      if (documentWasObserved) return true;
+      yield* retryClaim(
+        store,
+        claim,
+        "An accepted Session conversation is not yet available for deletion",
+        retryDelaySeconds,
+      );
+      return false;
+    }
+    if (!documentWasObserved) {
+      const retained = yield* store.recordDeletionProgress(claim, {
+        _tag: "DeleteSessionConversation",
+        documentId,
+      });
+      if (!retained) return false;
+    }
     const canDelete = yield* authorizeProviderRequest(
       store,
       claim,

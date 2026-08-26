@@ -11,6 +11,7 @@ import {
   SessionRecallCursorInvalid,
   type SessionRecallCandidate,
 } from "../../../services/session-recall";
+import { MemoryProvider } from "../../../services/memory-provider";
 import {
   AgentId,
   AgentInitializationId,
@@ -41,6 +42,7 @@ import {
   enqueueConversationSnapshotTransaction,
   enqueueMemoryProviderDeletionTransaction,
   inspectConversationSnapshotTransaction,
+  type MemoryProviderDeletionProgress,
   type MemoryProviderOutboxId,
   type MemoryProviderDeletionPayload,
 } from "./memory-provider-outbox";
@@ -773,6 +775,51 @@ export const makeAgentStore = (db: AgentDb) => {
           .delete(committedTurns)
           .where(eq(committedTurns.session_id, input.sessionId))
           .run();
+        const providerSubmissionEvidence = transaction
+          .select({
+            providerAcceptedAt: memoryProviderOutbox.provider_accepted_at,
+            providerDocumentId: memoryProviderOutbox.provider_document_id,
+            providerSubmissionAmbiguous: memoryProviderOutbox.provider_submission_ambiguous,
+          })
+          .from(memoryProviderOutbox)
+          .where(
+            and(
+              eq(memoryProviderOutbox.operation_type, "saveConversation"),
+              sql`json_extract(${memoryProviderOutbox.payload_json}, '$.projection.sessionId') = ${input.sessionId}`,
+            ),
+          )
+          .all()
+          .filter((row) => row.providerAcceptedAt !== null || row.providerSubmissionAmbiguous);
+        if (
+          providerSubmissionEvidence.some(
+            (row) =>
+              (row.providerAcceptedAt !== null) !== (row.providerDocumentId !== null) ||
+              (row.providerAcceptedAt !== null && row.providerSubmissionAmbiguous),
+          ) ||
+          providerSubmissionEvidence.filter((row) => row.providerSubmissionAmbiguous).length > 1
+        )
+          return "Invalid";
+        const acceptedDocumentIds = providerSubmissionEvidence.flatMap((row) =>
+          row.providerDocumentId === null
+            ? []
+            : [Schema.decodeOption(MemoryProvider.ProviderDocumentId)(row.providerDocumentId)],
+        );
+        if (acceptedDocumentIds.some(Option.isNone)) return "Invalid";
+        const distinctAcceptedDocumentIds = new Set(
+          acceptedDocumentIds.map((documentId) => Option.getOrThrow(documentId)),
+        );
+        if (distinctAcceptedDocumentIds.size > 1) return "Invalid";
+        const retainedDocumentId = providerSubmissionEvidence.some(
+          (row) => row.providerSubmissionAmbiguous,
+        )
+          ? undefined
+          : distinctAcceptedDocumentIds.values().next().value;
+        const deletionProgress: MemoryProviderDeletionProgress | undefined =
+          providerSubmissionEvidence.length === 0
+            ? undefined
+            : retainedDocumentId === undefined
+              ? { _tag: "AwaitSessionConversation" }
+              : { _tag: "AwaitSessionConversation", documentId: retainedDocumentId };
         transaction
           .update(memoryProviderOutbox)
           .set({
@@ -794,6 +841,7 @@ export const makeAgentStore = (db: AgentDb) => {
           .where(eq(sessionOwnership.session_id, input.sessionId))
           .run();
         return enqueueMemoryProviderDeletionTransaction(transaction, {
+          deletionProgress,
           enqueuedAt: input.deletedAt,
           outboxId: input.outboxId,
           payload: deleteSessionPayload(input),

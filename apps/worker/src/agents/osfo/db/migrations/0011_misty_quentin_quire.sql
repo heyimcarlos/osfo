@@ -1,0 +1,1 @@
+ALTER TABLE `osfo_memory_provider_outbox` ADD `provider_submission_ambiguous` integer DEFAULT false NOT NULL;

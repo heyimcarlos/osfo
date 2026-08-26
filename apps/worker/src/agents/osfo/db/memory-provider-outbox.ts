@@ -63,10 +63,14 @@ export const MemoryProviderDeletionProgress = Schema.Union([
   Schema.TaggedStruct("DeleteSessionConversation", {
     documentId: MemoryProvider.ProviderDocumentId,
   }),
+  Schema.TaggedStruct("AwaitSessionConversation", {
+    documentId: Schema.optionalKey(MemoryProvider.ProviderDocumentId),
+  }),
 ]);
 export type MemoryProviderDeletionProgress = typeof MemoryProviderDeletionProgress.Type;
 
 export interface EnqueueMemoryProviderDeletion {
+  readonly deletionProgress?: MemoryProviderDeletionProgress | undefined;
   readonly enqueuedAt: DbTimestamp;
   readonly outboxId: MemoryProviderOutboxId;
   readonly payload: MemoryProviderDeletionPayload;
@@ -192,6 +196,7 @@ export const enqueueConversationSnapshotTransaction = (
 ) =>
   enqueueTransaction(transaction, {
     allowancePeriodId: projection.allowancePeriodId,
+    deletionProgress: undefined,
     enqueuedAt,
     operationType: "saveConversation",
     orderingKey: userOrderingKey(projection.userId),
@@ -377,6 +382,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
       db.transaction((transaction) =>
         enqueueTransaction(transaction, {
           allowancePeriodId: null,
+          deletionProgress: input.deletionProgress,
           enqueuedAt: input.enqueuedAt,
           operationType: operationType(input.payload),
           orderingKey: userOrderingKey(input.payload.userId),
@@ -492,6 +498,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
       updateClaim("completeMemoryProviderOutbox", claim, {
         provider_accepted_at: acceptedAt,
         provider_document_id: result.documentId,
+        provider_submission_ambiguous: false,
         provider_status: result.processingStatus,
         usage_json: encodeUsage(result.usage),
       }),
@@ -500,7 +507,10 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
   const retainAmbiguousProviderSubmission = Effect.fn(
     "MemoryProviderOutbox.retainAmbiguousProviderSubmission",
   )((claim: ClaimedMemoryProviderWork, message: string) =>
-    updateClaim("retryMemoryProviderOutbox", claim, { last_error: message }),
+    updateClaim("retryMemoryProviderOutbox", claim, {
+      last_error: message,
+      provider_submission_ambiguous: true,
+    }),
   );
 
   const markProviderStatus = Effect.fn("MemoryProviderOutbox.markProviderStatus")(
@@ -764,6 +774,7 @@ export type MemoryProviderOutboxStore = ReturnType<typeof makeMemoryProviderOutb
 
 interface EnqueueMemoryProviderWork {
   readonly allowancePeriodId: AllowancePeriodId | null;
+  readonly deletionProgress: MemoryProviderDeletionProgress | undefined;
   readonly enqueuedAt: DbTimestamp;
   readonly operationType: (typeof memoryProviderOutbox.$inferInsert)["operation_type"];
   readonly orderingKey: string;
@@ -790,6 +801,10 @@ const enqueueTransaction = (transaction: AgentTransaction, input: EnqueueMemoryP
     .values({
       allowance_period_id: input.allowancePeriodId,
       available_at: input.enqueuedAt,
+      deletion_progress_json:
+        input.deletionProgress === undefined
+          ? null
+          : encodeDeletionProgress(input.deletionProgress),
       enqueued_at: input.enqueuedAt,
       operation_type: input.operationType,
       ordering_key: input.orderingKey,
@@ -809,6 +824,7 @@ export const enqueueMemoryProviderDeletionTransaction = (
 ) =>
   enqueueTransaction(transaction, {
     allowancePeriodId: null,
+    deletionProgress: input.deletionProgress,
     enqueuedAt: input.enqueuedAt,
     operationType: operationType(input.payload),
     orderingKey: userOrderingKey(input.payload.userId),
@@ -860,12 +876,18 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
     hasProviderAcceptance !== (usage !== null) ||
     hasProviderAcceptance !== (providerDocumentId !== null) ||
     hasProviderAcceptance !== (providerStatus !== null) ||
-    providerStatus === "failed"
+    providerStatus === "failed" ||
+    (hasProviderAcceptance && row.provider_submission_ambiguous)
   ) {
     return yield* invalidRecord();
   }
   if (
-    (deletionProgress !== null && deletionProgress._tag !== payload._tag) ||
+    (deletionProgress !== null &&
+      deletionProgress._tag !== payload._tag &&
+      !(
+        payload._tag === "DeleteSessionConversation" &&
+        deletionProgress._tag === "AwaitSessionConversation"
+      )) ||
     (deletionProgress !== null && payload._tag === "SaveConversation") ||
     (deletionProgress !== null && payload._tag === "DeleteUserKnowledge") ||
     (deletionProgress?._tag === "ForgetKnowledge" &&

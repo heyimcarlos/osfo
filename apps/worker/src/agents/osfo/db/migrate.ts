@@ -11,6 +11,7 @@ import structuredConversationIngestionMigrationSql from "./migrations/0007_red_f
 import conversationProcessingBarrierMigrationSql from "./migrations/0008_little_adam_warlock.sql";
 import memoryProviderConfigurationMigrationSql from "./migrations/0009_absent_typhoid_mary.sql";
 import memoryProviderDeletionProgressMigrationSql from "./migrations/0010_yellow_living_mummy.sql";
+import providerSubmissionAmbiguityMigrationSql from "./migrations/0011_misty_quentin_quire.sql";
 import {
   AgentMigrationDefinitionMismatch,
   AgentMigrationDigestMismatch,
@@ -82,6 +83,11 @@ export const agentMigrations: ReadonlyArray<AgentMigration> = [
     digest: "sha256:da5f5abdbc33793494a9f1ebfe6b520edf2becaaef3afe18ad24421e0d4e8669",
     sql: memoryProviderDeletionProgressMigrationSql,
     version: 11,
+  },
+  {
+    digest: "sha256:d3716616805ee5d1e36ab9050e1c92787b3a06cb4057bfc807e307906b1713aa",
+    sql: providerSubmissionAmbiguityMigrationSql,
+    version: 12,
   },
 ];
 
