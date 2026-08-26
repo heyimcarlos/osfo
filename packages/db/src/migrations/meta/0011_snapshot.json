@@ -1919,6 +1919,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "replay_session_cookie_hash": {
+          "name": "replay_session_cookie_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "presentation": {
           "name": "presentation",
           "type": "text",
@@ -2006,7 +2012,7 @@
       "checkConstraints": {
         "account_deletion_actions_identity_check": {
           "name": "account_deletion_actions_identity_check",
-          "value": "length(btrim(\"account_deletion_actions\".\"action_id\")) > 0 and length(btrim(\"account_deletion_actions\".\"user_id\")) > 0 and length(btrim(\"account_deletion_actions\".\"auth_session_id\")) > 0"
+          "value": "length(btrim(\"account_deletion_actions\".\"action_id\")) > 0 and length(btrim(\"account_deletion_actions\".\"user_id\")) > 0 and length(btrim(\"account_deletion_actions\".\"auth_session_id\")) > 0 and \"account_deletion_actions\".\"replay_session_cookie_hash\" ~ '^[0-9a-f]{64}$'"
         },
         "account_deletion_actions_presentation_check": {
           "name": "account_deletion_actions_presentation_check",

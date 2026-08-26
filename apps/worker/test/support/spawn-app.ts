@@ -245,6 +245,17 @@ export const spawnApp = async () => {
         const response = await fetch(`${context.providerOrigin}/_test/supermemory/ledger`);
         return Schema.decodeUnknownPromise(SupermemoryLedger)(await response.json());
       },
+      failDeletes: async (count: number) => {
+        const response = await fetch(
+          `${context.providerOrigin}/_test/supermemory/delete-failures`,
+          {
+            body: JSON.stringify({ count }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          },
+        );
+        await requireSuccessfulResponse(response, "Configure Supermemory deletion failures");
+      },
       seedUser: async (userId: string) => {
         const response = await fetch(`${context.providerOrigin}/_test/supermemory/seed`, {
           body: JSON.stringify({ userId }),

@@ -4,9 +4,16 @@ import { AllowancePeriodId, UserId } from "../../domain";
 import { AccountDeletion } from "../../services/account-deletion";
 import {
   attemptKeyForContentKey,
+  contentKeyForAttemptKey,
+  documentKeysForOwnerKey,
   documentAttemptPrefix,
   documentContentPrefix,
+  ownerKeyFor,
+  ownerPrefixFor,
 } from "./document-storage-keys";
+import { DocumentOwnershipIndex } from "./document-ownership-index";
+
+/* oxlint-disable eslint/no-underscore-dangle -- Decoded Result values use the _tag discriminator. */
 
 const ArtifactMetadata = Schema.fromJsonString(Schema.Struct({ userId: UserId }));
 const AttemptMetadata = Schema.fromJsonString(
@@ -71,16 +78,94 @@ const deleteArtifacts: (
   allowancePeriodIds: ReadonlySet<AllowancePeriodId>,
   authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
 ) {
-  const targetArtifacts = yield* discoverArtifacts(bucket, userId, authorizeDelete);
-  const pairedAttemptKeys = new Set(targetArtifacts.map(({ attemptKey }) => attemptKey));
-  const targetAttemptKeys = yield* discoverAttemptEvidence(
-    bucket,
-    userId,
-    allowancePeriodIds,
-    pairedAttemptKeys,
-    authorizeDelete,
+  const ownerObjects = yield* discoverObjects(bucket, ownerPrefixFor(userId), authorizeDelete);
+  const indexedTargets = yield* Effect.forEach(ownerObjects, (object) =>
+    decodeOwnerMarker(object, userId),
   );
-  const contentKeys = yield* Effect.forEach(targetArtifacts, ({ contentKey }) =>
+  const contentObjects = yield* discoverObjects(bucket, documentContentPrefix, authorizeDelete);
+  const attemptObjects = yield* discoverObjects(bucket, documentAttemptPrefix, authorizeDelete);
+  const legacyContentTargets = yield* Effect.forEach(contentObjects, (object) => {
+    const decoded = Schema.decodeUnknownResult(ArtifactMetadata)(object.customMetadata?.osfo);
+    if (decoded._tag === "Success" && decoded.success.userId === userId) {
+      const attemptKey = attemptKeyForContentKey(object.key);
+      if (attemptKey === undefined) {
+        return Effect.fail(ambiguousObjectOwnership(object.key, "malformed artifact key"));
+      }
+      return Effect.succeed([{ attemptKey, contentKey: object.key }]);
+    }
+    if (
+      decoded._tag === "Failure" &&
+      indexedTargets.some(({ contentKey }) => contentKey === object.key)
+    ) {
+      return Effect.fail(ambiguousObjectOwnership(object.key, decoded.failure));
+    }
+    return Effect.succeed([]);
+  }).pipe(Effect.map((groups) => groups.flat()));
+  const pairedContentKeys = new Set([
+    ...indexedTargets.map(({ contentKey }) => contentKey),
+    ...legacyContentTargets.map(({ contentKey }) => contentKey),
+  ]);
+  const pairedAttemptKeys = new Set([
+    ...indexedTargets.map(({ attemptKey }) => attemptKey),
+    ...legacyContentTargets.map(({ attemptKey }) => attemptKey),
+  ]);
+  const discoveredAttemptTargets = yield* Effect.forEach(attemptObjects, (object) => {
+    const decoded = Schema.decodeUnknownResult(AttemptMetadata)(object.customMetadata?.osfo);
+    if (decoded._tag === "Failure") {
+      if (pairedAttemptKeys.has(object.key)) {
+        return Effect.fail(ambiguousObjectOwnership(object.key, decoded.failure));
+      }
+      return Effect.succeed([]);
+    }
+    return selectDecodedAttemptEvidence(
+      object.key,
+      decoded.success,
+      userId,
+      allowancePeriodIds,
+      pairedAttemptKeys,
+    ).pipe(
+      Effect.map((owned) =>
+        owned
+          ? [
+              {
+                attemptKey: object.key,
+                contentKey: contentKeyForAttemptKey(object.key),
+              },
+            ]
+          : [],
+      ),
+    );
+  }).pipe(Effect.map((groups) => groups.flat()));
+  const targetContentKeys = new Set([
+    ...pairedContentKeys,
+    ...discoveredAttemptTargets.flatMap(({ contentKey }) =>
+      contentKey === undefined ? [] : [contentKey],
+    ),
+  ]);
+  const targetAttemptKeys = new Set([
+    ...pairedAttemptKeys,
+    ...discoveredAttemptTargets.map(({ attemptKey }) => attemptKey),
+  ]);
+  yield* Effect.forEach(
+    contentObjects.filter(({ key }) => targetContentKeys.has(key)),
+    (object) => {
+      const decoded = Schema.decodeUnknownResult(ArtifactMetadata)(object.customMetadata?.osfo);
+      if (decoded._tag === "Failure") {
+        return Effect.fail(ambiguousObjectOwnership(object.key, decoded.failure));
+      }
+      return decoded.success.userId === userId
+        ? Effect.void
+        : Effect.fail(ambiguousObjectOwnership(object.key, "contradictory artifact ownership"));
+    },
+    { discard: true },
+  );
+
+  const ownerKeys = yield* Effect.forEach(indexedTargets, ({ ownerKey }) =>
+    verifyConcreteObject(bucket, ownerKey, authorizeDelete, (object) =>
+      decodeOwnerMarker(object, userId).pipe(Effect.asVoid),
+    ),
+  );
+  const contentKeys = yield* Effect.forEach([...targetContentKeys], (contentKey) =>
     verifyConcreteObject(bucket, contentKey, authorizeDelete, (object) =>
       decodeArtifactMetadata(object).pipe(
         Effect.flatMap((metadata) =>
@@ -93,9 +178,9 @@ const deleteArtifacts: (
       ),
     ),
   );
-  const attemptKeys = yield* Effect.forEach(targetAttemptKeys, (key) =>
+  const attemptKeys = yield* Effect.forEach([...targetAttemptKeys], (key) =>
     verifyConcreteObject(bucket, key, authorizeDelete, (object) =>
-      selectAttemptEvidence(object, userId, allowancePeriodIds, pairedAttemptKeys).pipe(
+      selectAttemptEvidence(object, userId, allowancePeriodIds, targetAttemptKeys).pipe(
         Effect.flatMap((owned) =>
           owned
             ? Effect.void
@@ -106,73 +191,26 @@ const deleteArtifacts: (
       ),
     ),
   );
-  const keys = [...contentKeys.flat(), ...attemptKeys.flat()];
+  const keys = [...ownerKeys.flat(), ...contentKeys.flat(), ...attemptKeys.flat()];
   yield* Effect.forEach(
     Array.chunksOf(keys, 1_000),
     (keyBatch) =>
       authorizeDelete.pipe(Effect.andThen(attempt("removeObjects", () => bucket.delete(keyBatch)))),
     { discard: true },
   );
+  return undefined;
 });
 
-const discoverArtifacts: (
+const discoverObjects: (
   bucket: R2Bucket,
-  userId: UserId,
+  prefix: string,
   authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
   cursor?: string,
-) => Effect.Effect<
-  ReadonlyArray<{ readonly attemptKey: string; readonly contentKey: string }>,
-  AccountDeletion.AccountDeletionUnavailable
-> = Effect.fn("AccountDeletionCloudflare.discoverArtifacts")(function* (
-  bucket: R2Bucket,
-  userId: UserId,
-  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
-  cursor?: string,
-) {
-  yield* authorizeDelete;
-  const page = yield* attempt("removeObjects", () =>
-    bucket.list(
-      cursor === undefined
-        ? { include: ["customMetadata"], prefix: documentContentPrefix }
-        : { cursor, include: ["customMetadata"], prefix: documentContentPrefix },
-    ),
-  );
-  const targetGroups = yield* Effect.forEach(page.objects, (object) =>
-    decodeArtifactMetadata(object).pipe(
-      Effect.flatMap((metadata) => {
-        if (metadata.userId !== userId) return Effect.succeed([]);
-        const attemptKey = attemptKeyForContentKey(object.key);
-        if (attemptKey !== undefined) {
-          return Effect.succeed([{ attemptKey, contentKey: object.key }]);
-        }
-        return Effect.fail(ambiguousObjectOwnership(object.key, "malformed artifact key"));
-      }),
-    ),
-  );
-  const targets = targetGroups.flat();
-  if (page.truncated) {
-    return [
-      ...targets,
-      ...(yield* discoverArtifacts(bucket, userId, authorizeDelete, page.cursor)),
-    ];
-  }
-  return targets;
-});
-
-const discoverAttemptEvidence: (
-  bucket: R2Bucket,
-  userId: UserId,
-  allowancePeriodIds: ReadonlySet<AllowancePeriodId>,
-  pairedAttemptKeys: ReadonlySet<string>,
-  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
-  cursor?: string,
-) => Effect.Effect<ReadonlyArray<string>, AccountDeletion.AccountDeletionUnavailable> = Effect.fn(
-  "AccountDeletionCloudflare.discoverAttemptEvidence",
+) => Effect.Effect<ReadonlyArray<R2Object>, AccountDeletion.AccountDeletionUnavailable> = Effect.fn(
+  "AccountDeletionCloudflare.discoverObjects",
 )(function* (
   bucket: R2Bucket,
-  userId: UserId,
-  allowancePeriodIds: ReadonlySet<AllowancePeriodId>,
-  pairedAttemptKeys: ReadonlySet<string>,
+  prefix: string,
   authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
   cursor?: string,
 ) {
@@ -180,31 +218,34 @@ const discoverAttemptEvidence: (
   const page = yield* attempt("removeObjects", () =>
     bucket.list(
       cursor === undefined
-        ? { include: ["customMetadata"], prefix: documentAttemptPrefix }
-        : { cursor, include: ["customMetadata"], prefix: documentAttemptPrefix },
+        ? { include: ["customMetadata"], prefix }
+        : { cursor, include: ["customMetadata"], prefix },
     ),
   );
-  const keyGroups = yield* Effect.forEach(page.objects, (object) =>
-    selectAttemptEvidence(object, userId, allowancePeriodIds, pairedAttemptKeys).pipe(
-      Effect.map((owned) => (owned ? [object.key] : [])),
-    ),
-  );
-  const keys = keyGroups.flat();
   if (page.truncated) {
     return [
-      ...keys,
-      ...(yield* discoverAttemptEvidence(
-        bucket,
-        userId,
-        allowancePeriodIds,
-        pairedAttemptKeys,
-        authorizeDelete,
-        page.cursor,
-      )),
+      ...page.objects,
+      ...(yield* discoverObjects(bucket, prefix, authorizeDelete, page.cursor)),
     ];
   }
-  return keys;
+  return page.objects;
 });
+
+const decodeOwnerMarker = (object: R2Object, userId: UserId) => {
+  const metadata = DocumentOwnershipIndex.decode(object);
+  if (metadata._tag === "Failure") {
+    return Effect.fail(ambiguousObjectOwnership(object.key, metadata.failure));
+  }
+  const keys = documentKeysForOwnerKey(userId, object.key);
+  if (
+    keys === undefined ||
+    metadata.success.userId !== userId ||
+    ownerKeyFor(userId, metadata.success.contentId) !== object.key
+  ) {
+    return Effect.fail(ambiguousObjectOwnership(object.key, "invalid ownership marker"));
+  }
+  return Effect.succeed(keys);
+};
 
 const selectAttemptEvidence = (
   object: R2Object,
@@ -213,19 +254,35 @@ const selectAttemptEvidence = (
   pairedAttemptKeys: ReadonlySet<string>,
 ) =>
   decodeAttemptMetadata(object).pipe(
-    Effect.flatMap((metadata) => {
-      if (metadata.userId === userId) return Effect.succeed(true);
-      const matchesTargetArtifact = pairedAttemptKeys.has(object.key);
-      const matchesTargetAllowance = allowancePeriodIds.has(metadata.cost.allowancePeriodId);
-      if (metadata.userId !== undefined) {
-        if (!matchesTargetArtifact && !matchesTargetAllowance) return Effect.succeed(false);
-        return Effect.fail(ambiguousObjectOwnership(object.key, "contradictory attempt ownership"));
-      }
-      if (matchesTargetAllowance) return Effect.succeed(true);
-      if (!matchesTargetArtifact) return Effect.succeed(false);
-      return Effect.fail(ambiguousObjectOwnership(object.key, "contradictory attempt ownership"));
-    }),
+    Effect.flatMap((metadata) =>
+      selectDecodedAttemptEvidence(
+        object.key,
+        metadata,
+        userId,
+        allowancePeriodIds,
+        pairedAttemptKeys,
+      ),
+    ),
   );
+
+const selectDecodedAttemptEvidence = (
+  key: string,
+  metadata: typeof AttemptMetadata.Type,
+  userId: UserId,
+  allowancePeriodIds: ReadonlySet<AllowancePeriodId>,
+  pairedAttemptKeys: ReadonlySet<string>,
+): Effect.Effect<boolean, AccountDeletion.AccountDeletionUnavailable> => {
+  if (metadata.userId === userId) return Effect.succeed(true);
+  const matchesTargetArtifact = pairedAttemptKeys.has(key);
+  const matchesTargetAllowance = allowancePeriodIds.has(metadata.cost.allowancePeriodId);
+  if (metadata.userId !== undefined) {
+    if (!matchesTargetArtifact && !matchesTargetAllowance) return Effect.succeed(false);
+    return Effect.fail(ambiguousObjectOwnership(key, "contradictory attempt ownership"));
+  }
+  if (matchesTargetAllowance) return Effect.succeed(true);
+  if (!matchesTargetArtifact) return Effect.succeed(false);
+  return Effect.fail(ambiguousObjectOwnership(key, "contradictory attempt ownership"));
+};
 
 const verifyConcreteObject = <E>(
   bucket: R2Bucket,

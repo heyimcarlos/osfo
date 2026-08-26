@@ -1,7 +1,29 @@
-import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { Context, Schema } from "effect";
+import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, OpenApi } from "effect/unstable/httpapi";
 
-import { Auth } from "../middleware/auth";
+import {
+  AuthenticationUnavailable,
+  Auth,
+  type CurrentUserValue,
+  Unauthorized,
+} from "../middleware/auth";
+
+/** Caller admitted either by a current session or one exact retained deletion replay. */
+export type AccountDeletionCallerValue =
+  | ({ readonly _tag: "CurrentUser" } & CurrentUserValue)
+  | { readonly _tag: "RetainedReplay"; readonly userId: string };
+
+/** Caller admitted either by a current session or one exact retained deletion replay. */
+export class AccountDeletionCaller extends Context.Service<
+  AccountDeletionCaller,
+  AccountDeletionCallerValue
+>()("@osfo/api/AccountDeletionCaller") {}
+
+/** Narrow authorization required only by the destructive account endpoint. */
+export class AccountDeletionAuth extends HttpApiMiddleware.Service<
+  AccountDeletionAuth,
+  { readonly provides: AccountDeletionCaller }
+>()("@osfo/api/AccountDeletionAuth", { error: [Unauthorized, AuthenticationUnavailable] }) {}
 
 const BoundedActionText = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_000));
 
@@ -60,7 +82,7 @@ export const AccountGroup = HttpApiGroup.make("account")
       payload: AccountDeletionRequest,
       success: AccountDeletionResponse,
     })
-      .middleware(Auth)
+      .middleware(AccountDeletionAuth)
       .annotateMerge(
         OpenApi.annotations({
           description: "Fence normal access and permanently delete the authenticated account.",

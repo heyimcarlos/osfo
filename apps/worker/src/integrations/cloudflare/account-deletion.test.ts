@@ -11,6 +11,8 @@ import {
   contentKeyFor,
   documentAttemptPrefix,
   documentContentPrefix,
+  ownerKeyFor,
+  ownerPrefixFor,
 } from "./document-storage-keys";
 
 it.effect("uses an allowance period to remove legacy attempt evidence without a user id", () => {
@@ -216,6 +218,7 @@ it.effect("preserves canonically owned unrelated document evidence", () => {
 
 it.effect("fails closed on malformed artifact ownership metadata", () =>
   expectOwnershipFailure({
+    contentId: ContentId.make("bad"),
     prefix: documentContentPrefix,
     object: { customMetadata: { osfo: "not-json" }, key: contentKeyFor(ContentId.make("bad")) },
   }),
@@ -223,19 +226,72 @@ it.effect("fails closed on malformed artifact ownership metadata", () =>
 
 it.effect("fails closed when an owned artifact key is not canonical", () =>
   expectOwnershipFailure({
+    contentId: ContentId.make("bad-owned-key"),
     prefix: documentContentPrefix,
     object: {
       customMetadata: { osfo: JSON.stringify({ userId: "user-1" }) },
-      key: "documents/not-a-content-key",
+      key: `${documentContentPrefix}not-a-content-key`,
     },
   }),
 );
 
 it.effect("fails closed on malformed attempt ownership metadata", () =>
   expectOwnershipFailure({
+    contentId: ContentId.make("bad-attempt"),
     prefix: documentAttemptPrefix,
-    object: { customMetadata: { osfo: "{}" }, key: "document-attempts/bad" },
+    object: {
+      customMetadata: { osfo: "{}" },
+      key: attemptKeyFor(ContentId.make("bad-attempt")),
+    },
   }),
+);
+
+it.effect(
+  "ignores unrelated malformed legacy objects while deleting indexed target evidence",
+  () => {
+    const deleted: Array<string> = [];
+    const userId = UserId.make("user-1");
+    const contentId = ContentId.make("indexed-target");
+    const ownerKey = ownerKeyFor(userId, contentId);
+    const contentKey = contentKeyFor(contentId);
+    const attemptKey = attemptKeyFor(contentId);
+    const files = bucketStub({ deleted });
+    const artifacts = bucketStub({
+      deleted,
+      objectsByPrefix: {
+        [ownerPrefixFor(userId)]: [ownerMarker(userId, contentId)],
+        [documentContentPrefix]: [
+          { customMetadata: { osfo: JSON.stringify({ userId }) }, key: contentKey },
+          {
+            customMetadata: { osfo: "not-json" },
+            key: contentKeyFor(ContentId.make("legacy-bad")),
+          },
+        ],
+        [documentAttemptPrefix]: [
+          {
+            customMetadata: {
+              osfo: JSON.stringify({ cost: { allowancePeriodId: "period-1" }, userId }),
+            },
+            key: attemptKey,
+          },
+          {
+            customMetadata: { osfo: "not-json" },
+            key: attemptKeyFor(ContentId.make("legacy-bad")),
+          },
+        ],
+      },
+    });
+
+    return make(files, artifacts, () => Effect.succeed(new Set()))
+      .remove(userId, Effect.void)
+      .pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            expect(deleted).toEqual([ownerKey, contentKey, attemptKey]);
+          }),
+        ),
+      );
+  },
 );
 
 it.effect("rechecks authority before every paginated R2 delete", () => {
@@ -299,7 +355,11 @@ it.effect("rechecks authority before each concrete R2 head verification", () => 
       Effect.tap((result) =>
         Effect.sync(() => {
           expect(Result.isFailure(result)).toBe(true);
-          expect(calls).toEqual([`list:${documentContentPrefix}`, `list:${documentAttemptPrefix}`]);
+          expect(calls).toEqual([
+            `list:${ownerPrefixFor(userId)}`,
+            `list:${documentContentPrefix}`,
+            `list:${documentAttemptPrefix}`,
+          ]);
         }),
       ),
     );
@@ -358,6 +418,7 @@ const bucketStub = (options: {
 };
 
 const expectOwnershipFailure = (input: {
+  readonly contentId: ContentId;
   readonly object: Partial<R2Object>;
   readonly prefix: string;
 }) => {
@@ -365,7 +426,12 @@ const expectOwnershipFailure = (input: {
   const files = bucketStub({ deleted });
   const artifacts = bucketStub({
     deleted,
-    objectsByPrefix: { [input.prefix]: [input.object] },
+    objectsByPrefix: {
+      [ownerPrefixFor(UserId.make("user-1"))]: [
+        ownerMarker(UserId.make("user-1"), input.contentId),
+      ],
+      [input.prefix]: [input.object],
+    },
   });
   return make(files, artifacts, () => Effect.succeed(new Set()))
     .remove(UserId.make("user-1"), Effect.void)
@@ -379,6 +445,11 @@ const expectOwnershipFailure = (input: {
       ),
     );
 };
+
+const ownerMarker = (userId: UserId, contentId: ContentId) => ({
+  customMetadata: { osfo: JSON.stringify({ contentId, userId }) },
+  key: ownerKeyFor(userId, contentId),
+});
 
 const expectPairedOwnershipFailure = (input: {
   readonly attempt: Partial<R2Object>;

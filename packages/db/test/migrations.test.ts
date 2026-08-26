@@ -197,16 +197,19 @@ describe("Postgres migrations", () => {
                 ('action-case-1', 'action-user-1', 'action-admin', 'Required erasure'),
                 ('action-case-2', 'action-user-2', 'action-admin', 'Required erasure');
               INSERT INTO account_deletion_actions (
-                action_id, user_id, auth_session_id, presentation, presentation_version,
+                action_id, user_id, auth_session_id, replay_session_cookie_hash,
+                presentation, presentation_version,
                 expires_at, consumed_at, deletion_case_id
               ) VALUES (
-                'action-exact', 'action-user-1', 'session-1', '{}', 'account-deletion-v1',
+                'action-exact', 'action-user-1', 'session-1', repeat('a', 64),
+                '{}', 'account-deletion-v1',
                 now() + interval '5 minutes', now(), 'action-case-1'
               );
               INSERT INTO account_deletion_actions (
-                action_id, user_id, auth_session_id, presentation, presentation_version, expires_at
+                action_id, user_id, auth_session_id, replay_session_cookie_hash,
+                presentation, presentation_version, expires_at
               ) VALUES (
-                'action-unconsumed', 'action-user-3', 'session-3', '{}',
+                'action-unconsumed', 'action-user-3', 'session-3', repeat('b', 64), '{}',
                 'account-deletion-v1', now() + interval '5 minutes'
               );
             `),
@@ -214,44 +217,57 @@ describe("Postgres migrations", () => {
 
             const rejectedStatements = [
               `INSERT INTO account_deletion_actions (
-               action_id, user_id, auth_session_id, presentation, presentation_version,
+               action_id, user_id, auth_session_id, replay_session_cookie_hash,
+               presentation, presentation_version,
                expires_at, consumed_at, deletion_case_id
              ) VALUES (
-               'action-missing-case', 'action-user-3', 'session-3', '{}',
+               'action-missing-case', 'action-user-3', 'session-3', repeat('c', 64), '{}',
                'account-deletion-v1', now() + interval '5 minutes', now(), 'missing-case'
              )`,
               `INSERT INTO account_deletion_actions (
-               action_id, user_id, auth_session_id, presentation, presentation_version,
+               action_id, user_id, auth_session_id, replay_session_cookie_hash,
+               presentation, presentation_version,
                expires_at, consumed_at, deletion_case_id
              ) VALUES (
-               'action-wrong-user', 'action-user-1', 'session-1', '{}',
+               'action-wrong-user', 'action-user-1', 'session-1', repeat('d', 64), '{}',
                'account-deletion-v1', now() + interval '5 minutes', now(), 'action-case-2'
              )`,
               `INSERT INTO account_deletion_actions (
-               action_id, user_id, auth_session_id, presentation, presentation_version,
+               action_id, user_id, auth_session_id, replay_session_cookie_hash,
+               presentation, presentation_version,
                expires_at, consumed_at
              ) VALUES (
-               'action-consumed-without-case', 'action-user-3', 'session-3', '{}',
+               'action-consumed-without-case', 'action-user-3', 'session-3', repeat('e', 64), '{}',
                'account-deletion-v1', now() + interval '5 minutes', now()
              )`,
               `INSERT INTO account_deletion_actions (
-               action_id, user_id, auth_session_id, presentation, presentation_version,
+               action_id, user_id, auth_session_id, replay_session_cookie_hash,
+               presentation, presentation_version,
                expires_at, consumed_at, deletion_case_id
              ) VALUES (
-               'action-consumed-blank-case', 'action-user-3', 'session-3', '{}',
+               'action-consumed-blank-case', 'action-user-3', 'session-3', repeat('f', 64), '{}',
                'account-deletion-v1', now() + interval '5 minutes', now(), '   '
              )`,
               `INSERT INTO account_deletion_actions (
-               action_id, user_id, auth_session_id, presentation, presentation_version,
+               action_id, user_id, auth_session_id, replay_session_cookie_hash,
+               presentation, presentation_version,
                expires_at, deletion_case_id
              ) VALUES (
-               'action-unconsumed-with-case', 'action-user-3', 'session-3', '{}',
+               'action-unconsumed-with-case', 'action-user-3', 'session-3', repeat('0', 64), '{}',
                'account-deletion-v1', now() + interval '5 minutes', 'action-case-1'
              )`,
               `INSERT INTO account_deletion_actions (
-               action_id, user_id, auth_session_id, presentation, presentation_version, expires_at
+               action_id, user_id, auth_session_id, replay_session_cookie_hash,
+               presentation, presentation_version, expires_at
              ) VALUES (
-               'action-blank-user', '   ', 'session-blank-user', '{}',
+               'action-blank-user', '   ', 'session-blank-user', repeat('1', 64), '{}',
+               'account-deletion-v1', now() + interval '5 minutes'
+             )`,
+              `INSERT INTO account_deletion_actions (
+               action_id, user_id, auth_session_id, replay_session_cookie_hash,
+               presentation, presentation_version, expires_at
+             ) VALUES (
+               'action-bad-replay-hash', 'action-user-3', 'session-3', 'not-a-sha256', '{}',
                'account-deletion-v1', now() + interval '5 minutes'
              )`,
             ];

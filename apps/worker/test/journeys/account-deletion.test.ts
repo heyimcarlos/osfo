@@ -90,22 +90,34 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
       user_exists: true,
     });
 
-    const [response, lostResponseRetry] = yield* Effect.promise(() =>
-      Promise.all([app.account.delete(presentation), app.account.delete(presentation)]),
-    );
+    yield* Effect.promise(() => app.supermemory.failDeletes(1));
+    const response = yield* Effect.promise(() => app.account.delete(presentation));
     expect(response.status).toBe(200);
     expect(yield* Effect.promise(() => response.json())).toEqual({ status: "deletion-pending" });
+    expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toEqual({
+      agent_exists: true,
+      auth_session_exists: false,
+      deletion_case_exists: true,
+      user_exists: true,
+    });
+    const fencedOrdinaryEndpoint = yield* Effect.promise(() => app.billing.checkout());
+    expect(fencedOrdinaryEndpoint.response.status).toBe(401);
+    const mismatchedReplay = yield* Effect.promise(() =>
+      app.account.delete({ ...presentation, actionId: `${presentation.actionId}:changed` }),
+    );
+    expect(mismatchedReplay.status).toBe(401);
+    const lostResponseRetry = yield* Effect.promise(() => app.account.delete(presentation));
     expect(lostResponseRetry.status).toBe(200);
     expect(yield* Effect.promise(() => lostResponseRetry.json())).toEqual({
       status: "deletion-pending",
     });
     expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toBeNull();
-    expect(yield* Effect.promise(app.supermemory.ledger)).toEqual([
-      {
+    expect(yield* Effect.promise(app.supermemory.ledger)).toEqual(
+      Array.from({ length: 2 }, () => ({
         method: "DELETE",
-        path: expect.stringMatching(/^\/v3\/container-tags\/u_[A-Za-z0-9_-]+$/u),
-      },
-    ]);
+        path: `/v3/container-tags/${encodeURIComponent(seededProvider.containerTag)}`,
+      })),
+    );
     expect(yield* Effect.promise(app.supermemory.containers)).toEqual([
       unrelatedProvider.containerTag,
     ]);

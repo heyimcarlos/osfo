@@ -10,6 +10,7 @@ import { and, desc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 
 import { Db } from "../../db";
+import { UserId } from "../../domain";
 import { DeletionCaseId } from "../../domain/deletion-case";
 import { DeletionCase } from "../../services/deletion-case";
 import { fenceDeletionCaseAccess } from "./deletion-case-authority";
@@ -19,6 +20,50 @@ import { fenceDeletionCaseAccess } from "./deletion-case-authority";
 /** Build the Deletion Case persistence adapter from Postgres. */
 export const make = Effect.gen(function* () {
   const database = yield* Db.database;
+  const authenticateSelfReplay = Effect.fn("DeletionCasePostgres.authenticateSelfReplay")(
+    function* (replay: Parameters<DeletionCase.PersistencePort["authenticateSelfReplay"]>[0]) {
+      const rows = yield* Db.execute("requestDeletion", () =>
+        database
+          .select({
+            deletionCaseId: deletionCases.deletion_case_id,
+            userId: deletionCases.user_id,
+          })
+          .from(accountDeletionActions)
+          .innerJoin(
+            deletionCases,
+            and(
+              eq(deletionCases.deletion_case_id, accountDeletionActions.deletion_case_id),
+              eq(deletionCases.user_id, accountDeletionActions.user_id),
+            ),
+          )
+          .where(
+            and(
+              eq(accountDeletionActions.action_id, replay.actionId),
+              eq(accountDeletionActions.presentation, replay.presentation),
+              eq(accountDeletionActions.presentation_version, replay.presentationVersion),
+              eq(accountDeletionActions.replay_session_cookie_hash, replay.replaySessionCookieHash),
+              gt(accountDeletionActions.expires_at, sql`clock_timestamp()`),
+              isNotNull(accountDeletionActions.consumed_at),
+              isNull(accountDeletionActions.invalidated_at),
+              isNotNull(deletionCases.access_fenced_at),
+              isNull(deletionCases.requested_by_admin_id),
+              eq(deletionCases.requested_by_user_id, accountDeletionActions.user_id),
+              eq(deletionCases.approval_action_id, accountDeletionActions.action_id),
+              eq(deletionCases.approval_presentation, accountDeletionActions.presentation),
+            ),
+          )
+          .limit(1),
+      );
+      const replayed = rows[0];
+      return replayed === undefined
+        ? ({ _tag: "Denied" } as const)
+        : ({
+            _tag: "Authenticated",
+            deletionCaseId: DeletionCaseId.make(replayed.deletionCaseId),
+            userId: UserId.make(replayed.userId),
+          } as const);
+    },
+  );
   const presentSelf = Effect.fn("DeletionCasePostgres.presentSelf")(function* (
     userId: Parameters<DeletionCase.PersistencePort["presentSelf"]>[0],
     action: Parameters<DeletionCase.PersistencePort["presentSelf"]>[1],
@@ -68,6 +113,7 @@ export const make = Effect.gen(function* () {
           expires_at: action.expiresAt,
           presentation: action.presentation,
           presentation_version: action.presentationVersion,
+          replay_session_cookie_hash: action.replaySessionCookieHash,
           user_id: userId,
         });
         return { _tag: "Presented" } as const;
@@ -214,6 +260,7 @@ export const make = Effect.gen(function* () {
     );
   });
   return DeletionCase.Persistence.of({
+    authenticateSelfReplay,
     inspect: (userId) =>
       Db.execute("inspectDeletionCase", () =>
         database

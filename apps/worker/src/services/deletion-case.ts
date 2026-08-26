@@ -1,4 +1,4 @@
-import { Context, Crypto, Effect, Layer, Schema } from "effect";
+import { Context, Crypto, Effect, Encoding, Layer, Redacted, Schema } from "effect";
 
 import type { DbUnavailable } from "../db";
 import type { PlanPolicyVersion, UserId } from "../domain";
@@ -34,7 +34,34 @@ export interface SelfDeletionApproval {
 export interface SelfDeletionAction extends SelfDeletionApproval {
   readonly authSessionId: AuthSessionId;
   readonly expiresAt: Date;
+  readonly replaySessionCookieHash: SelfDeletionReplayCookieHash;
 }
+
+/** SHA-256 identity of the exact signed session cookie that received a deletion Action. */
+export const SelfDeletionReplayCookieHash = Schema.String.check(
+  Schema.isPattern(/^[0-9a-f]{64}$/u),
+).pipe(Schema.brand("SelfDeletionReplayCookieHash"));
+
+/** SHA-256 identity of the exact signed session cookie that received a deletion Action. */
+export type SelfDeletionReplayCookieHash = typeof SelfDeletionReplayCookieHash.Type;
+
+/** Exact retained credential allowed to acknowledge a consumed self-service deletion. */
+export interface SelfDeletionReplay extends SelfDeletionApproval {
+  readonly replaySessionCookieHash: SelfDeletionReplayCookieHash;
+}
+
+/** Reduce the signed Better Auth cookie to retained non-bearer replay evidence. */
+export const hashReplaySessionCookie = (crypto: Crypto.Crypto, cookie: Redacted.Redacted) =>
+  crypto.digest("SHA-256", new TextEncoder().encode(Redacted.value(cookie))).pipe(
+    Effect.map((digest) => SelfDeletionReplayCookieHash.make(Encoding.encodeHex(digest))),
+    Effect.mapError(
+      (cause) =>
+        new DeletionCaseIdentityUnavailable({
+          cause,
+          message: "The account-deletion replay credential could not be retained",
+        }),
+    ),
+  );
 
 /** Exact current facts that must remain locked through the self-service access fence. */
 export interface SelfDeletionAuthority {
@@ -56,11 +83,23 @@ export type PresentSelfResult =
   | { readonly _tag: "Presented" }
   | { readonly _tag: "MissingUser" };
 
+/** Result of authenticating one post-revocation account-deletion retry. */
+export type AuthenticateSelfReplayResult =
+  | {
+      readonly _tag: "Authenticated";
+      readonly deletionCaseId: DeletionCaseId;
+      readonly userId: UserId;
+    }
+  | { readonly _tag: "Denied" };
+
 /** Exact administrative access-fence persistence result. */
 export type AccessFenceResult = { readonly _tag: "AuthorityChanged" } | { readonly _tag: "Fenced" };
 
 /** Deletion Case persistence interface. */
 export interface PersistencePort {
+  readonly authenticateSelfReplay: (
+    replay: SelfDeletionReplay,
+  ) => Effect.Effect<AuthenticateSelfReplayResult, DbUnavailable>;
   readonly inspect: (userId: UserId) => Effect.Effect<DeletionAccessFact, DbUnavailable>;
   readonly markAccessFenced: (
     command: RequestCommand,
@@ -89,6 +128,7 @@ export class Persistence extends Context.Service<Persistence, PersistencePort>()
 
 /** Public Deletion Case authority. */
 export interface Interface {
+  readonly authenticateSelfReplay: PersistencePort["authenticateSelfReplay"];
   readonly inspect: PersistencePort["inspect"];
   readonly presentSelf: PersistencePort["presentSelf"];
   readonly request: (
@@ -145,6 +185,7 @@ export const make = Effect.gen(function* () {
       : ({ _tag: "DeletionRequested", deletionCaseId } as const);
   });
   return Service.of({
+    authenticateSelfReplay: persistence.authenticateSelfReplay,
     inspect: persistence.inspect,
     presentSelf: persistence.presentSelf,
     request: (command) =>

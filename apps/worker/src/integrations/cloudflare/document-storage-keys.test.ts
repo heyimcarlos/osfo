@@ -1,7 +1,15 @@
 import { expect, it } from "@effect/vitest";
 
 import { ContentId } from "../../domain/client-content";
-import { attemptKeyFor, attemptKeyForContentKey, contentKeyFor } from "./document-storage-keys";
+import { UserId } from "../../domain";
+import {
+  attemptKeyFor,
+  attemptKeyForContentKey,
+  contentKeyFor,
+  contentKeyForAttemptKey,
+  documentKeysForOwnerKey,
+  ownerKeyFor,
+} from "./document-storage-keys";
 
 it("resolves only canonical Client Content body keys to attempt sidecars", () => {
   const contentId = ContentId.make("content-1");
@@ -10,4 +18,19 @@ it("resolves only canonical Client Content body keys to attempt sidecars", () =>
   expect(attemptKeyForContentKey("client-content/")).toBeUndefined();
   expect(attemptKeyForContentKey("client-content/not-hex")).toBeUndefined();
   expect(attemptKeyForContentKey("other/636f6e74656e742d31")).toBeUndefined();
+});
+
+it("round-trips only canonical User-scoped document ownership keys", () => {
+  const userId = UserId.make("user-1");
+  const contentId = ContentId.make("content-1");
+  const ownerKey = ownerKeyFor(userId, contentId);
+
+  expect(contentKeyForAttemptKey(attemptKeyFor(contentId))).toBe(contentKeyFor(contentId));
+  expect(documentKeysForOwnerKey(userId, ownerKey)).toEqual({
+    attemptKey: attemptKeyFor(contentId),
+    contentKey: contentKeyFor(contentId),
+    ownerKey,
+  });
+  expect(documentKeysForOwnerKey(UserId.make("user-2"), ownerKey)).toBeUndefined();
+  expect(documentKeysForOwnerKey(userId, `${ownerKey}z`)).toBeUndefined();
 });

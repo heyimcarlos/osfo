@@ -24,6 +24,9 @@ export const Api = HttpApi.make("osfo")
 export { HealthGroup, HealthResponse } from "./groups/health";
 export {
   AccountDeletionActionPresentation,
+  AccountDeletionAuth,
+  AccountDeletionCaller,
+  type AccountDeletionCallerValue,
   AccountDeletionRequest,
   AccountDeletionResponse,
   AccountDeletionUnavailable,

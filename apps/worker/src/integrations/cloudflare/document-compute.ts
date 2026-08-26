@@ -17,6 +17,7 @@ import {
   type DisposableCompute,
 } from "../../services/document-generation";
 import { attemptKeyFor } from "./document-storage-keys";
+import { DocumentOwnershipIndex } from "./document-ownership-index";
 
 export interface AttemptEvidence {
   readonly cost: Extract<CostEvidence, { _tag: "Incurred" }>;
@@ -428,6 +429,7 @@ const interrupted = (cost: AttemptEvidence["cost"], evidence: string): ComputeRe
 export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore => ({
   // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
   claim: async (contentId, intentDigest, cost, executionLeaseExpiresAt, userId) => {
+    await DocumentOwnershipIndex.ensure(bucket, userId, contentId);
     const key = attemptKeyFor(contentId);
     const proposed = {
       cost,

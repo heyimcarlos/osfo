@@ -203,7 +203,9 @@ export interface ArtifactStore {
   readonly account: (
     contentId: ContentId,
   ) => Effect.Effect<void, ArtifactIntegrityFailure | ArtifactStoreUnavailable>;
-  readonly delete: (contentId: ContentId) => Effect.Effect<void, ArtifactStoreUnavailable>;
+  readonly delete: (
+    metadata: StoredArtifactMetadata,
+  ) => Effect.Effect<void, ArtifactStoreUnavailable>;
   readonly inspect: (
     contentId: ContentId,
   ) => Effect.Effect<
@@ -333,7 +335,7 @@ export const make = (options: MakeOptions): Interface => ({
   delete: (request) =>
     Effect.gen(function* () {
       const stored = yield* readAuthorized(options, request, "file.delete");
-      yield* options.artifacts.delete(stored.artifact.content.contentId);
+      yield* options.artifacts.delete(stored);
     }),
   export: (request) =>
     Effect.gen(function* () {

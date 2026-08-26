@@ -50,6 +50,7 @@ it.effect(
       Effect.provideService(
         DeletionCase.Persistence,
         DeletionCase.Persistence.of({
+          authenticateSelfReplay: () => Effect.die(new Error("unexpected replay authentication")),
           inspect: () => Effect.succeed({ _tag: "DeletionAccessAvailable" }),
           markAccessFenced: () => Effect.die(new Error("unexpected administrative fence")),
           presentSelf: () => Effect.die(new Error("unexpected presentation")),
@@ -111,6 +112,7 @@ it.effect("leaves AuthSessions untouched when a retained self-service case is no
     Effect.provideService(
       DeletionCase.Persistence,
       DeletionCase.Persistence.of({
+        authenticateSelfReplay: () => Effect.die(new Error("unexpected replay authentication")),
         inspect: () => Effect.succeed({ _tag: "DeletionAccessRevoked" }),
         markAccessFenced: () =>
           Effect.sync(() => {
@@ -155,6 +157,7 @@ it.effect("leaves AuthSessions to the exact administrative persistence fence", (
     Effect.provideService(
       DeletionCase.Persistence,
       DeletionCase.Persistence.of({
+        authenticateSelfReplay: () => Effect.die(new Error("unexpected replay authentication")),
         inspect: () => Effect.succeed({ _tag: "DeletionAccessAvailable" }),
         markAccessFenced: (_command, deletionCaseId) =>
           Effect.sync(() => {

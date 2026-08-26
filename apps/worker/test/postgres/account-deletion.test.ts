@@ -22,6 +22,7 @@ import { AdminActorId, AdminReason } from "../../src/domain/account-administrati
 import { DeletionCaseId } from "../../src/domain/deletion-case";
 import { ActionId } from "../../src/domain/action-execution";
 import { ApprovalPresentation } from "../../src/services/authorization";
+import { DeletionCase } from "../../src/services/deletion-case";
 import { AccountDeletion } from "../../src/services/account-deletion";
 import { AccountAuthorities } from "../../src/composition/account-authorities";
 import { AccountDeletionPostgres } from "../../src/integrations/postgres/account-deletion";
@@ -51,6 +52,7 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
         actionId: ActionId.make("account-delete-1"),
         presentation: ApprovalPresentation.make("Delete Account"),
         presentationVersion: "account-deletion-v1",
+        replaySessionCookieHash,
       };
       const authority = {
         authSessionId: AuthSessionId.make(authSession.id),
@@ -465,6 +467,9 @@ it.effect("consumes only one exact current server-owned self-service deletion Ac
         authSessionId: currentAuthority.authSessionId,
         expiresAt: retrySessionExpiresAt,
       });
+      expect(yield* persistence.authenticateSelfReplay(exactApproval)).toEqual({
+        _tag: "Denied",
+      });
       expect(
         yield* persistence.requestSelf(
           userId,
@@ -518,6 +523,41 @@ it.effect("consumes only one exact current server-owned self-service deletion Ac
         consumedAt: expect.any(Date),
         deletionCaseId: retainedCase?.deletion_case_id,
       });
+      expect(yield* persistence.authenticateSelfReplay(exactApproval)).toEqual({
+        _tag: "Authenticated",
+        deletionCaseId: DeletionCaseId.make("exact-case"),
+        userId,
+      });
+      expect(
+        yield* persistence.authenticateSelfReplay({
+          ...exactApproval,
+          replaySessionCookieHash: DeletionCase.SelfDeletionReplayCookieHash.make("b".repeat(64)),
+        }),
+      ).toEqual({ _tag: "Denied" });
+      expect(
+        yield* persistence.authenticateSelfReplay({
+          ...exactApproval,
+          presentation: ApprovalPresentation.make("foreign presentation"),
+        }),
+      ).toEqual({ _tag: "Denied" });
+      yield* Effect.promise(() =>
+        database
+          .update(accountDeletionActions)
+          .set({
+            created_at: expiredActionCreatedAt,
+            expires_at: expiredActionExpiresAt,
+          })
+          .where(eq(accountDeletionActions.action_id, exactApproval.actionId)),
+      );
+      expect(yield* persistence.authenticateSelfReplay(exactApproval)).toEqual({
+        _tag: "Denied",
+      });
+      yield* Effect.promise(() =>
+        database
+          .update(accountDeletionActions)
+          .set({ expires_at: retrySessionExpiresAt })
+          .where(eq(accountDeletionActions.action_id, exactApproval.actionId)),
+      );
 
       yield* Effect.promise(() =>
         database.insert(sessions).values({
@@ -954,7 +994,10 @@ const selfDeletionApproval = (identity: string) => ({
     }),
   ),
   presentationVersion: "account-deletion-v1",
+  replaySessionCookieHash,
 });
+
+const replaySessionCookieHash = DeletionCase.SelfDeletionReplayCookieHash.make("a".repeat(64));
 
 const suspendedBeforeCaseAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:00:00.000Z"));
 const restoredBeforeCaseAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:01:00.000Z"));

@@ -46,6 +46,7 @@ export const layer = (options: Options) => {
     Layer.provide(Registration.layerWithoutDependencies),
     Layer.provide(RegistrationCloudflare.layer(options.env)),
     Layer.provide(AuthMiddleware.layer(options.config.auth)),
+    Layer.provide(AuthMiddleware.accountDeletionLayer(options.config.auth)),
     Layer.provide(productApiLayer(options.config.auth.trustedOrigins)),
     Layer.provide(options.authDependencies),
   );

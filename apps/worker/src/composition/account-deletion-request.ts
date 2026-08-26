@@ -1,7 +1,7 @@
 import type { AccountDeletionActionPresentation } from "@osfo/api";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { eq } from "drizzle-orm";
-import { Crypto, DateTime, Effect, Option, Predicate, Schema } from "effect";
+import { Crypto, DateTime, Effect, Option, Predicate, Schema, type Redacted } from "effect";
 
 import { Db } from "../db";
 import { PlanPolicyVersion, UserId } from "../domain";
@@ -9,6 +9,7 @@ import { AuthSessionId } from "../domain/auth-session";
 import { ActionId } from "../domain/action-execution";
 import { retainedCatalog } from "../domain/plan-policy";
 import { AccountDeletion } from "../services/account-deletion";
+import { DeletionCase } from "../services/deletion-case";
 import {
   approvalFor,
   ApprovalPresentation,
@@ -26,6 +27,7 @@ export const make = Effect.gen(function* () {
   const deletion = yield* AccountDeletion.Service;
   const present = Effect.fn("AccountDeletionRequest.present")(function* (input: {
     readonly authSessionId: string;
+    readonly replaySessionCookie: Redacted.Redacted;
     readonly userId: string;
   }) {
     const userId = UserId.make(input.userId);
@@ -43,6 +45,10 @@ export const make = Effect.gen(function* () {
       expiresAt: DateTime.toDateUtc(DateTime.add(now, { minutes: 5 })),
       presentation: ApprovalPresentation.make(encodeAccountDeletionPresentation(presentation)),
       presentationVersion: accountDeletionPresentationVersion,
+      replaySessionCookieHash: yield* DeletionCase.hashReplaySessionCookie(
+        crypto,
+        input.replaySessionCookie,
+      ),
     });
     if (!Predicate.isTagged(result, "Presented")) return yield* unavailable("presentAuthority");
     return presentation;
@@ -143,7 +149,20 @@ export const make = Effect.gen(function* () {
       );
     return undefined;
   });
-  return { present, request };
+  const reconcileRetained = Effect.fn("AccountDeletionRequest.reconcileRetained")(function* (
+    userId: string,
+  ) {
+    yield* deletion
+      .reconcileUser(UserId.make(userId))
+      .pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Account deletion remains pending").pipe(
+            Effect.annotateLogs({ cause }),
+          ),
+        ),
+      );
+  });
+  return { present, reconcileRetained, request };
 });
 
 type AccountDeletionPresentation = AccountDeletionActionPresentation;
@@ -180,6 +199,19 @@ export const isExactApproval = (received: {
 }) =>
   received.confirmation === accountDeletionActionDefinition.confirmation &&
   Option.isSome(decodeExactPresentation(received.approval.presentation));
+
+/** Decode the exact retained approval fields allowed to authenticate a post-revocation retry. */
+export const replayApproval = (received: {
+  readonly approval: { readonly presentation: AccountDeletionPresentation };
+  readonly confirmation: string;
+}) =>
+  Option.map(decodeExactPresentation(received.approval.presentation), (presentation) => ({
+    actionId: ActionId.make(presentation.actionId),
+    presentation: ApprovalPresentation.make(encodeAccountDeletionPresentation(presentation)),
+    presentationVersion: accountDeletionPresentationVersion,
+  })).pipe(
+    Option.filter(() => received.confirmation === accountDeletionActionDefinition.confirmation),
+  );
 
 const decodeExactPresentation = Schema.decodeUnknownOption(ExactAccountDeletionActionPresentation);
 

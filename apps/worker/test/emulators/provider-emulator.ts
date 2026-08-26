@@ -51,6 +51,9 @@ const TelegramRequestFromJson = Schema.fromJsonString(TelegramRequest);
 const SupermemorySeedRequestFromJson = Schema.fromJsonString(
   Schema.Struct({ userId: Schema.String.check(Schema.isMinLength(1)) }),
 );
+const SupermemoryDeleteFailuresFromJson = Schema.fromJsonString(
+  Schema.Struct({ count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)) }),
+);
 
 /** Local HTTP providers and their request ledgers for composed Worker journeys. */
 export interface ProviderEmulator {
@@ -62,6 +65,7 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
   new Promise((resolve, reject) => {
     const stripeLedger: Array<StripeLedgerEntry> = [];
     const supermemoryContainers = new Set<string>();
+    let supermemoryDeleteFailuresRemaining = 0;
     const supermemoryLedger: Array<SupermemoryLedgerEntry> = [];
     const telegramLedger: Array<TelegramLedgerEntry> = [];
     const twilioLedger: Array<TwilioLedgerEntry> = [];
@@ -70,6 +74,7 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
       if (request.method === "POST" && pathname === "/_test/reset") {
         stripeLedger.length = 0;
         supermemoryContainers.clear();
+        supermemoryDeleteFailuresRemaining = 0;
         supermemoryLedger.length = 0;
         telegramLedger.length = 0;
         twilioLedger.length = 0;
@@ -100,8 +105,24 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         handleSupermemorySeed(request, response, supermemoryContainers);
         return;
       }
+      if (request.method === "POST" && pathname === "/_test/supermemory/delete-failures") {
+        readTextBody(request)
+          .then(Schema.decodeUnknownPromise(SupermemoryDeleteFailuresFromJson))
+          .then(({ count }) => {
+            supermemoryDeleteFailuresRemaining = count;
+            response.statusCode = 204;
+            response.end();
+          })
+          .catch((cause: unknown) => respondJson(response, 400, { error: String(cause) }));
+        return;
+      }
       if (request.method === "DELETE" && pathname.startsWith("/v3/container-tags/")) {
         supermemoryLedger.push({ method: request.method, path: pathname });
+        if (supermemoryDeleteFailuresRemaining > 0) {
+          supermemoryDeleteFailuresRemaining -= 1;
+          respondJson(response, 503, { error: "temporarily unavailable" });
+          return;
+        }
         const containerTag = decodeURIComponent(pathname.slice("/v3/container-tags/".length));
         const removed = supermemoryContainers.delete(containerTag);
         respondJson(
