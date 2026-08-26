@@ -42,7 +42,6 @@ export const make = Effect.gen(function* () {
               eq(accountDeletionActions.presentation, replay.presentation),
               eq(accountDeletionActions.presentation_version, replay.presentationVersion),
               eq(accountDeletionActions.replay_session_cookie_hash, replay.replaySessionCookieHash),
-              gt(accountDeletionActions.expires_at, sql`clock_timestamp()`),
               isNotNull(accountDeletionActions.consumed_at),
               isNull(accountDeletionActions.invalidated_at),
               isNotNull(deletionCases.access_fenced_at),

@@ -179,6 +179,17 @@ export const spawnApp = async () => {
       verifyPhoneOtp,
     },
     database: {
+      expireAccountDeletionAction: async (userId: string, actionId: string) => {
+        const response = await fetch(
+          `${context.databaseObserverOrigin}/expire-account-deletion-action`,
+          {
+            body: JSON.stringify({ actionId, userId }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          },
+        );
+        await requireSuccessfulResponse(response, "Expire account deletion Action");
+      },
       accountDeletion: async (userId: string) => {
         const response = await fetch(`${context.databaseObserverOrigin}/account-deletion`, {
           body: JSON.stringify({ userId }),

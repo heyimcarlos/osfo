@@ -550,14 +550,10 @@ it.effect("consumes only one exact current server-owned self-service deletion Ac
           .where(eq(accountDeletionActions.action_id, exactApproval.actionId)),
       );
       expect(yield* persistence.authenticateSelfReplay(exactApproval)).toEqual({
-        _tag: "Denied",
+        _tag: "Authenticated",
+        deletionCaseId: DeletionCaseId.make("exact-case"),
+        userId,
       });
-      yield* Effect.promise(() =>
-        database
-          .update(accountDeletionActions)
-          .set({ expires_at: retrySessionExpiresAt })
-          .where(eq(accountDeletionActions.action_id, exactApproval.actionId)),
-      );
 
       yield* Effect.promise(() =>
         database.insert(sessions).values({

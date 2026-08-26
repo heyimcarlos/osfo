@@ -21,6 +21,13 @@ export const startDatabaseObserver = (
   new Promise((resolve, reject) => {
     const server = createServer((request, response) => {
       const path = new URL(request.url ?? "/", "http://localhost").pathname;
+      if (request.method === "POST" && path === "/expire-account-deletion-action") {
+        readAccountDeletionAction(request)
+          .then(({ actionId, userId }) => expireAccountDeletionAction(options, userId, actionId))
+          .then(() => respondJson(response, 200, { status: "expired" }))
+          .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
+        return;
+      }
       const query =
         path === "/registration"
           ? findRegistration
@@ -51,6 +58,26 @@ export const startDatabaseObserver = (
       });
     });
   });
+
+const expireAccountDeletionAction = async (
+  options: DatabaseObserverOptions,
+  userId: string,
+  actionId: string,
+) => {
+  const expired = await findJourneyRow(options, async (client) => {
+    const [row] = await client`
+      update account_deletion_actions
+      set created_at = consumed_at - interval '2 seconds',
+          expires_at = consumed_at - interval '1 second'
+      where user_id = ${userId}
+        and action_id = ${actionId}
+        and consumed_at is not null
+      returning action_id
+    `;
+    return row;
+  });
+  if (expired === null) throw new Error("Consumed account deletion Action was not found");
+};
 
 const findBillingCheckout = async (options: DatabaseObserverOptions, userId: string) =>
   findJourneyRow(options, async (client) => {
@@ -147,6 +174,16 @@ const readUserId = async (request: IncomingMessage): Promise<string> => {
   const body: unknown = JSON.parse(await readTextBody(request));
   if (typeof body === "object" && body !== null && "userId" in body) return String(body.userId);
   throw new Error("Database observation requires a userId");
+};
+
+const readAccountDeletionAction = async (
+  request: IncomingMessage,
+): Promise<{ readonly actionId: string; readonly userId: string }> => {
+  const body: unknown = JSON.parse(await readTextBody(request));
+  if (typeof body === "object" && body !== null && "actionId" in body && "userId" in body) {
+    return { actionId: String(body.actionId), userId: String(body.userId) };
+  }
+  throw new Error("Account deletion Action fixture requires an actionId and userId");
 };
 
 const readTextBody = (request: IncomingMessage): Promise<string> =>

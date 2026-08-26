@@ -106,6 +106,9 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
       app.account.delete({ ...presentation, actionId: `${presentation.actionId}:changed` }),
     );
     expect(mismatchedReplay.status).toBe(401);
+    yield* Effect.promise(() =>
+      app.database.expireAccountDeletionAction(identity.userId, presentation.actionId),
+    );
     const lostResponseRetry = yield* Effect.promise(() => app.account.delete(presentation));
     expect(lostResponseRetry.status).toBe(200);
     expect(yield* Effect.promise(() => lostResponseRetry.json())).toEqual({
