@@ -76,7 +76,7 @@ export const deletionCases = pgTable(
     check(
       "deletion_cases_actor_check",
       sql`(${table.requested_by_admin_id} is not null and length(btrim(${table.requested_by_admin_id})) > 0 and ${table.requested_by_user_id} is null and ${table.approval_action_id} is null and ${table.approval_presentation} is null)
-        or (${table.requested_by_admin_id} is null and ${table.requested_by_user_id} is not null and ${table.requested_by_user_id} = ${table.user_id} and ${table.approval_action_id} is not null and length(btrim(${table.approval_action_id})) > 0 and ${table.approval_presentation} is not null and length(btrim(${table.approval_presentation})) > 0)`,
+        or (${table.requested_by_admin_id} is null and ${table.requested_by_user_id} is not null and length(btrim(${table.requested_by_user_id})) > 0 and ${table.requested_by_user_id} = ${table.user_id} and ${table.approval_action_id} is not null and length(btrim(${table.approval_action_id})) > 0 and ${table.approval_presentation} is not null and length(btrim(${table.approval_presentation})) > 0)`,
     ),
     check("deletion_cases_reason_check", sql`length(btrim(${table.reason})) > 0`),
   ],
@@ -108,7 +108,7 @@ export const accountDeletionActions = pgTable(
     }),
     check(
       "account_deletion_actions_identity_check",
-      sql`length(btrim(${table.action_id})) > 0 and length(btrim(${table.auth_session_id})) > 0`,
+      sql`length(btrim(${table.action_id})) > 0 and length(btrim(${table.user_id})) > 0 and length(btrim(${table.auth_session_id})) > 0`,
     ),
     check(
       "account_deletion_actions_presentation_check",

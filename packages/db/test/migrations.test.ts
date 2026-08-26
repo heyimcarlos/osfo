@@ -144,7 +144,8 @@ describe("Postgres migrations", () => {
               INSERT INTO users (id, name, email, updated_at)
               VALUES ('action-user-1', 'Action User 1', 'action-1@example.test', now()),
                      ('action-user-2', 'Action User 2', 'action-2@example.test', now()),
-                     ('action-user-3', 'Action User 3', 'action-3@example.test', now());
+                     ('action-user-3', 'Action User 3', 'action-3@example.test', now()),
+                     ('   ', 'Blank User', 'blank-action-user@example.test', now());
               INSERT INTO administrative_authorities (admin_actor_id)
               VALUES ('action-admin');
               INSERT INTO deletion_cases (
@@ -203,6 +204,12 @@ describe("Postgres migrations", () => {
              ) VALUES (
                'action-unconsumed-with-case', 'action-user-3', 'session-3', '{}',
                'account-deletion-v1', now() + interval '5 minutes', 'action-case-1'
+             )`,
+              `INSERT INTO account_deletion_actions (
+               action_id, user_id, auth_session_id, presentation, presentation_version, expires_at
+             ) VALUES (
+               'action-blank-user', '   ', 'session-blank-user', '{}',
+               'account-deletion-v1', now() + interval '5 minutes'
              )`,
             ];
 
@@ -347,7 +354,8 @@ describe("Postgres migrations", () => {
               client.exec(`
               INSERT INTO users (id, name, email, updated_at)
               VALUES ('user-1', 'User 1', 'user-1@example.test', now()),
-                     ('user-2', 'User 2', 'user-2@example.test', now());
+                     ('user-2', 'User 2', 'user-2@example.test', now()),
+                     ('   ', 'Blank User', 'blank-self-user@example.test', now());
               INSERT INTO billing_subscriptions (
                 billing_subscription_id, user_id, plan, plan_policy_version
               ) VALUES
@@ -443,6 +451,11 @@ describe("Postgres migrations", () => {
                 approval_presentation, reason)
              VALUES ('self-case-blank-presentation', 'user-2', 'user-2',
                      'account-delete:blank-presentation', '   ', 'User request')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_user_id, approval_action_id,
+                approval_presentation, reason)
+             VALUES ('self-case-blank-requester', '   ', '   ',
+                     'account-delete:blank-requester', '{}', 'User request')`,
             ];
 
             for (const statement of rejectedStatements) {

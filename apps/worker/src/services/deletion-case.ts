@@ -172,7 +172,7 @@ export const make = Effect.gen(function* () {
   });
 });
 
-/** Deletion Case Layer that preserves its AuthSession.Service and persistence dependencies. */
+/** Deletion Case Layer that preserves its persistence dependency. */
 export const layerWithoutDependencies = Layer.effect(Service, make);
 
 export * as DeletionCase from "./deletion-case";

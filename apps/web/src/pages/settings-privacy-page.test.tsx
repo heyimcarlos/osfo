@@ -1,8 +1,8 @@
 /* oxlint-disable effecttsgo/async-function -- The user-event test callback follows Vitest's Promise contract. */
 import { render, screen } from "@testing-library/react";
+import { expect, it, vi } from "@effect/vitest";
 import type { AccountDeletionActionPresentation } from "@osfo/api";
 import userEvent from "@testing-library/user-event";
-import { expect, it, vi } from "vitest";
 
 import { DeleteAccountControl } from "./settings-privacy-page";
 

@@ -2047,7 +2047,7 @@
       "checkConstraints": {
         "deletion_cases_actor_check": {
           "name": "deletion_cases_actor_check",
-          "value": "(\"deletion_cases\".\"requested_by_admin_id\" is not null and length(btrim(\"deletion_cases\".\"requested_by_admin_id\")) > 0 and \"deletion_cases\".\"requested_by_user_id\" is null and \"deletion_cases\".\"approval_action_id\" is null and \"deletion_cases\".\"approval_presentation\" is null)\n        or (\"deletion_cases\".\"requested_by_admin_id\" is null and \"deletion_cases\".\"requested_by_user_id\" = \"deletion_cases\".\"user_id\" and length(btrim(\"deletion_cases\".\"approval_action_id\")) > 0 and length(btrim(\"deletion_cases\".\"approval_presentation\")) > 0)"
+          "value": "(\"deletion_cases\".\"requested_by_admin_id\" is not null and length(btrim(\"deletion_cases\".\"requested_by_admin_id\")) > 0 and \"deletion_cases\".\"requested_by_user_id\" is null and \"deletion_cases\".\"approval_action_id\" is null and \"deletion_cases\".\"approval_presentation\" is null)\n        or (\"deletion_cases\".\"requested_by_admin_id\" is null and \"deletion_cases\".\"requested_by_user_id\" is not null and length(btrim(\"deletion_cases\".\"requested_by_user_id\")) > 0 and \"deletion_cases\".\"requested_by_user_id\" = \"deletion_cases\".\"user_id\" and \"deletion_cases\".\"approval_action_id\" is not null and length(btrim(\"deletion_cases\".\"approval_action_id\")) > 0 and \"deletion_cases\".\"approval_presentation\" is not null and length(btrim(\"deletion_cases\".\"approval_presentation\")) > 0)"
         },
         "deletion_cases_reason_check": {
           "name": "deletion_cases_reason_check",
