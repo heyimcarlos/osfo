@@ -486,7 +486,7 @@ const make = (options: Options) =>
           providerIdentity(crypto, "u", input.userId, "deleteSessionConversation"),
           providerIdentity(crypto, "s", input.sessionId, "deleteSessionConversation"),
         ]);
-        let candidate: SessionConversationDocumentSummary | undefined;
+        const candidates: Array<SessionConversationDocumentSummary> = [];
         let page = 1;
         while (true) {
           const response = yield* sdk.use("deleteSessionConversation", (client, signal) =>
@@ -505,19 +505,25 @@ const make = (options: Options) =>
           }
           const matches = decoded.memories.filter((document) => document.customId === customId);
           if (
-            matches.length > 1 ||
-            (candidate !== undefined && matches.length === 1) ||
             matches.some((document) => !belongsOnlyToUser(document.containerTags, containerTag))
           ) {
             return yield* providerUnavailable("deleteSessionConversation", "identityMismatch");
           }
-          candidate = matches[0] ?? candidate;
+          candidates.push(...matches);
           if (page >= decoded.pagination.totalPages) break;
           page += 1;
         }
-        return candidate === undefined
+        const documentIds = candidates.map(({ id }) => id);
+        if (new Set(documentIds).size !== documentIds.length) {
+          return yield* providerUnavailable("deleteSessionConversation", "identityMismatch");
+        }
+        const [firstDocumentId, ...remainingDocumentIds] = documentIds;
+        return firstDocumentId === undefined
           ? ({ _tag: "AlreadyAbsent" } as const)
-          : ({ _tag: "Found", documentId: candidate.id } as const);
+          : ({
+              _tag: "Found",
+              documentIds: [firstDocumentId, ...remainingDocumentIds],
+            } as const);
       },
     );
 

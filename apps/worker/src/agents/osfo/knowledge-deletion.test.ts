@@ -73,13 +73,9 @@ it.effect("rechecks authority immediately before every Core Memory replacement",
   );
 });
 
-it.effect("cancels provider work before surfacing an immediate correction failure", () => {
+it.effect("retains provider work when an immediate correction fails", () => {
   const events: Array<string> = [];
   return completeKnowledgeDeletionPreparation({
-    cancel: Effect.sync(() => {
-      events.push("cancel");
-      return true;
-    }),
     correct: Effect.sync(() => events.push("correct")).pipe(
       Effect.andThen(Effect.fail("correction failed" as const)),
     ),
@@ -88,19 +84,53 @@ it.effect("cancels provider work before surfacing an immediate correction failur
       return true;
     }),
   }).pipe(
-    Effect.flip,
-    Effect.tap((failure) =>
+    Effect.tap((result) =>
       Effect.sync(() => {
-        expect(failure).toBe("correction failed");
-        expect(events).toEqual(["correct", "cancel"]);
+        expect(result).toEqual({ _tag: "CorrectionPending" });
+        expect(events).toEqual(["correct"]);
       }),
     ),
   );
 });
 
-it.effect("returns explicit pending state when failed correction cancellation is unconfirmed", () =>
+it.effect("retains provider ownership after a later Core Memory replacement fails", () => {
+  const coreMemory = { agentNotes: "Old note", userContext: "Old preference" };
+  const events: Array<string> = [];
+  return completeKnowledgeDeletionPreparation({
+    correct: correctForgottenKnowledge(
+      [
+        { block: "userContext", content: "Corrected preference" },
+        { block: "agentNotes", content: "" },
+      ],
+      Effect.void,
+      (replacement) =>
+        replacement.block === "agentNotes"
+          ? Effect.fail("later replacement failed" as const)
+          : Effect.sync(() => {
+              coreMemory[replacement.block] = replacement.content;
+              events.push(`replace:${replacement.block}`);
+            }),
+    ),
+    release: Effect.sync(() => {
+      events.push("release");
+      return true;
+    }),
+  }).pipe(
+    Effect.tap((result) =>
+      Effect.sync(() => {
+        expect(result).toEqual({ _tag: "CorrectionPending" });
+        expect(coreMemory).toEqual({
+          agentNotes: "Old note",
+          userContext: "Corrected preference",
+        });
+        expect(events).toEqual(["replace:userContext"]);
+      }),
+    ),
+  );
+});
+
+it.effect("returns explicit pending state when correction remains unavailable", () =>
   completeKnowledgeDeletionPreparation({
-    cancel: Effect.succeed(false),
     correct: Effect.fail("correction failed" as const),
     release: Effect.die(new Error("Failed correction released provider work")),
   }).pipe(
@@ -115,7 +145,6 @@ it.effect("returns explicit pending state when failed correction cancellation is
 it.effect("releases durable provider retry only after correction commits", () => {
   const events: Array<string> = [];
   return completeKnowledgeDeletionPreparation({
-    cancel: Effect.die(new Error("Successful correction was cancelled")),
     correct: Effect.sync(() => {
       events.push("correct");
       return ["corrected"];

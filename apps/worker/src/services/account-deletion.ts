@@ -242,6 +242,7 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
+    yield* requireCurrentAuthority("before integration authority discovery");
     const discoveredIntegrationTargets = yield* dependencies.integrations.pending(candidate.userId);
     for (const target of discoveredIntegrationTargets) {
       if (target.userId !== candidate.userId) {

@@ -207,7 +207,10 @@ export interface FindSessionConversationInput {
 /** Fenced provider target discovered for a Session conversation deletion. */
 export type SessionConversationDiscovery =
   | { readonly _tag: "AlreadyAbsent" }
-  | { readonly _tag: "Found"; readonly documentId: ProviderDocumentId };
+  | {
+      readonly _tag: "Found";
+      readonly documentIds: readonly [ProviderDocumentId, ...ReadonlyArray<ProviderDocumentId>];
+    };
 
 /** Current provider proof for an exact discovered Session conversation target. */
 export type SessionConversationVerification =

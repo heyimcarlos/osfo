@@ -41,16 +41,24 @@ const deleteSessionConversation = (
   memory.findSessionConversation(input).pipe(
     Effect.flatMap((discovered) => {
       if (discovered._tag === "AlreadyAbsent") return Effect.succeed(discovered);
-      const target = { ...input, documentId: discovered.documentId };
-      return memory
-        .verifySessionConversation(target)
-        .pipe(
-          Effect.flatMap((verified) =>
-            verified._tag === "AlreadyAbsent"
-              ? Effect.succeed(verified)
-              : memory.deleteSessionConversation(target),
-          ),
-        );
+      return Effect.forEach(discovered.documentIds, (documentId) => {
+        const target = { ...input, documentId };
+        return memory
+          .verifySessionConversation(target)
+          .pipe(
+            Effect.flatMap((verified) =>
+              verified._tag === "AlreadyAbsent"
+                ? Effect.succeed(verified)
+                : memory.deleteSessionConversation(target),
+            ),
+          );
+      }).pipe(
+        Effect.map((results) =>
+          results.some((result) => result._tag === "Deleted")
+            ? ({ _tag: "Deleted" } as const)
+            : ({ _tag: "AlreadyAbsent" } as const),
+        ),
+      );
     }),
   );
 
@@ -598,14 +606,20 @@ it.effect("forgets only exact approved memory IDs within the User scope", () =>
   ),
 );
 
-it.effect("deletes one Session conversation by its stable provider identity", () =>
+it.effect("deletes every Session conversation document by stable provider identity", () =>
   withProvider(({ requests, origin, respondWith }) =>
     Effect.gen(function* () {
       respondWith(
         {
           body: {
-            memories: [],
-            pagination: { currentPage: 1, totalItems: 1, totalPages: 2 },
+            memories: [
+              {
+                containerTags: ["u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
+                customId: "s_rOWDOMu6gfHVler-5_5Pqai1QTLVqrovuxZcQccEncE",
+                id: "document-1",
+              },
+            ],
+            pagination: { currentPage: 1, totalItems: 2, totalPages: 2 },
           },
           status: 200,
         },
@@ -615,10 +629,10 @@ it.effect("deletes one Session conversation by its stable provider identity", ()
               {
                 containerTags: ["shared_project", "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
                 customId: "s_rOWDOMu6gfHVler-5_5Pqai1QTLVqrovuxZcQccEncE",
-                id: "document-1",
+                id: "document-2",
               },
             ],
-            pagination: { currentPage: 2, totalItems: 1, totalPages: 2 },
+            pagination: { currentPage: 2, totalItems: 2, totalPages: 2 },
           },
           status: 200,
         },
@@ -627,6 +641,15 @@ it.effect("deletes one Session conversation by its stable provider identity", ()
             containerTags: ["shared_project", "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
             customId: "s_rOWDOMu6gfHVler-5_5Pqai1QTLVqrovuxZcQccEncE",
             id: "document-1",
+          },
+          status: 200,
+        },
+        { status: 204 },
+        {
+          body: {
+            containerTags: ["shared_project", "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
+            customId: "s_rOWDOMu6gfHVler-5_5Pqai1QTLVqrovuxZcQccEncE",
+            id: "document-2",
           },
           status: 200,
         },
@@ -671,6 +694,18 @@ it.effect("deletes one Session conversation by its stable provider identity", ()
           body: undefined,
           method: "DELETE",
           path: "/v3/documents/document-1",
+        },
+        {
+          authorization: "Bearer test-api-key",
+          body: undefined,
+          method: "GET",
+          path: "/v3/documents/document-2",
+        },
+        {
+          authorization: "Bearer test-api-key",
+          body: undefined,
+          method: "DELETE",
+          path: "/v3/documents/document-2",
         },
       ]);
     }).pipe(Effect.provide(providerLayer(origin))),

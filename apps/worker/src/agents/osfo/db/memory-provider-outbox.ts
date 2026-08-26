@@ -25,7 +25,7 @@ export const SaveConversationPayload = Schema.TaggedStruct("SaveConversation", {
   projection: ConversationSnapshotProjection,
 });
 export const DeleteSessionConversationPayload = Schema.TaggedStruct("DeleteSessionConversation", {
-  authorization: Schema.optionalKey(DeletionAuthorization),
+  authorization: DeletionAuthorization,
   sessionId: SessionId,
   userId: UserId,
 });
@@ -33,7 +33,7 @@ export const DeleteUserKnowledgePayload = Schema.TaggedStruct("DeleteUserKnowled
   userId: UserId,
 });
 export const ForgetKnowledgePayload = Schema.TaggedStruct("ForgetKnowledge", {
-  authorization: Schema.optionalKey(DeletionAuthorization),
+  authorization: DeletionAuthorization,
   coreMemory: Schema.optionalKey(Schema.Array(CoreMemoryReplacement)),
   memoryIds: Schema.NonEmptyArray(MemoryProvider.KnowledgeMemoryId),
   userId: UserId,
@@ -55,6 +55,24 @@ export const MemoryProviderDeletionPayload = Schema.Union([
   ForgetKnowledgePayload,
 ]);
 export type MemoryProviderDeletionPayload = typeof MemoryProviderDeletionPayload.Type;
+
+// Retained rows from before deletion authority was mandatory must decode only far enough to fail
+// closed. New callers cannot construct either legacy variant through the public payload contract.
+const StoredMemoryProviderOutboxPayload = Schema.Union([
+  SaveConversationPayload,
+  Schema.TaggedStruct("DeleteSessionConversation", {
+    authorization: Schema.optionalKey(DeletionAuthorization),
+    sessionId: SessionId,
+    userId: UserId,
+  }),
+  DeleteUserKnowledgePayload,
+  Schema.TaggedStruct("ForgetKnowledge", {
+    authorization: Schema.optionalKey(DeletionAuthorization),
+    coreMemory: Schema.optionalKey(Schema.Array(CoreMemoryReplacement)),
+    memoryIds: Schema.NonEmptyArray(MemoryProvider.KnowledgeMemoryId),
+    userId: UserId,
+  }),
+]);
 
 export const MemoryProviderDeletionProgress = Schema.Union([
   Schema.TaggedStruct("ForgetKnowledge", {
@@ -403,6 +421,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
       const retained = yield* execute("enqueueMemoryProviderOutbox", () =>
         db.transaction((transaction) => {
           const payloadJson = JSON.stringify(input.payload);
+          const deletionProgressJson = encodeOptionalDeletionProgress(input.deletionProgress);
           const existing = transaction
             .select()
             .from(memoryProviderOutbox)
@@ -410,7 +429,11 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
             .limit(1)
             .get();
           if (existing !== undefined) {
-            if (existing.payload_json !== payloadJson) return { _tag: "Conflict" as const };
+            if (
+              existing.payload_json !== payloadJson ||
+              existing.deletion_progress_json !== deletionProgressJson
+            )
+              return { _tag: "Conflict" as const };
             return existing.status === "claimed" && existing.claim_token === input.claimToken
               ? { _tag: "Claimed" as const, row: existing }
               : { _tag: "Existing" as const };
@@ -428,10 +451,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
               available_at: input.enqueuedAt,
               claim_expires_at: input.claimExpiresAt,
               claim_token: input.claimToken,
-              deletion_progress_json:
-                input.deletionProgress === undefined
-                  ? null
-                  : encodeDeletionProgress(input.deletionProgress),
+              deletion_progress_json: deletionProgressJson,
               enqueued_at: input.enqueuedAt,
               operation_type: operationType(input.payload),
               ordering_key: userOrderingKey(input.payload.userId),
@@ -791,13 +811,20 @@ interface EnqueueMemoryProviderWork {
 
 const enqueueTransaction = (transaction: AgentTransaction, input: EnqueueMemoryProviderWork) => {
   const payloadJson = JSON.stringify(input.payload);
+  const deletionProgressJson = encodeOptionalDeletionProgress(input.deletionProgress);
   const existing = transaction
-    .select({ payloadJson: memoryProviderOutbox.payload_json })
+    .select({
+      deletionProgressJson: memoryProviderOutbox.deletion_progress_json,
+      payloadJson: memoryProviderOutbox.payload_json,
+    })
     .from(memoryProviderOutbox)
     .where(eq(memoryProviderOutbox.outbox_id, input.outboxId))
     .limit(1)
     .get();
-  if (existing !== undefined) return existing.payloadJson === payloadJson;
+  if (existing !== undefined)
+    return (
+      existing.payloadJson === payloadJson && existing.deletionProgressJson === deletionProgressJson
+    );
   const maximumSequence =
     transaction
       .select({ value: max(memoryProviderOutbox.sequence) })
@@ -808,10 +835,7 @@ const enqueueTransaction = (transaction: AgentTransaction, input: EnqueueMemoryP
     .values({
       allowance_period_id: input.allowancePeriodId,
       available_at: input.enqueuedAt,
-      deletion_progress_json:
-        input.deletionProgress === undefined
-          ? null
-          : encodeDeletionProgress(input.deletionProgress),
+      deletion_progress_json: deletionProgressJson,
       enqueued_at: input.enqueuedAt,
       operation_type: input.operationType,
       ordering_key: input.orderingKey,
@@ -852,6 +876,16 @@ const userOrderingKey = (userId: UserId): string => `user:${userId}`;
 const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
   row: typeof memoryProviderOutbox.$inferSelect,
 ) {
+  const storedPayload = yield* Schema.decodeEffect(
+    Schema.fromJsonString(StoredMemoryProviderOutboxPayload),
+  )(row.payload_json).pipe(Effect.mapError(() => invalidRecord()));
+  if (
+    (storedPayload._tag === "DeleteSessionConversation" ||
+      storedPayload._tag === "ForgetKnowledge") &&
+    storedPayload.authorization === undefined
+  ) {
+    return yield* invalidRecord();
+  }
   const payload = yield* Schema.decodeEffect(Schema.fromJsonString(MemoryProviderOutboxPayload))(
     row.payload_json,
   ).pipe(Effect.mapError(() => invalidRecord()));
@@ -944,6 +978,10 @@ const encodeUsage = Schema.encodeSync(Schema.fromJsonString(StoredUsageEvidence)
 const encodeDeletionProgress = Schema.encodeSync(
   Schema.fromJsonString(MemoryProviderDeletionProgress),
 );
+
+const encodeOptionalDeletionProgress = (
+  progress: MemoryProviderDeletionProgress | undefined,
+): string | null => (progress === undefined ? null : encodeDeletionProgress(progress));
 
 const decodeDeletionProgress = (json: string) =>
   Schema.decodeEffect(Schema.fromJsonString(MemoryProviderDeletionProgress))(json);

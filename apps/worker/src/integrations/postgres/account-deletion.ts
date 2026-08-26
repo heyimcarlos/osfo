@@ -11,7 +11,7 @@ import {
   userSuspensionEvents,
 } from "@osfo/db/schema/user-lifecycle";
 import { webhookEvents } from "@osfo/db/schema/webhooks";
-import { eq, inArray, sql } from "drizzle-orm";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 import { Effect, Result, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -137,6 +137,32 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
           .limit(1)
           .for("update");
         if (user === undefined) return false;
+        if (candidate._tag === "SelfService") {
+          const [subscription] = await transaction
+            .select({
+              planPolicyVersion: billingSubscriptions.plan_policy_version,
+            })
+            .from(billingSubscriptions)
+            .where(eq(billingSubscriptions.user_id, candidate.userId))
+            .limit(1)
+            .for("update");
+          if (
+            subscription === undefined ||
+            !retainedCatalog.policies.some(
+              ({ version }) => version === subscription.planPolicyVersion,
+            )
+          )
+            return false;
+          const [latestSuspension] = await transaction
+            .select({ action: userSuspensionEvents.action })
+            .from(userSuspensionEvents)
+            .where(eq(userSuspensionEvents.user_id, candidate.userId))
+            .orderBy(desc(userSuspensionEvents.occurred_at), desc(userSuspensionEvents.event_id))
+            .limit(1)
+            .for("update");
+          if (latestSuspension !== undefined && latestSuspension.action !== "restored")
+            return false;
+        }
         const identifiers = [user.email, user.phoneNumber].filter(
           (identifier): identifier is string => identifier !== null,
         );

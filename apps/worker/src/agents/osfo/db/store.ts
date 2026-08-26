@@ -61,7 +61,7 @@ interface ReplaceCurrentSessionRecordInput {
 type RollbackCurrentSessionReplacementInput = ReplaceCurrentSessionRecordInput;
 
 interface DeleteHistoricalSessionInput {
-  readonly authorization?: DeletionAuthorization;
+  readonly authorization: DeletionAuthorization;
   readonly deletedAt: DbTimestamp;
   readonly outboxId: MemoryProviderOutboxId;
   readonly sessionId: SessionId;
@@ -950,15 +950,12 @@ export const makeAgentStore = (db: AgentDb) => {
 
 const deleteSessionPayload = (
   input: DeleteHistoricalSessionInput,
-): MemoryProviderDeletionPayload => {
-  const payload = {
-    _tag: "DeleteSessionConversation" as const,
-    sessionId: input.sessionId,
-    userId: input.userId,
-  };
-  if (input.authorization === undefined) return payload;
-  return { ...payload, authorization: input.authorization };
-};
+): MemoryProviderDeletionPayload => ({
+  _tag: "DeleteSessionConversation" as const,
+  authorization: input.authorization,
+  sessionId: input.sessionId,
+  userId: input.userId,
+});
 
 interface RecordCommittedTurnTransactionInput {
   readonly enqueuedAt: DbTimestamp;

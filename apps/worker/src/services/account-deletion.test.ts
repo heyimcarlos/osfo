@@ -57,6 +57,7 @@ it.effect("keeps local data pending until provider deletion confirms permanent a
       "recheck",
       "provider",
       "recheck",
+      "recheck",
       "objects",
       "recheck",
       "agent",
@@ -137,6 +138,7 @@ it.effect(
         "recheck",
         "provider",
         "recheck",
+        "recheck",
         "objects",
         "recheck",
         "agent",
@@ -157,12 +159,61 @@ it.effect("stops before object deletion when authority changes during provider d
   ]),
 );
 
+it.effect("rechecks authority immediately before integration discovery", () => {
+  const calls: Array<string> = [];
+  let authorized = true;
+  const candidate = {
+    _tag: "SelfService" as const,
+    agentId: AgentId.make("agent-1"),
+    approvalActionId: ActionId.make("account-delete-1"),
+    approvalPresentation: ApprovalPresentation.make("Delete Account"),
+    deletionCaseId: DeletionCaseId.make("deletion-case-1"),
+    userId: UserId.make("user-1"),
+  };
+  const port = AccountDeletion.Port.of({
+    inspectAuthorization: () =>
+      Effect.sync(() => {
+        calls.push("recheck");
+        return authorized ? activeFacts(candidate.userId) : null;
+      }),
+    agents: {
+      quiesce: () => Effect.sync(() => calls.push("quiesce")),
+      remove: () => Effect.die(new Error("Unexpected Agent deletion")),
+    },
+    integrations: {
+      pending: () => Effect.die(new Error("Unauthorized integration discovery")),
+      revoke: () => Effect.die(new Error("Unexpected integration deletion")),
+    },
+    objects: { remove: () => Effect.die(new Error("Unexpected R2 deletion")) },
+    persistence: {
+      ...passthroughIntegrationProgress,
+      pending: Effect.succeed([candidate]),
+      removeUser: () => Effect.die(new Error("Unexpected PostgreSQL deletion")),
+    },
+  });
+
+  return Effect.gen(function* () {
+    const deletion = yield* AccountDeletion.Service;
+    const result = yield* deletion.reconcileOne(candidate).pipe(Effect.result);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(calls).toEqual(["recheck", "quiesce", "recheck", "provider", "recheck"]);
+  }).pipe(
+    Effect.provide(
+      accountDeletionLayer(port, calls, () => {
+        authorized = false;
+        return "deleted";
+      }),
+    ),
+  );
+});
+
 it.effect("stops before Agent deletion when authority changes during object deletion", () =>
   expectStopsWhenAuthorityChangesAfter("objects", [
     "recheck",
     "quiesce",
     "recheck",
     "provider",
+    "recheck",
     "recheck",
     "objects",
     "recheck",
@@ -213,7 +264,7 @@ it.effect("keeps the case pending and local data intact when R2 ownership is con
     const result = yield* deletion.reconcileOne(candidate).pipe(Effect.result);
     expect(Result.isFailure(result)).toBe(true);
     expect(yield* port.persistence.pending).toEqual([candidate]);
-    expect(calls).toEqual(["recheck", "quiesce", "recheck", "provider", "objects"]);
+    expect(calls).toEqual(["recheck", "quiesce", "recheck", "provider", "recheck", "objects"]);
   }).pipe(Effect.provide(accountDeletionLayer(port, calls, () => "deleted")));
 });
 
@@ -223,6 +274,7 @@ it.effect("stops before PostgreSQL deletion when authority changes during Agent 
     "quiesce",
     "recheck",
     "provider",
+    "recheck",
     "recheck",
     "objects",
     "recheck",
@@ -541,6 +593,7 @@ it.effect("rechecks a retained administrative case through every protected stage
       "quiesce",
       "recheck",
       "provider",
+      "recheck",
       "recheck",
       "objects",
       "recheck",

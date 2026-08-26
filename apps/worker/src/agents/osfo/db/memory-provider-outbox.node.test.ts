@@ -134,6 +134,12 @@ it.effect("activates an Agent that slept before the conversation processing migr
           status: "failed",
         },
       ]);
+      const legacyClaim = yield* makeMemoryProviderOutboxStore(
+        makeAgentDb(asDurableObjectStorage(storage)),
+      )
+        .claimNext(now, liveLease, "legacy-authless-claim")
+        .pipe(Effect.result);
+      expect(Result.isFailure(legacyClaim)).toBe(true);
     }),
   ),
 );
@@ -398,6 +404,65 @@ it.effect("serializes successive claims and recovers an expired lease with exact
       });
       expect(yield* outbox.complete(Option.getOrThrow(first), liveLease)).toBe(false);
       expect(yield* outbox.complete(Option.getOrThrow(recovered), liveLease)).toBe(true);
+    }),
+  ),
+);
+
+it.effect("treats deletion progress as part of exact enqueue identity", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const outbox = makeMemoryProviderOutboxStore(makeAgentDb(asDurableObjectStorage(storage)));
+      const input = {
+        ...deletion("delete-progress-identity", "session-1"),
+        deletionProgress: sessionDeletionProgress("document-1"),
+      };
+
+      yield* outbox.enqueueDeletion(input);
+      yield* outbox.enqueueDeletion(input);
+      const conflicting = yield* outbox
+        .enqueueDeletion({
+          ...input,
+          deletionProgress: sessionDeletionProgress("document-2"),
+        })
+        .pipe(Effect.result);
+
+      expect(Result.isFailure(conflicting)).toBe(true);
+      expect(countRows(database, "osfo_memory_provider_outbox")).toBe(1);
+      expect(
+        database
+          .prepare(
+            "SELECT deletion_progress_json FROM osfo_memory_provider_outbox WHERE outbox_id = ?",
+          )
+          .get(input.outboxId),
+      ).toEqual({
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This proves the exact normalized persisted boundary.
+        deletion_progress_json: JSON.stringify(input.deletionProgress),
+      });
+    }),
+  ),
+);
+
+it.effect("treats deletion progress as part of exact retained-preparation identity", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const outbox = makeMemoryProviderOutboxStore(makeAgentDb(asDurableObjectStorage(storage)));
+      const input = {
+        ...deletion("delete-preparation-progress", "session-1"),
+        claimExpiresAt: liveLease,
+        claimToken: "correction-claim",
+        deletionProgress: sessionDeletionProgress("document-1"),
+      };
+
+      expect(Option.isSome(yield* outbox.retainDeletionPreparation(input))).toBe(true);
+      expect(Option.isSome(yield* outbox.retainDeletionPreparation(input))).toBe(true);
+      const conflicting = yield* outbox
+        .retainDeletionPreparation({
+          ...input,
+          deletionProgress: sessionDeletionProgress("document-2"),
+        })
+        .pipe(Effect.result);
+
+      expect(Result.isFailure(conflicting)).toBe(true);
     }),
   ),
 );
@@ -1005,7 +1070,7 @@ it.effect("retains accepted Session cleanup until a processing provider document
             surfaced
               ? ({
                   _tag: "Found",
-                  documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
+                  documentIds: [MemoryProvider.ProviderDocumentId.make("document-1")],
                 } as const)
               : ({ _tag: "AlreadyAbsent" } as const),
           ),
@@ -1117,7 +1182,7 @@ it.effect(
               surfaced
                 ? ({
                     _tag: "Found",
-                    documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
+                    documentIds: [MemoryProvider.ProviderDocumentId.make("document-1")],
                   } as const)
                 : ({ _tag: "AlreadyAbsent" } as const),
             ),
@@ -1544,6 +1609,10 @@ it.effect("deletes every accepted Session document across delayed surfacing and 
         committedTurn("assistant-2", "request-2"),
         conversationProjection("assistant-2"),
       );
+      yield* store.recordCommittedTurn(
+        committedTurn("assistant-3", "request-3"),
+        conversationProjection("assistant-3"),
+      );
       database
         .prepare(
           `UPDATE osfo_memory_provider_outbox
@@ -1562,6 +1631,13 @@ it.effect("deletes every accepted Session document across delayed surfacing and 
             WHERE sequence = 2`,
         )
         .run(now);
+      database
+        .prepare(
+          `UPDATE osfo_memory_provider_outbox
+            SET provider_submission_ambiguous = 1
+            WHERE sequence = 3`,
+        )
+        .run();
 
       yield* store.deleteHistoricalSession({
         authorization: authorizedDeletion("delete-session-1", "session-1").payload.authorization,
@@ -1584,7 +1660,14 @@ it.effect("deletes every accepted Session document across delayed surfacing and 
             return { _tag: "Deleted" as const };
           }),
         findSessionConversation: () =>
-          Effect.die(new Error("Accepted documents must use their retained exact IDs")),
+          Effect.sync(() =>
+            providerDocuments.has("document-3")
+              ? ({
+                  _tag: "Found",
+                  documentIds: [MemoryProvider.ProviderDocumentId.make("document-3")],
+                } as const)
+              : ({ _tag: "AlreadyAbsent" } as const),
+          ),
         verifySessionConversation: ({ documentId }) =>
           Effect.sync(() =>
             providerDocuments.has(documentId)
@@ -1624,6 +1707,28 @@ it.effect("deletes every accepted Session document across delayed surfacing and 
       );
 
       expect(deleted).toEqual(["document-1", "document-2"]);
+      expect(
+        database
+          .prepare(
+            "SELECT status FROM osfo_memory_provider_outbox WHERE operation_type = 'deleteSessionConversation'",
+          )
+          .get(),
+      ).toEqual({ status: "pending" });
+
+      providerDocuments.add("document-3");
+      database.exec(
+        "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+      );
+      yield* reconcileMemoryProviderOutbox(
+        makeMemoryProviderOutboxStore(makeAgentDb(asDurableObjectStorage(storage))),
+        permittedDeletionOptions,
+      ).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+
+      expect(deleted).toEqual(["document-1", "document-2", "document-3"]);
       expect(providerDocuments).toEqual(new Set(["unrelated-document"]));
       expect(
         database
@@ -2167,14 +2272,18 @@ const conversationProjection = (assistantMessageId: string) =>
     userId: UserId.make("user-1"),
   });
 
-const deletion = (outboxId: string, sessionId: string, userId = "user-1", enqueuedAt = now) => ({
-  enqueuedAt,
-  outboxId: MemoryProviderOutboxId.make(outboxId),
-  payload: {
-    _tag: "DeleteSessionConversation" as const,
-    sessionId: SessionId.make(sessionId),
-    userId: UserId.make(userId),
-  },
+const deletion = (outboxId: string, sessionId: string, userId = "user-1", enqueuedAt = now) =>
+  authorizedDeletion(outboxId, sessionId, userId, enqueuedAt);
+
+const sessionDeletionProgress = (documentId: string) => ({
+  _tag: "DeleteSessionConversation" as const,
+  awaitingDiscovery: false,
+  targets: [
+    {
+      documentId: MemoryProvider.ProviderDocumentId.make(documentId),
+      status: "observed" as const,
+    },
+  ],
 });
 
 const authorizedDeletion = (
@@ -2245,7 +2354,7 @@ const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvi
   findSessionConversation: () =>
     Effect.succeed({
       _tag: "Found",
-      documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
+      documentIds: [MemoryProvider.ProviderDocumentId.make("document-1")],
     }),
   forgetKnowledge: () => Effect.die(new Error("Unexpected forget")),
   getConversationStatus: () => Effect.die(new Error("Unexpected conversation status read")),

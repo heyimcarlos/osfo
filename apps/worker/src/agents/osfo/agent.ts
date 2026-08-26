@@ -1682,7 +1682,6 @@ export class OsfoAgent extends Think<Env> {
     );
     const prepared = await runRpc(
       completeKnowledgeDeletionPreparation({
-        cancel: this.#memoryProviderOutbox.cancelDeletionPreparation(retained.value),
         correct: Effect.tryPromise({
           try: () => this.#activateCurrentSession(),
           catch: (cause) =>
@@ -2121,11 +2120,7 @@ export class OsfoAgent extends Think<Env> {
 
   #prepareProviderDeletion(claim: ClaimedMemoryProviderWork) {
     const payload = claim.payload;
-    if (
-      payload._tag === "ForgetKnowledge" &&
-      payload.authorization !== undefined &&
-      payload.coreMemory !== undefined
-    ) {
+    if (payload._tag === "ForgetKnowledge" && payload.coreMemory !== undefined) {
       return Effect.tryPromise({
         try: () => this.#activateCurrentSession(),
         catch: (cause) =>
@@ -2161,7 +2156,7 @@ export class OsfoAgent extends Think<Env> {
         ),
       );
     }
-    if (payload._tag === "DeleteSessionConversation" && payload.authorization !== undefined) {
+    if (payload._tag === "DeleteSessionConversation") {
       const deletionAuthorization = payload.authorization;
       return Effect.tryPromise({
         try: () =>

@@ -20,7 +20,6 @@ import { MemoryProvider } from "../../services/memory-provider";
 import type {
   ClaimedMemoryProviderWork,
   MemoryProviderDeletionProgress,
-  MemoryProviderOutboxPayload,
   MemoryProviderOutboxStore,
 } from "./db/memory-provider-outbox";
 import { MemoryProviderOutboxId } from "./db/memory-provider-outbox";
@@ -31,10 +30,13 @@ import {
 } from "./memory-provider-reconciliation";
 
 const documentId = MemoryProvider.ProviderDocumentId.make("document-1");
+type ObservedSessionDeletion = MemoryProvider.DeleteSessionConversationInput & {
+  readonly _tag: "DeleteSessionConversation";
+};
 
 it.effect("retries a rejected deletion until the provider confirms it", () => {
   const claim = authorizedDeletionClaim();
-  const observed: Array<MemoryProviderOutboxPayload> = [];
+  const observed: Array<ObservedSessionDeletion> = [];
   const { completed, failed, retried, store } = testStore(claim);
   const provider = providerStub({
     deleteSessionConversation: (input) => {
@@ -62,32 +64,6 @@ it.effect("retries a rejected deletion until the provider confirms it", () => {
             userId: "user-1",
           },
         ]);
-        expect(failed).toEqual([]);
-        expect(retried).toEqual([claim.outboxId]);
-        expect(completed).toEqual([]);
-      }),
-    ),
-  );
-});
-
-it.effect("does not execute legacy deletion work without retained authorization", () => {
-  const claim = deletionClaim();
-  const observed: Array<MemoryProviderOutboxPayload> = [];
-  const { completed, failed, retried, store } = testStore(claim);
-  const provider = providerStub({
-    deleteSessionConversation: (input) => {
-      observed.push({ _tag: "DeleteSessionConversation", ...input });
-      return Effect.succeed({ _tag: "Deleted" as const });
-    },
-  });
-
-  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
-    Effect.provideService(MemoryProvider.Service, provider),
-    Effect.provideService(Db.Service, unavailableDatabase),
-    Effect.provide(BrowserCrypto.layer),
-    Effect.andThen(
-      Effect.sync(() => {
-        expect(observed).toEqual([]);
         expect(failed).toEqual([]);
         expect(retried).toEqual([claim.outboxId]);
         expect(completed).toEqual([]);
@@ -127,7 +103,7 @@ it.effect("does not execute legacy User deletion outside the PostgreSQL Deletion
 
 it.effect("completes deletion work only after provider confirmation", () => {
   const claim = authorizedDeletionClaim();
-  const observed: Array<MemoryProviderOutboxPayload> = [];
+  const observed: Array<ObservedSessionDeletion> = [];
   const { completed, retried, store } = testStore(claim);
   const provider = providerStub({
     deleteSessionConversation: (input) => {
@@ -294,7 +270,7 @@ it.effect("rechecks authority between Session discovery and ownership verificati
     findSessionConversation: () =>
       Effect.sync(() => {
         events.push("list");
-        return { _tag: "Found" as const, documentId };
+        return { _tag: "Found" as const, documentIds: [documentId] };
       }),
     verifySessionConversation: () => Effect.die(new Error("Stale authority reached GET")),
   });
@@ -347,7 +323,7 @@ it.effect("rechecks authority between Session ownership verification and deletio
     findSessionConversation: () =>
       Effect.sync(() => {
         events.push("list");
-        return { _tag: "Found" as const, documentId };
+        return { _tag: "Found" as const, documentIds: [documentId] };
       }),
     verifySessionConversation: () =>
       Effect.sync(() => {
@@ -775,6 +751,17 @@ it.effect("stops when a stale conversation claim loses settlement ownership", ()
   );
 });
 
+const deletionAuthorization = {
+  actionId: ActionId.make("action-1"),
+  authorityIdentity: {
+    _tag: "AuthSession" as const,
+    authSessionId: AuthSessionId.make("auth-session-1"),
+    userId: UserId.make("user-1"),
+  },
+  operation: "session.delete" as const,
+  presentation: ApprovalPresentation.make("Delete Session session-1"),
+};
+
 const deletionClaim = (): ClaimedMemoryProviderWork => ({
   allowancePeriodId: null,
   attemptCount: 1,
@@ -782,6 +769,7 @@ const deletionClaim = (): ClaimedMemoryProviderWork => ({
   outboxId: MemoryProviderOutboxId.make("deletion:session-1"),
   payload: {
     _tag: "DeleteSessionConversation",
+    authorization: deletionAuthorization,
     sessionId: SessionId.make("session-1"),
     userId: UserId.make("user-1"),
   },
@@ -792,30 +780,11 @@ const deletionClaim = (): ClaimedMemoryProviderWork => ({
 
 const authorizedDeletionClaim = (): ClaimedMemoryProviderWork => ({
   ...deletionClaim(),
-  payload: {
-    _tag: "DeleteSessionConversation",
-    authorization: {
-      actionId: ActionId.make("action-1"),
-      authorityIdentity: {
-        _tag: "AuthSession",
-        authSessionId: AuthSessionId.make("auth-session-1"),
-        userId: UserId.make("user-1"),
-      },
-      operation: "session.delete",
-      presentation: ApprovalPresentation.make("Delete Session session-1"),
-    },
-    sessionId: SessionId.make("session-1"),
-    userId: UserId.make("user-1"),
-  },
 });
 
 const authorizedForgetKnowledgeClaim = (): ClaimedMemoryProviderWork => {
   const authorization = authorizedDeletionClaim().payload;
-  if (
-    authorization._tag !== "DeleteSessionConversation" ||
-    authorization.authorization === undefined
-  )
-    throw new Error("Invalid fixture");
+  if (authorization._tag !== "DeleteSessionConversation") throw new Error("Invalid fixture");
   return {
     ...authorizedDeletionClaim(),
     outboxId: MemoryProviderOutboxId.make("deletion:forget-1"),
@@ -952,7 +921,7 @@ const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvi
   findSessionConversation: () =>
     Effect.succeed({
       _tag: "Found",
-      documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
+      documentIds: [MemoryProvider.ProviderDocumentId.make("document-1")],
     }),
   forgetKnowledge: () => Effect.die(new Error("Unexpected forget")),
   getConversationStatus: () => Effect.die(new Error("Unexpected conversation status read")),

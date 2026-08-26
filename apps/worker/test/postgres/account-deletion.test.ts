@@ -247,11 +247,68 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
       expect(
         yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate),
       ).toMatchObject({ user: { _tag: "SuspendedUser", userId } });
-
+      expect(
+        Result.isFailure(yield* accountDeletion.removeUser(candidate).pipe(Effect.result)),
+      ).toBe(true);
+      expect(
+        yield* Effect.promise(() => database.select().from(users).where(eq(users.id, userId))),
+      ).toHaveLength(1);
       yield* Effect.promise(() =>
-        database.delete(billingSubscriptions).where(eq(billingSubscriptions.user_id, userId)),
+        database.insert(userSuspensionEvents).values({
+          action: "restored",
+          admin_actor_id: "admin-1",
+          event_id: "restoration-after-case-1",
+          occurred_at: restoredAfterCaseAt,
+          reason: "Security hold cleared",
+          user_id: userId,
+        }),
       );
+      yield* Effect.promise(() =>
+        database
+          .update(billingSubscriptions)
+          .set({ plan_policy_version: "unretained-policy" })
+          .where(eq(billingSubscriptions.user_id, userId)),
+      );
+      expect(
+        Result.isFailure(yield* accountDeletion.removeUser(candidate).pipe(Effect.result)),
+      ).toBe(true);
+      expect(
+        yield* Effect.promise(() => database.select().from(users).where(eq(users.id, userId))),
+      ).toHaveLength(1);
+      yield* Effect.promise(() =>
+        database
+          .update(billingSubscriptions)
+          .set({ plan_policy_version: "launch-v1" })
+          .where(eq(billingSubscriptions.user_id, userId)),
+      );
+
+      const [removedSubscription] = yield* Effect.promise(() =>
+        database
+          .delete(billingSubscriptions)
+          .where(eq(billingSubscriptions.user_id, userId))
+          .returning(),
+      );
+      if (removedSubscription === undefined) {
+        return yield* Effect.die(new Error("Billing Subscription missing"));
+      }
       expect(yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate)).toBeNull();
+      expect(
+        Result.isFailure(yield* accountDeletion.removeUser(candidate).pipe(Effect.result)),
+      ).toBe(true);
+      expect(
+        yield* Effect.promise(() =>
+          Promise.all([
+            database.select().from(users).where(eq(users.id, userId)),
+            database.select().from(deletionCases).where(eq(deletionCases.user_id, userId)),
+          ]),
+        ),
+      ).toEqual([
+        [expect.objectContaining({ id: userId })],
+        [expect.objectContaining({ deletion_case_id: candidate.deletionCaseId })],
+      ]);
+      yield* Effect.promise(() =>
+        database.insert(billingSubscriptions).values(removedSubscription),
+      );
 
       yield* accountDeletion.removeUser(candidate);
 
@@ -861,7 +918,8 @@ const selfDeletionApproval = (identity: string) => ({
 const suspendedBeforeCaseAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:00:00.000Z"));
 const restoredBeforeCaseAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:01:00.000Z"));
 const suspendedAfterCaseAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:02:00.000Z"));
+const restoredAfterCaseAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:03:00.000Z"));
 const retrySessionExpiresAt = DateTime.toDateUtc(DateTime.makeUnsafe("2027-08-25T12:00:00.000Z"));
-const retrySessionUpdatedAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:03:00.000Z"));
+const retrySessionUpdatedAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:04:00.000Z"));
 const expiredActionCreatedAt = DateTime.toDateUtc(DateTime.makeUnsafe("2025-08-25T12:00:00.000Z"));
 const expiredActionExpiresAt = DateTime.toDateUtc(DateTime.makeUnsafe("2025-08-25T12:05:00.000Z"));

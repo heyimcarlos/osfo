@@ -24,19 +24,14 @@ export type KnowledgeDeletionPreparationOutcome<A> =
 /** Keep provider work leased until local correction commits or its untouched intent is cancelled. */
 export const completeKnowledgeDeletionPreparation = Effect.fn(
   "KnowledgeDeletion.completeKnowledgeDeletionPreparation",
-)(function* <A, E, E2, E3>(input: {
-  readonly cancel: Effect.Effect<boolean, E2>;
+)(function* <A, E, E2>(input: {
   readonly correct: Effect.Effect<A, E>;
-  readonly release: Effect.Effect<boolean, E3>;
+  readonly release: Effect.Effect<boolean, E2>;
 }) {
   const correction = yield* input.correct.pipe(Effect.result);
-  if (Result.isFailure(correction)) {
-    const cancellation = yield* input.cancel.pipe(Effect.result);
-    if (Result.isSuccess(cancellation) && cancellation.success) {
-      return yield* Effect.fail(correction.failure);
-    }
-    return { _tag: "CorrectionPending" } as const;
-  }
+  // A failed later replacement may follow an already committed earlier block. Retaining the
+  // preparation makes both local correction and provider forgetting retryable as one obligation.
+  if (Result.isFailure(correction)) return { _tag: "CorrectionPending" } as const;
   const release = yield* input.release.pipe(Effect.result);
   return {
     _tag: "Prepared",
