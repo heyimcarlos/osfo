@@ -163,7 +163,7 @@ function DeleteAccountControl() {
           type="button"
           onClick={begin}
         >
-          {busy && presentation === null ? "Preparing…" : "Delete Account"}
+          {busy && presentation === null ? "Preparing..." : "Delete Account"}
         </button>
       </div>
       {presentation === null && error ? (
@@ -180,7 +180,7 @@ function DeleteAccountControl() {
               type="button"
               onClick={remove}
             >
-              {busy ? "Deleting…" : "Confirm account deletion"}
+              {busy ? "Deleting..." : "Confirm account deletion"}
             </button>
             <button
               className="min-h-11 rounded-full px-4 text-sm font-semibold"
