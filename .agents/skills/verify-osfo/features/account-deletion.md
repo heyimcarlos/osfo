@@ -26,7 +26,7 @@ After registration and Telegram channel linking, open `/settings/privacy`, choos
 6. After confirmation, choose `Confirm account deletion` once. Wait for navigation to `/`, then require the signed-out `Sign in` and `Get started` links. Capture `result.png` and record that `Sign in and Get started` are visible.
 7. Run `observe account-deletion` and finish the evidence.
 
-PASS requires the generic prefetch state followed by exactly one canonical server consequence; exactly one successful `GET /v1/account/deletion-action` and one successful `DELETE /v1/account` in the actual Worker log; the signed-out home result; no run-owned PostgreSQL User graph, active session, Agent registry entry, or Agent initialization database; no target R2 object or target Supermemory container; exactly one target container deletion; and both unrelated sentinels still present. The before-state Agent observation must show one registry entry and one initialized Agent database.
+PASS requires the generic prefetch state followed by exactly one canonical server consequence; exactly one total and one successful `GET /v1/account/deletion-action`, plus exactly one total and one successful `DELETE /v1/account`, in the actual Worker log; the signed-out home result; no run-owned PostgreSQL User graph, active session, Agent registry entry, or Agent initialization database; no target R2 object or target Supermemory container; exactly one target container deletion; and both unrelated sentinels still present. The before-state Agent observation must show one registry entry and one initialized Agent database.
 
 ## Gotchas
 
