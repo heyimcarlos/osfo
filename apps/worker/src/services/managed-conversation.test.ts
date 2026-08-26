@@ -79,6 +79,12 @@ it.effect("keeps the supported deletion and data-rights launch surface reachable
       "erase my account permanently please",
       "I want to exercise my data rights",
       "um yeah could you please just delete all of my memories for me now",
+      "Please forget what you know about me",
+      "Delete everything you remember about me",
+      "Please remove all memories about me",
+      "Erase everything you know about me",
+      "Forget everything about me",
+      "Remove your memories of me",
     ];
 
     const results = yield* Effect.forEach(messages, (message, index) =>
@@ -107,6 +113,11 @@ it.effect("does not mistake ordinary discussion of deletion for a data-rights re
       "Write a story where someone wipes their chat history",
       "Remember that my job is deleting data",
       "I forgot my password",
+      "Tell me what you know about me",
+      "Help me remember what you know about me",
+      "Please forget what you know about machine learning",
+      "Delete everything you remember about writing the report",
+      "Write a story about removing memories",
     ];
 
     const results = yield* Effect.forEach(messages, (message, index) =>

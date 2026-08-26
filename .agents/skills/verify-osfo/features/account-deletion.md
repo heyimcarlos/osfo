@@ -20,13 +20,13 @@ After registration and Telegram channel linking, open `/settings/privacy`, choos
 
 1. Complete [registration](registration.md) and [channel linking](channel-linking.md) in the same Chrome tab.
 2. Run `control-osfo seed-account-deletion <run-id>`. The helper records the run-owned User, Agent, and Channel Link; confirms the Agent registry and SQLite initialization; and seeds target plus unrelated Supermemory and R2 evidence.
-3. Start account-deletion evidence, open `/settings/privacy`, and choose `Delete Account`.
-4. Wait for the server-presented warning `Permanently delete this account and all of its data.` and the enabled `Confirm account deletion` button. Capture this state as `action.png` and record the action.
+3. Start account-deletion evidence and open `/settings/privacy`. Before presentation, require the generic copy `Permanent account removal requires confirmation.`, one enabled `Delete Account` button, no permanent-deletion consequence, and no confirmation button. Choose `Delete Account` once.
+4. Wait for exactly one server-presented consequence `Permanently delete this account and all of its data.` and the enabled `Confirm account deletion` button. Capture this state as `action.png`. Record the generic prefetch and exactly one server-owned consequence using those exact sentences.
 5. Stop immediately before choosing `Confirm account deletion`. Obtain action-time confirmation that names the run-owned account, local Osfo destination, and permanent PostgreSQL, Agent SQLite, R2, provider-memory, session, and Channel Link effects. Keep the tab at this exact confirmation.
-6. After confirmation, choose `Confirm account deletion` once. Wait for navigation to `/`, then require the signed-out `Sign in` and `Get started` links. Capture `result.png` and record the result.
+6. After confirmation, choose `Confirm account deletion` once. Wait for navigation to `/`, then require the signed-out `Sign in` and `Get started` links. Capture `result.png` and record that `Sign in and Get started` are visible.
 7. Run `observe account-deletion` and finish the evidence.
 
-PASS requires the signed-out home result; no run-owned PostgreSQL User graph, active session, Agent registry entry, or Agent initialization database; no target R2 object or target Supermemory container; exactly one target container deletion; and both unrelated sentinels still present. The before-state Agent observation must show one registry entry and one initialized Agent database.
+PASS requires the generic prefetch state followed by exactly one canonical server consequence; exactly one successful `GET /v1/account/deletion-action` and one successful `DELETE /v1/account` in the actual Worker log; the signed-out home result; no run-owned PostgreSQL User graph, active session, Agent registry entry, or Agent initialization database; no target R2 object or target Supermemory container; exactly one target container deletion; and both unrelated sentinels still present. The before-state Agent observation must show one registry entry and one initialized Agent database.
 
 ## Gotchas
 

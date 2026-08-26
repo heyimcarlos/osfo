@@ -48,6 +48,7 @@ export const isDeletionOrDataRightsIntent: CapabilityIntentPredicate = (task) =>
   );
   return [
     /^(?:(?:can|could|would|will) you (?:please )?(?:just )?|how do i |i (?:need|want|would like) (?:you )?to |please (?:just )?|just )?(?:clear|delete|erase|forget|remove|wipe) (?:all (?:of )?)?(?:(?:my|the|this|that) )?(?:account|chat history|conversation|conversation history|current session|data|memories|memory|session)(?:(?: for me| now| permanently| please))*$/,
+    /^(?:(?:can|could|would|will) you (?:please )?(?:just )?|how do i |i (?:need|want|would like) (?:you )?to |please (?:just )?|just )?(?:clear|delete|erase|forget|remove|wipe) (?:(?:all (?:of )?)?(?:(?:my|the|your) )?(?:knowledge|memories|memory) (?:about|of) me|(?:everything|what) (?:that )?you (?:know|remember) about me|everything about me)(?:(?: for me| now| permanently| please))*$/,
     /^(?:(?:can|could|would|will) you (?:please )?|how do i |i (?:need|want|would like) to |please )?(?:exercise|request) (?:my )?(?:data rights|privacy rights)(?:(?: now| please))*$/,
   ].some((pattern) => pattern.test(normalized));
 };

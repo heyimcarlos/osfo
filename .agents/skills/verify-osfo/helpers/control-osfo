@@ -800,6 +800,7 @@ observe_account_deletion() {
   local run_id state_dir feature_dir container_id provider_origin phone user_id agent_id
   local channel_link_id target_tag unrelated_tag files_bucket target_key unrelated_key
   local postgres_state agent_storage provider_ledger provider_containers target_exists unrelated_exists
+  local worker_log presentation_get_count account_delete_count
   run_id="$1"
   state_dir="$(state_dir_for "$run_id")"
   feature_dir="$(feature_artifact_dir_for "$run_id" account-deletion)"
@@ -815,6 +816,7 @@ observe_account_deletion() {
   files_bucket="$(state_value "$run_id" account-deletion-files-bucket)"
   target_key="$(state_value "$run_id" account-deletion-target-r2-key)"
   unrelated_key="$(state_value "$run_id" account-deletion-unrelated-r2-key)"
+  worker_log="$(artifact_dir_for "$run_id")/logs/worker.log"
   require_owned_identifier 'User ID' "$user_id"
   require_owned_identifier 'Agent ID' "$agent_id"
   require_owned_identifier 'Channel Link ID' "$channel_link_id"
@@ -845,15 +847,25 @@ observe_account_deletion() {
   else
     unrelated_exists=false
   fi
+  presentation_get_count="$(rg --count-matches '^\[wrangler:info\] GET /v1/account/deletion-action 200 OK' "$worker_log" || true)"
+  account_delete_count="$(rg --count-matches '^\[wrangler:info\] DELETE /v1/account 200 OK' "$worker_log" || true)"
+  presentation_get_count="${presentation_get_count:-0}"
+  account_delete_count="${account_delete_count:-0}"
   jq --null-input \
     --argjson postgres "$postgres_state" \
     --argjson agentStorage "$agent_storage" \
     --argjson targetR2Exists "$target_exists" \
     --argjson unrelatedR2Exists "$unrelated_exists" \
+    --argjson presentationGets "$presentation_get_count" \
+    --argjson deleteRequests "$account_delete_count" \
     --arg targetR2Key "$target_key" \
     --arg unrelatedR2Key "$unrelated_key" \
     '$postgres + {
       agentStorage: $agentStorage,
+      accountHttp: {
+        presentationGets: $presentationGets,
+        deleteRequests: $deleteRequests
+      },
       targetR2Exists: $targetR2Exists,
       targetR2Key: $targetR2Key,
       unrelatedR2Exists: $unrelatedR2Exists,
@@ -879,6 +891,7 @@ observe_account_deletion() {
       .channelLinkExists or .acceptedInviteExists or .channelAuditExists or
       .billingExists or .allowanceExists or .phoneVerificationExists) == false and
       .agentStorage.initializationCount == 0 and .agentStorage.registryCount == 0 and
+      .accountHttp.presentationGets == 1 and .accountHttp.deleteRequests == 1 and
       .targetR2Exists == false and .unrelatedR2Exists == true' \
     "$feature_dir/state.json" >/dev/null
   jq --exit-status \
@@ -927,6 +940,18 @@ evidence_finish() {
   if ! rg --quiet 'phase=action ' "$feature_dir/browser-actions.txt" || \
     ! rg --quiet 'phase=result ' "$feature_dir/browser-actions.txt"; then
     printf 'Evidence needs both action and result browser records\n' >&2
+    exit 1
+  fi
+  if [[ "$feature" == account-deletion ]] && \
+    { ! rg --fixed-strings --quiet 'Permanent account removal requires confirmation.' \
+        "$feature_dir/browser-actions.txt" || \
+      ! rg --fixed-strings --quiet 'Permanently delete this account and all of its data.' \
+        "$feature_dir/browser-actions.txt" || \
+      ! rg --fixed-strings --quiet 'exactly one server-owned consequence' \
+        "$feature_dir/browser-actions.txt" || \
+      ! rg --fixed-strings --quiet 'Sign in and Get started' \
+        "$feature_dir/browser-actions.txt"; }; then
+    printf 'Account-deletion evidence needs the generic prefetch, one exact server consequence, and signed-out result\n' >&2
     exit 1
   fi
   printf 'completed_at=%s\nresult=PASS\ncommit=%s\n' \
