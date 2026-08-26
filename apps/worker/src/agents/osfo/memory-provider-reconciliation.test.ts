@@ -261,6 +261,34 @@ it.effect("persists each forgotten memory before rechecking authority for the ne
   );
 });
 
+it.effect("does not complete forgotten Knowledge when provider identity confirmation fails", () => {
+  const claim = authorizedForgetKnowledgeClaim();
+  const { completed, deletionProgress, retried, store } = testStore(claim);
+  const provider = providerStub({
+    forgetKnowledge: () =>
+      Effect.fail(
+        new MemoryProvider.MemoryProviderUnavailable({
+          diagnostic: "identityMismatch",
+          message: "The MemoryProvider confirmed a different Knowledge memory",
+          operation: "forgetKnowledge",
+        }),
+      ),
+  });
+
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(completed).toEqual([]);
+        expect(deletionProgress).toEqual([]);
+        expect(retried).toEqual([claim.outboxId]);
+      }),
+    ),
+  );
+});
+
 it.effect("rechecks authority between Session discovery and ownership verification", () => {
   const claim = authorizedDeletionClaim();
   const events: Array<string> = [];

@@ -473,7 +473,11 @@ const make = (options: Options) =>
             > => {
               if (result._tag === "AlreadyAbsent") return Effect.succeed(result);
               return decodeResponse("forgetKnowledge", ForgetResponse, result.response).pipe(
-                Effect.as({ _tag: "Deleted" } as const),
+                Effect.flatMap((decoded) =>
+                  decoded.id === input.memoryId
+                    ? Effect.succeed({ _tag: "Deleted" } as const)
+                    : providerUnavailable("forgetKnowledge", "identityMismatch"),
+                ),
               );
             },
           ),

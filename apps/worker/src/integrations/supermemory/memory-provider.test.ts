@@ -606,6 +606,27 @@ it.effect("forgets only exact approved memory IDs within the User scope", () =>
   ),
 );
 
+it.effect("keeps an exact memory deletion pending when the provider confirms another ID", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({ body: { forgotten: true, id: "different-memory" }, status: 200 });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .forgetKnowledge({
+          memoryId: MemoryProvider.KnowledgeMemoryId.make("memory-1"),
+          userId: UserId.make("user-1"),
+        })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "identityMismatch",
+        operation: "forgetKnowledge",
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
 it.effect("deletes every Session conversation document by stable provider identity", () =>
   withProvider(({ requests, origin, respondWith }) =>
     Effect.gen(function* () {
