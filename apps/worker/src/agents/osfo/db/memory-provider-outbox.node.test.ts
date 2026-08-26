@@ -1314,6 +1314,14 @@ it.effect("hands a cross-isolate late provider acceptance to durable Session del
   ),
 );
 
+it.effect("preserves observed Session deletion progress after a late provider acceptance", () =>
+  verifyLateProviderAcceptancePreservesProgress("observed"),
+);
+
+it.effect("preserves deleted Session deletion progress after a late provider acceptance", () =>
+  verifyLateProviderAcceptancePreservesProgress("deleted"),
+);
+
 it.effect("retains accepted Session cleanup until a processing provider document surfaces", () =>
   withDatabase(({ database, storage }) =>
     Effect.gen(function* () {
@@ -3137,6 +3145,89 @@ const conversationProjection = (assistantMessageId: string) =>
 
 const deletion = (outboxId: string, sessionId: string, userId = "user-1", enqueuedAt = now) =>
   authorizedDeletion(outboxId, sessionId, userId, enqueuedAt);
+
+const verifyLateProviderAcceptancePreservesProgress = (status: "deleted" | "observed") =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const durableStorage = asDurableObjectStorage(storage);
+      const db = makeAgentDb(durableStorage);
+      const agentStore = makeAgentStore(db);
+      const outbox = makeMemoryProviderOutboxStore(db);
+      yield* agentStore.initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId: ConversationRouteId.make("route-1"),
+        sessionId: SessionId.make("session-1"),
+      });
+      yield* agentStore.replaceCurrentSession({
+        expectedCurrentSessionId: SessionId.make("session-1"),
+        replacedAt: now,
+        replacementSessionId: SessionId.make("session-2"),
+        routeId: ConversationRouteId.make("route-1"),
+      });
+      yield* agentStore.recordCommittedTurn(
+        committedTurn("assistant-1", "request-1"),
+        conversationProjection("assistant-1"),
+      );
+      const lateSaveClaim = Option.getOrThrow(
+        yield* outbox.claimNext(now, liveLease, "late-provider-save"),
+      );
+      expect(yield* outbox.beginProviderSubmission(lateSaveClaim)).toBe(true);
+
+      yield* agentStore.deleteHistoricalSession({
+        authorization: authorizedDeletion("delete-session-1", "session-1").payload.authorization,
+        deletedAt: now,
+        outboxId: MemoryProviderOutboxId.make("delete-session-1"),
+        sessionId: SessionId.make("session-1"),
+        userId: UserId.make("user-1"),
+      });
+      const retainedProgress = yield* Schema.encodeEffect(
+        Schema.fromJsonString(MemoryProviderDeletionProgress),
+      )({
+        _tag: "DeleteSessionConversation",
+        awaitingDiscovery: false,
+        targets: [
+          {
+            documentId: MemoryProvider.ProviderDocumentId.make("late-document"),
+            status,
+          },
+        ],
+      }).pipe(Effect.orDie);
+      database
+        .prepare(
+          `UPDATE osfo_memory_provider_outbox SET deletion_progress_json = ?
+            WHERE outbox_id = 'delete-session-1'`,
+        )
+        .run(retainedProgress);
+
+      const reactivatedOutbox = makeMemoryProviderOutboxStore(makeAgentDb(durableStorage));
+      expect(
+        yield* reactivatedOutbox.markProviderAccepted(
+          lateSaveClaim,
+          conversationSaveResult("late-document", "done"),
+          now,
+        ),
+      ).toBe(true);
+      const retained = database
+        .prepare(
+          `SELECT deletion_progress_json FROM osfo_memory_provider_outbox
+            WHERE outbox_id = 'delete-session-1'`,
+        )
+        .get();
+      if (retained === undefined || typeof retained.deletion_progress_json !== "string") {
+        throw new Error("Session deletion progress was not retained");
+      }
+      const progress = yield* Schema.decodeEffect(
+        Schema.fromJsonString(MemoryProviderDeletionProgress),
+      )(retained.deletion_progress_json).pipe(Effect.orDie);
+      expect(progress).toEqual({
+        _tag: "DeleteSessionConversation",
+        awaitingDiscovery: false,
+        targets: [{ documentId: "late-document", status }],
+      });
+    }),
+  );
 
 const sessionDeletionProgress = (documentId: string) => ({
   _tag: "DeleteSessionConversation" as const,

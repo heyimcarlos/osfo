@@ -666,11 +666,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
                   ...decodedProgress.success.targets,
                   { documentId: result.documentId, status: "accepted" },
                 ]
-              : decodedProgress.success.targets.map((target) =>
-                  target.documentId === result.documentId
-                    ? { documentId: target.documentId, status: "accepted" as const }
-                    : target,
-                ),
+              : decodedProgress.success.targets,
         };
         transaction
           .update(memoryProviderOutbox)
