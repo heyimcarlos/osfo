@@ -20,11 +20,17 @@ it.effect("corrects Core Memory while preserving the source Session transcript",
       { block: "agentNotes", content: "" },
     ],
     Effect.void,
-    (replacement) =>
-      Effect.sync(() => {
-        coreMemory[replacement.block] = replacement.content;
-        return replacement;
-      }),
+    (replacements, authorize) =>
+      authorize.pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            for (const replacement of replacements) {
+              coreMemory[replacement.block] = replacement.content;
+            }
+            return replacements;
+          }),
+        ),
+      ),
   ).pipe(
     Effect.andThen(
       Effect.sync(() => {
@@ -38,7 +44,7 @@ it.effect("corrects Core Memory while preserving the source Session transcript",
   );
 });
 
-it.effect("rechecks authority immediately before every Core Memory replacement", () => {
+it.effect("rechecks authority immediately before the atomic Core Memory replacement", () => {
   const coreMemory = {
     agentNotes: "Old note",
     userContext: "Old preference",
@@ -52,21 +58,27 @@ it.effect("rechecks authority immediately before every Core Memory replacement",
     ],
     Effect.suspend(() => {
       checks += 1;
-      return checks === 1 ? Effect.void : Effect.fail("authority changed" as const);
+      return Effect.fail("authority changed" as const);
     }),
-    (replacement) =>
-      Effect.sync(() => {
-        coreMemory[replacement.block] = replacement.content;
-      }),
+    (replacements, authorize) =>
+      authorize.pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            for (const replacement of replacements) {
+              coreMemory[replacement.block] = replacement.content;
+            }
+          }),
+        ),
+      ),
   ).pipe(
     Effect.flip,
     Effect.tap((failure) =>
       Effect.sync(() => {
         expect(failure).toBe("authority changed");
-        expect(checks).toBe(2);
+        expect(checks).toBe(1);
         expect(coreMemory).toEqual({
           agentNotes: "Old note",
-          userContext: "Corrected preference",
+          userContext: "Old preference",
         });
       }),
     ),
@@ -93,7 +105,7 @@ it.effect("retains provider work when an immediate correction fails", () => {
   );
 });
 
-it.effect("retains provider ownership after a later Core Memory replacement fails", () => {
+it.effect("leaves every Core Memory block unchanged when the atomic replacement fails", () => {
   const coreMemory = { agentNotes: "Old note", userContext: "Old preference" };
   const events: Array<string> = [];
   return completeKnowledgeDeletionPreparation({
@@ -103,13 +115,8 @@ it.effect("retains provider ownership after a later Core Memory replacement fail
         { block: "agentNotes", content: "" },
       ],
       Effect.void,
-      (replacement) =>
-        replacement.block === "agentNotes"
-          ? Effect.fail("later replacement failed" as const)
-          : Effect.sync(() => {
-              coreMemory[replacement.block] = replacement.content;
-              events.push(`replace:${replacement.block}`);
-            }),
+      (_replacements, authorize) =>
+        authorize.pipe(Effect.andThen(Effect.fail("later replacement failed" as const))),
     ),
     release: Effect.sync(() => {
       events.push("release");
@@ -121,9 +128,9 @@ it.effect("retains provider ownership after a later Core Memory replacement fail
         expect(result).toEqual({ _tag: "CorrectionPending" });
         expect(coreMemory).toEqual({
           agentNotes: "Old note",
-          userContext: "Corrected preference",
+          userContext: "Old preference",
         });
-        expect(events).toEqual(["replace:userContext"]);
+        expect(events).toEqual([]);
       }),
     ),
   );

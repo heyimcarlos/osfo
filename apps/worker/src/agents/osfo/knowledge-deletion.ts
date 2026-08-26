@@ -7,13 +7,12 @@ export const correctForgottenKnowledge = Effect.fn("KnowledgeDeletion.correctFor
   function* <A, E, E2, R>(
     replacements: ReadonlyArray<CoreMemoryReplacement>,
     authorizeReplacement: Effect.Effect<void, E2, R>,
-    replace: (replacement: CoreMemoryReplacement) => Effect.Effect<A, E>,
+    replace: (
+      replacements: ReadonlyArray<CoreMemoryReplacement>,
+      authorize: Effect.Effect<void, E2, R>,
+    ) => Effect.Effect<A, E | E2, R>,
   ) {
-    return yield* Effect.forEach(
-      replacements,
-      (replacement) => authorizeReplacement.pipe(Effect.andThen(replace(replacement))),
-      { concurrency: 1 },
-    );
+    return yield* replace(replacements, authorizeReplacement);
   },
 );
 
@@ -29,8 +28,7 @@ export const completeKnowledgeDeletionPreparation = Effect.fn(
   readonly release: Effect.Effect<boolean, E2>;
 }) {
   const correction = yield* input.correct.pipe(Effect.result);
-  // A failed later replacement may follow an already committed earlier block. Retaining the
-  // preparation makes both local correction and provider forgetting retryable as one obligation.
+  // The correction boundary is atomic, so failure retains provider ownership with no local write.
   if (Result.isFailure(correction)) return { _tag: "CorrectionPending" } as const;
   const release = yield* input.release.pipe(Effect.result);
   return {

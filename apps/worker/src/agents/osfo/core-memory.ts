@@ -11,6 +11,18 @@ import { Effect, Schema } from "effect";
 import { AuthorizationContext } from "../../services/authorization";
 import { effectToolSchema } from "./effect-tool-schema";
 
+interface CoreMemoryBatchSession {
+  readonly getContextBlock: (label: string) => ContextBlock | null;
+  readonly refreshSystemPrompt: () => Promise<string>;
+}
+
+interface CoreMemoryBatchStorage {
+  readonly sql: {
+    readonly exec: (query: string, ...bindings: ReadonlyArray<string>) => void;
+  };
+  readonly transactionSync: <A>(transaction: () => A) => A;
+}
+
 const positiveInteger = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0));
 const configurableTokenBudget = Schema.Finite.check(
   Schema.isInt(),
@@ -225,7 +237,7 @@ export const coreMemoryTools = (session: Session): ToolSet => ({
 
 /** Inspect both user-readable Core Memory blocks through Think's public Session interface. */
 export const inspectCoreMemory = (
-  session: Session,
+  session: CoreMemoryBatchSession,
 ): Effect.Effect<CoreMemoryInspected, CoreMemoryUnavailable> =>
   Effect.tryPromise({
     try: () =>
@@ -294,6 +306,75 @@ export const replaceCoreMemoryBlock = (
     });
   });
 
+/** Replace an exact-approved Core Memory set as one Agent SQLite mutation. */
+export const replaceCoreMemoryBlocks = <E, R>(
+  session: CoreMemoryBatchSession,
+  storage: CoreMemoryBatchStorage,
+  replacements: ReadonlyArray<{ readonly block: CoreMemoryBlockName; readonly content: string }>,
+  authorizeReplacement: Effect.Effect<void, E, R>,
+): Effect.Effect<
+  ReadonlyArray<CoreMemoryCorrected>,
+  CoreMemoryBudgetExceeded | CoreMemoryUnavailable | E,
+  R
+> =>
+  Effect.gen(function* () {
+    const memory = yield* inspectCoreMemory(session);
+    const corrected = yield* Effect.forEach(replacements, (replacement) => {
+      const maxTokens = memory[replacement.block].maxTokens;
+      const tokens = estimateStringTokens(replacement.content);
+      return tokens > maxTokens
+        ? Effect.fail(
+            new CoreMemoryBudgetExceeded({
+              block: replacement.block,
+              maxTokens,
+              message: "The Core Memory correction exceeds the selected block budget",
+              tokens,
+            }),
+          )
+        : Effect.succeed({
+            _tag: "CoreMemoryCorrected" as const,
+            block: replacement.block,
+            content: replacement.content,
+            maxTokens,
+            tokens,
+          });
+    });
+    yield* authorizeReplacement;
+    yield* Effect.try({
+      try: () =>
+        storage.transactionSync(() => {
+          // The installed AgentContextProvider owns these exact rows but exposes only one-block
+          // writes. Use its version-matched schema here so one approved correction is atomic.
+          for (const replacement of replacements) {
+            storage.sql.exec(
+              `INSERT INTO cf_agents_context_blocks (label, content)
+               VALUES (?, ?)
+               ON CONFLICT(label) DO UPDATE
+               SET content = excluded.content, updated_at = CURRENT_TIMESTAMP`,
+              coreMemoryStorageKeyFor(replacement.block),
+              replacement.content,
+            );
+          }
+        }),
+      catch: (cause) =>
+        new CoreMemoryUnavailable({
+          cause,
+          message: "Core Memory could not be corrected atomically",
+          operation: "correct",
+        }),
+    });
+    yield* Effect.tryPromise({
+      try: () => session.refreshSystemPrompt(),
+      catch: (cause) =>
+        new CoreMemoryUnavailable({
+          cause,
+          message: "Corrected Core Memory could not be refreshed",
+          operation: "correct",
+        }),
+    });
+    return corrected;
+  });
+
 /** Persist one User-selected block budget when its current content fits. */
 export const boundCoreMemory = (
   session: Session,
@@ -351,7 +432,7 @@ export const clearCoreMemory = (
       }),
   });
 
-const requireBlock = (session: Session, label: string): ContextBlock => {
+const requireBlock = (session: CoreMemoryBatchSession, label: string): ContextBlock => {
   const block = session.getContextBlock(label);
   if (block === null) throw new Error(`Required Core Memory block is missing: ${label}`);
   return block;
@@ -369,8 +450,11 @@ const labelFor = coreMemoryLabelFor;
 
 const maxTokensFor = (block: CoreMemoryBlockName) => coreMemoryBlocks[block].defaultMaxTokens;
 
+const coreMemoryStorageKeyFor = (block: CoreMemoryBlockName) =>
+  `osfo_core_memory_${coreMemoryBlocks[block].storageKey}`;
+
 const contentProvider = (sqlProvider: SqlProvider, block: CoreMemoryBlockName) =>
-  new AgentContextProvider(sqlProvider, `osfo_core_memory_${coreMemoryBlocks[block].storageKey}`);
+  new AgentContextProvider(sqlProvider, coreMemoryStorageKeyFor(block));
 
 const budgetProvider = (sqlProvider: SqlProvider, block: CoreMemoryBlockName) =>
   new AgentContextProvider(

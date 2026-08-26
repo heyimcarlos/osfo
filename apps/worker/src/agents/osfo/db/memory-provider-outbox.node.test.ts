@@ -987,6 +987,12 @@ it.effect("drains an in-flight provider save before terminalizing Session append
             Effect.tap(() => Effect.sync(() => providerDocuments.add("document-1"))),
             Effect.as(conversationSaveResult("document-1", "processing")),
           ),
+        verifySessionConversation: ({ documentId }) =>
+          Effect.sync(() =>
+            providerDocuments.has(documentId)
+              ? ({ _tag: "Verified" } as const)
+              : ({ _tag: "AlreadyAbsent" } as const),
+          ),
       });
       const reconciliation = Effect.scoped(
         reconcileMemoryProviderOutbox(outbox, {
@@ -1318,8 +1324,10 @@ it.effect("retains accepted Session cleanup until a processing provider document
               : ({ _tag: "AlreadyAbsent" } as const),
           ),
         verifySessionConversation: () =>
-          Effect.succeed(
-            surfaced ? ({ _tag: "Verified" } as const) : ({ _tag: "AlreadyAbsent" } as const),
+          Effect.sync(() =>
+            surfaced && providerDocuments.has("document-1")
+              ? ({ _tag: "Verified" } as const)
+              : ({ _tag: "AlreadyAbsent" } as const),
           ),
       });
 
@@ -1427,6 +1435,12 @@ it.effect(
                     _tag: "Found",
                     documentIds: [MemoryProvider.ProviderDocumentId.make("document-1")],
                   } as const)
+                : ({ _tag: "AlreadyAbsent" } as const),
+            ),
+          verifySessionConversation: ({ documentId }) =>
+            Effect.sync(() =>
+              surfaced && providerDocuments.has(documentId)
+                ? ({ _tag: "Verified" } as const)
                 : ({ _tag: "AlreadyAbsent" } as const),
             ),
         });
@@ -2289,6 +2303,7 @@ it.effect("allows independent reconcilers to overlap without duplicating provide
         authorizedDeletion("delete-user-2", "session-2", "user-2", past),
       );
       const observed: Array<string> = [];
+      const deletedUsers = new Set<string>();
       let active = 0;
       let maximumActive = 0;
       const provider = providerStub({
@@ -2298,9 +2313,16 @@ it.effect("allows independent reconcilers to overlap without duplicating provide
             maximumActive = Math.max(maximumActive, active);
             yield* Effect.yieldNow;
             observed.push(userId);
+            deletedUsers.add(userId);
             active -= 1;
             return { _tag: "Deleted" as const };
           }),
+        verifySessionConversation: ({ userId }) =>
+          Effect.sync(() =>
+            deletedUsers.has(userId)
+              ? ({ _tag: "AlreadyAbsent" } as const)
+              : ({ _tag: "Verified" } as const),
+          ),
       });
 
       yield* Effect.all(

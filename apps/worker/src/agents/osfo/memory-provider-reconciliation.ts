@@ -347,6 +347,28 @@ const processSessionDeletionTarget = Effect.fn("MemoryProviderOutbox.processSess
       yield* retryClaim(store, claim, deleted.failure.message, retryDelaySeconds);
       return undefined;
     }
+    const canConfirm = yield* authorizeProviderRequest(
+      store,
+      claim,
+      options,
+      payload.authorization,
+      "Session deletion authority changed before provider absence confirmation",
+    );
+    if (!canConfirm) return undefined;
+    const confirmed = yield* provider.verifySessionConversation(target).pipe(Effect.result);
+    if (Result.isFailure(confirmed)) {
+      yield* retryClaim(store, claim, confirmed.failure.message, retryDelaySeconds);
+      return undefined;
+    }
+    if (confirmed.success._tag !== "AlreadyAbsent") {
+      yield* retryClaim(
+        store,
+        claim,
+        "The Session conversation remains present after provider deletion",
+        retryDelaySeconds,
+      );
+      return undefined;
+    }
     return yield* recordSessionTargetStatus(store, claim, observed, retainedTarget, "deleted");
   },
 );

@@ -105,11 +105,19 @@ it.effect("completes deletion work only after provider confirmation", () => {
   const claim = authorizedDeletionClaim();
   const observed: Array<ObservedSessionDeletion> = [];
   const { completed, retried, store } = testStore(claim);
+  let verificationCount = 0;
   const provider = providerStub({
     deleteSessionConversation: (input) => {
       observed.push({ _tag: "DeleteSessionConversation", ...input });
-      return Effect.succeed({ _tag: "AlreadyAbsent" as const });
+      return Effect.succeed({ _tag: "Deleted" as const });
     },
+    verifySessionConversation: () =>
+      Effect.sync(() => {
+        verificationCount += 1;
+        return verificationCount === 1
+          ? ({ _tag: "Verified" } as const)
+          : ({ _tag: "AlreadyAbsent" } as const);
+      }),
   });
 
   return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
@@ -128,6 +136,124 @@ it.effect("completes deletion work only after provider confirmation", () => {
         ]);
         expect(completed).toEqual([claim.outboxId]);
         expect(retried).toEqual([]);
+        expect(verificationCount).toBe(2);
+      }),
+    ),
+  );
+});
+
+it.effect("keeps Session deletion pending when DELETE 204 has not made the document absent", () => {
+  const claim = authorizedDeletionClaim();
+  let verificationCount = 0;
+  const { completed, deletionProgress, retried, store } = testStore(claim);
+  const provider = providerStub({
+    deleteSessionConversation: () => Effect.succeed({ _tag: "Deleted" as const }),
+    verifySessionConversation: () =>
+      Effect.sync(() => {
+        verificationCount += 1;
+        return { _tag: "Verified" as const };
+      }),
+  });
+
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(verificationCount).toBe(2);
+        expect(completed).toEqual([]);
+        expect(retried).toEqual([claim.outboxId]);
+        expect(deletionProgress).toEqual([
+          {
+            _tag: "DeleteSessionConversation",
+            awaitingDiscovery: false,
+            targets: [{ documentId, status: "observed" }],
+          },
+        ]);
+      }),
+    ),
+  );
+});
+
+it.effect("confirms delayed Session absence after restart without repeating DELETE", () => {
+  const firstClaim = authorizedDeletionClaim();
+  const firstRun = testStore(firstClaim);
+  const firstProvider = providerStub({
+    deleteSessionConversation: () => Effect.succeed({ _tag: "Deleted" as const }),
+    verifySessionConversation: () => Effect.succeed({ _tag: "Verified" as const }),
+  });
+  const retainedClaim: ClaimedMemoryProviderWork = {
+    ...firstClaim,
+    deletionProgress: {
+      _tag: "DeleteSessionConversation",
+      awaitingDiscovery: false,
+      targets: [{ documentId, status: "observed" }],
+    },
+  };
+  const restarted = testStore(retainedClaim);
+  let repeatedDelete = false;
+  const restartedProvider = providerStub({
+    deleteSessionConversation: () => {
+      repeatedDelete = true;
+      return Effect.die(new Error("Confirmed absence repeated provider deletion"));
+    },
+    verifySessionConversation: () => Effect.succeed({ _tag: "AlreadyAbsent" as const }),
+  });
+
+  return Effect.scoped(
+    reconcileMemoryProviderOutbox(firstRun.store, permittedDeletionOptions).pipe(
+      Effect.provideService(MemoryProvider.Service, firstProvider),
+      Effect.andThen(
+        reconcileMemoryProviderOutbox(restarted.store, permittedDeletionOptions).pipe(
+          Effect.provideService(MemoryProvider.Service, restartedProvider),
+        ),
+      ),
+    ),
+  ).pipe(
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(firstRun.completed).toEqual([]);
+        expect(firstRun.retried).toEqual([firstClaim.outboxId]);
+        expect(restarted.completed).toEqual([retainedClaim.outboxId]);
+        expect(restarted.retried).toEqual([]);
+        expect(repeatedDelete).toBe(false);
+      }),
+    ),
+  );
+});
+
+it.effect("keeps Session deletion pending when post-delete identity confirmation fails", () => {
+  const claim = authorizedDeletionClaim();
+  let verificationCount = 0;
+  const { completed, retried, store } = testStore(claim);
+  const provider = providerStub({
+    deleteSessionConversation: () => Effect.succeed({ _tag: "Deleted" as const }),
+    verifySessionConversation: () =>
+      Effect.suspend(() => {
+        verificationCount += 1;
+        return verificationCount === 1
+          ? Effect.succeed({ _tag: "Verified" as const })
+          : Effect.fail(
+              new MemoryProvider.MemoryProviderUnavailable({
+                diagnostic: "identityMismatch",
+                message: "The provider returned a different Session document",
+                operation: "deleteSessionConversation",
+              }),
+            );
+      }),
+  });
+
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(completed).toEqual([]);
+        expect(retried).toEqual([claim.outboxId]);
       }),
     ),
   );
@@ -136,12 +262,20 @@ it.effect("completes deletion work only after provider confirmation", () => {
 it.effect("rechecks retained Approval around idempotent local deletion preparation", () => {
   const claim = authorizedDeletionClaim();
   const events: Array<string> = [];
+  let verificationCount = 0;
   const { completed, store } = testStore(claim);
   const provider = providerStub({
     deleteSessionConversation: () =>
       Effect.sync(() => {
         events.push("provider");
         return { _tag: "Deleted" as const };
+      }),
+    verifySessionConversation: () =>
+      Effect.sync(() => {
+        verificationCount += 1;
+        return verificationCount === 1
+          ? ({ _tag: "Verified" } as const)
+          : ({ _tag: "AlreadyAbsent" } as const);
       }),
   });
 
@@ -168,6 +302,7 @@ it.effect("rechecks retained Approval around idempotent local deletion preparati
           "authorize",
           "authorize",
           "provider",
+          "authorize",
         ]);
         expect(completed).toEqual([claim.outboxId]);
       }),

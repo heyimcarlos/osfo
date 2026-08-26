@@ -144,7 +144,7 @@ import {
   inspectCoreMemory,
   InspectCoreMemoryInput,
   type InspectCoreMemoryEncoded,
-  replaceCoreMemoryBlock,
+  replaceCoreMemoryBlocks,
 } from "./core-memory";
 import { Allowances } from "../../services/allowances";
 import { makeActionApprovals } from "../../services/action-approvals";
@@ -1695,8 +1695,11 @@ export class OsfoAgent extends Think<Env> {
             }),
         }).pipe(
           Effect.andThen(
-            correctForgottenKnowledge(input.coreMemory, authorizeReplacement, (replacement) =>
-              replaceCoreMemoryBlock(this.session, replacement),
+            correctForgottenKnowledge(
+              input.coreMemory,
+              authorizeReplacement,
+              (replacements, authorize) =>
+                replaceCoreMemoryBlocks(this.session, this.ctx.storage, replacements, authorize),
             ),
           ),
         ),
@@ -2147,7 +2150,8 @@ export class OsfoAgent extends Think<Env> {
                   : Effect.void,
               ),
             ),
-            (replacement) => replaceCoreMemoryBlock(this.session, replacement),
+            (replacements, authorize) =>
+              replaceCoreMemoryBlocks(this.session, this.ctx.storage, replacements, authorize),
           ).pipe(Effect.asVoid),
         ),
         Effect.mapError(
