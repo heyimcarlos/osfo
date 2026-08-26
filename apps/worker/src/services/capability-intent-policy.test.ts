@@ -11,6 +11,10 @@ describe("deletion and data-rights intent", () => {
       "Erase everything you know about me",
       "Forget everything about me",
       "Remove your memories of me",
+      "Delete my remembered knowledge",
+      "Forget my remembered knowledge",
+      "Remove my remembered knowledge",
+      "Erase my remembered knowledge",
     ];
 
     expect(requests.map(isDeletionOrDataRightsIntent)).toEqual(requests.map(() => true));
@@ -24,6 +28,9 @@ describe("deletion and data-rights intent", () => {
       "Delete everything you remember about writing the report",
       "Write a story about removing memories",
       "Summarize an article about erasing memories",
+      "Explain what remembered knowledge means",
+      "Write a story about deleting remembered knowledge",
+      "Do you support erasing remembered knowledge?",
     ];
 
     expect(ordinaryMessages.map(isDeletionOrDataRightsIntent)).toEqual(

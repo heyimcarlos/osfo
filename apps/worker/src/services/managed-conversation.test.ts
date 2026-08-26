@@ -85,6 +85,10 @@ it.effect("keeps the supported deletion and data-rights launch surface reachable
       "Erase everything you know about me",
       "Forget everything about me",
       "Remove your memories of me",
+      "Delete my remembered knowledge",
+      "Forget my remembered knowledge",
+      "Remove my remembered knowledge",
+      "Erase my remembered knowledge",
     ];
 
     const results = yield* Effect.forEach(messages, (message, index) =>
@@ -120,6 +124,9 @@ it.effect("does not mistake ordinary discussion of deletion for a data-rights re
       "Please forget what you know about machine learning",
       "Delete everything you remember about writing the report",
       "Write a story about removing memories",
+      "Explain what remembered knowledge means",
+      "Write a story about deleting remembered knowledge",
+      "Do you support erasing remembered knowledge?",
     ];
 
     const results = yield* Effect.forEach(messages, (message, index) =>
