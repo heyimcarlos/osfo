@@ -21,7 +21,7 @@ RUN_ID="verify-$(date -u +%Y%m%d-%H%M%S)-$$"
 
 `start` launches one labeled PostgreSQL container, applies the real migrations, starts local Twilio, Telegram, Stripe, and Supermemory HTTP emulators, starts the actual Worker under Wrangler with run-owned Durable Object and R2 storage, and starts the Vite web UI. It prints `ready` only after `/auth/get-session` and `/get-started` answer.
 
-The helper derives each run's Wrangler config from `apps/worker/wrangler.jsonc`. It changes only the run name, local provider and browser origins, test credentials, run-owned PostgreSQL connection, R2 bucket names, and Workflow name. Compatibility settings, bindings, migrations, containers, triggers, and observability remain canonical.
+The helper derives each run's Wrangler config from `apps/worker/wrangler.jsonc`. It changes only the run name, local provider and browser origins, test credentials, run-owned PostgreSQL connection, R2 bucket names, and Workflow name. It removes the inactive `ai` and `websearch` remote-provider bindings so a local journey cannot open a Cloudflare proxy session. Compatibility settings, all other bindings, migrations, containers, triggers, and observability remain canonical.
 
 The run is ready when all of these hold:
 
