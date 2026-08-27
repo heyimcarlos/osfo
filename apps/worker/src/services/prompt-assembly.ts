@@ -1,4 +1,4 @@
-import { Array, Duration, Effect, Order } from "effect";
+import { Array, Clock, Duration, Effect, Order } from "effect";
 import { estimateStringTokens } from "agents/experimental/memory/utils";
 import type { ModelMessage, UserModelMessage } from "ai";
 
@@ -214,19 +214,32 @@ export const assemble = Effect.fn("PromptAssembly.assemble")(function* (input: I
       suppliedLimits.providerSourceMaxTokens ?? defaultLimits.providerSourceMaxTokens ?? 0,
     recallDeadlineMillis: suppliedLimits.recallDeadlineMillis,
   };
-  const recalled = yield* memoryProvider
+  const recallStartedAt = yield* Clock.currentTimeMillis;
+  const recallOutcome = yield* memoryProvider
     .recall({ mode, query: input.query, userId: input.userId })
     .pipe(
+      Effect.map((value) => ({ _tag: "Available" as const, value })),
       Effect.catchTags({
-        MemoryProviderRejected: () => Effect.succeed(null),
-        MemoryProviderUnavailable: () => Effect.succeed(null),
+        MemoryProviderRejected: () => Effect.succeed({ _tag: "Rejected" as const }),
+        MemoryProviderUnavailable: () => Effect.succeed({ _tag: "Unavailable" as const }),
       }),
       Effect.timeoutOrElse({
         duration: Duration.millis(limits.recallDeadlineMillis),
-        orElse: () => Effect.succeed(null),
+        orElse: () => Effect.succeed({ _tag: "TimedOut" as const }),
       }),
     );
-  if (recalled === null) return providerUnavailable(input.agentInstructions);
+  if (recallOutcome._tag !== "Available") {
+    const recallCompletedAt = yield* Clock.currentTimeMillis;
+    yield* Effect.logWarning("MemoryProvider recall unavailable for prompt assembly").pipe(
+      Effect.annotateLogs({
+        failureTag: recallOutcome._tag,
+        latencyMillis: recallCompletedAt - recallStartedAt,
+        operation: "recall",
+      }),
+    );
+    return providerUnavailable(input.agentInstructions);
+  }
+  const recalled = recallOutcome.value;
   const providerContext = [
     "## Provider profile evidence",
     boundedProfile(recalled.profile, limits.providerProfileMaxTokens),

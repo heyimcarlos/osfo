@@ -159,8 +159,10 @@ export interface ClaimedMemoryProviderWork {
   readonly attemptCount: number;
   readonly claimToken: string;
   readonly deletionProgress?: MemoryProviderDeletionProgress | null;
+  readonly enqueuedAt?: DbTimestamp;
   readonly outboxId: MemoryProviderOutboxId;
   readonly payload: MemoryProviderOutboxPayload;
+  readonly providerAcceptedAt?: DbTimestamp | null;
   readonly providerAcceptance: AcceptedConversationDocument | null;
   readonly sequence: number;
   readonly usage: MemoryProvider.UsageEvidence | null;
@@ -197,6 +199,41 @@ interface MemoryProviderOrderingRow {
   readonly providerStatus: StoredProviderStatus | null;
   readonly status: "claimed" | "completed" | "failed" | "pending";
 }
+
+export interface MemoryProviderBacklogRow extends MemoryProviderOrderingRow {
+  readonly enqueuedAt: DbTimestamp;
+  readonly operationType: (typeof memoryProviderOutbox.$inferSelect)["operation_type"];
+  readonly outboxId: string;
+}
+
+export interface MemoryProviderBacklogSummary {
+  readonly blockedAppendCount: number;
+  readonly oldestPendingAppendAgeMillis: number;
+  readonly pendingAppendCount: number;
+}
+
+/** Summarize append pressure without exporting payloads, identities, or provider bodies. */
+export const summarizeMemoryProviderBacklog = (
+  rows: ReadonlyArray<MemoryProviderBacklogRow>,
+  now: DbTimestamp,
+): MemoryProviderBacklogSummary => {
+  const pendingAppends = rows.filter(
+    (row) => row.operationType === "saveConversation" && row.status !== "failed",
+  );
+  const actionableAppendCount = actionableOrderingRows(pendingAppends).length;
+  const oldestPendingAppend = pendingAppends.reduce<MemoryProviderBacklogRow | undefined>(
+    (oldest, row) => (oldest === undefined || row.enqueuedAt < oldest.enqueuedAt ? row : oldest),
+    undefined,
+  );
+  return {
+    blockedAppendCount: pendingAppends.length - actionableAppendCount,
+    oldestPendingAppendAgeMillis:
+      oldestPendingAppend === undefined
+        ? 0
+        : Math.max(0, Date.parse(now) - Date.parse(oldestPendingAppend.enqueuedAt)),
+    pendingAppendCount: pendingAppends.length,
+  };
+};
 
 /** Select only the oldest unfinished operation per ordering key. */
 export const selectMemoryProviderClaimCandidate = (
@@ -407,6 +444,25 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
           version: MemoryProvider.ConfigurationVersion.make(row.version),
         } satisfies MemoryProviderConfigurationStatus);
       }),
+  );
+
+  const inspectBacklog = Effect.fn("MemoryProviderOutbox.inspectBacklog")((now: DbTimestamp) =>
+    execute("inspectMemoryProviderOutbox", () => {
+      const rows = db
+        .select({
+          enqueuedAt: memoryProviderOutbox.enqueued_at,
+          operationType: memoryProviderOutbox.operation_type,
+          orderingKey: memoryProviderOutbox.ordering_key,
+          outboxId: memoryProviderOutbox.outbox_id,
+          providerStatus: memoryProviderOutbox.provider_status,
+          status: memoryProviderOutbox.status,
+        })
+        .from(memoryProviderOutbox)
+        .where(ne(memoryProviderOutbox.status, "completed"))
+        .orderBy(asc(memoryProviderOutbox.sequence))
+        .all();
+      return summarizeMemoryProviderBacklog(rows, now);
+    }),
   );
 
   const enqueueDeletion = Effect.fn("MemoryProviderOutbox.enqueueDeletion")(function* (
@@ -1018,6 +1074,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     expediteProcessingConversationWork,
     hasUnsettledProviderConversationWork,
     hasRetryableWork,
+    inspectBacklog,
     inspectConfiguration,
     isClaimCurrent,
     awaitProvider,
@@ -1248,8 +1305,10 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
     attemptCount: row.attempt_count,
     claimToken: row.claim_token,
     deletionProgress,
+    enqueuedAt: row.enqueued_at,
     outboxId,
     payload,
+    providerAcceptedAt: row.provider_accepted_at,
     providerAcceptance:
       providerDocumentId === null || providerStatus === null
         ? null

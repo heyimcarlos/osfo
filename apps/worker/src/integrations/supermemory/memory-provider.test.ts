@@ -833,7 +833,7 @@ it.effect("refuses a Session document shared with another User container", () =>
       expect(failure).toMatchObject({
         _tag: "MemoryProviderUnavailable",
         diagnostic: "identityMismatch",
-        operation: "deleteSessionConversation",
+        operation: "findSessionConversation",
       });
       expect(requests).toHaveLength(1);
       expect(requests[0]).toMatchObject({ method: "POST", path: "/v3/documents/list" });
@@ -876,7 +876,7 @@ it.effect("refuses deletion when Session document ownership changes after lookup
       expect(failure).toMatchObject({
         _tag: "MemoryProviderUnavailable",
         diagnostic: "identityMismatch",
-        operation: "deleteSessionConversation",
+        operation: "verifySessionConversation",
       });
       expect(requests).toHaveLength(2);
       expect(requests.every(({ method }) => method !== "DELETE")).toBe(true);
@@ -977,7 +977,7 @@ it.effect("fails closed when the post-delete User container read names another o
       expect(failure).toMatchObject({
         _tag: "MemoryProviderUnavailable",
         diagnostic: "identityMismatch",
-        operation: "deleteUserKnowledge",
+        operation: "verifyUserKnowledge",
       });
     }).pipe(Effect.provide(providerLayer(origin))),
   ),
@@ -994,7 +994,7 @@ it.effect("keeps User deletion pending when the post-delete absence read is unav
 
       expect(failure).toMatchObject({
         _tag: "MemoryProviderUnavailable",
-        operation: "deleteUserKnowledge",
+        operation: "verifyUserKnowledge",
         status: 503,
       });
     }).pipe(Effect.provide(providerLayer(origin))),

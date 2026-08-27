@@ -93,6 +93,15 @@ jobs:
           docker rm --force osfo-journeys-postgres || true
           docker network rm osfo-journeys || true
 
+      - name: Restore host Vitest cache ownership
+        if: always()
+        shell: bash
+        run: |
+          vite_temp="$GITHUB_WORKSPACE/apps/worker/node_modules/.vite-temp"
+          if [[ -d "$vite_temp" ]]; then
+            sudo chown --recursive "$(id -u):$(id -g)" "$vite_temp"
+          fi
+
       - name: Start real-Wrangler edited-envelope environment
         shell: bash
         run: |
