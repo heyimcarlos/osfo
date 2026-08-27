@@ -161,6 +161,50 @@ class ArtifactRendererTest(unittest.TestCase):
             with Image.open(image_output) as rendered_image:
                 self.assertEqual(rendered_image.size, (96, 64))
 
+    def test_provider_image_rejects_large_decoded_dimensions_before_conversion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_image = root / "compressed-large.png"
+            Image.new("RGB", (3000, 1000), "white").save(input_image, optimize=True)
+            self.assertLess(len(input_image.read_bytes()), 100_000)
+            image_source = root / "image.json"
+            image_output = root / "image.png"
+            image_source.write_text(
+                json.dumps(
+                    {
+                        "providerImageBase64": base64.b64encode(
+                            input_image.read_bytes()
+                        ).decode(),
+                        "source": {
+                            "altText": "bounded",
+                            "height": 64,
+                            "prompt": "bounded",
+                            "width": 96,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "--kind",
+                    "image",
+                    "--input",
+                    str(image_source),
+                    "--output",
+                    str(image_output),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("provider image exceeds its decoded bounds", completed.stderr)
+            self.assertFalse(image_output.exists())
+
     def test_diagram_rejects_text_that_does_not_fit_the_canvas_or_node(self) -> None:
         base = {
             "direction": "leftToRight",

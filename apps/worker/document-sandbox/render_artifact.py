@@ -19,8 +19,12 @@ from pptx.util import Inches, Pt
 
 MAX_SLIDES = 20
 MAX_VISUAL_EDGE = 2048
+MAX_DECODED_VISUAL_PIXELS = MAX_VISUAL_EDGE * MAX_VISUAL_EDGE
 TITLE_FONT = "Liberation Sans"
 BODY_FONT = "Liberation Sans"
+
+# Pillow rejects extreme dimensions from headers before any pixel expansion.
+Image.MAX_IMAGE_PIXELS = MAX_DECODED_VISUAL_PIXELS
 
 
 def read_source(path: Path) -> dict[str, object]:
@@ -47,6 +51,7 @@ def decode_visuals(value: object) -> dict[str, bytes]:
         if total > 25_000_000:
             raise ValueError("supporting visuals exceed the immutable input limit")
         with Image.open(io.BytesIO(body)) as image:
+            require_decoded_visual_bounds(image, "supporting visual")
             image.verify()
         decoded[content_id] = body
     return decoded
@@ -191,15 +196,34 @@ def render_diagram(source: dict[str, object], output: Path) -> dict[str, object]
 def normalize_image(source: dict[str, object], provider_body: str, output: Path) -> dict[str, object]:
     width = source.get("width")
     height = source.get("height")
-    if not isinstance(width, int) or not isinstance(height, int):
-        raise ValueError("image dimensions are required")
+    if (
+        not isinstance(width, int)
+        or not isinstance(height, int)
+        or not 1 <= width <= MAX_VISUAL_EDGE
+        or not 1 <= height <= MAX_VISUAL_EDGE
+        or width * height > MAX_DECODED_VISUAL_PIXELS
+    ):
+        raise ValueError("image dimensions exceed the bounded output")
     body = base64.b64decode(provider_body, validate=True)
     with Image.open(io.BytesIO(body)) as image:
+        require_decoded_visual_bounds(image, "provider image")
         converted = image.convert("RGBA")
         if converted.size != (width, height):
             converted = converted.resize((width, height), Image.Resampling.LANCZOS)
         converted.save(output, format="PNG", optimize=True)
     return {"height": height, "kind": "visual", "width": width}
+
+
+def require_decoded_visual_bounds(image: Image.Image, label: str) -> None:
+    width, height = image.size
+    if (
+        width < 1
+        or height < 1
+        or width > MAX_VISUAL_EDGE
+        or height > MAX_VISUAL_EDGE
+        or width * height > MAX_DECODED_VISUAL_PIXELS
+    ):
+        raise ValueError(f"{label} exceeds its decoded bounds")
 
 
 def clear_slides(presentation: Presentation) -> None:
