@@ -160,20 +160,26 @@ describe("Composio Provider", () => {
         authorize: async () => ({ redirectUrl: "https://connect.composio.dev/link" }),
         sessionId: "provider-session-1",
       };
+      const executed: Array<{ readonly input: ProviderInput; readonly providerTool: string }> = [];
       const provider = makeFromClient({
         createSession: async () => session,
         disconnect: async () => undefined,
-        executeOnce: async () => ({
-          data: {
-            downloaded_file_content: {
-              mimetype: "text/plain",
-              name: "notes.txt",
-              s3url: signedUrl,
-            },
-          },
-          error: null,
-          logId: "download-log",
-        }),
+        executeOnce: async (_sessionId, providerTool, input) => {
+          executed.push({ input, providerTool });
+          return providerTool === "GOOGLEDRIVE_GET_FILE_METADATA"
+            ? { data: { id: "file-1" }, error: null, logId: "metadata-log" }
+            : {
+                data: {
+                  downloaded_file_content: {
+                    mimetype: "text/plain",
+                    name: "notes.txt",
+                    s3url: signedUrl,
+                  },
+                },
+                error: null,
+                logId: "download-log",
+              };
+        },
         listConnectedAccounts: async () => ({ items: [] }),
         uploadFile: async () => ({ mimetype: "text/plain", name: "notes.txt", s3key: "key" }),
         useSession: async () => session,
@@ -196,6 +202,20 @@ describe("Composio Provider", () => {
           redirect: "error",
         }),
       );
+      expect(executed).toEqual([
+        {
+          input: {
+            fields: "id,name,mimeType,size,modifiedTime,webViewLink",
+            fileId: "file-1",
+            supportsAllDrives: true,
+          },
+          providerTool: "GOOGLEDRIVE_GET_FILE_METADATA",
+        },
+        {
+          input: { fileId: "file-1", mime_type: "text/plain" },
+          providerTool: "GOOGLEDRIVE_DOWNLOAD_FILE",
+        },
+      ]);
       expect(result).toEqual({
         data: {
           content: "x".repeat(8),
@@ -213,6 +233,54 @@ describe("Composio Provider", () => {
     }),
   );
 
+  it.effect("rejects a Drive download whose provider metadata names a different file", () =>
+    Effect.gen(function* () {
+      const fetchMock = vi.spyOn(globalThis, "fetch");
+      const session = {
+        authorize: async () => ({ redirectUrl: "https://connect.composio.dev/link" }),
+        sessionId: "provider-session-1",
+      };
+      const provider = makeFromClient({
+        createSession: async () => session,
+        disconnect: async () => undefined,
+        executeOnce: async (_sessionId, providerTool) =>
+          providerTool === "GOOGLEDRIVE_GET_FILE_METADATA"
+            ? { data: { id: "different-file" }, error: null, logId: "metadata-log" }
+            : {
+                data: {
+                  downloaded_file_content: {
+                    mimetype: "text/plain",
+                    name: "notes.txt",
+                    s3url: "https://example.com/must-not-fetch",
+                  },
+                },
+                error: null,
+                logId: "download-log",
+              },
+        listConnectedAccounts: async () => ({ items: [] }),
+        uploadFile: async () => ({ mimetype: "text/plain", name: "notes.txt", s3key: "key" }),
+        useSession: async () => session,
+      });
+      const created = yield* provider.createSession(
+        UserId.make("user-1"),
+        directIntegrationProviderConfig,
+      );
+
+      expect(
+        yield* Effect.flip(
+          created.session.execute(
+            "GOOGLEDRIVE_DOWNLOAD_FILE",
+            { fileId: "file-1", mime_type: "text/plain" },
+            "private-account",
+            { maximumDownloadBytes: 8 },
+          ),
+        ),
+      ).toMatchObject({ _tag: "IntegrationProviderUnavailable", operation: "downloadFile" });
+      expect(fetchMock).not.toHaveBeenCalled();
+      fetchMock.mockRestore();
+    }),
+  );
+
   it.effect("rejects an arbitrary HTTPS Drive download origin before fetching it", () =>
     Effect.gen(function* () {
       const fetchMock = vi.spyOn(globalThis, "fetch");
@@ -223,17 +291,20 @@ describe("Composio Provider", () => {
       const provider = makeFromClient({
         createSession: async () => session,
         disconnect: async () => undefined,
-        executeOnce: async () => ({
-          data: {
-            downloaded_file_content: {
-              mimetype: "text/plain",
-              name: "notes.txt",
-              s3url: "https://example.com/provider-selected-target",
-            },
-          },
-          error: null,
-          logId: "download-log",
-        }),
+        executeOnce: async (_sessionId, providerTool) =>
+          providerTool === "GOOGLEDRIVE_GET_FILE_METADATA"
+            ? { data: { id: "file-1" }, error: null, logId: "metadata-log" }
+            : {
+                data: {
+                  downloaded_file_content: {
+                    mimetype: "text/plain",
+                    name: "notes.txt",
+                    s3url: "https://example.com/provider-selected-target",
+                  },
+                },
+                error: null,
+                logId: "download-log",
+              },
         listConnectedAccounts: async () => ({ items: [] }),
         uploadFile: async () => ({ mimetype: "text/plain", name: "notes.txt", s3key: "key" }),
         useSession: async () => session,
@@ -268,17 +339,20 @@ describe("Composio Provider", () => {
       const provider = makeFromClient({
         createSession: async () => session,
         disconnect: async () => undefined,
-        executeOnce: async () => ({
-          data: {
-            downloaded_file_content: {
-              mimetype: "text/html",
-              name: "private.txt",
-              s3url: "https://127.0.0.1/private",
-            },
-          },
-          error: null,
-          logId: "download-log",
-        }),
+        executeOnce: async (_sessionId, providerTool) =>
+          providerTool === "GOOGLEDRIVE_GET_FILE_METADATA"
+            ? { data: { id: "file-1" }, error: null, logId: "metadata-log" }
+            : {
+                data: {
+                  downloaded_file_content: {
+                    mimetype: "text/html",
+                    name: "private.txt",
+                    s3url: "https://127.0.0.1/private",
+                  },
+                },
+                error: null,
+                logId: "download-log",
+              },
         listConnectedAccounts: async () => ({ items: [] }),
         uploadFile: async () => ({ mimetype: "text/plain", name: "notes.txt", s3key: "key" }),
         useSession: async () => session,

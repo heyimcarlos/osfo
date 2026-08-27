@@ -43,6 +43,8 @@ const DownloadedFile = Schema.Struct({
   s3url: Schema.String,
 });
 
+const DriveMetadataIdentity = Schema.Struct({ id: Schema.String });
+
 interface ComposioSessionPort {
   readonly authorize: (
     toolkit: string,
@@ -219,24 +221,20 @@ const adaptSession = (
           : Effect.fail(providerFailure("authorize"));
       }),
     ),
-  execute: (providerTool, input, connectedAccountId, constraints) =>
-    providerCall("execute", () =>
+  execute: (providerTool, input, connectedAccountId, constraints) => {
+    if (providerTool === "GOOGLEDRIVE_DOWNLOAD_FILE" && "fileId" in input && "mime_type" in input) {
+      return executeDriveDownload(
+        client,
+        session.sessionId,
+        input,
+        connectedAccountId,
+        constraints?.maximumDownloadBytes,
+      );
+    }
+    return providerCall("execute", () =>
       client.executeOnce(session.sessionId, providerTool, input, connectedAccountId),
-    ).pipe(
-      Effect.flatMap((execution) =>
-        providerTool === "GOOGLEDRIVE_DOWNLOAD_FILE" &&
-        execution.error === null &&
-        "fileId" in input &&
-        "mime_type" in input
-          ? normalizeDriveDownload(
-              execution,
-              input.fileId,
-              input.mime_type,
-              constraints?.maximumDownloadBytes,
-            )
-          : Effect.succeed(execution),
-      ),
-    ),
+    );
+  },
   disconnect: (connectedAccountId) =>
     providerCall("disconnect", () => client.disconnect(connectedAccountId)),
   inspectToolkits: (toolkits) =>
@@ -256,6 +254,39 @@ const adaptSession = (
     ).pipe(Effect.map((groups) => groups.flat())),
   stageFile: (artifact) => providerCall("stageFile", () => client.uploadFile(artifact)),
 });
+
+const executeDriveDownload = (
+  client: ComposioClientPort,
+  sessionId: string,
+  input: Extract<ProviderInput, { readonly mime_type: string }>,
+  connectedAccountId: string,
+  maximumBytes: number | undefined,
+) =>
+  Effect.gen(function* () {
+    const metadataInput = {
+      fields: "id,name,mimeType,size,modifiedTime,webViewLink",
+      fileId: input.fileId,
+      supportsAllDrives: true,
+    } as const satisfies ProviderInput;
+    const metadata = yield* providerCall("downloadFile", () =>
+      client.executeOnce(
+        sessionId,
+        "GOOGLEDRIVE_GET_FILE_METADATA",
+        metadataInput,
+        connectedAccountId,
+      ),
+    );
+    if (metadata.error !== null) return yield* providerFailure("downloadFile");
+    const identity = yield* Schema.decodeUnknownEffect(DriveMetadataIdentity)(metadata.data).pipe(
+      Effect.mapError(() => providerFailure("downloadFile")),
+    );
+    if (identity.id !== input.fileId) return yield* providerFailure("downloadFile");
+    const execution = yield* providerCall("execute", () =>
+      client.executeOnce(sessionId, "GOOGLEDRIVE_DOWNLOAD_FILE", input, connectedAccountId),
+    );
+    if (execution.error !== null) return execution;
+    return yield* normalizeDriveDownload(execution, identity.id, input.mime_type, maximumBytes);
+  });
 
 const normalizeDriveDownload = (
   execution: ProviderExecutionResult,
