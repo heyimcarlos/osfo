@@ -1784,17 +1784,9 @@ export class OsfoAgent extends Think<Env> {
                         this.ctx.storage,
                         replacements,
                         authorize,
-                        () => {
-                          if (
-                            !this.#memoryProviderOutbox.markForgetKnowledgeCorrectionCommitted(
-                              retained.value,
-                            )
-                          ) {
-                            throw new Error(
-                              "Knowledge forgetting lost its exact local preparation claim",
-                            );
-                          }
-                        },
+                        this.#memoryProviderOutbox.markForgetKnowledgeCorrectionCommitted(
+                          retained.value,
+                        ),
                       ),
                   ),
             ),
@@ -2385,13 +2377,7 @@ export class OsfoAgent extends Think<Env> {
                     this.ctx.storage,
                     replacements,
                     authorize,
-                    () => {
-                      if (
-                        !this.#memoryProviderOutbox.markForgetKnowledgeCorrectionCommitted(claim)
-                      ) {
-                        throw new Error("Knowledge forgetting lost its exact reconciliation claim");
-                      }
-                    },
+                    this.#memoryProviderOutbox.markForgetKnowledgeCorrectionCommitted(claim),
                   ),
               ).pipe(Effect.asVoid),
         ),

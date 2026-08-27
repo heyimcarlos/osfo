@@ -6,7 +6,7 @@ import {
   type SqlProvider,
 } from "agents/experimental/memory/session";
 import { estimateStringTokens } from "agents/experimental/memory/utils";
-import { Effect, Schema } from "effect";
+import { Context, Data, Effect, Result, Schema } from "effect";
 
 import { AuthorizationContext } from "../../services/authorization";
 import { effectToolSchema } from "./effect-tool-schema";
@@ -25,6 +25,10 @@ interface CoreMemoryBatchStorage {
   };
   readonly transactionSync: <A>(transaction: () => A) => A;
 }
+
+class CoreMemoryTransactionFailed extends Data.TaggedError("CoreMemoryTransactionFailed")<{
+  readonly cause: unknown;
+}> {}
 
 const positiveInteger = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0));
 const configurableTokenBudget = Schema.Finite.check(
@@ -310,7 +314,7 @@ export const replaceCoreMemoryBlock = (
   });
 
 /** Replace an exact-approved Core Memory set as one Agent SQLite mutation. */
-export const replaceCoreMemoryBlocks = <E, R>(
+export const replaceCoreMemoryBlocks = <E, R, E2>(
   session: CoreMemoryBatchSession,
   storage: CoreMemoryBatchStorage,
   replacements: ReadonlyArray<{
@@ -319,10 +323,10 @@ export const replaceCoreMemoryBlocks = <E, R>(
     readonly expectedContent: string;
   }>,
   authorizeReplacement: Effect.Effect<void, E, R>,
-  markCorrectionCommitted: () => void,
+  markCorrectionCommitted: Effect.Effect<void, E2>,
 ): Effect.Effect<
   ReadonlyArray<CoreMemoryCorrected>,
-  CoreMemoryBudgetExceeded | CoreMemoryUnavailable | E,
+  CoreMemoryBudgetExceeded | CoreMemoryUnavailable | E | E2,
   R
 > =>
   Effect.gen(function* () {
@@ -348,7 +352,9 @@ export const replaceCoreMemoryBlocks = <E, R>(
           });
     });
     yield* authorizeReplacement;
-    yield* Effect.try({
+    let markerResult: Result.Result<void, E2> = Result.succeed(undefined);
+    const markerRollback = new Error("Core Memory correction marker rejected");
+    const transactionResult = yield* Effect.try({
       try: () =>
         storage.transactionSync(() => {
           // The installed AgentContextProvider owns these exact rows but exposes only one-block
@@ -375,15 +381,26 @@ export const replaceCoreMemoryBlocks = <E, R>(
               replacement.content,
             );
           }
-          markCorrectionCommitted();
+          markerResult = Effect.runSyncWith(Context.empty())(
+            Effect.result(markCorrectionCommitted),
+          );
+          // SQLite rolls back transactionSync only when its callback throws. Keep this sentinel
+          // private, then restore the marker's expected failure to the Effect channel below.
+          if (Result.isFailure(markerResult)) throw markerRollback;
         }),
-      catch: (cause) =>
-        new CoreMemoryUnavailable({
-          cause,
-          message: "Core Memory could not be corrected atomically",
-          operation: "correct",
-        }),
-    });
+      catch: (cause) => new CoreMemoryTransactionFailed({ cause }),
+    }).pipe(Effect.result);
+    if (Result.isFailure(transactionResult)) {
+      if (transactionResult.failure.cause === markerRollback && Result.isFailure(markerResult)) {
+        // oxlint-disable-next-line effecttsgo/unnecessary-fail-yieldable-error -- E2 is generic and is not guaranteed to implement Effect's yieldable-error protocol.
+        return yield* Effect.fail(markerResult.failure);
+      }
+      return yield* new CoreMemoryUnavailable({
+        cause: transactionResult.failure.cause,
+        message: "Core Memory could not be corrected atomically",
+        operation: "correct",
+      });
+    }
     yield* refreshCoreMemoryPrompt(session);
     return corrected;
   });

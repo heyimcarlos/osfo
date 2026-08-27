@@ -808,31 +808,40 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     },
   );
 
-  const markForgetKnowledgeCorrectionCommitted = (claim: ClaimedMemoryProviderWork) => {
-    if (claim.payload._tag !== "ForgetKnowledge") return false;
+  const markForgetKnowledgeCorrectionCommitted = Effect.fn(
+    "MemoryProviderOutbox.markForgetKnowledgeCorrectionCommitted",
+  )(function* (claim: ClaimedMemoryProviderWork) {
+    if (claim.payload._tag !== "ForgetKnowledge") {
+      return yield* invalidRecord("completeMemoryProviderOutbox");
+    }
     const progress = claim.deletionProgress;
     if (progress !== null && progress !== undefined && progress._tag !== "ForgetKnowledge") {
-      return false;
+      return yield* invalidRecord("completeMemoryProviderOutbox");
     }
     const committed: MemoryProviderDeletionProgress = {
       _tag: "ForgetKnowledge",
       coreMemoryState: "committed",
       completedMemoryIds: progress?.completedMemoryIds ?? [],
     };
-    const updated = db
-      .update(memoryProviderOutbox)
-      .set({ deletion_progress_json: encodeDeletionProgress(committed) })
-      .where(
-        and(
-          eq(memoryProviderOutbox.outbox_id, claim.outboxId),
-          eq(memoryProviderOutbox.status, "claimed"),
-          eq(memoryProviderOutbox.claim_token, claim.claimToken),
-        ),
-      )
-      .returning({ outboxId: memoryProviderOutbox.outbox_id })
-      .get();
-    return updated !== undefined;
-  };
+    const updated = yield* execute("completeMemoryProviderOutbox", () =>
+      db
+        .update(memoryProviderOutbox)
+        .set({ deletion_progress_json: encodeDeletionProgress(committed) })
+        .where(
+          and(
+            eq(memoryProviderOutbox.outbox_id, claim.outboxId),
+            eq(memoryProviderOutbox.status, "claimed"),
+            eq(memoryProviderOutbox.claim_token, claim.claimToken),
+          ),
+        )
+        .returning({ outboxId: memoryProviderOutbox.outbox_id })
+        .get(),
+    );
+    if (updated === undefined) {
+      return yield* invalidRecord("completeMemoryProviderOutbox");
+    }
+    return undefined;
+  });
 
   const cancelDeletionPreparation = Effect.fn("MemoryProviderOutbox.cancelDeletionPreparation")(
     (claim: ClaimedMemoryProviderWork) =>

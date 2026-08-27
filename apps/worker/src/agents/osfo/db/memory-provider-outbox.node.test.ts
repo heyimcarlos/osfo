@@ -633,10 +633,13 @@ it.effect("commits the Core Memory correction marker in the caller's SQLite tran
           claimToken: "initial-correction",
         }),
       );
+      const runtimeContext = yield* Effect.context();
 
       expect(() =>
         storage.transactionSync(() => {
-          expect(outbox.markForgetKnowledgeCorrectionCommitted(preparation)).toBe(true);
+          Effect.runSyncWith(runtimeContext)(
+            outbox.markForgetKnowledgeCorrectionCommitted(preparation),
+          );
           throw new Error("Injected later Core Memory write failure");
         }),
       ).toThrow("Injected later Core Memory write failure");
@@ -649,7 +652,9 @@ it.effect("commits the Core Memory correction marker in the caller's SQLite tran
       ).toBeNull();
 
       storage.transactionSync(() => {
-        expect(outbox.markForgetKnowledgeCorrectionCommitted(preparation)).toBe(true);
+        Effect.runSyncWith(runtimeContext)(
+          outbox.markForgetKnowledgeCorrectionCommitted(preparation),
+        );
       });
       expect(
         database
@@ -661,6 +666,62 @@ it.effect("commits the Core Memory correction marker in the caller's SQLite tran
     }),
   ),
 );
+
+it.effect("rejects a stale claim when committing the Core Memory correction marker", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const outbox = makeMemoryProviderOutboxStore(makeAgentDb(asDurableObjectStorage(storage)));
+      const preparation = Option.getOrThrow(
+        yield* outbox.retainDeletionPreparation({
+          ...forgetKnowledgeDeletion("forget-correction-stale-claim"),
+          claimExpiresAt: liveLease,
+          claimToken: "initial-correction",
+        }),
+      );
+      const stale = yield* outbox
+        .markForgetKnowledgeCorrectionCommitted({
+          ...preparation,
+          claimToken: "stale-correction",
+        })
+        .pipe(Effect.result);
+
+      expect(Result.isFailure(stale)).toBe(true);
+      if (Result.isFailure(stale)) {
+        expect(stale.failure).toMatchObject({
+          _tag: "AgentStoreRecordInvalid",
+          operation: "completeMemoryProviderOutbox",
+        });
+      }
+    }),
+  ),
+);
+
+it.effect("reports SQLite failure when committing the Core Memory correction marker", () => {
+  const { database, storage } = makeTestDatabase();
+  const outbox = makeMemoryProviderOutboxStore(makeAgentDb(asDurableObjectStorage(storage)));
+  return Effect.gen(function* () {
+    const preparation = Option.getOrThrow(
+      yield* outbox.retainDeletionPreparation({
+        ...forgetKnowledgeDeletion("forget-correction-storage-failure"),
+        claimExpiresAt: liveLease,
+        claimToken: "initial-correction",
+      }),
+    );
+    database.close();
+
+    const failed = yield* outbox
+      .markForgetKnowledgeCorrectionCommitted(preparation)
+      .pipe(Effect.result);
+
+    expect(Result.isFailure(failed)).toBe(true);
+    if (Result.isFailure(failed)) {
+      expect(failed.failure).toMatchObject({
+        _tag: "AgentStoreUnavailable",
+        operation: "completeMemoryProviderOutbox",
+      });
+    }
+  });
+});
 
 it.effect("cancels untouched Knowledge deletion when immediate correction fails", () =>
   withDatabase(({ storage }) =>

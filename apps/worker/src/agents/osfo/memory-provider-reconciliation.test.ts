@@ -1182,7 +1182,8 @@ const testStore = (
     inspectConfiguration: () => Effect.succeed(Option.none()),
     isClaimCurrent: () => Effect.succeed(true),
     markProviderAccepted: () => Effect.succeed(options.providerAccepted ?? true),
-    markForgetKnowledgeCorrectionCommitted: () => true,
+    // oxlint-disable-next-line effecttsgo/effect-succeed-with-void -- The exact undefined return matches the inferred real store contract; Effect.void widens it to void.
+    markForgetKnowledgeCorrectionCommitted: () => Effect.succeed(undefined),
     markProviderStatus: () => Effect.succeed(true),
     readRecentTurnBridge: () => Effect.succeed([]),
     releaseDeletionPreparation: () => Effect.succeed(false),

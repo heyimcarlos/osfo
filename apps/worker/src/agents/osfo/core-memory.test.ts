@@ -1,8 +1,12 @@
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 
 import { refreshCoreMemoryPrompt, replaceCoreMemoryBlocks } from "./core-memory";
+
+class CorrectionMarkerRejected extends Data.TaggedError("CorrectionMarkerRejected")<{
+  readonly message: string;
+}> {}
 
 it.effect("commits every exact Core Memory replacement in one storage transaction", () => {
   const fixture = batchFixture();
@@ -15,9 +19,9 @@ it.effect("commits every exact Core Memory replacement in one storage transactio
       { block: "agentNotes", content: "New Agent Notes", expectedContent: "Old Agent Notes" },
     ],
     Effect.void,
-    () => {
+    Effect.sync(() => {
       correctionCommitted = true;
-    },
+    }),
   ).pipe(
     Effect.tap((corrected) =>
       Effect.sync(() => {
@@ -48,9 +52,9 @@ it.effect("rolls back every Core Memory replacement when a later write fails", (
       { block: "agentNotes", content: "New Agent Notes", expectedContent: "Old Agent Notes" },
     ],
     Effect.void,
-    () => {
+    Effect.sync(() => {
       correctionCommitted = true;
-    },
+    }),
   ).pipe(
     Effect.flip,
     Effect.tap((failure) =>
@@ -79,9 +83,11 @@ it.effect("rejects a delayed Approval when any exact Core Memory preimage change
       { block: "agentNotes", content: "New Agent Notes", expectedContent: "Old Agent Notes" },
     ],
     Effect.void,
-    () => {
-      throw new Error("A stale correction must not commit its durable marker");
-    },
+    Effect.fail(
+      new CorrectionMarkerRejected({
+        message: "A stale correction must not commit its durable marker",
+      }),
+    ),
   ).pipe(
     Effect.flip,
     Effect.tap(() =>
@@ -107,9 +113,7 @@ it.effect("rolls back every Core Memory replacement when the durable marker cann
       { block: "agentNotes", content: "New Agent Notes", expectedContent: "Old Agent Notes" },
     ],
     Effect.void,
-    () => {
-      throw new Error("Injected correction marker failure");
-    },
+    Effect.fail(new CorrectionMarkerRejected({ message: "Injected correction marker failure" })),
   ).pipe(
     Effect.flip,
     Effect.tap(() =>
@@ -147,9 +151,9 @@ it.effect(
           },
         ],
         Effect.void,
-        () => {
+        Effect.sync(() => {
           correctionCommitted = true;
-        },
+        }),
       ).pipe(Effect.flip);
 
       expect(failure).toMatchObject({
