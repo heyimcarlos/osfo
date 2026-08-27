@@ -21,6 +21,7 @@ import {
 } from "./deletion-actions";
 import { personalSkillDeleteActionName, SkillDeleteInput } from "./personal-skill-tools";
 import type { PersonalSkillId } from "../../domain/personal-skill";
+import { CalendarUpdateEventInput, GmailMessageInput } from "../../domain/integration-manifest";
 
 export {
   ForgetKnowledgeInput,
@@ -34,6 +35,8 @@ type SanitizedPendingApprovalInput =
   | Partial<ClearCoreMemoryInput>
   | Partial<ForgetKnowledgeInput>
   | Partial<RetainedDocumentInput>
+  | Partial<typeof CalendarUpdateEventInput.Type>
+  | Partial<typeof GmailMessageInput.Type>
   | Partial<SkillDeleteInput>
   | Partial<SessionDeleteInput>;
 
@@ -172,6 +175,22 @@ export const sanitizePendingApproval = (approval: PendingApproval): PendingAppro
     return withInput(
       approval,
       Schema.decodeUnknownOption(SkillDeleteInput)(approval.descriptor.input).pipe(
+        Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
+      ),
+    );
+  }
+  if (approval.descriptor.action === "calendarUpdateEvent") {
+    return withInput(
+      approval,
+      Schema.decodeUnknownOption(CalendarUpdateEventInput)(approval.descriptor.input).pipe(
+        Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
+      ),
+    );
+  }
+  if (approval.descriptor.action === "gmailSendEmail") {
+    return withInput(
+      approval,
+      Schema.decodeUnknownOption(GmailMessageInput)(approval.descriptor.input).pipe(
         Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
       ),
     );

@@ -21,6 +21,8 @@ describe("Integration Capability Manifests", () => {
         providerExecutions: 1,
       },
       manifestVersion: ManifestVersion.make("gmail-v1"),
+      outputContract: "gmailThreadV1",
+      providerTool: "GMAIL_FETCH_MESSAGE_BY_THREAD_ID",
       safeErrors: [
         "connectionUnavailable",
         "inputRejected",
@@ -48,6 +50,43 @@ describe("Integration Capability Manifests", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  it("pins every Osfo operation to one direct provider tool and never exposes provider meta tools", () => {
+    const expected = new Map([
+      ["GMAIL_FETCH_THREAD", "GMAIL_FETCH_MESSAGE_BY_THREAD_ID"],
+      ["GMAIL_CREATE_DRAFT", "GMAIL_CREATE_EMAIL_DRAFT"],
+      ["GMAIL_SEND_EMAIL", "GMAIL_SEND_EMAIL"],
+      ["CALENDAR_LIST_EVENTS", "GOOGLECALENDAR_EVENTS_LIST"],
+      ["CALENDAR_CREATE_PRIVATE", "GOOGLECALENDAR_CREATE_EVENT"],
+      ["CALENDAR_UPDATE_EVENT", "GOOGLECALENDAR_PATCH_EVENT"],
+      ["DRIVE_GET_METADATA", "GOOGLEDRIVE_GET_FILE_METADATA"],
+    ]);
+
+    for (const [operation, providerTool] of expected) {
+      const manifestVersion = operation.startsWith("GMAIL_")
+        ? "gmail-v1"
+        : operation.startsWith("CALENDAR_")
+          ? "calendar-v1"
+          : "drive-v1";
+      const toolkit = operation.startsWith("GMAIL_")
+        ? "gmail"
+        : operation.startsWith("CALENDAR_")
+          ? "googlecalendar"
+          : "googledrive";
+      expect(
+        Result.getOrThrow(
+          resolveManifest({
+            manifestVersion: ManifestVersion.make(manifestVersion),
+            operation,
+            toolkit,
+          }),
+        ).providerTool,
+      ).toBe(providerTool);
+    }
+    expect([...expected.values()]).not.toContain("COMPOSIO_SEARCH_TOOLS");
+    expect([...expected.values()]).not.toContain("COMPOSIO_MULTI_EXECUTE_TOOL");
+    expect([...expected.values()].some((tool) => /WORKBENCH|BASH|SANDBOX/u.test(tool))).toBe(false);
   });
 
   it("keeps approval consequence-based across providers", () => {
@@ -219,7 +258,15 @@ describe("Integration Capability Manifests", () => {
           operation: "CALENDAR_UPDATE_EVENT",
           toolkit: "googlecalendar",
         },
-        input: { calendarId: "primary", change: "Move by one hour", eventId: "event-1" },
+        input: {
+          calendarId: "primary",
+          changes: {
+            endsAt: "2026-09-01T14:00:00Z",
+            startsAt: "2026-09-01T13:00:00Z",
+          },
+          eventId: "event-1",
+          sendNotifications: false,
+        },
       },
       {
         evidence: {

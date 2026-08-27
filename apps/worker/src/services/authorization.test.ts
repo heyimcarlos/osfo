@@ -444,6 +444,8 @@ describe("governed Authorization", () => {
           manifestVersion: ManifestVersion.make("availability-v1"),
           operation: "CALENDAR_GET_AVAILABILITY",
           operationKind: "read",
+          outputContract: "calendarEventsV1",
+          providerTool: "GOOGLECALENDAR_FIND_FREE_SLOTS",
           requiredConnection: true,
           safeErrors: [
             "connectionUnavailable",

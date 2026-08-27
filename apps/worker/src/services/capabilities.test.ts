@@ -53,6 +53,33 @@ const personalSkillVersionFacts = {
   updateEvidence: [],
 };
 
+it.effect(
+  "publishes only the closed direct Gmail operation bundle after capability selection",
+  () =>
+    Effect.gen(function* () {
+      const capabilities = Capabilities.make();
+      const availableToolNames = [
+        "gmailCreateDraft",
+        "gmailFetchThread",
+        "gmailSendEmail",
+      ] as const;
+      const index = yield* capabilities.eligibleIndex({
+        ...baseInput,
+        availableIntegrationToolkits: ["gmail"],
+        availableRequirements: [...baseInput.availableRequirements, "composio"],
+        availableToolNames,
+        plan: "free",
+        taskDescription: "Read my Gmail",
+        taskKinds: ["integration"],
+      });
+
+      expect(
+        capabilities.assembleToolBundle({ availableToolNames, index, loadedSkills: [] })
+          .activeToolNames,
+      ).toEqual(["gmailCreateDraft", "gmailFetchThread", "gmailSendEmail"]);
+    }),
+);
+
 it("accepts an exact 16 KiB Personal Skill Version and rejects the next encoded byte", () => {
   const maximumBytes = 16_384;
   const baseSkill = {
@@ -723,7 +750,12 @@ it("explains missing requirements and denies unknown catalog entries", () => {
   const disconnectedGmail = capabilities.explainUnavailable({
     availableIntegrationToolkits: [],
     availableRequirements: ["composio", "personal-agent"],
-    availableToolNames: baseInput.availableToolNames,
+    availableToolNames: [
+      ...baseInput.availableToolNames,
+      "gmailCreateDraft",
+      "gmailFetchThread",
+      "gmailSendEmail",
+    ],
     catalogVersion: baseInput.catalogVersion,
     capabilityId: "gmail",
   });
@@ -828,7 +860,9 @@ it("projects exact governed result bounds from the pinned #252 catalog", () => {
       maximumSlides: null,
     },
   });
-  expect(available("gmail")).toMatchObject({
+  expect(
+    available("gmail", ["gmailCreateDraft", "gmailFetchThread", "gmailSendEmail"]),
+  ).toMatchObject({
     resultBounds: {
       maximumBytes: 262_144n,
       maximumDurationMillis: 300_000,

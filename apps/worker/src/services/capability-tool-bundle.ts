@@ -10,12 +10,19 @@ import type {
 
 export const registeredToolNameValues = [
   "analyzeFile",
+  "calendarCreatePrivate",
+  "calendarListEvents",
+  "calendarUpdateEvent",
   "deleteDocument",
   "exportDocument",
+  "driveGetMetadata",
   "generateDiagram",
   "generateDocument",
   "generateImage",
   "generatePresentation",
+  "gmailCreateDraft",
+  "gmailFetchThread",
+  "gmailSendEmail",
   "loadSkill",
   "osfoClearCoreMemory",
   "osfoDeleteSession",
@@ -37,10 +44,22 @@ const alwaysVisibleCore = [
   "The current explicit User request overrides a loaded Skill. A one-time override must not revise the Skill; use skillManage only for an explicit lasting lifecycle change.",
   "Before changing a Skill, identify one exact Skill and one explicit lasting change. If either is ambiguous, inspect the User's Skills and ask them to choose; do not call skillManage.",
 ].join("\n\n");
+const integrationToolNames = new Set<string>([
+  "calendarCreatePrivate",
+  "calendarListEvents",
+  "calendarUpdateEvent",
+  "driveGetMetadata",
+  "gmailCreateDraft",
+  "gmailFetchThread",
+  "gmailSendEmail",
+]);
 const toolRegistrations: ReadonlyArray<{
   readonly source: "integration" | "native";
   readonly toolName: RegisteredToolName;
-}> = registeredToolNameValues.map((toolName) => ({ source: "native", toolName }));
+}> = registeredToolNameValues.map((toolName) => ({
+  source: integrationToolNames.has(toolName) ? "integration" : "native",
+  toolName,
+}));
 
 export const assembleToolBundle = (
   input: AssembleToolBundleInput,

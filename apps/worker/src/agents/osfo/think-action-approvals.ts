@@ -18,7 +18,7 @@ export type ActionPresentationId = typeof ActionPresentationId.Type;
 export const ActionPresentationField = Schema.Struct({
   label: boundedText(80),
   name: boundedText(80),
-  value: boundedText(2_000),
+  value: boundedText(64_000),
 });
 
 /** One immutable client-safe projection of a Think Action descriptor. */

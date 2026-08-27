@@ -259,6 +259,14 @@ Account.
 _Avoid_: Account, Better Auth provider Account, local connected-account record,
 implicit provider scope, Approval
 
+**Integration Capability Manifest**:
+An immutable Osfo-owned contract that admits one provider operation under an
+exact input, normalized output, connection, consequence, idempotency, evidence,
+and hard-bound policy. Provider discovery and annotations cannot add operations
+or change their authority or consequence class.
+_Avoid_: Provider tool registry, runtime discovery result, Capability Catalog,
+Approval
+
 **Model Access Policy**:
 The immutable Osfo-owned rule that derives a managed route profile from trusted
 task requirements and controls qualification and one-way quality escalation.

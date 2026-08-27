@@ -56,6 +56,7 @@ export interface TrustedToolAssembly {
 export const trustedToolAssembly = (input: {
   readonly actionNames: ReadonlyArray<Capabilities.RegisteredToolName>;
   readonly allTools: ToolSet;
+  readonly integrationTools?: ToolSet;
   readonly nativeTools: ToolSet;
   readonly reservedNames: ReadonlyArray<Capabilities.RegisteredToolName>;
 }): TrustedToolAssembly => {
@@ -66,11 +67,18 @@ export const trustedToolAssembly = (input: {
       ? [[toolName, definition] as const]
       : [];
   });
+  const trustedIntegrations = Object.entries(input.integrationTools ?? {}).filter(([toolName]) =>
+    reserved.has(toolName),
+  );
   const rejectedReservedNames = [...reserved].filter((toolName) => {
     const canonicalNative = input.nativeTools[toolName];
+    const canonicalIntegration = input.integrationTools?.[toolName];
     const merged = input.allTools[toolName];
     return (
       (merged !== undefined && canonicalNative !== undefined && merged !== canonicalNative) ||
+      (merged !== undefined &&
+        canonicalIntegration !== undefined &&
+        merged !== canonicalIntegration) ||
       (merged !== undefined &&
         input.actionNames.some((actionName) => actionName === toolName) &&
         !isThinkAction(merged))
@@ -78,11 +86,13 @@ export const trustedToolAssembly = (input: {
   });
   const trustedTools = {
     ...Object.fromEntries(trustedActions),
+    ...Object.fromEntries(trustedIntegrations),
     ...input.nativeTools,
   } satisfies ToolSet;
   return {
     provenance: Object.keys(trustedTools).map((toolName) => ({
-      source: "native",
+      source:
+        input.integrationTools?.[toolName] === trustedTools[toolName] ? "integration" : "native",
       toolName,
     })),
     rejectedReservedNames,

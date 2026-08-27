@@ -23,6 +23,7 @@
     "@chat-adapter/whatsapp": "4.38.1",
     "@cloudflare/sandbox": "0.12.7",
     "@cloudflare/think": "0.15.1",
+    "@composio/core": "0.17.0",
     "@effect/platform-browser": "catalog:",
     "@osfo/api": "workspace:*",
     "@osfo/auth": "workspace:*",
