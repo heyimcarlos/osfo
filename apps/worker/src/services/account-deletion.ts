@@ -155,11 +155,13 @@ export interface Interface {
   readonly reconcileOne: (
     candidate: PendingAccountDeletion,
   ) => Effect.Effect<void, AccountDeletionUnavailable>;
-  readonly reconcilePending: Effect.Effect<void, AccountDeletionUnavailable>;
+  // oxlint-disable-next-line effecttsgo/lazy-effect -- Scheduled reconciliation is a named service operation, not shared Effect state.
+  readonly reconcilePending: () => Effect.Effect<void, AccountDeletionUnavailable>;
   readonly reconcileUser: (userId: UserId) => Effect.Effect<void, AccountDeletionUnavailable>;
 }
 
 /** Shared provider-first account-deletion service. */
+// oxlint-disable-next-line effecttsgo/lazy-effect -- The service intentionally exposes named zero-argument reconciliation.
 export class Service extends Context.Service<Service, Interface>()("@osfo/AccountDeletion") {}
 
 /** Construct the idempotent provider-first account deletion reconciler. */
@@ -337,7 +339,7 @@ export const make = Effect.gen(function* () {
     return undefined;
   });
 
-  const reconcilePending = Effect.gen(function* () {
+  const reconcilePending = Effect.fn("AccountDeletion.reconcilePending")(function* () {
     const pending = yield* dependencies.persistence.pending;
     yield* Effect.forEach(
       pending,
@@ -351,7 +353,7 @@ export const make = Effect.gen(function* () {
         ),
       { concurrency: 1, discard: true },
     );
-  }).pipe(Effect.withSpan("AccountDeletion.reconcilePending"));
+  });
 
   const reconcileUser = Effect.fn("AccountDeletion.reconcileUser")(function* (userId: UserId) {
     const pending = yield* dependencies.persistence.pending;

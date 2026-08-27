@@ -141,7 +141,7 @@ it.effect(
       ).toBe(true);
       expect(calls).toEqual(["recheck", "quiesce"]);
 
-      yield* deletion.reconcilePending;
+      yield* deletion.reconcilePending();
       expect(calls).toEqual([
         "recheck",
         "quiesce",
@@ -447,10 +447,10 @@ it.effect(
     });
     return Effect.gen(function* () {
       const deletion = yield* AccountDeletion.Service;
-      yield* deletion.reconcilePending;
+      yield* deletion.reconcilePending();
       expect(calls).toEqual(["fence"]);
 
-      yield* deletion.reconcilePending;
+      yield* deletion.reconcilePending();
       expect(calls).toEqual([
         "fence",
         "fence",

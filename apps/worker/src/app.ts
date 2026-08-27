@@ -104,7 +104,7 @@ export const reconcileAccountDeletions = (env: CloudflareEnv) => {
   return Effect.runPromise(
     Effect.scoped(
       AccountDeletion.Service.pipe(
-        Effect.flatMap((deletion) => deletion.reconcilePending),
+        Effect.flatMap((deletion) => deletion.reconcilePending()),
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Scheduled maintenance is an application entry point.
         Effect.provide(deletionLayer),
       ),
