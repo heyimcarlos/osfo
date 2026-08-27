@@ -27,3 +27,7 @@ short, specific, and actionable.
 - Supermemory rejects an organization `filterPrompt` unless the same settings
   update enables `shouldLLMFilter`. Qualify coupled provider settings live, not
   from the generated request type alone.
+- When a governing contract moves activation to complete-system qualification,
+  do not keep a finished capability ticket open on that activation gate. Verify
+  that the capability retained its bounded evidence, then leave aggregation and
+  activation with the named owner.

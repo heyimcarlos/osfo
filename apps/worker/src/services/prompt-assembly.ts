@@ -39,6 +39,15 @@ export const defaultLimits: Limits = {
   recallDeadlineMillis: 1_000,
 };
 
+/** Company-funded Knowledge Base limits after shared Plan Usage exhaustion. */
+const exhaustedLimits: Limits = {
+  providerBridgeMaxTokens: 0,
+  providerProfileMaxTokens: 200,
+  providerRecallMaxTokens: 300,
+  providerSourceMaxTokens: 0,
+  recallDeadlineMillis: 750,
+};
+
 /** Sanitized Agent-local source evidence waiting for provider indexing. */
 export interface RecentTurnEvidence {
   readonly messages: ReadonlyArray<MemoryProvider.ConversationMessage>;
@@ -117,11 +126,11 @@ export type Result =
 /** Prompt outcome plus the exact model messages supplied to Think. */
 export type ModelTurnResult = Result & { readonly messages: globalThis.Array<ModelMessage> };
 
-/** Keep exhausted deletion help free of provider recall and its continuity cost. */
+/** Select the provider recall shape for the current managed execution mode. */
 export const policyForManagedExecution = (executionMode: ManagedTurnMetadata["executionMode"]) =>
   executionMode === "exhaustedConversation"
-    ? ({ recallMode: "exhausted", recordProviderRecallUsage: false } as const)
-    : ({ recallMode: "normal", recordProviderRecallUsage: true } as const);
+    ? ({ recallMode: "exhausted" } as const)
+    : ({ recallMode: "normal" } as const);
 
 /** Submission-scoped prompt assembly with warm continuation retention. */
 export interface RetainedPromptAssembly {
@@ -195,16 +204,27 @@ export const retain = (result: Result): RetainedPrompt => {
 /** Assemble query-relevant Knowledge Base evidence after Agent-owned instructions. */
 export const assemble = Effect.fn("PromptAssembly.assemble")(function* (input: Input) {
   const mode = input.mode ?? "normal";
-  if (mode === "exhausted") {
-    return {
-      _tag: "ProviderRecallSkipped",
-      instructions: input.agentInstructions,
-      providerContext: null,
-      usage: null,
-    } satisfies ProviderRecallSkipped;
-  }
   const memoryProvider = yield* MemoryProvider.Service;
-  const suppliedLimits = input.limits ?? defaultLimits;
+  const requestedLimits = input.limits ?? (mode === "exhausted" ? exhaustedLimits : defaultLimits);
+  const suppliedLimits =
+    mode === "exhausted"
+      ? {
+          providerBridgeMaxTokens: 0,
+          providerProfileMaxTokens: Math.min(
+            requestedLimits.providerProfileMaxTokens,
+            exhaustedLimits.providerProfileMaxTokens,
+          ),
+          providerRecallMaxTokens: Math.min(
+            requestedLimits.providerRecallMaxTokens,
+            exhaustedLimits.providerRecallMaxTokens,
+          ),
+          providerSourceMaxTokens: 0,
+          recallDeadlineMillis: Math.min(
+            requestedLimits.recallDeadlineMillis,
+            exhaustedLimits.recallDeadlineMillis,
+          ),
+        }
+      : requestedLimits;
   const limits: Required<Limits> = {
     providerBridgeMaxTokens:
       suppliedLimits.providerBridgeMaxTokens ?? defaultLimits.providerBridgeMaxTokens ?? 0,

@@ -6,7 +6,74 @@ import { SupermemoryMemoryProvider } from "../../src/integrations/supermemory/me
 import { MemoryProvider } from "../../src/services/memory-provider";
 import { PromptAssembly } from "../../src/services/prompt-assembly";
 
+/* oxlint-disable eslint/no-underscore-dangle -- Application outcomes use the _tag discriminator. */
+
 const pollIntervalMillis = 2_000;
+
+it.live("qualifies bounded exhausted profile-and-query recall", () =>
+  Config.redacted("SUPERMEMORY_API_KEY").pipe(
+    Effect.flatMap((apiKey) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const provider = yield* MemoryProvider.Service;
+          const startedAt = yield* Clock.currentTimeMillis;
+          const [runHigh, runLow] = yield* Effect.all([Random.next, Random.next]);
+          const runId = `${startedAt.toString(36)}${runHigh.toString(36).slice(2)}${runLow.toString(36).slice(2)}`;
+          const userId = UserId.make(`qualification-exhausted-${runId}`);
+          yield* Effect.addFinalizer(() =>
+            provider.deleteUserKnowledge({ userId }).pipe(Effect.ignore),
+          );
+
+          yield* provider.configureUserGuidance({ userId });
+          const result = yield* PromptAssembly.assemble({
+            agentInstructions: "Qualification instructions",
+            limits: {
+              providerBridgeMaxTokens: 5_000,
+              providerProfileMaxTokens: 5_000,
+              providerRecallMaxTokens: 5_000,
+              providerSourceMaxTokens: 5_000,
+              recallDeadlineMillis: 10_000,
+            },
+            mode: "exhausted",
+            query: "What should I remember?",
+            recentTurns: [
+              {
+                messages: [{ content: "Local bridge evidence", role: "user" }],
+                recordedAt: "2026-08-24T12:00:00.000Z",
+                sourceId: `bridge-${runId}`,
+              },
+            ],
+            userId,
+          });
+
+          expect(result._tag).toBe("ProviderRecallAvailable");
+          if (result._tag !== "ProviderRecallAvailable") return;
+          expect(result.providerContext).not.toContain("Indexed conversation source evidence");
+          expect(result.providerContext).not.toContain(
+            "Recent unindexed conversation source evidence",
+          );
+          expect(result.providerContext).not.toContain("Local bridge evidence");
+          expect(result.usage.completedNonModelCost).toEqual([
+            {
+              activity: "conversationsAndMemory",
+              ratedCostUsdMicros: 5n,
+              resourcePriceVersion: "resource-prices-2026-08-22",
+            },
+          ]);
+          yield* reportStage("exhausted-profile-query-passed", startedAt);
+        }),
+      ).pipe(
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This credentialed test is the live application entry point.
+        Effect.provide(
+          SupermemoryMemoryProvider.layer({
+            apiKey,
+            rateCard: SupermemoryMemoryProvider.publicRateCard,
+          }),
+        ),
+      ),
+    ),
+  ),
+);
 
 it.live("qualifies live Supermemory correction ordering and semantic extraction", () =>
   Config.redacted("SUPERMEMORY_API_KEY").pipe(
