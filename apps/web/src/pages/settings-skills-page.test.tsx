@@ -99,7 +99,7 @@ describe("SkillsSettingsContent", () => {
               state: "unavailable",
             },
             behavior: "Read the latest messages before drafting a reply.",
-            canUndo: false,
+            canUndo: true,
             capabilities: ["Read Gmail."],
             lastUsedAt: null,
             purpose: "Draft inbox replies.",
@@ -123,7 +123,7 @@ describe("SkillsSettingsContent", () => {
     expect(html).not.toContain("private-version-id");
   });
 
-  it("does not offer undo until a Skill has a prior material version", () => {
+  it("hides undo when the authority reports no safe target", () => {
     const html = renderToStaticMarkup(
       <SkillsSettingsContent
         busyReference={null}

@@ -673,6 +673,21 @@ describe("PersonalSkillAuthority", () => {
         expect(created._tag).toBe("Created");
         if (created._tag !== "Created") return;
 
+        const creationUndone = yield* tools.manage({
+          _tag: "UndoLatest",
+          expectedSkillVersion: created.version.skillVersion,
+          skillId: created.version.skillId,
+        });
+        expect(creationUndone._tag).toBe("Archived");
+        if (creationUndone._tag !== "Archived") return;
+        const creationRestored = yield* tools.manage({
+          _tag: "UndoLatest",
+          expectedSkillVersion: creationUndone.version.skillVersion,
+          skillId: creationUndone.version.skillId,
+        });
+        expect(creationRestored._tag).toBe("Restored");
+        if (creationRestored._tag !== "Restored") return;
+
         const listed = yield* tools.inspect({ _tag: "List" });
         expect(listed._tag).toBe("ActiveSkills");
         if (listed._tag !== "ActiveSkills") return;
@@ -681,9 +696,9 @@ describe("PersonalSkillAuthority", () => {
         const revised = yield* tools.manage({
           _tag: "Revise",
           ...editable,
-          expectedSkillVersion: created.version.skillVersion,
+          expectedSkillVersion: creationRestored.version.skillVersion,
           instructions: "Put the decisions and executive summary before the detail.",
-          skillId: created.version.skillId,
+          skillId: creationRestored.version.skillId,
         });
         expect(revised._tag).toBe("Revised");
         if (revised._tag !== "Revised") return;
@@ -740,7 +755,7 @@ describe("PersonalSkillAuthority", () => {
             {
               availability: { state: "available" },
               behavior: "Create the weekly status report as a PDF.",
-              canUndo: false,
+              canUndo: true,
               capabilities: ["Generate one bounded PDF or DOCX."],
               purpose: "Prepare the User's weekly status report.",
               status: "active",
@@ -748,10 +763,28 @@ describe("PersonalSkillAuthority", () => {
           ]);
           const skill = listed.skills[0];
           if (skill === undefined) return;
-          const archived = yield* control.change(userId, {
-            change: "archive",
+          const creationUndone = yield* control.change(userId, {
+            change: "undo",
             expectedRevision: skill.revisionReference,
             reference: skill.reference,
+          });
+          expect(creationUndone).toMatchObject({
+            notice: "Latest Skill change undone.",
+            skill: { canUndo: true, status: "archived" },
+          });
+          const creationRestored = yield* control.change(userId, {
+            change: "undo",
+            expectedRevision: creationUndone.skill.revisionReference,
+            reference: creationUndone.skill.reference,
+          });
+          expect(creationRestored).toMatchObject({
+            notice: "Latest Skill change undone.",
+            skill: { canUndo: true, status: "active" },
+          });
+          const archived = yield* control.change(userId, {
+            change: "archive",
+            expectedRevision: creationRestored.skill.revisionReference,
+            reference: creationRestored.skill.reference,
           });
           expect(archived).toMatchObject({
             notice: "Skill archived.",

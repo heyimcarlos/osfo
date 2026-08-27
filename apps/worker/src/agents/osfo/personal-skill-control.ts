@@ -150,7 +150,7 @@ const projectSkill = (
         }
       : { state: "available" },
     behavior: version.taskDescription,
-    canUndo: version.parentSkillVersion !== null,
+    canUndo: version.parentSkillVersion !== null || version.status === "active",
     capabilities,
     lastUsedAt:
       version.lastUsedAtEpochMillis === null

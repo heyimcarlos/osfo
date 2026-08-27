@@ -513,6 +513,9 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
       ({ skillVersion }) => skillVersion === inspection.current.parentSkillVersion,
     );
     if (previous === undefined) {
+      if (inspection.current.revision === 1 && inspection.current.status === "active") {
+        return yield* archive(input);
+      }
       return yield* new PersonalSkillInvalid({
         cause: { skillId: input.skillId },
         message: "This Skill has no material change to undo",
