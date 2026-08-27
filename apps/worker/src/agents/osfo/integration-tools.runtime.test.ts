@@ -66,7 +66,7 @@ const fakeIntegrations: Integrations.Interface = {
       ),
       Effect.as({
         _tag: "IntegrationReadCompleted" as const,
-        evidence: { providerLogId: "composio-runtime-log" },
+        evidence: { providerLogIds: ["composio-runtime-log"] },
         manifestVersion: input.identity.manifestVersion,
         operation: input.identity.operation,
         records: [{ id: "message-1" }],
@@ -135,7 +135,7 @@ it("publishes and executes only the selected connected pack through OsfoAgent", 
         { includeAttachments: false, maximumMessages: 20, threadId: "thread-1" },
         { context: {}, messages: [], toolCallId: "integration-runtime-read" },
       ),
-    ).toMatchObject({ evidence: { providerLogId: "composio-runtime-log" } });
+    ).toMatchObject({ evidence: { providerLogIds: ["composio-runtime-log"] } });
     expect(executedReads).toEqual([{ operation: "GMAIL_FETCH_THREAD", userId: runtimeUserId }]);
   });
 });

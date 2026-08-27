@@ -2,7 +2,7 @@ import { Composio, logger, SessionPreset } from "@composio/core";
 import ComposioClient from "@composio/client";
 import { md5 } from "@noble/hashes/legacy.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { Effect, Option, Redacted, Schema } from "effect";
+import { Clock, Effect, Option, Redacted, Schema } from "effect";
 
 import type { UserId } from "../../domain";
 import {
@@ -78,6 +78,7 @@ interface ComposioClientPort {
     providerTool: string,
     input: ProviderInput,
     connectedAccountId: string,
+    timeoutMillis?: number,
   ) => Promise<ProviderExecutionResult>;
   readonly disconnect: (connectedAccountId: string) => Promise<void>;
   readonly listConnectedAccounts: (
@@ -166,8 +167,15 @@ export const make = (apiKey: Redacted.Redacted): IntegrationProvider => {
   });
   return makeFromClient({
     createSession: (userId, config) => composio.sessions.create(userId, config),
-    executeOnce: (sessionId, providerTool, input, connectedAccountId) =>
-      executeOnce(value, sessionId, providerTool, input, connectedAccountId),
+    executeOnce: (sessionId, providerTool, input, connectedAccountId, timeoutMillis) =>
+      executeOnce(
+        value,
+        sessionId,
+        providerTool,
+        input,
+        connectedAccountId,
+        timeoutMillis ?? requestTimeoutMillis,
+      ),
     disconnect: (connectedAccountId) =>
       composio.connectedAccounts.delete(connectedAccountId).then(() => undefined),
     listConnectedAccounts: (userId, toolkit) =>
@@ -263,29 +271,54 @@ const executeDriveDownload = (
   maximumBytes: number | undefined,
 ) =>
   Effect.gen(function* () {
+    const deadline = (yield* Clock.currentTimeMillis) + requestTimeoutMillis;
+    const remaining = Clock.currentTimeMillis.pipe(
+      Effect.map((now) => Math.max(0, deadline - now)),
+    );
     const metadataInput = {
       fields: "id,name,mimeType,size,modifiedTime,webViewLink",
       fileId: input.fileId,
       supportsAllDrives: true,
     } as const satisfies ProviderInput;
+    const metadataTimeout = yield* remaining;
+    if (metadataTimeout === 0) return yield* providerFailure("downloadFile");
     const metadata = yield* providerCall("downloadFile", () =>
       client.executeOnce(
         sessionId,
         "GOOGLEDRIVE_GET_FILE_METADATA",
         metadataInput,
         connectedAccountId,
+        metadataTimeout,
       ),
     );
     if (metadata.error !== null) return yield* providerFailure("downloadFile");
+    const metadataLogId = metadata.logId.trim();
+    if (metadataLogId.length === 0 || metadataLogId.length > 500) {
+      return yield* providerFailure("downloadFile");
+    }
     const identity = yield* Schema.decodeUnknownEffect(DriveMetadataIdentity)(metadata.data).pipe(
       Effect.mapError(() => providerFailure("downloadFile")),
     );
     if (identity.id !== input.fileId) return yield* providerFailure("downloadFile");
+    const downloadTimeout = yield* remaining;
+    if (downloadTimeout === 0) return yield* providerFailure("downloadFile");
     const execution = yield* providerCall("execute", () =>
-      client.executeOnce(sessionId, "GOOGLEDRIVE_DOWNLOAD_FILE", input, connectedAccountId),
+      client.executeOnce(
+        sessionId,
+        "GOOGLEDRIVE_DOWNLOAD_FILE",
+        input,
+        connectedAccountId,
+        downloadTimeout,
+      ),
     );
     if (execution.error !== null) return execution;
-    return yield* normalizeDriveDownload(execution, identity.id, input.mime_type, maximumBytes);
+    return yield* normalizeDriveDownload(
+      { ...execution, supportingLogIds: [metadataLogId] },
+      identity.id,
+      input.mime_type,
+      maximumBytes,
+      deadline,
+    );
   });
 
 const normalizeDriveDownload = (
@@ -293,6 +326,7 @@ const normalizeDriveDownload = (
   fileId: string,
   expectedMediaType: string,
   maximumBytes: number | undefined,
+  deadline: number,
 ) =>
   Effect.gen(function* () {
     if (maximumBytes === undefined || maximumBytes < 1 || maximumBytes > 65_536) {
@@ -303,12 +337,14 @@ const normalizeDriveDownload = (
     ).pipe(Effect.mapError(() => providerFailure("downloadFile")));
     if (downloaded.mimetype !== expectedMediaType) return yield* providerFailure("downloadFile");
     if (!isSafeDownloadUrl(downloaded.s3url)) return yield* providerFailure("downloadFile");
+    const downloadTimeout = Math.max(0, deadline - (yield* Clock.currentTimeMillis));
+    if (downloadTimeout === 0) return yield* providerFailure("downloadFile");
     const response = yield* providerCall("downloadFile", () =>
       // oxlint-disable-next-line osfo/no-raw-fetch, effecttsgo/global-fetch -- The provider adapter consumes one decoded, public HTTPS download reference.
       fetch(downloaded.s3url, {
         headers: { range: `bytes=0-${maximumBytes - 1}` },
         redirect: "error",
-        signal: AbortSignal.timeout(requestTimeoutMillis),
+        signal: AbortSignal.timeout(downloadTimeout),
       }),
     );
     if (!response.ok && response.status !== 206) return yield* providerFailure("downloadFile");
@@ -469,6 +505,7 @@ const executeOnce = async (
   providerTool: string,
   input: ProviderInput,
   connectedAccountId: string,
+  timeoutMillis: number,
 ): Promise<ProviderExecutionResult> => {
   // Osfo owns Action retry policy; this host adapter performs one request because the current session SDK may retry writes.
   // oxlint-disable-next-line osfo/no-raw-fetch, effecttsgo/global-fetch -- This is the Composio host adapter and must preserve one execution attempt.
@@ -482,7 +519,7 @@ const executeOnce = async (
       }),
       headers: { "content-type": "application/json", "x-api-key": apiKey },
       method: "POST",
-      signal: AbortSignal.timeout(requestTimeoutMillis),
+      signal: AbortSignal.timeout(timeoutMillis),
     },
   );
   if (!response.ok) {

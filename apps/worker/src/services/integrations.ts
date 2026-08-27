@@ -59,6 +59,7 @@ export interface ProviderExecutionResult {
   readonly data: Schema.JsonObject;
   readonly error: string | null;
   readonly logId: string;
+  readonly supportingLogIds?: ReadonlyArray<string>;
 }
 
 export interface IntegrationArtifact {
@@ -232,7 +233,7 @@ export type IntegrationConnectionEvidence =
 
 export interface IntegrationReadCompleted {
   readonly _tag: "IntegrationReadCompleted";
-  readonly evidence: { readonly providerLogId: string };
+  readonly evidence: { readonly providerLogIds: ReadonlyArray<string> };
   readonly manifestVersion: ManifestVersion;
   readonly operation: string;
   readonly records: ReadonlyArray<Record<string, boolean | number | string | null>>;
@@ -607,6 +608,13 @@ const normalizeRead = (
 ) =>
   Effect.gen(function* () {
     const providerLogId = yield* validateProviderResult(manifest, execution);
+    const providerLogIds = [...(execution.supportingLogIds ?? []), providerLogId];
+    if (
+      providerLogIds.length !== manifest.hardBounds.providerExecutions ||
+      providerLogIds.some((logId) => logId.trim().length === 0 || logId.length > 500)
+    ) {
+      return yield* invalidProviderResult(manifest);
+    }
     const candidates = yield* readCandidates(manifest, execution.data);
     const records: Array<Record<string, boolean | number | string | null>> = [];
     let truncated = candidates.length > manifest.hardBounds.maximumRecords;
@@ -624,7 +632,7 @@ const normalizeRead = (
     const responseBytes = byteLength(records);
     return {
       _tag: "IntegrationReadCompleted" as const,
-      evidence: { providerLogId },
+      evidence: { providerLogIds },
       manifestVersion: manifest.manifestVersion,
       operation: manifest.operation,
       records,

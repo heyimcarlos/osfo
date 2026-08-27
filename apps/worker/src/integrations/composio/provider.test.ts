@@ -227,6 +227,7 @@ describe("Composio Provider", () => {
         },
         error: null,
         logId: "download-log",
+        supportingLogIds: ["metadata-log"],
       });
       expect(result.data).not.toHaveProperty("s3url");
       fetchMock.mockRestore();
@@ -276,6 +277,52 @@ describe("Composio Provider", () => {
           ),
         ),
       ).toMatchObject({ _tag: "IntegrationProviderUnavailable", operation: "downloadFile" });
+      expect(fetchMock).not.toHaveBeenCalled();
+      fetchMock.mockRestore();
+    }),
+  );
+
+  it.effect("passes one decreasing aggregate deadline through Drive provider calls", () =>
+    Effect.gen(function* () {
+      const fetchMock = vi.spyOn(globalThis, "fetch");
+      const executed: Array<string> = [];
+      const timeouts: Array<number | undefined> = [];
+      const session = {
+        authorize: async () => ({ redirectUrl: "https://connect.composio.dev/link" }),
+        sessionId: "provider-session-1",
+      };
+      const provider = makeFromClient({
+        createSession: async () => session,
+        disconnect: async () => undefined,
+        executeOnce: async (_sessionId, providerTool, _input, _accountId, timeoutMillis) => {
+          executed.push(providerTool);
+          timeouts.push(timeoutMillis);
+          return providerTool === "GOOGLEDRIVE_GET_FILE_METADATA"
+            ? { data: { id: "file-1" }, error: null, logId: "metadata-log" }
+            : { data: {}, error: "provider unavailable", logId: "download-log" };
+        },
+        listConnectedAccounts: async () => ({ items: [] }),
+        uploadFile: async () => ({ mimetype: "text/plain", name: "notes.txt", s3key: "key" }),
+        useSession: async () => session,
+      });
+      const created = yield* provider.createSession(
+        UserId.make("user-1"),
+        directIntegrationProviderConfig,
+      );
+
+      expect(
+        yield* created.session.execute(
+          "GOOGLEDRIVE_DOWNLOAD_FILE",
+          { fileId: "file-1", mime_type: "text/plain" },
+          "private-account",
+          { maximumDownloadBytes: 8 },
+        ),
+      ).toMatchObject({ error: "provider unavailable", logId: "download-log" });
+      expect(executed).toEqual(["GOOGLEDRIVE_GET_FILE_METADATA", "GOOGLEDRIVE_DOWNLOAD_FILE"]);
+      expect(timeouts).toHaveLength(2);
+      expect(timeouts.every((timeout) => timeout !== undefined && timeout > 0)).toBe(true);
+      expect(timeouts[0]).toBeLessThanOrEqual(30_000);
+      expect(timeouts[1]).toBeLessThanOrEqual(timeouts[0] ?? 0);
       expect(fetchMock).not.toHaveBeenCalled();
       fetchMock.mockRestore();
     }),

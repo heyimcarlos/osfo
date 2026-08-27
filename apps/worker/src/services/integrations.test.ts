@@ -11,6 +11,7 @@ import {
   type IntegrationPersistence,
   type IntegrationProvider,
   type PersistedIntegrationAction,
+  type ProviderExecutionResult,
   type ProviderInput,
   type ProviderSession,
 } from "./integrations";
@@ -387,7 +388,7 @@ describe("Integrations", () => {
 
         expect(result).toMatchObject({
           _tag: "IntegrationReadCompleted",
-          evidence: { providerLogId: "composio-log-large" },
+          evidence: { providerLogIds: ["composio-log-large"] },
           truncated: true,
         });
         if (result._tag === "IntegrationReadCompleted") {
@@ -694,6 +695,7 @@ describe("Integrations", () => {
         },
         error: null,
         logId: "drive-read-log",
+        supportingLogIds: ["drive-metadata-log"],
       };
 
       yield* make(harness).execute({
@@ -765,6 +767,7 @@ describe("Integrations", () => {
         },
         error: null,
         logId: "drive-read-log",
+        supportingLogIds: ["drive-metadata-log"],
       };
       const contentFailure = yield* Effect.flip(
         integrations.execute({
@@ -1105,7 +1108,7 @@ const makeHarness = (): IntegrationProvider &
     actions: Map<ActionId, PersistedIntegrationAction>;
     authorized: Array<{ callbackUrl: string; toolkit: string }>;
     created: Array<{ config: typeof directIntegrationProviderConfig; userId: UserId }>;
-    executeResult: { data: Schema.JsonObject; error: string | null; logId: string };
+    executeResult: ProviderExecutionResult;
     executeFailure: IntegrationProviderUnavailable | null;
     executed: Array<{
       connectedAccountId: string;

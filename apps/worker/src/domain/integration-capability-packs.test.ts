@@ -107,7 +107,7 @@ describe("curated integration capability packs", () => {
     ).toEqual(["accessOrOwnershipChange"]);
   });
 
-  it("keeps one-call reads bounded and Drive delivery within the 5 MB provider limit", () => {
+  it("keeps reads bounded and Drive delivery within the 5 MB provider limit", () => {
     expect(
       Result.getOrThrow(
         resolveManifest({
@@ -117,6 +117,34 @@ describe("curated integration capability packs", () => {
         }),
       ).hardBounds,
     ).toMatchObject({ maximumRecords: 20, providerExecutions: 1 });
+    const driveRead = Result.getOrThrow(
+      resolveManifest({
+        manifestVersion: ManifestVersion.make("drive-v1"),
+        operation: "DRIVE_READ_FILE",
+        toolkit: "googledrive",
+      }),
+    );
+    expect(driveRead.hardBounds).toMatchObject({ maximumRecords: 1, providerExecutions: 2 });
+    expect(
+      Result.isSuccess(
+        driveRead.decodeCompletedEvidence({
+          _tag: "CompletedIntegrationRead",
+          providerLogIds: ["metadata-log", "download-log"],
+          records: 1,
+          responseBytes: 8n,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      Result.isFailure(
+        driveRead.decodeCompletedEvidence({
+          _tag: "CompletedIntegrationRead",
+          providerLogIds: ["download-log"],
+          records: 1,
+          responseBytes: 8n,
+        }),
+      ),
+    ).toBe(true);
     expect(
       Result.getOrThrow(
         resolveManifest({

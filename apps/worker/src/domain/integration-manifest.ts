@@ -311,9 +311,16 @@ export const DriveDeliverArtifactInput = Schema.Struct({
   targetFolderId: Schema.Null,
 });
 
-const readCompletedEvidence = (maximumRecords: number, maximumResponseBytes: bigint) =>
+const readCompletedEvidence = (
+  maximumRecords: number,
+  maximumResponseBytes: bigint,
+  providerExecutions: number,
+) =>
   Schema.TaggedStruct("CompletedIntegrationRead", {
-    providerExecutionId: boundedIdentity,
+    providerLogIds: Schema.Array(boundedIdentity).check(
+      Schema.isMinLength(providerExecutions),
+      Schema.isMaxLength(providerExecutions),
+    ),
     records: nonNegativeIntegerAtMost(maximumRecords),
     responseBytes: nonNegativeBytesAtMost(maximumResponseBytes),
   });
@@ -587,7 +594,7 @@ const manifestInput = {
         maximumRequestBytes: 0n,
         maximumResponseBytes: 65_536n,
         mutations: 0,
-        providerExecutions: 1,
+        providerExecutions: 2,
       },
       idempotency: "readOnly",
       inputContract: "driveReadFileV1",
@@ -699,6 +706,7 @@ const completedEvidenceDecoderFor = (
         readCompletedEvidence(
           manifest.hardBounds.maximumRecords,
           manifest.hardBounds.maximumResponseBytes,
+          manifest.hardBounds.providerExecutions,
         ),
         manifest,
         "completedEvidence",

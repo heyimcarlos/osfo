@@ -160,7 +160,7 @@ describe("Integration Capability Manifests", () => {
       Result.isSuccess(
         manifest.decodeCompletedEvidence({
           _tag: "CompletedIntegrationRead",
-          providerExecutionId: "execution-1",
+          providerLogIds: ["execution-1"],
           records: 20,
           responseBytes: 65_536n,
         }),
@@ -170,7 +170,7 @@ describe("Integration Capability Manifests", () => {
       Result.isFailure(
         manifest.decodeCompletedEvidence({
           _tag: "CompletedIntegrationRead",
-          providerExecutionId: "execution-1",
+          providerLogIds: ["execution-1"],
           providerPayload: { secret: "must not persist" },
           records: 20,
           responseBytes: 65_536n,
@@ -184,7 +184,7 @@ describe("Integration Capability Manifests", () => {
       {
         evidence: {
           _tag: "CompletedIntegrationRead",
-          providerExecutionId: "gmail-read",
+          providerLogIds: ["gmail-read"],
           records: 20,
           responseBytes: 65_536n,
         },
@@ -208,7 +208,7 @@ describe("Integration Capability Manifests", () => {
       {
         evidence: {
           _tag: "CompletedIntegrationRead",
-          providerExecutionId: "calendar-read",
+          providerLogIds: ["calendar-read"],
           records: 10,
           responseBytes: 65_536n,
         },
@@ -274,7 +274,7 @@ describe("Integration Capability Manifests", () => {
       {
         evidence: {
           _tag: "CompletedIntegrationRead",
-          providerExecutionId: "drive-read",
+          providerLogIds: ["drive-read"],
           records: 1,
           responseBytes: 16_384n,
         },
