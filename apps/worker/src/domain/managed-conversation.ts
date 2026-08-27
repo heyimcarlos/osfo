@@ -23,6 +23,11 @@ import {
   resolveCapabilityCatalog,
 } from "./capability-catalog";
 import { FileAnalysisId } from "./file";
+import {
+  PersonalSkillId,
+  PersonalSkillVersionId,
+  TrustedSkillLearningText,
+} from "./personal-skill";
 
 const positiveInteger = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0));
 const maximumManagedSkillBodyBytes = Number(
@@ -41,6 +46,38 @@ const ManagedSkillBody = Schema.String.check(
 
 /** Maximum immutable Skill bodies that one managed turn may retain and activate. */
 export const maximumLoadedSkillsPerTurn = 5;
+
+/** Exact immutable personal Skill identity admitted to one managed turn. */
+export const ManagedEligiblePersonalSkill = Schema.Struct({
+  skillId: PersonalSkillId,
+  skillVersion: PersonalSkillVersionId,
+});
+
+/** Exact immutable personal Skill identity admitted to one managed turn. */
+export type ManagedEligiblePersonalSkill = typeof ManagedEligiblePersonalSkill.Type;
+
+/** Durable direct-User learning intent retained until the accepted root outcome commits. */
+export const ManagedSkillLearningDraft = Schema.Struct({
+  availableCapabilityIds: Schema.Array(CapabilityId).check(Schema.isMaxLength(22)),
+  availableRequirements: Schema.Array(
+    Schema.Literals([
+      "composio",
+      "document-renderer",
+      "file-storage",
+      "native-memory",
+      "personal-agent",
+      "reminder-store",
+      "session-history",
+      "skill-store",
+      "web-provider",
+      "workflow-store",
+    ]),
+  ).check(Schema.isMaxLength(10)),
+  taskDescription: TrustedSkillLearningText,
+});
+
+/** Durable direct-User learning intent retained until the accepted root outcome commits. */
+export type ManagedSkillLearningDraft = typeof ManagedSkillLearningDraft.Type;
 
 /** Immutable server receipt for one Skill body loaded during an exact managed Submission. */
 export const ManagedLoadedSkillReceipt = Schema.Struct({
@@ -70,11 +107,17 @@ export type ManagedPendingFileAnalysis = typeof ManagedPendingFileAnalysis.Type;
  * Component limits keep the complete JSON receipt below Think's metadata row budget.
  */
 export const ManagedCapabilityTurnState = Schema.Struct({
+  eligiblePersonalSkills: Schema.Array(ManagedEligiblePersonalSkill)
+    .check(Schema.isMaxLength(20))
+    .pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   initialized: Schema.Boolean,
   loadedSkillReceipts: Schema.Array(ManagedLoadedSkillReceipt).check(
     Schema.isMaxLength(maximumLoadedSkillsPerTurn),
   ),
   pendingFileAnalyses: Schema.Array(ManagedPendingFileAnalysis).check(Schema.isMaxLength(20)),
+  skillLearningDraft: Schema.NullOr(ManagedSkillLearningDraft).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
 });
 
 /** Server-owned progressive state stored on the durable managed-turn message. */
@@ -113,7 +156,13 @@ export const ManagedTurnMetadata = Schema.TaggedStruct("OsfoManagedTurn", {
   ),
   capabilityTurnState: ManagedCapabilityTurnState.pipe(
     Schema.withDecodingDefaultKey(
-      Effect.succeed({ initialized: false, loadedSkillReceipts: [], pendingFileAnalyses: [] }),
+      Effect.succeed({
+        eligiblePersonalSkills: [],
+        initialized: false,
+        loadedSkillReceipts: [],
+        pendingFileAnalyses: [],
+        skillLearningDraft: null,
+      }),
     ),
   ),
   conservativeVendorUsdMicros: positiveInteger,

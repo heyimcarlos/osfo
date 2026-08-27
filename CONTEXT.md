@@ -126,6 +126,26 @@ Registration verifies its first Phone Account. A User owns one Osfo Agent in v1
 and scopes ownership, admission, fairness, allowances, entitlements, and memory.
 _Avoid_: Account, Channel Address, Principal
 
+**Personal Skill**:
+A User-owned reusable procedure or preference that may guide a matching later
+task. It contains bounded natural-language guidance and availability facts, never
+executable code, credentials, provider payloads, or authority. The current
+explicit User request overrides a Personal Skill.
+_Avoid_: Tool, Approval, memory, prompt injection, integration credential
+
+**Skill Version**:
+One immutable, evidence-backed revision of a Personal Skill. A turn selects and
+retains an exact Skill Version so concurrent learning, rollback, archival, or
+later correction cannot change the procedure already in use.
+_Avoid_: Mutable Skill body, latest Skill pointer, model completion
+
+**Skill Learning**:
+Company-funded, bounded post-turn work that may create or revise a Personal Skill
+only after a Good Root Outcome commits and trusted reusable evidence exists. It
+is failure-isolated from the root task, excludes untrusted uploaded or fetched
+content, and keeps minor non-changes quiet.
+_Avoid_: Memory ingestion, whole-Session reflection, model self-approval
+
 **Account**:
 A reusable authentication method linked to a User, such as SMS-verified phone,
 passwordless email, federated identity, or passkey. Osfo v1 implements exactly one

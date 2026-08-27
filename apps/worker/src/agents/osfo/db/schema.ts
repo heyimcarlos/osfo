@@ -29,6 +29,13 @@ import type {
   FileState,
   FileUploadId,
 } from "../../../domain/file";
+import type {
+  GoodRootOutcomeEvaluationId,
+  PersonalSkillId,
+  PersonalSkillVersionId,
+  SkillLearningCandidateId,
+  SkillLearningModelAttemptId,
+} from "../../../domain/personal-skill";
 import type { DbTimestamp } from "../../../db";
 
 const agentId = customType<{ data: AgentId; driverData: string }>({
@@ -75,6 +82,25 @@ const fileAnalysisId = customType<{ data: FileAnalysisId; driverData: string }>(
 const fileAnalysisState = customType<{ data: FileAnalysisState; driverData: string }>({
   dataType: () => "text",
 });
+const personalSkillId = customType<{ data: PersonalSkillId; driverData: string }>({
+  dataType: () => "text",
+});
+const goodRootOutcomeEvaluationId = customType<{
+  data: GoodRootOutcomeEvaluationId;
+  driverData: string;
+}>({ dataType: () => "text" });
+const personalSkillVersionId = customType<{
+  data: PersonalSkillVersionId;
+  driverData: string;
+}>({ dataType: () => "text" });
+const skillLearningCandidateId = customType<{
+  data: SkillLearningCandidateId;
+  driverData: string;
+}>({ dataType: () => "text" });
+const skillLearningModelAttemptId = customType<{
+  data: SkillLearningModelAttemptId;
+  driverData: string;
+}>({ dataType: () => "text" });
 
 /** Ordered provider work retained until its external effect is confirmed. */
 export const memoryProviderOutbox = sqliteTable(
@@ -365,3 +391,114 @@ export const fileDeletions = sqliteTable("osfo_file_deletions", {
   source_sha256: fileDigest().notNull(),
   user_id: userId().notNull(),
 });
+
+/** Current personal Skill pointers and deterministic selection metadata. */
+export const personalSkills = sqliteTable(
+  "osfo_personal_skills",
+  {
+    current_revision: integer().notNull(),
+    current_skill_version: personalSkillVersionId().notNull().unique(),
+    last_used_at_epoch_millis: integer(),
+    owner_user_id: userId().notNull(),
+    skill_id: personalSkillId().primaryKey(),
+    status: text({ enum: ["active", "archived"] }).notNull(),
+  },
+  (table) => [
+    check("osfo_personal_skill_revision_positive", sql`${table.current_revision} > 0`),
+    check("osfo_personal_skill_status", sql`${table.status} IN ('active', 'archived')`),
+    index("osfo_personal_skills_by_owner_status").on(table.owner_user_id, table.status),
+  ],
+);
+
+/** Immutable evidence-backed personal Skill revisions. */
+export const personalSkillVersions = sqliteTable(
+  "osfo_personal_skill_versions",
+  {
+    revision: integer().notNull(),
+    skill_id: personalSkillId()
+      .notNull()
+      .references(() => personalSkills.skill_id, { onDelete: "cascade", onUpdate: "restrict" }),
+    skill_version: personalSkillVersionId().notNull().unique(),
+    version_json: text().notNull(),
+  },
+  (table) => [
+    check("osfo_personal_skill_version_revision_positive", sql`${table.revision} > 0`),
+    uniqueIndex("osfo_personal_skill_version_revision").on(table.skill_id, table.revision),
+  ],
+);
+
+/** Bounded post-root-commit learning candidates and their lease state. */
+export const personalSkillLearningCandidates = sqliteTable(
+  "osfo_personal_skill_learning_candidates",
+  {
+    accepted_skill_version: personalSkillVersionId(),
+    attempts: integer().notNull().default(0),
+    candidate_id: skillLearningCandidateId().primaryKey(),
+    candidate_json: text().notNull(),
+    claim_expires_at_epoch_millis: integer(),
+    claim_token: text(),
+    created_at_epoch_millis: integer().notNull(),
+    notification_delivered_at_epoch_millis: integer(),
+    notification_text: text(),
+    owner_user_id: userId().notNull(),
+    prior_skill_version: personalSkillVersionId(),
+    status: text({ enum: ["pending", "claimed", "accepted", "rejected"] }).notNull(),
+    undo_target_skill_version: personalSkillVersionId(),
+    updated_at_epoch_millis: integer().notNull(),
+  },
+  (table) => [
+    check("osfo_personal_skill_learning_attempts", sql`${table.attempts} >= 0`),
+    check(
+      "osfo_personal_skill_learning_status",
+      sql`${table.status} IN ('pending', 'claimed', 'accepted', 'rejected')`,
+    ),
+    check(
+      "osfo_personal_skill_learning_claim",
+      sql`(${table.status} = 'claimed' AND ${table.claim_token} IS NOT NULL AND ${table.claim_expires_at_epoch_millis} IS NOT NULL) OR (${table.status} != 'claimed' AND ${table.claim_token} IS NULL AND ${table.claim_expires_at_epoch_millis} IS NULL)`,
+    ),
+    index("osfo_personal_skill_learning_by_owner_status").on(
+      table.owner_user_id,
+      table.status,
+      table.created_at_epoch_millis,
+    ),
+  ],
+);
+
+/** Idempotent company-funded cost evidence for every Skill Learning model attempt. */
+export const personalSkillLearningModelAttempts = sqliteTable(
+  "osfo_personal_skill_learning_model_attempts",
+  {
+    attempt_id: skillLearningModelAttemptId().primaryKey(),
+    basis: text({ enum: ["conservative", "observed"] }).notNull(),
+    candidate_id: skillLearningCandidateId().notNull(),
+    model_input_tokens: integer().notNull(),
+    model_output_tokens: integer().notNull(),
+    outcome: text({ enum: ["failure", "success"] }).notNull(),
+    recorded_at_epoch_millis: integer().notNull(),
+    vendor_usd_micros: integer().notNull(),
+  },
+  (table) => [
+    check(
+      "osfo_personal_skill_learning_model_attempt_nonnegative",
+      sql`${table.model_input_tokens} >= 0 AND ${table.model_output_tokens} >= 0 AND ${table.vendor_usd_micros} >= 0`,
+    ),
+    index("osfo_personal_skill_learning_model_attempts_by_candidate").on(table.candidate_id),
+  ],
+);
+
+/** Immutable PASS receipts minted by the retained Good Root evaluator authority. */
+export const goodRootOutcomeEvaluations = sqliteTable(
+  "osfo_good_root_outcome_evaluations",
+  {
+    evaluation_id: goodRootOutcomeEvaluationId().primaryKey(),
+    owner_user_id: userId().notNull(),
+    receipt_json: text().notNull(),
+    retained_at_epoch_millis: integer().notNull(),
+  },
+  (table) => [
+    index("osfo_good_root_outcome_evaluations_by_owner").on(
+      table.owner_user_id,
+      table.retained_at_epoch_millis,
+    ),
+  ],
+);

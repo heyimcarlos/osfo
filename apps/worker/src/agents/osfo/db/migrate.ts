@@ -12,6 +12,10 @@ import conversationProcessingBarrierMigrationSql from "./migrations/0008_little_
 import memoryProviderConfigurationMigrationSql from "./migrations/0009_absent_typhoid_mary.sql";
 import memoryProviderDeletionProgressMigrationSql from "./migrations/0010_yellow_living_mummy.sql";
 import providerSubmissionAmbiguityMigrationSql from "./migrations/0011_misty_quentin_quire.sql";
+import personalSkillAuthorityMigrationSql from "./migrations/0012_chilly_scalphunter.sql";
+import personalSkillEconomicsMigrationSql from "./migrations/0013_flawless_pixie.sql";
+import personalSkillNotificationMigrationSql from "./migrations/0014_spooky_snowbird.sql";
+import goodRootOutcomeEvaluationMigrationSql from "./migrations/0015_nebulous_domino.sql";
 import {
   AgentMigrationDefinitionMismatch,
   AgentMigrationDigestMismatch,
@@ -88,6 +92,26 @@ export const agentMigrations: ReadonlyArray<AgentMigration> = [
     digest: "sha256:d3716616805ee5d1e36ab9050e1c92787b3a06cb4057bfc807e307906b1713aa",
     sql: providerSubmissionAmbiguityMigrationSql,
     version: 12,
+  },
+  {
+    digest: "sha256:a856bfc4ad18bc73c8aec4d799cf401986a0c44792b46e65ae1b9b4182b8b1e5",
+    sql: personalSkillAuthorityMigrationSql,
+    version: 13,
+  },
+  {
+    digest: "sha256:06ac75cd30c24f78d557f396b9b655681e7a3d10da9c78649f86363914e4fd7b",
+    sql: personalSkillEconomicsMigrationSql,
+    version: 14,
+  },
+  {
+    digest: "sha256:edd484f06b8c0bbcd5d72d5f8cd7fb45ad99202b1f10ab809fe12474a7fc9163",
+    sql: personalSkillNotificationMigrationSql,
+    version: 15,
+  },
+  {
+    digest: "sha256:dc9d44bd4d8c0118496d82e4cc0204e21d88c4a3bd6a830d0d36d7210e0b6767",
+    sql: goodRootOutcomeEvaluationMigrationSql,
+    version: 16,
   },
 ];
 

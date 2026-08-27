@@ -1,25 +1,24 @@
-import { Context, Effect, Layer, Option, Result, Schema } from "effect";
+import { Context, Effect, Layer, Result, Schema } from "effect";
 
 /* oxlint-disable unicorn/no-array-sort -- The Worker target lacks ES2023 toSorted; every sorted array here is freshly allocated. */
 
-import {
-  type CapabilityCatalogVersion,
-  type Plan,
-  type ThinkSubmissionId,
-  UserId,
-} from "../domain";
+import type { CapabilityCatalogVersion, Plan, ThinkSubmissionId, UserId } from "../domain";
 import {
   maximumLoadedSkillsPerTurn,
   type ManagedLoadedSkillReceipt,
 } from "../domain/managed-conversation";
-import {
+import type {
+  CapabilityCatalogNotFound,
   CapabilityId,
-  type CapabilityCatalogNotFound,
-  governedCapabilitiesV1Version,
-  retainedCapabilityCatalogs,
-  resolveCapabilityCatalog,
-  type GovernedAuthorizationOperationName,
+  GovernedAuthorizationOperationName,
 } from "../domain/capability-catalog";
+import {
+  PersonalSkillVersion,
+  SkillAvailabilityRequirement,
+  SkillTaskKind,
+  SkillTurnOrigin,
+  decodePersonalSkillVersions,
+} from "../domain/personal-skill";
 import {
   capabilityIsAvailable,
   catalogSnapshotsFor,
@@ -34,62 +33,23 @@ import { assembleToolBundle, registeredToolNameValues } from "./capability-tool-
 
 export { taskKindsFor } from "./capability-intent-policy";
 
-const governedCapabilitiesV1Policy = Result.getOrThrow(
-  resolveCapabilityCatalog(retainedCapabilityCatalogs, governedCapabilitiesV1Version),
-);
-const maximumPersonalSkillVersionBytes = Number(
-  governedCapabilitiesV1Policy.skillLearning.skillVersionBytes,
-);
-const maximumPersonalSkillBodyBytes = Number(
-  governedCapabilitiesV1Policy.skillLearning.skillBodyBytes,
-);
+/** Closed task kinds used to narrow the Skill index deterministically. */
+export const TaskKind = SkillTaskKind;
 
 /** Closed task kinds used to narrow the Skill index deterministically. */
-export const TaskKind = Schema.Literals([
-  "conversation",
-  "diagram",
-  "document",
-  "file",
-  "image",
-  "integration",
-  "memory",
-  "reminder",
-  "research",
-  "skill",
-  "web",
-  "workflow",
-]);
-
-/** Closed task kinds used to narrow the Skill index deterministically. */
-export type TaskKind = typeof TaskKind.Type;
+export type TaskKind = SkillTaskKind;
 
 /** Closed availability fact names understood by the Capability Catalog. */
-export const AvailabilityRequirement = Schema.Literals([
-  "composio",
-  "document-renderer",
-  "file-storage",
-  "native-memory",
-  "personal-agent",
-  "reminder-store",
-  "session-history",
-  "skill-store",
-  "web-provider",
-  "workflow-store",
-]);
+export const AvailabilityRequirement = SkillAvailabilityRequirement;
 
 /** Closed availability fact names understood by the Capability Catalog. */
-export type AvailabilityRequirement = typeof AvailabilityRequirement.Type;
+export type AvailabilityRequirement = SkillAvailabilityRequirement;
 
 /** Authority origin used to remove Skills that cannot run from the active turn. */
-export const TurnOrigin = Schema.Literals([
-  "authSession",
-  "channelLink",
-  "scheduledTask",
-  "workflow",
-]);
+export const TurnOrigin = SkillTurnOrigin;
 
 /** Authority origin used to remove Skills that cannot run from the active turn. */
-export type TurnOrigin = typeof TurnOrigin.Type;
+export type TurnOrigin = SkillTurnOrigin;
 
 /** Osfo-owned names reserved from client and integration catalogs. */
 export const registeredToolNames: ReadonlyArray<RegisteredToolName> = registeredToolNameValues;
@@ -103,39 +63,10 @@ export type RegisteredToolName = typeof RegisteredToolName.Type;
 export { CapabilityId } from "../domain/capability-catalog";
 
 /** One validated immutable personal Skill Version supplied by its future persistence Adapter. */
-export const PersonalSkill = Schema.Struct({
-  allowedOrigins: Schema.Array(TurnOrigin).check(Schema.isMaxLength(4)),
-  capabilityIds: Schema.Array(CapabilityId).check(Schema.isMinLength(1), Schema.isMaxLength(22)),
-  description: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
-  instructions: Schema.String.check(
-    Schema.isMinLength(1),
-    Schema.makeFilter(
-      (instructions) =>
-        byteLength(instructions) <= maximumPersonalSkillBodyBytes ||
-        `Personal Skill bodies must not exceed ${maximumPersonalSkillBodyBytes} encoded bytes`,
-    ),
-  ),
-  keywords: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100))).check(
-    Schema.isMaxLength(100),
-  ),
-  lastUsedAtEpochMillis: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
-  ownerUserId: UserId,
-  requirements: Schema.Array(AvailabilityRequirement).check(Schema.isMaxLength(10)),
-  revision: Schema.Int.check(Schema.isGreaterThan(0)),
-  skillId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100)),
-  skillVersion: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100)),
-  status: Schema.Literals(["active", "archived", "deleted"]),
-  taskKinds: Schema.Array(TaskKind).check(Schema.isMinLength(1), Schema.isMaxLength(12)),
-}).check(
-  Schema.makeFilter(
-    (skill) =>
-      byteLength(JSON.stringify(skill)) <= maximumPersonalSkillVersionBytes ||
-      `Personal Skill versions must not exceed ${maximumPersonalSkillVersionBytes} encoded bytes`,
-  ),
-);
+export const PersonalSkill = PersonalSkillVersion;
 
 /** One validated immutable personal Skill Version supplied by its future persistence Adapter. */
-export type PersonalSkill = typeof PersonalSkill.Type;
+export type PersonalSkill = PersonalSkillVersion;
 
 /** Expected denial when a Skill was not present in the turn's validated index. */
 export class SkillNotEligible extends Schema.TaggedError<SkillNotEligible>()("SkillNotEligible", {
@@ -554,12 +485,7 @@ const currentPersonalSkills = (values: ReadonlyArray<unknown>): ReadonlyArray<Pe
 };
 
 const decodePersonalSkills = (values: ReadonlyArray<unknown>): ReadonlyArray<PersonalSkill> =>
-  values.flatMap((value) =>
-    Option.match(Schema.decodeUnknownOption(PersonalSkill)(value), {
-      onNone: () => [],
-      onSome: (skill) => [skill],
-    }),
-  );
+  decodePersonalSkillVersions(values);
 
 const skillIsAvailable = (
   capabilityIds: ReadonlyArray<CapabilityId>,
@@ -576,8 +502,6 @@ const skillIsAvailable = (
     })
   );
 };
-
-const byteLength = (value: string): number => new TextEncoder().encode(value).byteLength;
 
 /** Build the retained in-process Capability Catalog implementation. */
 export const layer = Layer.succeed(Service, Service.of(make()));

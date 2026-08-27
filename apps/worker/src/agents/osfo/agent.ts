@@ -18,7 +18,7 @@ import {
   type TurnContext,
 } from "@cloudflare/think";
 import type { MessengerContext } from "@cloudflare/think/messengers";
-import { tool, type ToolSet, type UIMessage } from "ai";
+import { generateText, Output, tool, type ToolSet, type UIMessage } from "ai";
 import { genericObservability } from "agents/observability";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import {
@@ -47,6 +47,14 @@ import {
   UserId,
 } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
+import { CapabilityId, currentCapabilityCatalog } from "../../domain/capability-catalog";
+import {
+  type GoodRootOutcomeEvaluationReference,
+  PersonalSkillId,
+  PersonalSkillVersion,
+  PersonalSkillVersionId,
+  type SkillLearningCandidate,
+} from "../../domain/personal-skill";
 import { DocumentArtifact } from "../../domain/document-artifact";
 import { DocumentGenerationComposition } from "../../composition/document-generation";
 import { Db } from "../../db";
@@ -91,6 +99,11 @@ import {
   persistThinkTerminalBeforeCapture,
   withCommittedTurnTerminal,
 } from "./committed-turn-terminal";
+import {
+  ingestGoodRootEvaluation,
+  recoverPersonalSkillLearning,
+  selectPersonalSkillsForTurn,
+} from "./personal-skill-runtime";
 import {
   FileAnalysisId,
   type FileAnalysisRecord,
@@ -241,6 +254,7 @@ import {
   approvalPresentationFor,
   hasExactActionInput,
   hasExactForgetKnowledgeInput,
+  hasExactPersonalSkillDeleteInput,
   hasExactSessionDeleteInput,
   makeActionPresentationPersistence,
   presentOsfoAction,
@@ -262,6 +276,28 @@ import { effectToolSchema } from "./effect-tool-schema";
 import { makeFileTools } from "./file-tools";
 import { FileAnalysisReconciliation } from "./file-analysis-reconciliation";
 import { ManagedCapabilityState } from "./managed-capability-turn-state";
+import {
+  makeGoodRootOutcomeEvaluatorAuthority,
+  makePersonalSkillAuthority,
+  type PersonalSkillAvailability,
+} from "./personal-skill-authority";
+import { makeGoodRootOutcomeEvaluator } from "./good-root-outcome-evaluator";
+import {
+  makePersonalSkillTools,
+  SkillInspectInput,
+  SkillManageInput,
+} from "./personal-skill-tools";
+import type { SkillDeleteInput } from "./personal-skill-tools";
+import {
+  bindSkillLearningModelDecision,
+  projectSkillLearningDraft,
+  SkillLearningModelDecision,
+} from "./post-turn-skill-learning";
+import {
+  makeSkillLearningCoordinator,
+  type SkillLearningModelInput,
+} from "./skill-learning-coordinator";
+import { deliverSkillLearningNotifications } from "./skill-learning-notification";
 import {
   projectCommittedConversationSnapshot,
   projectTerminalMarkedCommittedTurns,
@@ -288,6 +324,7 @@ import {
 } from "./deletion-actions";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries, and Effect results use _tag. */
+/* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect -- Agent hooks and Durable Object callbacks supply the wall-clock boundary for retained metadata. */
 
 const pendingSessionId = "__osfo_uninitialized__";
 const gatewayId = "default";
@@ -302,6 +339,11 @@ class MemoryProviderWorkUnavailable extends Data.TaggedError("MemoryProviderWork
   readonly message: string;
 }> {}
 
+class SkillLearningModelUnavailable extends Data.TaggedError("SkillLearningModelUnavailable")<{
+  readonly cause: unknown;
+  readonly message: string;
+}> {}
+
 const authorization = Authorization.make(retainedCatalog);
 const capabilityActionNames = [
   "analyzeFile",
@@ -310,7 +352,26 @@ const capabilityActionNames = [
   "osfoClearCoreMemory",
   "osfoDeleteSession",
   "osfoForgetKnowledge",
+  "osfoDeletePersonalSkill",
 ] as const satisfies ReadonlyArray<Capabilities.RegisteredToolName>;
+const initialPersonalSkillAvailability = {
+  capabilityIds: [CapabilityId.make("conversation")],
+  requirements: [
+    "document-renderer",
+    "file-storage",
+    "native-memory",
+    "personal-agent",
+    "session-history",
+    "skill-store",
+  ],
+} as const;
+const SkillLearningPrompt = Schema.Struct({
+  corrections: Schema.Array(Schema.String),
+  decisions: Schema.Array(Schema.String),
+  priorSkill: Schema.NullOr(PersonalSkillVersion),
+  taskDescription: Schema.String,
+});
+const encodeSkillLearningPrompt = Schema.encodeSync(Schema.fromJsonString(SkillLearningPrompt));
 type AgentFilePersistenceError =
   | FileAnalysisConflict
   | FileNotFound
@@ -599,9 +660,11 @@ export class OsfoAgent extends Think<Env> {
       ),
   });
   #capabilityTurnState: ManagedCapabilityTurnState = {
+    eligiblePersonalSkills: [],
     initialized: false,
     loadedSkillReceipts: [],
     pendingFileAnalyses: [],
+    skillLearningDraft: null,
   };
   #activeCapabilityMetadata: ManagedTurnMetadata | undefined;
   readonly #capabilityStateSemaphore = Semaphore.makeUnsafe(1);
@@ -615,7 +678,8 @@ export class OsfoAgent extends Think<Env> {
         | "file.delete"
         | "memory.clear"
         | "memory.forgetKnowledge"
-        | "session.delete";
+        | "session.delete"
+        | "skill.manage";
       readonly presentation: ApprovalPresentation;
     }
   >();
@@ -656,6 +720,29 @@ export class OsfoAgent extends Think<Env> {
   #activeCapabilityTurn: CapabilityTurn.Interface | undefined;
   readonly #promptAssembly = PromptAssembly.makeRetainedPromptAssembly();
   readonly #store = makeAgentStore(this.#db);
+  readonly #personalSkillAuthority = makePersonalSkillAuthority(this.ctx.storage);
+  readonly #goodRootOutcomeEvaluator = makeGoodRootOutcomeEvaluator({
+    authority: makeGoodRootOutcomeEvaluatorAuthority(this.ctx.storage),
+    facts: {
+      readCommittedTurns: this.#store.readCommittedTurns,
+      readMessages: () => this.messages,
+    },
+  });
+  readonly #personalSkillTools = makePersonalSkillTools({
+    authority: this.#personalSkillAuthority,
+    availability: () => this.#personalSkillAvailability,
+    current: () => {
+      const metadata = this.#activeCapabilityMetadata;
+      return metadata === undefined
+        ? null
+        : {
+            decisionReferenceId: metadata.submissionId,
+            userId: metadata.authorityIdentity.userId,
+          };
+    },
+    nowEpochMillis: Date.now,
+  });
+  #personalSkillAvailability: PersonalSkillAvailability = initialPersonalSkillAvailability;
   readonly #sessionExecution = makeSessionExecution({
     hasPendingOrRunning: callThinkSubmission("listSubmissions", () =>
       this.listSubmissions({ limit: 1, status: ["pending", "running"] }),
@@ -755,6 +842,39 @@ export class OsfoAgent extends Think<Env> {
         "Load one exact Skill Version from the current turn's validated Skill index. This never grants authority or registers Tools.",
       execute: (input) => this.#loadSkill(input),
       inputSchema: effectToolSchema(CapabilityContext.LoadSkillToolInput),
+    }),
+    skillInspect: tool({
+      description: "List active personal Skills or inspect one immutable Skill lineage.",
+      execute: (input) =>
+        Effect.runPromise(
+          this.#personalSkillTools.inspect(input).pipe(
+            Effect.match({
+              onFailure: () => ({
+                _tag: "SkillUnavailable" as const,
+                message: "The personal Skill could not be inspected for this User.",
+              }),
+              onSuccess: (result) => result,
+            }),
+          ),
+        ),
+      inputSchema: effectToolSchema(SkillInspectInput),
+    }),
+    skillManage: tool({
+      description:
+        "Create, revise, archive, restore, roll back, or request approved deletion of a personal Skill after an explicit User request.",
+      execute: (input) =>
+        Effect.runPromise(
+          this.#personalSkillTools.manage(input).pipe(
+            Effect.match({
+              onFailure: () => ({
+                _tag: "SkillUnavailable" as const,
+                message: "The personal Skill lifecycle change could not be committed.",
+              }),
+              onSuccess: (result) => result,
+            }),
+          ),
+        ),
+      inputSchema: effectToolSchema(SkillManageInput),
     }),
   } satisfies ToolSet;
   /** Resolve a safe model before trusted per-turn metadata selects the exact managed route. */
@@ -981,6 +1101,7 @@ export class OsfoAgent extends Think<Env> {
       this.#clearCoreMemory(input, actionId);
     const osfoActions = makeOsfoActions({
       clearCoreMemory: executeClear,
+      deletePersonalSkill: (input, actionId) => this.#deletePersonalSkill(input, actionId),
       deleteSession: (input, actionId) => this.#deleteSession(input, actionId),
       forgetKnowledge: (input, actionId) => this.#forgetKnowledge(input, actionId),
     });
@@ -1009,8 +1130,8 @@ export class OsfoAgent extends Think<Env> {
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
     );
     this.#activeCapabilityMetadata = metadata;
+    const firstInitialization = !metadata.capabilityTurnState.initialized;
     const capabilityTurnState = ManagedCapabilityState.initialize(this.messages, metadata);
-    await this.#replaceCapabilityTurnState(capabilityTurnState);
     const trustedToolAssembly = CapabilityContext.trustedToolAssembly({
       actionNames: capabilityActionNames,
       allTools: context.tools,
@@ -1026,6 +1147,7 @@ export class OsfoAgent extends Think<Env> {
         "native-memory",
         "personal-agent",
         "session-history",
+        "skill-store",
       ],
       availableToolNames: Object.keys(tools),
     } as const;
@@ -1034,13 +1156,21 @@ export class OsfoAgent extends Think<Env> {
     const capabilityContext = CapabilityContext.projectTurn(context.messages, {
       pendingFileAnalysis: capabilityTurnState.pendingFileAnalyses.length > 0,
     });
+    const personalSkills = await Effect.runPromise(
+      selectPersonalSkillsForTurn({
+        authority: this.#personalSkillAuthority,
+        eligible: capabilityTurnState.eligiblePersonalSkills,
+        firstInitialization,
+        userId: metadata.authorityIdentity.userId,
+      }),
+    );
     const baseIndex = await Effect.runPromise(
       this.#capabilities.eligibleIndex({
         ...capabilityAvailability,
         catalogVersion: metadata.capabilityCatalogVersion,
         declaredRequirements: [],
         origin: capabilityTurnOrigin(metadata.authorityIdentity),
-        personalSkills: [],
+        personalSkills,
         plan: metadata.plan,
         taskDescription: capabilityContext.taskDescription,
         taskKinds: capabilityContext.taskKinds,
@@ -1048,21 +1178,61 @@ export class OsfoAgent extends Think<Env> {
         userId: metadata.authorityIdentity.userId,
       }),
     );
+    const learningDraft = Option.getOrNull(
+      projectSkillLearningDraft({
+        availableCapabilityIds: baseIndex.candidates.flatMap(({ capabilityIds }) => capabilityIds),
+        availableRequirements: capabilityAvailability.availableRequirements,
+        origin: capabilityTurnOrigin(metadata.authorityIdentity),
+        ownerUserId: metadata.authorityIdentity.userId,
+        priorSkillId: null,
+        priorSkillVersion: null,
+        submissionId: metadata.submissionId,
+        taskDescription: capabilityContext.taskDescription,
+      }),
+    );
+    const retainedCapabilityTurnState = firstInitialization
+      ? {
+          ...capabilityTurnState,
+          eligiblePersonalSkills: baseIndex.candidates.flatMap((candidate) =>
+            candidate.source === "personal"
+              ? [
+                  {
+                    skillId: PersonalSkillId.make(candidate.skillId),
+                    skillVersion: PersonalSkillVersionId.make(candidate.skillVersion),
+                  },
+                ]
+              : [],
+          ),
+          skillLearningDraft:
+            learningDraft === null
+              ? null
+              : {
+                  availableCapabilityIds: learningDraft.availableCapabilityIds,
+                  availableRequirements: learningDraft.availableRequirements,
+                  taskDescription: learningDraft.taskDescription,
+                },
+        }
+      : capabilityTurnState;
+    await this.#replaceCapabilityTurnState(retainedCapabilityTurnState);
     const restored = this.#capabilities.restoreLoadedSkillReceipts({
       ...capabilityAvailability,
       catalogVersion: metadata.capabilityCatalogVersion,
       index: baseIndex,
-      receipts: capabilityTurnState.loadedSkillReceipts,
+      receipts: retainedCapabilityTurnState.loadedSkillReceipts,
       submissionId: metadata.submissionId,
     });
     const index = restored.index;
+    this.#personalSkillAvailability = {
+      capabilityIds: [...new Set(index.candidates.flatMap(({ capabilityIds }) => capabilityIds))],
+      requirements: capabilityAvailability.availableRequirements,
+    };
     const activeCapabilityTurn = CapabilityTurn.make({
       availableToolNames: capabilityAvailability.availableToolNames,
       baseInstructions: prompt.instructions,
       capabilities: this.#capabilities,
       index,
       loadedSkills: restored.loadedSkills,
-      personalSkills: [],
+      personalSkills,
       toolSchemas: CapabilityContext.toolSchemaAccounting(trustedToolAssembly),
       userId: metadata.authorityIdentity.userId,
     });
@@ -1273,6 +1443,26 @@ export class OsfoAgent extends Think<Env> {
               );
               if (!receiptCommitted || !activeTurn.commitLoadedSkill(loaded)) {
                 throw new Error("The active turn reached its loaded Skill limit");
+              }
+              if (loaded.source === "personal") {
+                this.ctx.waitUntil(
+                  Effect.runPromise(
+                    this.#personalSkillAuthority
+                      .recordUse({
+                        nowEpochMillis: Date.now(),
+                        skillId: PersonalSkillId.make(loaded.skillId),
+                        skillVersion: PersonalSkillVersionId.make(loaded.skillVersion),
+                        userId: metadata.authorityIdentity.userId,
+                      })
+                      .pipe(
+                        Effect.catch((failure) =>
+                          Effect.logWarning("Personal Skill use metadata was not recorded").pipe(
+                            Effect.annotateLogs({ failure: failure._tag }),
+                          ),
+                        ),
+                      ),
+                  ),
+                );
               }
               return loaded;
             },
@@ -1724,6 +1914,54 @@ export class OsfoAgent extends Think<Env> {
     if (Predicate.isTagged(recheck, "Denied")) return recheck;
     await this.#activateCurrentSession();
     return runRpc(clearCoreMemory(this.session, input));
+  }
+
+  async #deletePersonalSkill(input: SkillDeleteInput, actionId: ActionId) {
+    await this.#migrationsReady;
+    const current = this.#currentApprovedActions.get(actionId);
+    if (
+      current?.operation !== "skill.manage" ||
+      !hasExactPersonalSkillDeleteInput(current.actionPresentation, input)
+    ) {
+      return {
+        _tag: "SkillUnavailable",
+        message: "Current personal Skill deletion Approval does not match the requested lineage.",
+      } as const;
+    }
+    const metadata = Schema.decodeUnknownOption(ManagedTurnMetadata)(this.activeTurnMetadata);
+    if (Option.isNone(metadata)) {
+      return {
+        _tag: "SkillUnavailable",
+        message: "Current personal Skill authority is unavailable.",
+      } as const;
+    }
+    const recheck = await runRpc(
+      this.#managedActionAuthorization.recheck(
+        metadata.value.authorityIdentity,
+        { actionId, change: "delete", kind: "skill.manage" },
+        current.presentation,
+      ),
+    );
+    if (Predicate.isTagged(recheck, "Denied")) return recheck;
+    return runRpc(
+      this.#accountDeletionFence
+        .run(
+          this.#personalSkillAuthority.delete({
+            ...input,
+            userId: metadata.value.authorityIdentity.userId,
+          }),
+          () => ({
+            _tag: "SkillUnavailable" as const,
+            message: "Account deletion fenced personal Skill management.",
+          }),
+        )
+        .pipe(
+          Effect.orElseSucceed(() => ({
+            _tag: "SkillUnavailable" as const,
+            message: "The approved personal Skill deletion could not be committed.",
+          })),
+        ),
+    );
   }
 
   async #forgetKnowledge(input: ForgetKnowledgeInput, actionId: ActionId) {
@@ -2330,7 +2568,202 @@ export class OsfoAgent extends Think<Env> {
     await this.#migrationsReady;
     await this.#reconcileModelCallUsageOrSchedule();
     await Effect.runPromise(this.#reconcileCommittedTurns());
+    this.ctx.waitUntil(this.#recoverSkillLearning());
     this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
+  }
+
+  async #recordGoodRootOutcome(input: GoodRootOutcomeEvaluationReference) {
+    const committed = await Effect.runPromise(this.#store.readCommittedTurns);
+    const outcome = await Effect.runPromise(
+      ingestGoodRootEvaluation({
+        authority: this.#personalSkillAuthority,
+        committedTurns: committed,
+        messages: this.messages,
+        nowEpochMillis: Date.now(),
+        reference: input,
+      }),
+    );
+    if (outcome._tag !== "SkillLearningQueued") return outcome;
+    this.ctx.waitUntil(this.#runSkillLearning(outcome.candidate));
+    return { _tag: outcome._tag, candidateId: outcome.candidateId } as const;
+  }
+
+  async #evaluateGoodRootOutcome(assistantMessageId: AssistantMessageId): Promise<void> {
+    const evaluation = await Effect.runPromise(
+      this.#goodRootOutcomeEvaluator.evaluate({
+        assistantMessageId,
+        evaluatedAtEpochMillis: Date.now(),
+      }),
+    );
+    if (Option.isNone(evaluation)) return;
+    await this.#recordGoodRootOutcome(evaluation.value);
+  }
+
+  async #recoverSkillLearning(): Promise<void> {
+    const recoverable = await Effect.runPromise(
+      recoverPersonalSkillLearning(this.#personalSkillAuthority, Date.now()),
+    );
+    await Promise.all(recoverable.map((candidate) => this.#runSkillLearning(candidate)));
+    await this.#deliverPendingSkillLearningNotifications();
+  }
+
+  async #runSkillLearning(candidate: SkillLearningCandidate): Promise<void> {
+    const authority = this.#personalSkillAuthority;
+    const deliverNotifications = () => this.#deliverPendingSkillLearningNotificationsUnfenced();
+    const propose = (input: SkillLearningModelInput) => this.#proposeSkillLearning(input);
+    await Effect.runPromise(
+      this.#accountDeletionFence
+        .run(
+          Effect.gen(function* () {
+            const load = yield* authority.learningLoad(candidate.ownerUserId, Date.now());
+            const outcome = yield* makeSkillLearningCoordinator({
+              authority,
+              propose,
+              recordCompanyCost: (cost) => authority.recordLearningCost(cost),
+            }).run({
+              availability: {
+                capabilityIds: candidate.availableCapabilityIds,
+                requirements: candidate.availableRequirements,
+              },
+              candidate,
+              load,
+              nowEpochMillis: Date.now(),
+            });
+            yield* Effect.logInfo("Post-turn personal Skill Learning completed").pipe(
+              Effect.annotateLogs({
+                outcome: outcome._tag,
+                reason: "reason" in outcome ? outcome.reason : undefined,
+              }),
+            );
+            yield* Effect.tryPromise({
+              try: deliverNotifications,
+              catch: (cause) => ({ _tag: "SkillLearningDeliveryUnavailable" as const, cause }),
+            });
+          }),
+          () => ({ _tag: "AccountDeletionFenced" as const }),
+        )
+        .pipe(
+          Effect.catch((failure) =>
+            Effect.logWarning("Post-turn personal Skill Learning was isolated").pipe(
+              Effect.annotateLogs({ failure: failure._tag }),
+            ),
+          ),
+        ),
+    );
+  }
+
+  #proposeSkillLearning(input: SkillLearningModelInput) {
+    const authority = this.#personalSkillAuthority;
+    const readGatewayVendorCost = (logId: string) => this.#readGatewayVendorCost(logId);
+    const resolveModel = () => this.resolveModel(launchModelAccessPolicy.plans.free.route);
+    return Effect.gen(function* () {
+      const prompt = encodeSkillLearningPrompt({
+        corrections: input.candidate.corrections,
+        decisions: input.candidate.decisions,
+        priorSkill: input.priorVersion,
+        taskDescription: input.candidate.taskDescription,
+      });
+      const generated = yield* Effect.exit(
+        Effect.tryPromise({
+          try: () =>
+            generateText({
+              maxOutputTokens: currentCapabilityCatalog.skillLearning.modelOutputTokens,
+              maxRetries: 0,
+              model: resolveModel(),
+              output: Output.object({ schema: effectToolSchema(SkillLearningModelDecision) }),
+              prompt,
+              system:
+                "Decide whether the trusted direct User correction creates a reusable personal Skill. Return only bounded natural-language guidance. Never add authority, code, credentials, provider payloads, or facts absent from the supplied correction and prior Skill.",
+              timeout: 20_000,
+            }),
+          catch: (cause) =>
+            new SkillLearningModelUnavailable({
+              cause,
+              message: "The isolated Skill Learning model call failed",
+            }),
+        }),
+      );
+      const conservativeVendorUsdMicros = Number(
+        currentLaunchPolicy.plans.free.operationLimits.vendorUsdMicrosPerRequest,
+      );
+      if (Exit.isFailure(generated)) {
+        yield* authority.recordLearningCost({
+          attemptId: input.attemptId,
+          basis: "conservative",
+          candidateId: input.candidate.candidateId,
+          modelInputTokens: currentCapabilityCatalog.skillLearning.modelInputTokens,
+          modelOutputTokens: currentCapabilityCatalog.skillLearning.modelOutputTokens,
+          outcome: "failure",
+          recordedAtEpochMillis: Date.now(),
+          userId: input.candidate.ownerUserId,
+          vendorUsdMicros: conservativeVendorUsdMicros,
+        });
+        return yield* new SkillLearningModelUnavailable({
+          cause: generated.cause,
+          message: "The isolated Skill Learning model call failed",
+        });
+      }
+      const logId = readAiGatewayLogId(
+        generated.value.finalStep.response.headers,
+        generated.value.finalStep.providerMetadata,
+      );
+      const observed = Option.isNone(logId)
+        ? Option.none<bigint>()
+        : yield* Effect.promise(() => readGatewayVendorCost(logId.value));
+      const measured =
+        generated.value.usage.inputTokens !== undefined &&
+        generated.value.usage.outputTokens !== undefined &&
+        Option.isSome(observed);
+      return {
+        proposal: bindSkillLearningModelDecision(input, generated.value.output),
+        usage: {
+          costBasis: measured ? ("observed" as const) : ("conservative" as const),
+          modelInputTokens:
+            generated.value.usage.inputTokens ??
+            currentCapabilityCatalog.skillLearning.modelInputTokens,
+          modelOutputTokens:
+            generated.value.usage.outputTokens ??
+            currentCapabilityCatalog.skillLearning.modelOutputTokens,
+          vendorUsdMicros: Option.match(observed, {
+            onNone: () => conservativeVendorUsdMicros,
+            onSome: Number,
+          }),
+        },
+      };
+    });
+  }
+
+  async #deliverPendingSkillLearningNotifications(): Promise<void> {
+    await Effect.runPromise(
+      this.#accountDeletionFence
+        .run(
+          Effect.tryPromise({
+            try: () => this.#deliverPendingSkillLearningNotificationsUnfenced(),
+            catch: (cause) => ({ _tag: "SkillLearningDeliveryUnavailable" as const, cause }),
+          }),
+          () => ({ _tag: "AccountDeletionFenced" as const }),
+        )
+        .pipe(
+          Effect.catch((failure) =>
+            Effect.logWarning("Personal Skill Learning notification delivery was isolated").pipe(
+              Effect.annotateLogs({ failure: failure._tag }),
+            ),
+          ),
+        ),
+    );
+  }
+
+  async #deliverPendingSkillLearningNotificationsUnfenced(): Promise<void> {
+    await Effect.runPromise(
+      deliverSkillLearningNotifications({
+        markDelivered: (input) =>
+          this.#personalSkillAuthority.markLearningNotificationDelivered(input),
+        messages: () => this.messages,
+        nowEpochMillis: Date.now,
+        pending: this.#personalSkillAuthority.pendingLearningNotifications,
+        updateMessage: (message) => Effect.promise(() => this.updateMessageInHistory(message)),
+      }),
+    );
   }
 
   /** Retry durable Knowledge Base operations after an activation or scheduled wake. */
@@ -2370,6 +2803,7 @@ export class OsfoAgent extends Think<Env> {
         accountDeletionProviderPollMilliseconds,
       ).pipe(Effect.timeout(accountDeletionProviderQuiescenceTimeoutMilliseconds)),
     );
+    await Effect.runPromise(this.#personalSkillAuthority.deleteUserData(userId));
   }
 
   async #cancelActiveSubmissionsForAccountDeletion() {
@@ -2821,7 +3255,8 @@ export class OsfoAgent extends Think<Env> {
                   (found.presentation.operation === "memory.clear" ||
                     found.presentation.operation === "file.delete" ||
                     found.presentation.operation === "memory.forgetKnowledge" ||
-                    found.presentation.operation === "session.delete")
+                    found.presentation.operation === "session.delete" ||
+                    found.presentation.operation === "skill.manage")
                 ) {
                   this.#currentApprovedActions.set(actionId, {
                     actionPresentation: found.presentation,
@@ -3150,6 +3585,7 @@ export class OsfoAgent extends Think<Env> {
           },
           requestId: thinkRequestId,
           status: result.status,
+          submissionId: activeTurn.value.submissionId,
         });
     await Effect.runPromise(
       persistThinkTerminalBeforeCapture(
@@ -3190,6 +3626,20 @@ export class OsfoAgent extends Think<Env> {
       ),
     );
     if (result.status === "completed") {
+      this.ctx.waitUntil(
+        Effect.runPromise(
+          Effect.tryPromise({
+            try: () => this.#evaluateGoodRootOutcome(assistantMessageId),
+            catch: (cause) => ({ _tag: "GoodRootEvaluationUnavailable" as const, cause }),
+          }).pipe(
+            Effect.catch((failure) =>
+              Effect.logWarning("Good Root evaluation was isolated from the committed turn").pipe(
+                Effect.annotateLogs({ failure: failure._tag }),
+              ),
+            ),
+          ),
+        ),
+      );
       this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
     }
   }

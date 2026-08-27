@@ -214,9 +214,11 @@ export const admitManagedConversation = (
         authorityIdentity,
         capabilityCatalogVersion: currentCapabilityCatalog.version,
         capabilityTurnState: {
+          eligiblePersonalSkills: [],
           initialized: false,
           loadedSkillReceipts: [],
           pendingFileAnalyses: [],
+          skillLearningDraft: null,
         },
         conservativeVendorUsdMicros: Number(maxVendorUsdMicros),
         coreMemoryAuthorization,

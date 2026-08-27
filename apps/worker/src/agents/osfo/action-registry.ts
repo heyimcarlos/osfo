@@ -19,6 +19,8 @@ import {
   type SessionDeletionPending,
   sessionDeleteActionName,
 } from "./deletion-actions";
+import { personalSkillDeleteActionName, SkillDeleteInput } from "./personal-skill-tools";
+import type { PersonalSkillId } from "../../domain/personal-skill";
 
 export {
   ForgetKnowledgeInput,
@@ -32,6 +34,7 @@ type SanitizedPendingApprovalInput =
   | Partial<ClearCoreMemoryInput>
   | Partial<ForgetKnowledgeInput>
   | Partial<RetainedDocumentInput>
+  | Partial<SkillDeleteInput>
   | Partial<SessionDeleteInput>;
 
 export {
@@ -42,6 +45,14 @@ export {
 
 /** Name registered with Think for the Core Memory clear Action. */
 export const coreMemoryClearActionName = "osfoClearCoreMemory";
+/** Name registered with Think for approval-gated personal Skill deletion. */
+export { personalSkillDeleteActionName } from "./personal-skill-tools";
+
+/** Closed result returned by the Approval-gated personal Skill deletion Action. */
+export type PersonalSkillDeleteActionResult =
+  | Denied
+  | { readonly _tag: "Deleted"; readonly skillId: PersonalSkillId }
+  | { readonly _tag: "SkillUnavailable"; readonly message: string };
 
 /** Build Osfo's cohesive Think Action registry. */
 export const makeOsfoActions = (options: {
@@ -59,6 +70,10 @@ export const makeOsfoActions = (options: {
   ) => Promise<
     DeletionActionUnavailable | Denied | KnowledgeForgetCorrectionPending | KnowledgeForgetPending
   >;
+  readonly deletePersonalSkill: (
+    input: SkillDeleteInput,
+    actionId: ActionId,
+  ) => Promise<PersonalSkillDeleteActionResult>;
 }) => {
   const actions = {
     [coreMemoryClearActionName]: action({
@@ -102,6 +117,18 @@ export const makeOsfoActions = (options: {
       kind: "durable-pause",
       permissions: ["sessions:delete"],
     }),
+    [personalSkillDeleteActionName]: action({
+      approval: true,
+      approvalRisk: "high",
+      approvalSummary: "Delete one personal Skill",
+      description: "Permanently delete one exact personal Skill lineage after Approval.",
+      execute: (input, context) =>
+        options.deletePersonalSkill(input, ActionId.make(context.toolCallId)),
+      idempotencyKey: ({ ctx }) => `personal-skill-delete:${ctx.toolCallId}`,
+      inputSchema: effectToolSchema(SkillDeleteInput),
+      kind: "durable-pause",
+      permissions: ["skills:delete"],
+    }),
   };
   return actions;
 };
@@ -137,6 +164,14 @@ export const sanitizePendingApproval = (approval: PendingApproval): PendingAppro
     return withInput(
       approval,
       Schema.decodeUnknownOption(SessionDeleteInput)(approval.descriptor.input).pipe(
+        Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
+      ),
+    );
+  }
+  if (approval.descriptor.action === personalSkillDeleteActionName) {
+    return withInput(
+      approval,
+      Schema.decodeUnknownOption(SkillDeleteInput)(approval.descriptor.input).pipe(
         Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
       ),
     );

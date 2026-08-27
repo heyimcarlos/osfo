@@ -9,9 +9,10 @@ export default defineConfig({
         compatibilityDate: "2026-08-12",
         compatibilityFlags: ["nodejs_compat"],
       },
+      wrangler: { configPath: "./test/wrangler.runtime.jsonc" },
     }),
   ],
   test: {
-    include: ["src/**/*.runtime.test.ts"],
+    include: ["src/**/*.runtime.test.ts", "test/runtime/**/*.runtime.test.ts"],
   },
 });
