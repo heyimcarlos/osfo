@@ -19,6 +19,7 @@ import {
 } from "@cloudflare/think";
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import { tool, type ToolSet, type UIMessage } from "ai";
+import { genericObservability } from "agents/observability";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import {
   Cause,
@@ -176,6 +177,7 @@ import {
 } from "../../services/session-recall";
 import { makeSessionRecallAuthorization } from "../../services/session-recall-authorization";
 import { PromptAssembly } from "../../services/prompt-assembly";
+import { PromptUtilization } from "../../services/prompt-utilization";
 import { Capabilities } from "../../services/capabilities";
 import { CapabilityTurn } from "./capability-turn";
 import { CapabilityContext } from "./capability-context";
@@ -470,6 +472,31 @@ export class OsfoAgent extends Think<Env> {
 
   /** Let Think classify and recover provider context-window failures. */
   override classifyChatError = defaultContextOverflowClassifier;
+
+  #promptUtilizationObserver: PromptUtilization.Observer | undefined;
+
+  /** Preserve Agents SDK diagnostics and export only numeric compaction evidence to Osfo logs. */
+  override observability = PromptUtilization.makeThinkObservability({
+    delegate: genericObservability,
+    onCompacted: (event) => {
+      const observer = this.#promptUtilizationObserver;
+      if (observer === undefined) return;
+      const evidence = [observer.compacted(event)];
+      if (event.reason === "reactive" && event.attempt !== undefined) {
+        evidence.push(
+          observer.overflowRetry({
+            attempt: event.attempt,
+            retryLimit: this.contextOverflow?.maxRetries ?? 0,
+          }),
+        );
+      }
+      this.ctx.waitUntil(
+        Effect.runPromise(
+          Effect.forEach(evidence, PromptUtilization.emit, { concurrency: 1, discard: true }),
+        ),
+      );
+    },
+  });
 
   readonly #db = makeAgentDb(this.ctx.storage);
   readonly #accountDeletionFence = makeAccountDeletionFence();
@@ -980,6 +1007,7 @@ export class OsfoAgent extends Think<Env> {
 
   /** Apply only the route and limits pinned to the current durable Think Submission. */
   override async beforeTurn(context: TurnContext): Promise<TurnConfig> {
+    this.#promptUtilizationObserver = undefined;
     const system = await this.session.refreshSystemPrompt();
     const metadata = await Effect.runPromise(
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
@@ -1049,15 +1077,34 @@ export class OsfoAgent extends Think<Env> {
       this.ctx.waitUntil(this.#recordProviderRecallCompanyCost(metadata, prompt.usage));
     }
     this.#completedModelSteps.clear();
-    this.contextOverflow = {
-      maxRetries: 1,
-      proactive: {
-        headroom: metadata.targetInputTokens / metadata.maxInputTokens,
-        maxCompactions: 1,
-        maxInputTokens: metadata.maxInputTokens,
-      },
-      reactive: true,
-    };
+    const promptUtilizationObserver = PromptUtilization.makeObserver({
+      contextWindowTokens: metadata.maxInputTokens,
+    });
+    this.#promptUtilizationObserver = promptUtilizationObserver;
+    this.contextOverflow = PromptUtilization.compactionPolicy({
+      contextWindowTokens: metadata.maxInputTokens,
+      proactiveCompactionLimit: 1,
+      reactiveRetryLimit: 1,
+      targetInputTokens: metadata.targetInputTokens,
+    });
+    const estimatedInputTokens = PromptUtilization.estimateInputTokens({
+      instructions: capabilityStep.instructions,
+      messages: prompt.messages,
+    });
+    this.ctx.waitUntil(
+      Effect.runPromise(
+        PromptUtilization.emit(
+          promptUtilizationObserver.promptAssembled({
+            categoryTokens: PromptUtilization.categoryTokensForTurn({
+              conversationMessages: context.messages,
+              providerContext: prompt.providerContext,
+              systemInstructions: capabilityStep.instructions,
+            }),
+            estimatedInputTokens,
+          }),
+        ),
+      ),
+    );
     return {
       maxOutputTokens: metadata.maxOutputTokens,
       maxRetries: metadata.maxRetries,
@@ -1133,6 +1180,22 @@ export class OsfoAgent extends Think<Env> {
     if (context.stepNumber > 0) {
       this.#recordCapabilityAccounting(step.bundle, step.index);
     }
+    const observer = this.#promptUtilizationObserver;
+    if (observer !== undefined) {
+      this.ctx.waitUntil(
+        Effect.runPromise(
+          PromptUtilization.emit(
+            observer.stepStarted({
+              estimatedInputTokens: PromptUtilization.estimateInputTokens({
+                instructions: step.instructions,
+                messages: context.messages,
+              }),
+              stepNumber: context.stepNumber + 1,
+            }),
+          ),
+        ),
+      );
+    }
     return {
       activeTools: [...step.activeToolNames],
       instructions: step.instructions,
@@ -1143,12 +1206,39 @@ export class OsfoAgent extends Think<Env> {
   override async onStepEnd(context: StepContext): Promise<void> {
     const stepNumber = ModelStepNumber.make(context.stepNumber + 1);
     await this.#recordCurrentModelUsage(stepNumber, context);
+    const observer = this.#promptUtilizationObserver;
+    if (observer !== undefined) {
+      const inputTokens = context.usage.inputTokens ?? context.usage.totalTokens ?? 0;
+      await Effect.runPromise(
+        PromptUtilization.emit(
+          observer.stepCompleted({
+            inputTokens,
+            outputTokens: context.usage.outputTokens ?? 0,
+            stepNumber,
+            toolCallCount: context.toolCalls.length,
+            toolResultCount: context.toolResults.length,
+          }),
+        ),
+      );
+    }
     this.#completedModelSteps.add(stepNumber);
   }
 
   /** Preserve conservative cost evidence when a provider turn ends ambiguously. */
   // oxlint-disable-next-line osfo/no-unknown-parameters, osfo/no-unknown-returns -- Think owns the error hook's unknown protocol contract.
   override onChatError(error: unknown, context?: ChatErrorContext): unknown {
+    if (context?.classification === "context_overflow") {
+      const observer = this.#promptUtilizationObserver;
+      if (observer !== undefined) {
+        this.ctx.waitUntil(
+          Effect.runPromise(
+            PromptUtilization.emit(
+              observer.overflowTerminal({ retryLimit: this.contextOverflow?.maxRetries ?? 0 }),
+            ),
+          ),
+        );
+      }
+    }
     if (context?.stage === "turn" || context?.stage === "stream" || context?.stage === "recovery") {
       if (!this.#completedModelSteps.has(this.#activeModelStepNumber)) {
         this.ctx.waitUntil(this.#recordCurrentModelUsage(this.#activeModelStepNumber));

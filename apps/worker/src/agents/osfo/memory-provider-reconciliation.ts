@@ -2,6 +2,7 @@ import { Crypto, DateTime, Effect, Option, Predicate, Result, Schedule, Schema }
 
 import { Db } from "../../db";
 import { MemoryProvider } from "../../services/memory-provider";
+import { MemoryProviderObservability } from "../../services/memory-provider-observability";
 import type { RecheckResult } from "../../services/authorization";
 import type { DeletionAuthorization } from "./deletion-actions";
 import type {
@@ -71,6 +72,15 @@ export const reconcileMemoryProviderOutbox = Effect.fn("MemoryProviderOutbox.rec
   options: ReconciliationOptions,
 ) {
   const crypto = yield* Crypto.Crypto;
+  const observedAt = yield* DateTime.now;
+  const backlog = yield* store.inspectBacklog(toDbTimestamp(observedAt));
+  yield* MemoryProviderObservability.emit({ _tag: "BacklogObserved", ...backlog });
+  if (backlog.blockedAppendCount > 0) {
+    yield* MemoryProviderObservability.emit({
+      _tag: "OverlappingAppendBlocked",
+      blockedAppendCount: backlog.blockedAppendCount,
+    });
+  }
   let drained = false;
   yield* Effect.forEach(
     Array.from({ length: maximumClaimsPerRun }),
@@ -142,7 +152,10 @@ const processDeletionClaim = Effect.fn("MemoryProviderOutbox.processDeletionClai
         .forgetKnowledge({ memoryId, userId: payload.userId })
         .pipe(Effect.result);
       if (Result.isFailure(result)) {
-        yield* retryClaim(store, claim, result.failure.message, retryDelaySeconds);
+        yield* retryClaim(store, claim, result.failure.message, retryDelaySeconds, {
+          failureTag: result.failure._tag,
+          operation: result.failure.operation,
+        });
         return false;
       }
       completed.add(memoryId);
@@ -280,7 +293,10 @@ const discoverSessionConversation = Effect.fn("MemoryProviderOutbox.discoverSess
     if (!permitted) return undefined;
     const discovered = yield* provider.findSessionConversation(payload).pipe(Effect.result);
     if (Result.isFailure(discovered)) {
-      yield* retryClaim(store, claim, discovered.failure.message, retryDelaySeconds);
+      yield* retryClaim(store, claim, discovered.failure.message, retryDelaySeconds, {
+        failureTag: discovered.failure._tag,
+        operation: discovered.failure.operation,
+      });
       return undefined;
     }
     return discovered.success;
@@ -315,7 +331,10 @@ const processSessionDeletionTarget = Effect.fn("MemoryProviderOutbox.processSess
     if (!canVerify) return undefined;
     const verified = yield* provider.verifySessionConversation(target).pipe(Effect.result);
     if (Result.isFailure(verified)) {
-      yield* retryClaim(store, claim, verified.failure.message, retryDelaySeconds);
+      yield* retryClaim(store, claim, verified.failure.message, retryDelaySeconds, {
+        failureTag: verified.failure._tag,
+        operation: verified.failure.operation,
+      });
       return undefined;
     }
     if (verified.success._tag === "AlreadyAbsent") {
@@ -345,7 +364,10 @@ const processSessionDeletionTarget = Effect.fn("MemoryProviderOutbox.processSess
     if (!canDelete) return undefined;
     const deleted = yield* provider.deleteSessionConversation(target).pipe(Effect.result);
     if (Result.isFailure(deleted)) {
-      yield* retryClaim(store, claim, deleted.failure.message, retryDelaySeconds);
+      yield* retryClaim(store, claim, deleted.failure.message, retryDelaySeconds, {
+        failureTag: deleted.failure._tag,
+        operation: deleted.failure.operation,
+      });
       return undefined;
     }
     const canConfirm = yield* authorizeProviderRequest(
@@ -358,7 +380,10 @@ const processSessionDeletionTarget = Effect.fn("MemoryProviderOutbox.processSess
     if (!canConfirm) return undefined;
     const confirmed = yield* provider.verifySessionConversation(target).pipe(Effect.result);
     if (Result.isFailure(confirmed)) {
-      yield* retryClaim(store, claim, confirmed.failure.message, retryDelaySeconds);
+      yield* retryClaim(store, claim, confirmed.failure.message, retryDelaySeconds, {
+        failureTag: confirmed.failure._tag,
+        operation: confirmed.failure.operation,
+      });
       return undefined;
     }
     if (confirmed.success._tag !== "AlreadyAbsent") {
@@ -514,6 +539,7 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
     if (!userConfigured) return undefined;
 
     let acceptance = claim.providerAcceptance;
+    let providerAcceptedAt = claim.providerAcceptedAt ?? null;
     let usage = claim.usage;
     if (acceptance === null) {
       const saveAndSettle = Effect.gen(function* () {
@@ -550,19 +576,23 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
           }
           if (Predicate.isTagged(saved.failure, "MemoryProviderUnavailable")) {
             yield* store.retainAmbiguousProviderSubmission(claim, saved.failure.message);
+            yield* MemoryProviderObservability.emit({
+              _tag: "RetryScheduled",
+              failureTag: saved.failure._tag,
+              operation: saved.failure.operation,
+              retryCount: retryCount(claim),
+            });
             return undefined;
           }
           yield* store.fail(claim, saved.failure.message);
           return undefined;
         }
         const acceptedAt = yield* DateTime.now;
-        const accepted = yield* store.markProviderAccepted(
-          claim,
-          saved.success,
-          toDbTimestamp(acceptedAt),
-        );
+        const acceptedTimestamp = toDbTimestamp(acceptedAt);
+        const accepted = yield* store.markProviderAccepted(claim, saved.success, acceptedTimestamp);
         if (!accepted) return undefined;
         return {
+          acceptedAt: acceptedTimestamp,
           acceptance: {
             documentId: saved.success.documentId,
             processingStatus: saved.success.processingStatus,
@@ -573,7 +603,16 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
       const saved = yield* options.runSaveConversation?.(saveAndSettle) ?? saveAndSettle;
       if (saved === undefined) return undefined;
       acceptance = saved.acceptance;
+      providerAcceptedAt = saved.acceptedAt;
       usage = saved.usage;
+      if (acceptance.processingStatus === "done") {
+        yield* MemoryProviderObservability.emit({
+          _tag: "ProcessingCompleted",
+          processingCompletedAtMillis: Date.parse(saved.acceptedAt),
+          processingLatencyMillis: 0,
+          retryCount: retryCount(claim),
+        });
+      }
     }
 
     if (acceptance.processingStatus !== "done") {
@@ -601,6 +640,13 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
       }
       const updated = yield* store.markProviderStatus(claim, "done");
       if (!updated) return undefined;
+      const processingCompletedAt = yield* DateTime.now;
+      yield* MemoryProviderObservability.emit({
+        _tag: "ProcessingCompleted",
+        processingCompletedAtMillis: DateTime.toDateUtc(processingCompletedAt).getTime(),
+        processingLatencyMillis: elapsedSince(providerAcceptedAt, processingCompletedAt),
+        retryCount: retryCount(claim),
+      });
     }
 
     const searchable = yield* provider
@@ -616,16 +662,21 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
       return yield* awaitProvider(store, claim, "done");
     }
 
+    const searchReadyAt = yield* DateTime.now;
+    yield* MemoryProviderObservability.emit({
+      _tag: "SearchReady",
+      retryCount: retryCount(claim),
+      searchReadyAtMillis: DateTime.toDateUtc(searchReadyAt).getTime(),
+      searchReadinessLatencyMillis: elapsedSince(providerAcceptedAt, searchReadyAt),
+    });
+
     if (usage === null || claim.allowancePeriodId === null) {
       return yield* store.fail(claim, "MemoryProvider cost attribution is invalid");
     }
     const summary = MemoryProvider.summarizeUsageEvidence(usage);
     yield* Effect.logInfo("MemoryProvider conversation work completed").pipe(
       Effect.annotateLogs({
-        allowancePeriodId: claim.allowancePeriodId,
         companyCostContinuity: claim.attemptCount > 1,
-        outboxId: claim.outboxId,
-        providerDocumentId: acceptance.documentId,
         providerStatus: "done",
         ratedCostUsdMicros: String(summary.ratedCostUsdMicros),
         resourcePriceVersions: summary.resourcePriceVersions.join(","),
@@ -680,7 +731,10 @@ const settleProviderFailure = Effect.fn("MemoryProviderOutbox.settleProviderFail
   if (Predicate.isTagged(failure, "MemoryProviderRejected")) {
     return yield* store.fail(claim, failure.message, accepted ? "failed" : undefined);
   }
-  return yield* retryClaim(store, claim, failure.message, retryDelaySeconds);
+  return yield* retryClaim(store, claim, failure.message, retryDelaySeconds, {
+    failureTag: failure._tag,
+    operation: failure.operation,
+  });
 });
 
 const awaitProvider = Effect.fn("MemoryProviderOutbox.awaitProvider")(function* (
@@ -702,10 +756,29 @@ const retryClaim = Effect.fn("MemoryProviderOutbox.retryClaim")(function* (
   claim: ClaimedMemoryProviderWork,
   message: string,
   delaySeconds: number,
+  evidence?: {
+    readonly failureTag: string;
+    readonly operation: MemoryProvider.MemoryProviderOperation;
+  },
 ) {
   const now = yield* DateTime.now;
   yield* store.retry(claim, toDbTimestamp(DateTime.add(now, { seconds: delaySeconds })), message);
+  if (evidence !== undefined) {
+    yield* MemoryProviderObservability.emit({
+      _tag: "RetryScheduled",
+      retryCount: retryCount(claim),
+      ...evidence,
+    });
+  }
 });
+
+const elapsedSince = (startedAt: Db.DbTimestamp | null, completedAt: DateTime.Utc): number =>
+  startedAt === null
+    ? 0
+    : Math.max(0, DateTime.toDateUtc(completedAt).getTime() - Date.parse(startedAt));
+
+const retryCount = (claim: ClaimedMemoryProviderWork): number =>
+  Math.max(0, claim.attemptCount - 1);
 
 const toDbTimestamp = (time: DateTime.Utc): Db.DbTimestamp =>
   Db.DbTimestamp.make(DateTime.toDateUtc(time).toISOString());

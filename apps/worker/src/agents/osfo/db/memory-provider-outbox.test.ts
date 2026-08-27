@@ -5,6 +5,7 @@ import { AssistantMessageId, SessionId } from "../../../domain";
 import {
   conversationSnapshotOutboxId,
   selectMemoryProviderClaimCandidate,
+  summarizeMemoryProviderBacklog,
 } from "./memory-provider-outbox";
 
 const now = DbTimestamp.make("2026-08-23T12:00:00.000Z");
@@ -63,6 +64,23 @@ describe("MemoryProvider outbox ordering", () => {
 
     expect(selected?.outboxId).toBe("next");
   });
+
+  it("reports the oldest pending append and provider-overlap blocks", () => {
+    expect(
+      summarizeMemoryProviderBacklog(
+        [
+          backlogRow("first", "user:one", "2026-08-23T11:58:00.000Z", "processing"),
+          backlogRow("blocked", "user:one", "2026-08-23T11:59:00.000Z", null),
+          backlogRow("other", "user:two", "2026-08-23T11:59:30.000Z", null),
+        ],
+        now,
+      ),
+    ).toEqual({
+      blockedAppendCount: 1,
+      oldestPendingAppendAgeMillis: 120_000,
+      pendingAppendCount: 3,
+    });
+  });
 });
 
 const candidate = (
@@ -78,4 +96,18 @@ const candidate = (
   outboxId,
   providerStatus,
   status,
+});
+
+const backlogRow = (
+  outboxId: string,
+  orderingKey: string,
+  enqueuedAt: string,
+  providerStatus: "done" | "processing" | null,
+) => ({
+  enqueuedAt: DbTimestamp.make(enqueuedAt),
+  operationType: "saveConversation" as const,
+  orderingKey,
+  outboxId,
+  providerStatus,
+  status: "pending" as const,
 });

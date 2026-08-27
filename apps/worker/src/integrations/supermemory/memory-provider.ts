@@ -11,6 +11,7 @@ import {
 import type { SupermemoryConfig } from "../../config";
 import { ResourcePriceVersion } from "../../domain";
 import { MemoryProvider } from "../../services/memory-provider";
+import { MemoryProviderObservability } from "../../services/memory-provider-observability";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Application-owned outcomes use the _tag discriminator. */
 
@@ -642,18 +643,49 @@ const make = (options: Options) =>
     );
 
     return MemoryProvider.Service.of({
-      checkConversationSearchability,
-      configureOrganizationGuidance,
-      configureUserGuidance,
-      deleteSessionConversation,
-      deleteUserKnowledge,
-      findSessionConversation,
-      forgetKnowledge,
-      getConversationStatus,
-      recall,
-      saveConversation,
-      verifySessionConversation,
-      verifyUserKnowledge,
+      checkConversationSearchability: (input) =>
+        MemoryProviderObservability.observeCall(
+          "checkConversationSearchability",
+          checkConversationSearchability(input),
+        ),
+      configureOrganizationGuidance: MemoryProviderObservability.observeCall(
+        "configureOrganizationGuidance",
+        configureOrganizationGuidance,
+      ),
+      configureUserGuidance: (input) =>
+        MemoryProviderObservability.observeCall(
+          "configureUserGuidance",
+          configureUserGuidance(input),
+        ),
+      deleteSessionConversation: (input) =>
+        MemoryProviderObservability.observeCall(
+          "deleteSessionConversation",
+          deleteSessionConversation(input),
+        ),
+      deleteUserKnowledge: (input) =>
+        MemoryProviderObservability.observeCall("deleteUserKnowledge", deleteUserKnowledge(input)),
+      findSessionConversation: (input) =>
+        MemoryProviderObservability.observeCall(
+          "deleteSessionConversation",
+          findSessionConversation(input),
+        ),
+      forgetKnowledge: (input) =>
+        MemoryProviderObservability.observeCall("forgetKnowledge", forgetKnowledge(input)),
+      getConversationStatus: (input) =>
+        MemoryProviderObservability.observeCall(
+          "getConversationStatus",
+          getConversationStatus(input),
+        ),
+      recall: (input) => MemoryProviderObservability.observeCall("recall", recall(input)),
+      saveConversation: (input) =>
+        MemoryProviderObservability.observeCall("saveConversation", saveConversation(input)),
+      verifySessionConversation: (input) =>
+        MemoryProviderObservability.observeCall(
+          "deleteSessionConversation",
+          verifySessionConversation(input),
+        ),
+      verifyUserKnowledge: (input) =>
+        MemoryProviderObservability.observeCall("deleteUserKnowledge", verifyUserKnowledge(input)),
     });
   });
 

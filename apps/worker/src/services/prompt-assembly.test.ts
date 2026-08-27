@@ -2,7 +2,7 @@
 /* oxlint-disable eslint/no-underscore-dangle -- Application outcomes use the _tag discriminator. */
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
 import { expect, it } from "@effect/vitest";
-import { Duration, Effect, Fiber, Layer } from "effect";
+import { Duration, Effect, Fiber, Layer, Logger, References } from "effect";
 import { TestClock } from "effect/testing";
 import { estimateStringTokens } from "agents/experimental/memory/utils";
 import type { ModelMessage } from "ai";
@@ -180,8 +180,15 @@ it.effect("fails open to Native Memory when the provider is unavailable", () =>
   ),
 );
 
-it.effect("fails open when provider recall exceeds its strict deadline", () =>
-  Effect.gen(function* () {
+it.effect("fails open and reports latency when provider recall exceeds its strict deadline", () => {
+  const logs: Array<{ readonly annotations: object; readonly message: unknown }> = [];
+  const logger = Logger.make<unknown, void>((options) => {
+    logs.push({
+      annotations: { ...options.fiber.getRef(References.CurrentLogAnnotations) },
+      message: options.message,
+    });
+  });
+  return Effect.gen(function* () {
     const fiber = yield* PromptAssembly.assemble({
       agentInstructions: "Native Memory remains available",
       limits: {
@@ -199,8 +206,19 @@ it.effect("fails open when provider recall exceeds its strict deadline", () =>
     expect(result._tag).toBe("ProviderRecallUnavailable");
     expect(result.instructions).toContain("Native Memory remains available");
     expect(result.instructions).toContain("The external Knowledge Base is unavailable");
-  }).pipe(Effect.provide(memoryLayerWithRecall(() => Effect.never))),
-);
+    expect(logs).toContainEqual({
+      annotations: { failureTag: "TimedOut", latencyMillis: 50, operation: "recall" },
+      message: ["MemoryProvider recall unavailable for prompt assembly"],
+    });
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        memoryLayerWithRecall(() => Effect.never),
+        Logger.layer([logger]),
+      ),
+    ),
+  );
+});
 
 it.effect(
   "skips provider recall and provider usage when managed deletion help is exhausted",
