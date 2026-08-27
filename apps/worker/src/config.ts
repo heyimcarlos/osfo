@@ -23,6 +23,7 @@ type RawConfigBinding =
   | "BETTER_AUTH_TRUSTED_ORIGINS"
   | "COMPANY_CONVERSATION_DAILY_TURN_LIMIT"
   | "COMPANY_CONVERSATION_MODEL"
+  | "COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT"
   | "COMPOSIO_API_KEY"
   | "OSFO_STAGE"
   | "STRIPE_ADVENTURER_PRICE_ID"
@@ -58,6 +59,7 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly BETTER_AUTH_TRUSTED_ORIGINS?: string;
   readonly COMPANY_CONVERSATION_DAILY_TURN_LIMIT?: string;
   readonly COMPANY_CONVERSATION_MODEL?: string;
+  readonly COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT?: string;
   readonly COMPOSIO_API_KEY?: string;
   readonly OSFO_STAGE?: string;
   readonly STRIPE_ADVENTURER_PRICE_ID?: string;
@@ -154,6 +156,8 @@ export interface CompanyConversationConfig {
   readonly dailyTurnLimit: number | null;
   /** Fixed Workers AI route served by every company conversation facet. */
   readonly modelRoute: ManagedModelRoute;
+  /** Optional per-address daily public-search ceiling; null disables search. */
+  readonly publicSearchDailyLimit: number | null;
 }
 
 /** Optional Composio Platform configuration for approved direct integrations. */
@@ -207,12 +211,19 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
       trustedOrigins,
     },
     companyConversation: {
-      dailyTurnLimit: parseOptionalPositiveInt(env.COMPANY_CONVERSATION_DAILY_TURN_LIMIT),
+      dailyTurnLimit: parseOptionalPositiveInt(
+        "COMPANY_CONVERSATION_DAILY_TURN_LIMIT",
+        env.COMPANY_CONVERSATION_DAILY_TURN_LIMIT,
+      ),
       modelRoute: Option.getOrElse(
         Schema.decodeOption(ManagedModelRoute)(
           env.COMPANY_CONVERSATION_MODEL ?? launchModelAccessPolicy.plans.free.route,
         ),
         () => launchModelAccessPolicy.plans.free.route,
+      ),
+      publicSearchDailyLimit: parseOptionalPositiveInt(
+        "COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT",
+        env.COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT,
       ),
     },
     composio:
@@ -281,12 +292,12 @@ const parseUrl = (binding: string, value: string): URL => {
   return url;
 };
 
-const parseOptionalPositiveInt = (value: string | undefined): number | null => {
+const parseOptionalPositiveInt = (binding: string, value: string | undefined): number | null => {
   if (value === undefined || value.trim().length === 0) return null;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0
     ? parsed
-    : invalid("COMPANY_CONVERSATION_DAILY_TURN_LIMIT must contain a positive integer");
+    : invalid(`${binding} must contain a positive integer`);
 };
 
 const optionalUrl = (

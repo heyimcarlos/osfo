@@ -68,7 +68,11 @@ import { IntegrationComposition } from "../../composition/integrations";
 import { Db } from "../../db";
 import { BillingDb } from "../../db/billing";
 import { decodeOsfoStage, loadConfig } from "../../config";
-import { makeDiscovery, makePageFetch } from "../../integrations/cloudflare/web";
+import {
+  hasRecognizedWebSearchPrice,
+  makeDiscovery,
+  makePageFetch,
+} from "../../integrations/cloudflare/web";
 import { ChannelLinkAuthorizationPostgres } from "../../integrations/postgres/channel-link-authorization";
 import { SessionRecallAuthorizationPostgres } from "../../integrations/postgres/session-recall-authorization";
 import { SupermemoryMemoryProvider } from "../../integrations/supermemory/memory-provider";
@@ -1278,7 +1282,7 @@ export class OsfoAgent extends Think<Env> {
         "personal-agent",
         "session-history",
         "skill-store",
-        "web-provider",
+        ...(hasRecognizedWebSearchPrice ? (["web-provider"] as const) : []),
       ],
       availableToolNames: Object.keys(tools),
     } as const;
@@ -1504,6 +1508,14 @@ export class OsfoAgent extends Think<Env> {
   }
 
   #authorizeWeb(request: AuthorizationRequest) {
+    if (!hasRecognizedWebSearchPrice) {
+      return Effect.fail(
+        new WebUnavailable({
+          message: "Public-web provider pricing is not yet recognized for Plan Usage.",
+          reason: "authorizationDenied",
+        }),
+      );
+    }
     const active = this.#activeCapabilityMetadata;
     if (
       active === undefined ||

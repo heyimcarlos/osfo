@@ -28,6 +28,13 @@ type Fetcher = (
 
 type SearchBinding = Pick<WebSearch, "search">;
 
+/**
+ * Activation remains fail-closed until Cloudflare publishes a traceable
+ * standalone WebSearch price or explicitly classifies it as zero marginal
+ * cost. Wrangler 4.127 only states that remote use may incur charges.
+ */
+export const hasRecognizedWebSearchPrice = false;
+
 export class WebProviderUnavailable extends Schema.TaggedError<WebProviderUnavailable>()(
   "WebProviderUnavailable",
   {

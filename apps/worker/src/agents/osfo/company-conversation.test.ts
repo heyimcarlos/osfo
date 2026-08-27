@@ -2,6 +2,8 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   boundedTranscriptWindow,
+  companyMessageText,
+  companyPublicSearchAvailable,
   planTeardown,
   sanitizeCompanyMessage,
   transcriptMessagesToPrune,
@@ -38,6 +40,13 @@ describe("Company Conversation policy", () => {
       role: "user",
     });
     expect(JSON.stringify(sanitizedMessage)).not.toContain("user-replayed-token");
+    expect(companyMessageText(sanitizedMessage)).toBe("I pasted [invite removed]");
+  });
+
+  it("publishes the separate public-search route only with price evidence and an address cap", () => {
+    expect(companyPublicSearchAvailable(true, 2)).toBe(true);
+    expect(companyPublicSearchAvailable(false, 2)).toBe(false);
+    expect(companyPublicSearchAvailable(true, null)).toBe(false);
   });
 
   it("bounds model input on a user boundary", () => {

@@ -1,6 +1,6 @@
 import { Container, DurableObject, Worker, Workers } from "alchemy/Cloudflare";
 import { Stack } from "alchemy/Stack";
-import { Config, Redacted } from "effect";
+import { Config, Effect, Redacted } from "effect";
 
 import { DatabaseHyperdrive } from "./Db";
 import { ExecutionUnitWorkflow } from "./ExecutionUnitWorkflow";
@@ -8,7 +8,7 @@ import { Files } from "./Files";
 import { Artifacts } from "./Artifacts";
 
 /** Cloudflare Worker and execution-unit bindings for one Osfo runtime stage. */
-export default Worker(
+const worker = Worker(
   "Api",
   Stack.useSync(({ stage }) => {
     const authBaseUrl =
@@ -21,7 +21,7 @@ export default Worker(
       compatibility: {
         // Alchemy 2.0.0-beta.72 bundles a local Workerd runtime that supports dates through 2026-07-11.
         date: stage === "production" ? "2026-08-12" : "2026-07-11",
-        flags: ["nodejs_compat"],
+        flags: ["nodejs_compat", "global_fetch_strictly_public"],
       },
       env: {
         AI: Workers.AI(),
@@ -33,6 +33,9 @@ export default Worker(
         COMPOSIO_API_KEY: Config.redacted("COMPOSIO_API_KEY").pipe(
           Config.withDefault(Redacted.make("")),
         ),
+        COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT: Config.string(
+          "COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT",
+        ).pipe(Config.withDefault("")),
         DB: DatabaseHyperdrive,
         DOCUMENT_SANDBOX: Container("DocumentSandbox", {
           className: "Sandbox",
@@ -82,4 +85,18 @@ export default Worker(
 
     return stage === "production" ? { ...workerOptions, domain: "api.osfo.ai" } : workerOptions;
   }),
+);
+
+// SAFETY: Wrangler 4.127 and the Cloudflare Workers API recognize this
+// zero-config binding shape. Alchemy 2.0.0-beta.74 does not yet expose it in
+// WorkerBinding, so the owning infrastructure adapter contains the temporary
+// type gap while still publishing the production binding.
+// oxlint-disable-next-line osfo/no-chained-type-assertions, typescript/no-unsafe-type-assertion
+const webSearchBinding = {
+  name: "WEBSEARCH",
+  type: "websearch",
+} as unknown as Workers.WorkerBinding;
+
+export default worker.pipe(
+  Effect.tap((deployed) => deployed.bind`WEBSEARCH`({ bindings: [webSearchBinding] })),
 );

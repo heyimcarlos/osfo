@@ -24,6 +24,7 @@ const maximumFetchedPageBytes = limits.fetchedPageBytes;
 const maximumNormalizedPageBytes = limits.normalizedPageBytes;
 const maximumRedirects = limits.redirects;
 const providerDeadline = Duration.seconds(15);
+const providerAttemptDeadline = Duration.seconds(5);
 
 const nonEmptyBoundedText = Schema.String.check(
   Schema.isMinLength(1),
@@ -207,11 +208,12 @@ export interface WebState<E> {
     ownerUserId: UserId,
     resultId: string,
   ) => Effect.Effect<RankedResult | null, E>;
-  readonly saveResults: (
-    ownerUserId: UserId,
-    resultSetId: string,
-    results: ReadonlyArray<RankedResult>,
-  ) => Effect.Effect<void, E>;
+  readonly replay: (input: {
+    readonly fingerprint: string;
+    readonly kind: "page" | "search";
+    readonly operationId: string;
+    readonly userId: UserId;
+  }) => Effect.Effect<CompletedOperation | null, E | WebUnavailable>;
 }
 
 export interface AuthorizationRequest {
@@ -279,7 +281,11 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
         return unavailablePage("unsafeUrl", "The URL is not public HTTPS.");
       const fetched = yield* options
         .fetchPage({ url })
-        .pipe(Effect.timeout(providerDeadline), Effect.retry(Schedule.recurs(1)), Effect.option);
+        .pipe(
+          Effect.timeout(providerAttemptDeadline),
+          Effect.retry(Schedule.recurs(1)),
+          Effect.option,
+        );
       if (fetched._tag === "None") {
         return unavailablePage("providerUnavailable", "The page could not be fetched.");
       }
@@ -328,11 +334,27 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
       if (query.length === 0 || query.length > maximumQueryCharacters) {
         return yield* unavailable("privateQuery", "The public search query is invalid.");
       }
-      if (!privateQueryIsExplicit(query, input.requestText)) {
+      if (!publicQueryIsExplicit(query, input.requestText)) {
         return yield* unavailable(
           "privateQuery",
           "Private conversation context was not explicitly authorized for public search.",
         );
+      }
+      const fingerprint = operationFingerprint("search", query);
+      const replay = yield* options.state.replay({
+        fingerprint,
+        kind: "search",
+        operationId: input.operationId,
+        userId: input.userId,
+      });
+      if (replay !== null) {
+        if (replay._tag !== "SearchCompleted") {
+          return yield* unavailable(
+            "operationConflict",
+            "The ToolCall identity changed operation.",
+          );
+        }
+        return replay;
       }
       yield* options.authorize({
         operationId: input.operationId,
@@ -342,7 +364,6 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
         turnId: input.turnId,
         userId: input.userId,
       });
-      const fingerprint = operationFingerprint("search", query);
       const claimed = yield* options.state.claim({
         fingerprint,
         kind: "search",
@@ -372,7 +393,7 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
       return yield* Effect.gen(function* () {
         const discovered = yield* options.discover(query, maximumResultsPerSearch).pipe(
           Effect.timeoutOrElse({
-            duration: providerDeadline,
+            duration: providerAttemptDeadline,
             orElse: () =>
               Effect.fail(unavailable("providerUnavailable", "The web search provider timed out.")),
           }),
@@ -385,25 +406,27 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
           maximumGroundingPagesPerSearch,
           maximumPagesPerTurn - pagesBeforeClaim,
         );
-        const results = yield* Effect.forEach(safe, (result, index) =>
-          Effect.gen(function* () {
-            const ranked: RankedResult = {
-              description: normalizeOptional(result.description),
-              descriptionKind: "searchDescription",
-              lastModifiedDate: normalizeOptional(result.lastModifiedDate),
-              page:
-                index < groundingPages
-                  ? yield* readEvidence(result.url)
-                  : { _tag: "NotRead", message: "This is discovery metadata, not page content." },
-              rank: index + 1,
-              resultId: options.makeId(),
-              title: boundedText(result.title, 500),
-              url: canonicalUrl(result.url),
-            };
-            return ranked;
-          }),
+        const results = yield* Effect.forEach(
+          safe,
+          (result, index) =>
+            Effect.gen(function* () {
+              const ranked: RankedResult = {
+                description: normalizeOptional(result.description),
+                descriptionKind: "searchDescription",
+                lastModifiedDate: normalizeOptional(result.lastModifiedDate),
+                page:
+                  index < groundingPages
+                    ? yield* readEvidence(result.url)
+                    : { _tag: "NotRead", message: "This is discovery metadata, not page content." },
+                rank: index + 1,
+                resultId: options.makeId(),
+                title: boundedText(result.title, 500),
+                url: canonicalUrl(result.url),
+              };
+              return ranked;
+            }),
+          { concurrency: maximumGroundingPagesPerSearch },
         );
-        yield* options.state.saveResults(input.userId, resultSetId, results);
         const completed: SearchCompleted = {
           _tag: "SearchCompleted",
           guidance: guidanceFor(query, results),
@@ -414,7 +437,16 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
         };
         yield* options.state.complete(input.userId, input.operationId, completed);
         return completed;
-      }).pipe(Effect.tapError(() => options.state.fail(input.userId, input.operationId)));
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: providerDeadline,
+          orElse: () =>
+            Effect.fail(
+              unavailable("providerUnavailable", "The bounded public-web operation timed out."),
+            ),
+        }),
+        Effect.tapError(() => options.state.fail(input.userId, input.operationId)),
+      );
     });
 
   const readPage: Interface<
@@ -430,15 +462,30 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
         "The result identity is unavailable for this User.",
       );
     }
-    const url = selected?.url ?? (input.reference._tag === "Url" ? input.reference.url : "");
-    if (!isSafePublicUrl(url)) {
+    const suppliedUrl =
+      selected?.url ?? (input.reference._tag === "Url" ? input.reference.url : "");
+    if (!isSafePublicUrl(suppliedUrl)) {
       return yield* unavailable("unsafeUrl", "The URL is not public HTTPS.");
     }
-    if (input.reference._tag === "Url" && !containsExact(input.requestText, url)) {
+    const url = canonicalUrl(suppliedUrl);
+    if (input.reference._tag === "Url" && !requestContainsPublicUrl(input.requestText, url)) {
       return yield* unavailable(
         "unsafeUrl",
         "A direct page URL must appear in the current User request.",
       );
+    }
+    const fingerprint = operationFingerprint("page", `${selected?.resultId ?? "direct"}\0${url}`);
+    const replay = yield* options.state.replay({
+      fingerprint,
+      kind: "page",
+      operationId: input.operationId,
+      userId: input.userId,
+    });
+    if (replay !== null) {
+      if (replay._tag !== "PageReadCompleted") {
+        return yield* unavailable("operationConflict", "The ToolCall identity changed operation.");
+      }
+      return replay;
     }
     yield* options.authorize({
       operationId: input.operationId,
@@ -448,7 +495,6 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
       turnId: input.turnId,
       userId: input.userId,
     });
-    const fingerprint = operationFingerprint("page", `${selected?.resultId ?? "direct"}\0${url}`);
     const claimed = yield* options.state.claim({
       fingerprint,
       kind: "page",
@@ -475,7 +521,16 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
       };
       yield* options.state.complete(input.userId, input.operationId, completed);
       return completed;
-    }).pipe(Effect.tapError(() => options.state.fail(input.userId, input.operationId)));
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: providerDeadline,
+        orElse: () =>
+          Effect.fail(
+            unavailable("providerUnavailable", "The bounded public-web operation timed out."),
+          ),
+      }),
+      Effect.tapError(() => options.state.fail(input.userId, input.operationId)),
+    );
   });
 
   return { readPage, search };
@@ -542,13 +597,11 @@ const boundedText = (value: string, maximum: number) => value.trim().slice(0, ma
 
 const operationFingerprint = (kind: string, value: string) => `${kind}\0${value}`;
 
-const containsExact = (requestText: string, value: string) =>
-  requestText.toLocaleLowerCase().includes(value.toLocaleLowerCase());
-
 const privateIdentifierPattern =
   /(?:\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b)|(?:\+?\d[\d .()-]{7,}\d)|(?:\b(?:api[_ -]?key|password|secret|token)\b)/giu;
 
-const privateQueryIsExplicit = (query: string, requestText: string) => {
+/** Require every public-query token and sensitive identifier in the current request. */
+export const publicQueryIsExplicit = (query: string, requestText: string) => {
   const identifiers = [...query.matchAll(privateIdentifierPattern)].map(([identifier]) =>
     identifier.toLocaleLowerCase(),
   );
@@ -560,6 +613,12 @@ const privateQueryIsExplicit = (query: string, requestText: string) => {
     queryTokens.every((token) => requestTokens.has(token))
   );
 };
+
+const requestContainsPublicUrl = (requestText: string, expected: string) =>
+  (requestText.match(/https:\/\/[^\s<>"']+/giu) ?? []).some((candidate) => {
+    const trimmed = candidate.replace(/[),.;!?\]}]+$/gu, "");
+    return isSafePublicUrl(trimmed) && canonicalUrl(trimmed) === expected;
+  });
 
 const isReadableContentType = (value: string) => {
   const normalized = value.split(";", 1)[0]?.trim().toLowerCase();

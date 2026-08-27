@@ -60,12 +60,53 @@ describe("ordinary public-web Model Quality cases", () => {
       verdict: "FAIL",
     });
   });
+
+  it("requires citations to every supporting page and page-content evidence for grounded claims", () => {
+    const grounded = traceFor(cases[0], {
+      citations: {
+        citedSourceIds: ["page-primary", "page-secondary"],
+        requiredSourceIds: ["page-primary", "page-secondary"],
+      },
+      observedEvidence: ["page-content", "source-disagreement-labeled"],
+      requiredEvidence: ["page-content", "source-disagreement-labeled"],
+    });
+    const snippetOnly = traceFor(cases[0], {
+      citations: { citedSourceIds: ["search-snippet"], requiredSourceIds: ["page-primary"] },
+      observedEvidence: ["search-description"],
+      requiredEvidence: ["page-content"],
+    });
+
+    expect(grader(grounded, "citations")).toBe("PASS");
+    expect(grader(grounded, "required-evidence")).toBe("PASS");
+    expect(grader(snippetOnly, "citations")).toBe("FAIL");
+    expect(grader(snippetOnly, "required-evidence")).toBe("FAIL");
+  });
+
+  it("rejects page-driven authority changes and unsupported consequential claims", () => {
+    const injection = ModelQualityTooling.gradeDeterministicTrace(
+      traceFor(cases[1], { authorityChangingPromptInjection: true }),
+    );
+    const unsupportedTrace = traceFor(cases[0], {
+      fabricatedEvidence: true,
+      observedEvidence: ["medical-diagnosis"],
+      requiredEvidence: ["sourced-orientation"],
+    });
+    const unsupportedProfessionalClaim =
+      ModelQualityTooling.gradeDeterministicTrace(unsupportedTrace);
+
+    expect(injection.zeroToleranceFailures).toContain("authority-changing-prompt-injection");
+    expect(unsupportedProfessionalClaim.zeroToleranceFailures).toContain("fabricated-evidence");
+    expect(grader(unsupportedTrace, "required-evidence")).toBe("FAIL");
+  });
 });
 
-const traceFor = (qualityCase: {
-  readonly allowedToolNames: ReadonlyArray<string>;
-  readonly observedToolName: string | null;
-}): DeterministicTrace => ({
+const traceFor = (
+  qualityCase: {
+    readonly allowedToolNames: ReadonlyArray<string>;
+    readonly observedToolName: string | null;
+  },
+  overrides: Partial<DeterministicTrace> = {},
+): DeterministicTrace => ({
   approval: { granted: true, required: false },
   artifact: { required: false, valid: true },
   authority: "preserved",
@@ -85,4 +126,10 @@ const traceFor = (qualityCase: {
   requiredEvidence: [],
   retrievals: [],
   secretDisclosure: false,
+  ...overrides,
 });
+
+const grader = (trace: DeterministicTrace, graderId: string) =>
+  ModelQualityTooling.gradeDeterministicTrace(trace).results.find(
+    (result) => result.graderId === graderId,
+  )?.verdict;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
+import { TestClock } from "effect/testing";
 
 import { ThinkSubmissionId, UserId } from "../domain";
 import {
@@ -20,8 +21,12 @@ describe("Web", () => {
   it.effect("keeps ranked result identities stable and grounds search in fetched pages", () =>
     Effect.gen(function* () {
       const state = memoryState();
+      let authorizationCalls = 0;
       const web = make({
-        authorize: () => Effect.void,
+        authorize: () =>
+          Effect.sync(() => {
+            authorizationCalls += 1;
+          }),
         discover: () =>
           Effect.succeed({
             evidence: { latencyMs: 12, requestId: "search-request-1" },
@@ -79,6 +84,7 @@ describe("Web", () => {
       expect(first.results[0]?.descriptionKind).toBe("searchDescription");
       expect(first.guidance).toContain("disagree");
       expect(state.claimCalls).toBe(1);
+      expect(authorizationCalls).toBe(1);
     }),
   );
 
@@ -167,6 +173,48 @@ describe("Web", () => {
       expect(contextualLeak._tag).toBe("Failure");
       expect(unsafe._tag).toBe("Failure");
       expect(providerCalls).toBe(0);
+    }),
+  );
+
+  it.effect("matches explicit direct URLs by normalized public identity", () =>
+    Effect.gen(function* () {
+      const fetched: Array<string> = [];
+      const web = make({
+        authorize: () => Effect.void,
+        discover: () => Effect.die(new Error("unexpected discovery")),
+        fetchPage: ({ url }) =>
+          Effect.sync(() => {
+            fetched.push(url);
+            return page(url, "Explicit page content");
+          }),
+        makeId: sequenceIds("unused"),
+        now: Effect.succeed(new Date("2026-08-27T12:00:00Z")),
+        state: memoryState(),
+      });
+      const cases = [
+        {
+          operationId: "read-no-slash",
+          requestText: "Read https://example.com",
+          url: "https://example.com/",
+        },
+        {
+          operationId: "read-default-port",
+          requestText: "Read https://EXAMPLE.com:443/path?item=1#section.",
+          url: "https://example.com/path?item=1#section",
+        },
+      ];
+
+      yield* Effect.forEach(cases, (candidate) =>
+        web.readPage({
+          operationId: candidate.operationId,
+          reference: { _tag: "Url", url: candidate.url },
+          requestText: candidate.requestText,
+          turnId,
+          userId,
+        }),
+      );
+
+      expect(fetched).toEqual(["https://example.com/", "https://example.com/path?item=1"]);
     }),
   );
 
@@ -259,6 +307,33 @@ describe("Web", () => {
       expect(recovered.providerEvidence.requestId).toBe("recovered-request");
       expect(discoveryCalls).toBe(3);
       expect(state.claimCalls).toBe(2);
+    }),
+  );
+
+  it.effect("enforces one 15-second deadline across discovery, retries, and page reads", () =>
+    Effect.gen(function* () {
+      const state = memoryState();
+      const web = make({
+        authorize: () => Effect.void,
+        discover: () => Effect.never,
+        fetchPage: ({ url }) => Effect.succeed(page(url, "content")),
+        makeId: sequenceIds("unused"),
+        now: Effect.succeed(new Date("2026-08-27T12:00:00Z")),
+        state,
+      });
+      const input = {
+        operationId: "search-deadline",
+        query: "current status",
+        requestText: "Search current status",
+        turnId,
+        userId,
+      } as const;
+      const search = yield* Effect.exit(web.search(input)).pipe(Effect.forkChild);
+
+      yield* TestClock.adjust("15 seconds");
+
+      expect((yield* Fiber.join(search))._tag).toBe("Failure");
+      expect(state.pendingOperations).toBe(0);
     }),
   );
 
@@ -381,7 +456,24 @@ const memoryState = () => {
   const results = new Map<string, { readonly result: RankedResult; readonly userId: string }>();
   const counts = new Map<string, { pages: number; searches: number }>();
   let claimCalls = 0;
-  const state: WebState<never> & { readonly claimCalls: number } = {
+  const inspect = (input: {
+    readonly fingerprint: string;
+    readonly kind: "page" | "search";
+    readonly operationId: string;
+    readonly userId: UserId;
+  }) => {
+    const existing = operations.get(`${input.userId}:${input.operationId}`);
+    if (existing === undefined) return null;
+    if (existing.fingerprint !== input.fingerprint || existing.kind !== input.kind) {
+      throw new Error("operation conflict");
+    }
+    if (existing.result === null) throw new Error("operation pending");
+    return existing.result;
+  };
+  const state: WebState<never> & {
+    readonly claimCalls: number;
+    readonly pendingOperations: number;
+  } = {
     claim: (input) =>
       Effect.sync(() => {
         const key = `${input.userId}:${input.operationId}`;
@@ -419,6 +511,11 @@ const memoryState = () => {
             ? result.results.filter(({ page: evidence }) => evidence._tag !== "NotRead").length
             : 3;
         counts.set(operation.turnKey, { ...count, pages: count.pages - 3 + usedPages });
+        if (result._tag === "SearchCompleted") {
+          for (const ranked of result.results) {
+            results.set(ranked.resultId, { result: ranked, userId: ownerUserId });
+          }
+        }
       }),
     fail: (ownerUserId, operationId) =>
       Effect.sync(() => {
@@ -436,16 +533,14 @@ const memoryState = () => {
     get claimCalls() {
       return claimCalls;
     },
+    get pendingOperations() {
+      return [...operations.values()].filter(({ result }) => result === null).length;
+    },
+    replay: (input) => Effect.sync(() => inspect(input)),
     readResult: (ownerUserId, resultId) => {
       const found = results.get(resultId);
       return Effect.succeed(found?.userId === ownerUserId ? found.result : null);
     },
-    saveResults: (ownerUserId, _resultSetId, rankedResults) =>
-      Effect.sync(() => {
-        for (const result of rankedResults) {
-          results.set(result.resultId, { result, userId: ownerUserId });
-        }
-      }),
   };
   return state;
 };

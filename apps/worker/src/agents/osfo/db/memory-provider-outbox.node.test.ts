@@ -189,7 +189,6 @@ it.effect("persists User-scoped public-web replay and rejects conflicting ToolCa
         title: "Osfo",
         url: "https://example.com/osfo",
       };
-      yield* state.saveResults(ownerUserId, "web-set-1", [result]);
       const completed: CompletedOperation = {
         _tag: "SearchCompleted",
         guidance: "Cite supporting pages.",
@@ -253,18 +252,19 @@ it.effect("bounds retained public-web operations and result identities per User"
               url: `https://example.com/${index}`,
             };
             yield* state.claim({
-              fingerprint: `page\0${index}`,
-              kind: "page",
+              fingerprint: `search\0${index}`,
+              kind: "search",
               operationId,
               turnId: ThinkSubmissionId.make(`${turnId}-${index}`),
               userId: ownerUserId,
             });
-            yield* state.saveResults(ownerUserId, `web-retention-set-${index}`, [result]);
             yield* state.complete(ownerUserId, operationId, {
-              _tag: "PageReadCompleted",
-              page: result.page,
-              resultId: result.resultId,
-              url: result.url,
+              _tag: "SearchCompleted",
+              guidance: "Cite supporting pages.",
+              providerEvidence: { latencyMs: 1, requestId: `request-${index}` },
+              query: String(index),
+              resultSetId: `web-retention-set-${index}`,
+              results: [result],
             });
           }),
       );
@@ -281,6 +281,34 @@ it.effect("bounds retained public-web operations and result identities per User"
       ).toEqual({ count: 30 });
       expect(yield* state.readResult(ownerUserId, "web-retention-result-0")).toBeNull();
       expect(yield* state.readResult(ownerUserId, "web-retention-result-30")).not.toBeNull();
+    }),
+  ),
+);
+
+it.effect("reclaims an abandoned public-web operation after its bounded lease", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      let nowEpochMillis = 1_000;
+      const state = makeWebState(
+        makeAgentDb(asDurableObjectStorage(storage)),
+        () => nowEpochMillis,
+      );
+      const ownerUserId = UserId.make("web-lease-owner");
+      const input = {
+        fingerprint: "search\0lease",
+        kind: "search" as const,
+        operationId: "web-lease-operation",
+        turnId: ThinkSubmissionId.make("web-lease-turn"),
+        userId: ownerUserId,
+      };
+
+      yield* state.claim(input);
+      expect(Result.isFailure(yield* state.replay(input).pipe(Effect.result))).toBe(true);
+
+      nowEpochMillis += 30_001;
+
+      expect(yield* state.replay(input)).toBeNull();
+      expect(yield* state.claim(input)).toMatchObject({ _tag: "Claimed" });
     }),
   ),
 );

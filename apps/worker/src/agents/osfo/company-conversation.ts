@@ -32,6 +32,18 @@ export const sanitizeCompanyMessage = (message: string | UIMessage): string | UI
   };
 };
 
+/** Read only sanitized current-User text when authorizing a public query. */
+export const companyMessageText = (message: string | UIMessage): string =>
+  Predicate.isString(message)
+    ? message
+    : message.parts.flatMap((part) => (isTextUIPart(part) ? [part.text] : [])).join("\n");
+
+/** Publish Company search only with both price evidence and an address cap. */
+export const companyPublicSearchAvailable = (
+  hasRecognizedPrice: boolean,
+  dailyLimit: number | null,
+): boolean => hasRecognizedPrice && dailyLimit !== null;
+
 /** Bound a model turn to the most recent window that starts on a user boundary. */
 export const boundedTranscriptWindow = <T extends { readonly role: string }>(
   messages: ReadonlyArray<T>,

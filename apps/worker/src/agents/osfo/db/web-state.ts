@@ -17,6 +17,7 @@ import { webOperations, webResults } from "./schema";
 
 const maximumRetainedResultsPerUser = 30;
 const maximumRetainedOperationsPerUser = 30;
+const pendingOperationLeaseMilliseconds = 30_000;
 const PersistedOperation = Schema.fromJsonString(CompletedOperationSchema);
 const PersistedResult = Schema.fromJsonString(RankedResultSchema);
 const encodeOperation = Schema.encodeSync(PersistedOperation);
@@ -27,7 +28,7 @@ export class WebStateUnavailable extends Schema.TaggedError<WebStateUnavailable>
   {
     cause: Schema.Defect(),
     message: Schema.String,
-    operation: Schema.Literals(["claim", "complete", "fail", "readResult", "saveResults"]),
+    operation: Schema.Literals(["claim", "complete", "fail", "readResult", "replay"]),
   },
 ) {}
 
@@ -41,6 +42,7 @@ export const makeWebState = (
       db.transaction<StoredClaim>((transaction) => {
         const existing = transaction
           .select({
+            createdAtEpochMillis: webOperations.created_at_epoch_millis,
             fingerprint: webOperations.fingerprint,
             kind: webOperations.kind,
             ownerUserId: webOperations.owner_user_id,
@@ -60,9 +62,19 @@ export const makeWebState = (
             return { _tag: "Conflict" as const };
           }
           if (existing.status === "pending" || existing.resultJson === null) {
-            return { _tag: "Pending" as const };
+            if (
+              nowEpochMillis() - existing.createdAtEpochMillis <=
+              pendingOperationLeaseMilliseconds
+            ) {
+              return { _tag: "Pending" as const };
+            }
+            transaction
+              .delete(webOperations)
+              .where(eq(webOperations.operation_id, input.operationId))
+              .run();
+          } else {
+            return { _tag: "Existing" as const, resultJson: existing.resultJson };
           }
-          return { _tag: "Existing" as const, resultJson: existing.resultJson };
         }
         transaction
           .insert(webOperations)
@@ -120,6 +132,22 @@ export const makeWebState = (
           }
           return;
         }
+        if (result._tag === "SearchCompleted") {
+          const retainedAt = nowEpochMillis();
+          for (const ranked of result.results) {
+            transaction
+              .insert(webResults)
+              .values({
+                owner_user_id: userId,
+                rank: ranked.rank,
+                result_id: ranked.resultId,
+                result_json: encodeResult(ranked),
+                result_set_id: result.resultSetId,
+                retained_at_epoch_millis: retainedAt,
+              })
+              .run();
+          }
+        }
         transaction
           .update(webOperations)
           .set({
@@ -163,26 +191,43 @@ export const makeWebState = (
             ),
       ),
     ),
-  saveResults: (ownerUserId, resultSetId, results) =>
-    execute("saveResults", () => {
-      if (results.length === 0) return;
-      const retainedAt = nowEpochMillis();
-      db.transaction((transaction) => {
-        for (const result of results) {
-          transaction
-            .insert(webResults)
-            .values({
-              owner_user_id: ownerUserId,
-              rank: result.rank,
-              result_id: result.resultId,
-              result_json: encodeResult(result),
-              result_set_id: resultSetId,
-              retained_at_epoch_millis: retainedAt,
-            })
-            .run();
+  replay: (input) =>
+    execute("replay", (): StoredReplay =>
+      db.transaction<StoredReplay>((transaction) => {
+        const existing = transaction
+          .select({
+            createdAtEpochMillis: webOperations.created_at_epoch_millis,
+            fingerprint: webOperations.fingerprint,
+            kind: webOperations.kind,
+            ownerUserId: webOperations.owner_user_id,
+            resultJson: webOperations.result_json,
+            status: webOperations.status,
+          })
+          .from(webOperations)
+          .where(eq(webOperations.operation_id, input.operationId))
+          .limit(1)
+          .get();
+        if (existing === undefined) return { _tag: "Missing" as const };
+        if (
+          existing.ownerUserId !== input.userId ||
+          existing.kind !== input.kind ||
+          existing.fingerprint !== input.fingerprint
+        ) {
+          return { _tag: "Conflict" as const };
         }
-      });
-    }),
+        if (existing.status === "completed" && existing.resultJson !== null) {
+          return { _tag: "Existing" as const, resultJson: existing.resultJson };
+        }
+        if (nowEpochMillis() - existing.createdAtEpochMillis <= pendingOperationLeaseMilliseconds) {
+          return { _tag: "Pending" as const };
+        }
+        transaction
+          .delete(webOperations)
+          .where(eq(webOperations.operation_id, input.operationId))
+          .run();
+        return { _tag: "Missing" as const };
+      }),
+    ).pipe(Effect.flatMap(decodeReplay)),
 });
 
 const completedPageCount = (result: CompletedOperation) =>
@@ -241,6 +286,12 @@ type StoredClaim =
   | { readonly _tag: "Existing"; readonly resultJson: string }
   | { readonly _tag: "Pending" };
 
+type StoredReplay =
+  | { readonly _tag: "Conflict" }
+  | { readonly _tag: "Existing"; readonly resultJson: string }
+  | { readonly _tag: "Missing" }
+  | { readonly _tag: "Pending" };
+
 type Claim =
   | { readonly _tag: "Claimed"; readonly counts: TurnCounts }
   | { readonly _tag: "Existing"; readonly result: CompletedOperation };
@@ -269,6 +320,35 @@ const decodeClaim = (
       return Schema.decodeEffect(PersistedOperation)(outcome.resultJson).pipe(
         Effect.map((result) => ({ _tag: "Existing" as const, result })),
         Effect.mapError((cause) => unavailable("claim", cause)),
+      );
+    default:
+      return outcome satisfies never;
+  }
+};
+
+const decodeReplay = (
+  outcome: StoredReplay,
+): Effect.Effect<CompletedOperation | null, WebStateUnavailable | WebUnavailable> => {
+  switch (outcome._tag) {
+    case "Missing":
+      return Effect.succeed(null);
+    case "Conflict":
+      return Effect.fail(
+        new WebUnavailable({
+          message: "The ToolCall identity already names different public-web work.",
+          reason: "operationConflict",
+        }),
+      );
+    case "Pending":
+      return Effect.fail(
+        new WebUnavailable({
+          message: "The same public-web ToolCall is still in progress.",
+          reason: "operationInProgress",
+        }),
+      );
+    case "Existing":
+      return Schema.decodeEffect(PersistedOperation)(outcome.resultJson).pipe(
+        Effect.mapError((cause) => unavailable("replay", cause)),
       );
     default:
       return outcome satisfies never;
