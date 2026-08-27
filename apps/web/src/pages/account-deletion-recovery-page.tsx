@@ -2,35 +2,26 @@ import { Link } from "@tanstack/react-router";
 import { Effect } from "effect";
 import { useState } from "react";
 
+import { useAccountDeletionReplayState } from "../account-deletion-replay-state";
 import { requestAccountDeletion } from "../lib/api-client";
-import {
-  accessBrowserAccountDeletionReplayStorage,
-  clearBrowserAccountDeletionReplay,
-  loadBrowserAccountDeletionReplay,
-  type AccountDeletionReplay,
-} from "../lib/account-deletion-replay";
+import type { AccountDeletionReplay } from "../lib/account-deletion-replay";
 
 /** Public, deletion-only recovery for one exact retained request after normal access is fenced. */
 export function AccountDeletionRecoveryPage() {
-  const [storage] = useState(accessBrowserAccountDeletionReplayStorage);
-  const [replay, setReplay] = useState(() => loadBrowserAccountDeletionReplay(storage));
+  const { clear, complete, replay } = useAccountDeletionReplayState();
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  const clear = () => {
-    if (clearBrowserAccountDeletionReplay(storage) === "cleared") {
-      setReplay({ status: "missing" });
-      setFailed(false);
-      return;
-    }
-    setReplay({ status: "unavailable" });
+  const clearRetainedRequest = () => {
+    clear();
+    setFailed(false);
   };
   const retry = (available: Extract<AccountDeletionReplay, { readonly status: "available" }>) => {
     setBusy(true);
     setFailed(false);
     void Effect.runPromise(requestAccountDeletion(available.request))
       .then(() => {
-        clearBrowserAccountDeletionReplay(storage);
+        complete();
         globalThis.location.assign("/");
       })
       .catch(() => {
@@ -69,7 +60,7 @@ export function AccountDeletionRecoveryPage() {
                 className="min-h-11 rounded-full px-4 text-sm font-semibold"
                 disabled={busy}
                 type="button"
-                onClick={clear}
+                onClick={clearRetainedRequest}
               >
                 Clear saved request
               </button>
@@ -81,7 +72,7 @@ export function AccountDeletionRecoveryPage() {
             ) : null}
           </div>
         ) : (
-          <RecoveryUnavailable replay={replay} onClear={clear} />
+          <RecoveryUnavailable replay={replay} onClear={clearRetainedRequest} />
         )}
       </section>
     </main>

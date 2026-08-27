@@ -1,15 +1,15 @@
 import { Navigate } from "@tanstack/react-router";
 
+import { useAccountDeletionReplayState } from "../account-deletion-replay-state";
 import { authenticatedLandingPath, useAuthState } from "../auth-state";
 import { HomeScreen } from "../components/home-screen";
 import { LoadingScreen } from "../components/loading-screen";
-import { loadBrowserAccountDeletionReplay } from "../lib/account-deletion-replay";
 
 /** Route-owned public home or authenticated registration-aware redirect. */
 export function HomePage() {
   const session = useAuthState();
+  const { replay } = useAccountDeletionReplayState();
   if (session.isPending) return <LoadingScreen />;
-  const replay = loadBrowserAccountDeletionReplay();
   if (session.data === null && (replay.status === "available" || replay.status === "invalid")) {
     return <Navigate replace to="/account-deletion/recovery" />;
   }

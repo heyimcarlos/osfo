@@ -4,15 +4,13 @@ import { BriefcaseBusiness, Database, Download, ShieldCheck, Trash2 } from "luci
 import { Effect } from "effect";
 import { useState } from "react";
 
+import { useAccountDeletionReplayState } from "../account-deletion-replay-state";
 import {
   accountDeletionRequestFor,
   presentAccountDeletion,
   requestAccountDeletion,
 } from "../lib/api-client";
-import {
-  accessBrowserAccountDeletionReplayStorage,
-  prepareBrowserAccountDeletionSubmission,
-} from "../lib/account-deletion-replay";
+import { prepareBrowserAccountDeletionSubmission } from "../lib/account-deletion-replay";
 
 const privacyPreferences = [
   {
@@ -125,6 +123,7 @@ function SettingsPrivacyContent() {
 
 /** One explicit confirmation before the irreversible account deletion request. */
 function DeleteAccountControl() {
+  const replay = useAccountDeletionReplayState();
   const [action, setAction] = useState<AccountDeletionAction | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
@@ -146,13 +145,16 @@ function DeleteAccountControl() {
     const request = accountDeletionRequestFor(action);
     setBusy(true);
     setError(false);
-    const storage = accessBrowserAccountDeletionReplayStorage();
     const submission = prepareBrowserAccountDeletionSubmission(
-      storage,
+      replay.access,
       request,
       requestAccountDeletion,
-      () => globalThis.location.assign("/"),
+      () => {
+        replay.complete();
+        globalThis.location.assign("/");
+      },
     );
+    if (submission.replayAvailable) replay.retain(request);
     void Effect.runPromise(submission.effect).catch(() => {
       if (submission.replayAvailable) {
         globalThis.location.assign("/account-deletion/recovery");

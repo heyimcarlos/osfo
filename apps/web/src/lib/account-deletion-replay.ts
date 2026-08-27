@@ -31,6 +31,11 @@ export type BrowserAccountDeletionReplayStorage =
   | { readonly status: "available"; readonly storage: AccountDeletionReplayStorage }
   | { readonly status: "unavailable" };
 
+export interface BrowserAccountDeletionReplayCapture {
+  readonly access: BrowserAccountDeletionReplayStorage;
+  readonly replay: AccountDeletionReplay;
+}
+
 /** Acquire browser replay storage once without trusting that its global getter is readable. */
 export const accessBrowserAccountDeletionReplayStorage = (): BrowserAccountDeletionReplayStorage =>
   Effect.runSync(
@@ -77,6 +82,12 @@ export const loadBrowserAccountDeletionReplay = (
   access.status === "available"
     ? loadAccountDeletionReplay(access.storage)
     : { status: "unavailable" };
+
+/** Capture the storage boundary and retained request once for one application lifetime. */
+export const captureBrowserAccountDeletionReplay = (): BrowserAccountDeletionReplayCapture => {
+  const access = accessBrowserAccountDeletionReplayStorage();
+  return { access, replay: loadBrowserAccountDeletionReplay(access) };
+};
 
 /** Clear the captured browser replay storage without reading its global getter again. */
 export const clearBrowserAccountDeletionReplay = (
