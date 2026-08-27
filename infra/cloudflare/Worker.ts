@@ -1,6 +1,6 @@
 import { Container, DurableObject, Worker, Workers } from "alchemy/Cloudflare";
 import { Stack } from "alchemy/Stack";
-import { Config } from "effect";
+import { Config, Redacted } from "effect";
 
 import { DatabaseHyperdrive } from "./Db";
 import { ExecutionUnitWorkflow } from "./ExecutionUnitWorkflow";
@@ -30,6 +30,9 @@ export default Worker(
         BETTER_AUTH_BASE_URL: authBaseUrl,
         BETTER_AUTH_SECRET: Config.redacted("BETTER_AUTH_SECRET"),
         BETTER_AUTH_TRUSTED_ORIGINS: authTrustedOrigins,
+        COMPOSIO_API_KEY: Config.redacted("COMPOSIO_API_KEY").pipe(
+          Config.withDefault(Redacted.make("")),
+        ),
         DB: DatabaseHyperdrive,
         DOCUMENT_SANDBOX: Container("DocumentSandbox", {
           className: "Sandbox",

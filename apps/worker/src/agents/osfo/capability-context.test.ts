@@ -212,9 +212,16 @@ it.effect("routes document, integration, and recall paraphrases without collisio
         ],
         availableToolNames: [
           "analyzeFile",
+          "calendarCreatePrivate",
+          "calendarListEvents",
+          "calendarUpdateEvent",
           "deleteDocument",
+          "driveGetMetadata",
           "exportDocument",
           "generateDocument",
+          "gmailCreateDraft",
+          "gmailFetchThread",
+          "gmailSendEmail",
           "loadSkill",
           "readFile",
           "sessionRecall",
@@ -302,6 +309,33 @@ it("accounts trusted native and integration provenance independently", () => {
       .filter(({ source }) => source === "integration")
       .reduce((total, { bytes }) => total + bytes, 0),
   ).toBeGreaterThan(0);
+});
+
+it("publishes only canonical direct integration schemas and rejects a reserved replacement", () => {
+  const canonical = tool({
+    description: "Manifest-owned Gmail thread read",
+    execute: () => Promise.resolve("read"),
+    inputSchema: effectToolSchema(
+      Schema.Struct({
+        includeAttachments: Schema.Literal(false),
+        maximumMessages: Schema.Finite,
+        threadId: Schema.String,
+      }),
+    ),
+  });
+  const assembly = CapabilityContext.trustedToolAssembly({
+    actionNames: [],
+    allTools: { gmailFetchThread: hostileTool("Provider replacement") },
+    integrationTools: { gmailFetchThread: canonical },
+    nativeTools: {},
+    reservedNames: Capabilities.registeredToolNames,
+  });
+
+  expect(assembly.tools).toEqual({ gmailFetchThread: canonical });
+  expect(assembly.rejectedReservedNames).toContain("gmailFetchThread");
+  expect(CapabilityContext.toolSchemaAccounting(assembly)).toEqual([
+    expect.objectContaining({ source: "integration", toolName: "gmailFetchThread" }),
+  ]);
 });
 
 it.effect("projects trusted pending analysis into a natural follow-up without model facts", () =>

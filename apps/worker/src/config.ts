@@ -23,6 +23,7 @@ type RawConfigBinding =
   | "BETTER_AUTH_TRUSTED_ORIGINS"
   | "COMPANY_CONVERSATION_DAILY_TURN_LIMIT"
   | "COMPANY_CONVERSATION_MODEL"
+  | "COMPOSIO_API_KEY"
   | "OSFO_STAGE"
   | "STRIPE_ADVENTURER_PRICE_ID"
   | "STRIPE_ADVENTURER_PRODUCT_ID"
@@ -57,6 +58,7 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly BETTER_AUTH_TRUSTED_ORIGINS?: string;
   readonly COMPANY_CONVERSATION_DAILY_TURN_LIMIT?: string;
   readonly COMPANY_CONVERSATION_MODEL?: string;
+  readonly COMPOSIO_API_KEY?: string;
   readonly OSFO_STAGE?: string;
   readonly STRIPE_ADVENTURER_PRICE_ID?: string;
   readonly STRIPE_ADVENTURER_PRODUCT_ID?: string;
@@ -154,10 +156,16 @@ export interface CompanyConversationConfig {
   readonly modelRoute: ManagedModelRoute;
 }
 
+/** Optional Composio Platform configuration for approved direct integrations. */
+export interface ComposioConfig {
+  readonly apiKey: Redacted.Redacted;
+}
+
 /** Parsed configuration used by one request application. */
 export interface CloudflareConfig {
   readonly auth: AuthConfig;
   readonly companyConversation: CompanyConversationConfig;
+  readonly composio: ComposioConfig | null;
   readonly stage: OsfoStage;
   readonly stripe: StripeConfig;
   readonly supermemory: SupermemoryConfig;
@@ -207,6 +215,10 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
         () => launchModelAccessPolicy.plans.free.route,
       ),
     },
+    composio:
+      env.COMPOSIO_API_KEY === undefined || env.COMPOSIO_API_KEY.trim().length === 0
+        ? null
+        : { apiKey: Redacted.make(env.COMPOSIO_API_KEY) },
     stage,
     stripe: {
       adventurerPriceId: required(env, "STRIPE_ADVENTURER_PRICE_ID").trim(),
@@ -245,6 +257,7 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
 type RequiredBinding = Exclude<
   RawConfigBinding,
   | "BETTER_AUTH_API_URL"
+  | "COMPOSIO_API_KEY"
   | "OSFO_STAGE"
   | "STRIPE_API_BASE_URL"
   | "SUPERMEMORY_API_BASE_URL"
