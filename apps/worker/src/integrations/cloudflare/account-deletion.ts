@@ -4,6 +4,7 @@ import { AllowancePeriodId, UserId } from "../../domain";
 import { AccountDeletion } from "../../services/account-deletion";
 import {
   attemptKeyForContentKey,
+  artifactAttemptPrefix,
   contentKeyForAttemptKey,
   documentKeysForOwnerKey,
   documentAttemptPrefix,
@@ -83,7 +84,10 @@ const deleteArtifacts: (
     decodeOwnerMarker(object, userId),
   );
   const contentObjects = yield* discoverObjects(bucket, documentContentPrefix, authorizeDelete);
-  const attemptObjects = yield* discoverObjects(bucket, documentAttemptPrefix, authorizeDelete);
+  const attemptObjects = [
+    ...(yield* discoverObjects(bucket, artifactAttemptPrefix, authorizeDelete)),
+    ...(yield* discoverObjects(bucket, documentAttemptPrefix, authorizeDelete)),
+  ];
   const legacyContentTargets = yield* Effect.forEach(contentObjects, (object) => {
     const decoded = Schema.decodeUnknownResult(ArtifactMetadata)(object.customMetadata?.osfo);
     if (decoded._tag === "Success" && decoded.success.userId === userId) {

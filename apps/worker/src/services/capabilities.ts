@@ -252,6 +252,24 @@ const systemSkills = [
     skillId: "document-production",
     skillVersion: "system-document-production-v1",
   },
+  {
+    capabilityIds: [
+      "presentation-generation",
+      "image-generation",
+      "diagram-generation",
+      "artifact-read",
+    ],
+    description: "Create, revise, inspect, validate, retain, and export a bounded presentation.",
+    instructions: [
+      "# Presentation production",
+      "Plan the narrative before calling generatePresentation. Use generateImage or generateDiagram first when a slide needs a bounded visual, then reference only the returned owned contentId.",
+      "Every slide must remain inside the canvas, use readable typography, avoid unintended overlap, clipping, wrapping, and missing images, and include source notes for external claims. Generation is retained only after the renderer reports every slide and validation finds no visual issue.",
+      "Use revisePresentation with exactly one owned sourceContentId. A revision receives a new immutable identity and never mutates its source. Use exportArtifact only for an owned retained artifact.",
+      "Treat a one-time correction as a revision. Change a personal Skill only when the User explicitly accepts the correction as a lasting preference, and keep that Skill scoped to presentation production so unrelated work is unchanged.",
+    ].join("\n\n"),
+    skillId: "presentation-production",
+    skillVersion: "system-presentation-production-v1",
+  },
 ] as const;
 
 /** Construct Osfo's closed Capability Catalog and progressive turn assembler. */

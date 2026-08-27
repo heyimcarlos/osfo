@@ -215,6 +215,27 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
         toolRequirements: ["deleteDocument"],
       },
     ),
+    entry("artifact-read", "Read or export one owned visual artifact.", "artifact.read", {
+      availabilityRequirements: ["file-storage"],
+      resultBounds: {
+        maximumBytes: policyCatalog.operationLimits.generatedPresentationBytes,
+        maximumDurationMillis: policyCatalog.operationLimits.interactiveOperationMilliseconds,
+        maximumItems: 1,
+        maximumPages: null,
+        maximumPixelsPerEdge: policyCatalog.operationLimits.generatedImagePixelsPerEdge,
+        maximumSlides: policyCatalog.operationLimits.generatedPresentationSlides,
+      },
+      toolRequirements: ["exportArtifact"],
+    }),
+    entry(
+      "artifact-delete",
+      "Delete one owned visual artifact after Approval.",
+      "artifact.delete",
+      {
+        availabilityRequirements: ["file-storage"],
+        toolRequirements: ["deleteArtifact"],
+      },
+    ),
     entry("web-search", "Search the public web within bounded results.", "web.search", {
       availabilityRequirements: ["web-provider"],
       resultBounds: {
@@ -253,7 +274,7 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
       },
     }),
     entry("presentation-generation", "Generate one bounded presentation.", "artifact.generate", {
-      availabilityRequirements: ["file-storage"],
+      availabilityRequirements: ["document-renderer", "file-storage"],
       resultBounds: {
         maximumBytes: policyCatalog.operationLimits.generatedPresentationBytes,
         maximumDurationMillis: policyCatalog.operationLimits.durableArtifactOperationMilliseconds,
@@ -262,15 +283,16 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
         maximumPixelsPerEdge: null,
         maximumSlides: policyCatalog.operationLimits.generatedPresentationSlides,
       },
-      toolRequirements: ["generatePresentation"],
+      skillCandidates: ["presentation-production"],
+      toolRequirements: ["generatePresentation", "revisePresentation"],
     }),
     entry("image-generation", "Generate one bounded image.", "artifact.generate", {
-      availabilityRequirements: ["file-storage"],
+      availabilityRequirements: ["document-renderer", "file-storage"],
       resultBounds: generatedImageResultBounds,
       toolRequirements: ["generateImage"],
     }),
     entry("diagram-generation", "Generate one bounded diagram.", "artifact.generate", {
-      availabilityRequirements: ["file-storage"],
+      availabilityRequirements: ["document-renderer", "file-storage"],
       resultBounds: generatedImageResultBounds,
       toolRequirements: ["generateDiagram"],
     }),

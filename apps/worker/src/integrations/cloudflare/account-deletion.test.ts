@@ -7,6 +7,7 @@ import { ContentId } from "../../domain/client-content";
 import { AccountDeletion } from "../../services/account-deletion";
 import { make } from "./account-deletion";
 import {
+  artifactAttemptPrefix,
   attemptKeyFor,
   contentKeyFor,
   documentAttemptPrefix,
@@ -358,6 +359,7 @@ it.effect("rechecks authority before each concrete R2 head verification", () => 
           expect(calls).toEqual([
             `list:${ownerPrefixFor(userId)}`,
             `list:${documentContentPrefix}`,
+            `list:${artifactAttemptPrefix}`,
             `list:${documentAttemptPrefix}`,
           ]);
         }),

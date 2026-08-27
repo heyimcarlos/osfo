@@ -4,7 +4,7 @@
 import { Effect, Schema } from "effect";
 
 import type { UserId } from "../../domain";
-import { CapabilityId } from "../../domain/capability-catalog";
+import { CapabilityId, maximumCapabilityIds } from "../../domain/capability-catalog";
 import {
   PersonalSkillId,
   PersonalSkillVersion,
@@ -31,7 +31,10 @@ export const SkillInspectInput = Schema.TaggedUnion({
 
 const EditableSkill = {
   allowedOrigins: Schema.Array(SkillTurnOrigin).check(Schema.isMinLength(1), Schema.isMaxLength(4)),
-  capabilityIds: Schema.Array(CapabilityId).check(Schema.isMinLength(1), Schema.isMaxLength(22)),
+  capabilityIds: Schema.Array(CapabilityId).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(maximumCapabilityIds),
+  ),
   description: SkillDescriptionText,
   instructions: SkillInstructionText,
   keywords: Schema.Array(SkillKeywordText).check(Schema.isMinLength(1), Schema.isMaxLength(100)),

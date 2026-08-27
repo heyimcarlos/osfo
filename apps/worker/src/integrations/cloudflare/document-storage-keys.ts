@@ -11,6 +11,8 @@ export const documentContentPrefix = "client-content/";
 
 /** Namespace for durable document-attempt evidence. */
 export const documentAttemptPrefix = "document-attempts/";
+/** Namespace for presentation, image, and diagram attempt evidence. */
+export const artifactAttemptPrefix = "artifact-attempts/";
 
 /** User-scoped namespace that makes generated-document ownership discoverable without a global scan. */
 export const documentOwnerPrefix = "document-owners/by-user/";
@@ -31,17 +33,28 @@ export const contentKeyFor = (contentId: ContentId) =>
 export const attemptKeyFor = (contentId: ContentId) =>
   `${documentAttemptPrefix}${encodedContentId(contentId)}`;
 
+/** R2 key for non-document artifact execution and incurred-cost evidence. */
+export const artifactAttemptKeyFor = (contentId: ContentId) =>
+  `${artifactAttemptPrefix}${encodedContentId(contentId)}`;
+
 /** Resolve the attempt sidecar for a valid retained Client Content body key. */
 export const attemptKeyForContentKey = (contentKey: string) => {
   if (!contentKey.startsWith(documentContentPrefix)) return undefined;
   const encodedId = contentKey.slice(documentContentPrefix.length);
-  return /^(?:[0-9a-f]{2})+$/u.test(encodedId) ? `${documentAttemptPrefix}${encodedId}` : undefined;
+  if (!/^(?:[0-9a-f]{2})+$/u.test(encodedId)) return undefined;
+  const contentId = decodeContentId(encodedId);
+  return `${contentId?.startsWith("artifact:") === true ? artifactAttemptPrefix : documentAttemptPrefix}${encodedId}`;
 };
 
 /** Resolve the retained Client Content body for a canonical attempt sidecar key. */
 export const contentKeyForAttemptKey = (attemptKey: string) => {
-  if (!attemptKey.startsWith(documentAttemptPrefix)) return undefined;
-  const encodedId = attemptKey.slice(documentAttemptPrefix.length);
+  const prefix = attemptKey.startsWith(documentAttemptPrefix)
+    ? documentAttemptPrefix
+    : attemptKey.startsWith(artifactAttemptPrefix)
+      ? artifactAttemptPrefix
+      : undefined;
+  if (prefix === undefined) return undefined;
+  const encodedId = attemptKey.slice(prefix.length);
   return /^(?:[0-9a-f]{2})+$/u.test(encodedId) ? `${documentContentPrefix}${encodedId}` : undefined;
 };
 
@@ -52,8 +65,18 @@ export const documentKeysForOwnerKey = (userId: UserId, ownerKey: string) => {
   const encodedId = ownerKey.slice(prefix.length);
   if (!/^(?:[0-9a-f]{2})+$/u.test(encodedId)) return undefined;
   return {
-    attemptKey: `${documentAttemptPrefix}${encodedId}`,
+    attemptKey: `${decodeContentId(encodedId)?.startsWith("artifact:") === true ? artifactAttemptPrefix : documentAttemptPrefix}${encodedId}`,
     contentKey: `${documentContentPrefix}${encodedId}`,
     ownerKey,
   };
+};
+
+const decodeContentId = (encodedId: string) => {
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(
+      Uint8Array.from(encodedId.match(/.{2}/gu) ?? [], (byte) => Number.parseInt(byte, 16)),
+    );
+  } catch {
+    return undefined;
+  }
 };

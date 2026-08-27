@@ -3,18 +3,17 @@ import { Effect, Schema } from "effect";
 import { AllowancePeriodId, UserId } from "../../domain";
 import type { ContentId } from "../../domain/client-content";
 import { DocumentArtifact } from "../../domain/document-artifact";
-import { DocumentArtifactValidation } from "./document-artifact-validation";
 import {
   ArtifactIntegrityFailure,
+  ArtifactIntentConflict,
+  ArtifactIntentDigest,
   ArtifactStoreUnavailable,
-  DocumentIntentConflict,
-  DocumentIntentDigest,
   type ArtifactStore,
   type CostEvidence,
   type StoredArtifact,
   type StoredArtifactMetadata,
-} from "../../services/document-generation";
-import { attemptKeyFor, contentKeyFor, ownerKeyFor } from "./document-storage-keys";
+} from "../../services/artifact-generation";
+import { artifactAttemptKeyFor, contentKeyFor, ownerKeyFor } from "./document-storage-keys";
 import { DocumentOwnershipIndex } from "./document-ownership-index";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Persisted unions use the _tag discriminator. */
@@ -32,60 +31,45 @@ const Metadata = Schema.fromJsonString(
         usdMicros: Schema.BigIntFromString,
       }),
     ]),
-    format: DocumentArtifact.DocumentFormat,
-    intentDigest: DocumentIntentDigest,
+    intentDigest: ArtifactIntentDigest,
+    intentTag: Schema.Literals(["Presentation", "Image", "Diagram"]),
     owner: DocumentArtifact.DocumentOwner,
     retention: Schema.Literals(["accounted", "pending"]),
     userId: UserId,
   }),
 );
 
-/** Construct immutable generated-document storage over one R2 bucket binding. */
+/** Construct immutable generated-artifact storage over one R2 bucket binding. */
 export const make = (bucket: R2Bucket): ArtifactStore => ({
   account: (contentId) =>
     Effect.gen(function* () {
       const object = yield* attempt("inspect", () => bucket.head(contentKeyFor(contentId)));
-      if (object === null) {
-        return yield* integrityFailure(contentId, "Pending retained Client Content is missing");
-      }
+      if (object === null) return yield* integrityFailure(contentId, "Pending artifact is missing");
       const metadata = yield* decodeMetadata(object, contentId);
       if (metadata.retention === "accounted") return undefined;
       const body = yield* attempt("readBytes", () => bucket.get(contentKeyFor(contentId)));
       if (body === null || body.size !== metadata.artifact.content.byteLength) {
-        return yield* integrityFailure(
-          contentId,
-          "Pending retained Client Content is missing or changed",
-        );
+        return yield* integrityFailure(contentId, "Pending artifact bytes are missing or changed");
       }
       const bytes = new Uint8Array(yield* attempt("readBytes", () => body.arrayBuffer()));
+      yield* verifyDigest(metadata, bytes);
       const accounted = yield* attempt("account", () =>
         bucket.put(contentKeyFor(contentId), bytes, {
           customMetadata: {
-            osfo: encodeMetadata({
-              ...metadata,
-              bytes,
-              retention: "accounted",
-            }),
+            osfo: encodeMetadata({ ...metadata, bytes, retention: "accounted" }),
           },
           httpMetadata: { contentType: metadata.artifact.content.mediaType },
           onlyIf: { etagMatches: object.etag },
+          sha256: metadata.artifact.content.sha256,
         }),
       );
-      if (accounted === null) {
-        const current = yield* attempt("inspect", () => bucket.head(contentKeyFor(contentId)));
-        if (current === null) {
-          return yield* integrityFailure(contentId, "Pending retained Client Content is missing");
-        }
-        const currentMetadata = yield* decodeMetadata(current, contentId);
-        if (
-          currentMetadata.retention !== "accounted" ||
-          !sameStoredArtifact(currentMetadata, metadata)
-        ) {
-          return yield* integrityFailure(
-            contentId,
-            "Retained Client Content accounting did not complete",
-          );
-        }
+      if (accounted !== null) return undefined;
+      const current = yield* attempt("inspect", () => bucket.head(contentKeyFor(contentId)));
+      if (current === null)
+        return yield* integrityFailure(contentId, "Accounted artifact is missing");
+      const currentMetadata = yield* decodeMetadata(current, contentId);
+      if (currentMetadata.retention !== "accounted" || !sameMetadata(currentMetadata, metadata)) {
+        return yield* integrityFailure(contentId, "Artifact accounting did not complete");
       }
       return undefined;
     }),
@@ -93,7 +77,7 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
     attempt("delete", () =>
       bucket.delete([
         contentKeyFor(metadata.artifact.content.contentId),
-        attemptKeyFor(metadata.artifact.content.contentId),
+        artifactAttemptKeyFor(metadata.artifact.content.contentId),
         ownerKeyFor(metadata.userId, metadata.artifact.content.contentId),
       ]),
     ).pipe(Effect.asVoid),
@@ -105,6 +89,7 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
   put: (stored) =>
     Effect.gen(function* () {
       const content = stored.artifact.content;
+      yield* verifyDigest(stored, stored.bytes);
       yield* attempt("put", () =>
         DocumentOwnershipIndex.ensure(bucket, stored.userId, content.contentId),
       );
@@ -116,104 +101,75 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
           sha256: content.sha256,
         }),
       );
-      if (result === null) {
-        const object = yield* attempt("inspect", () =>
-          bucket.head(contentKeyFor(content.contentId)),
-        );
-        const existing = object === null ? null : yield* decodeMetadata(object, content.contentId);
-        if (existing === null || !sameStoredArtifact(existing, stored)) {
-          return yield* new DocumentIntentConflict({
-            contentId: content.contentId,
-            message: "R2 already contains different Client Content for the owning identity",
-          });
-        }
+      if (result !== null) return undefined;
+      const object = yield* attempt("inspect", () => bucket.head(contentKeyFor(content.contentId)));
+      const existing = object === null ? null : yield* decodeMetadata(object, content.contentId);
+      if (existing === null || !sameMetadata(existing, stored)) {
+        return yield* new ArtifactIntentConflict({
+          contentId: content.contentId,
+          message: "R2 already contains different Client Content for the owning identity",
+        });
       }
       return undefined;
     }),
-  readBytes: (metadata) => readBytes(bucket, metadata),
+  readBytes: (metadata) =>
+    Effect.gen(function* () {
+      if (metadata.retention !== "accounted") {
+        return yield* integrityFailure(
+          metadata.artifact.content.contentId,
+          "Artifact accounting evidence is incomplete",
+        );
+      }
+      const content = metadata.artifact.content;
+      const object = yield* attempt("readBytes", () =>
+        bucket.get(contentKeyFor(content.contentId)),
+      );
+      if (object === null || object.size !== content.byteLength) {
+        return yield* integrityFailure(content.contentId, "Artifact bytes are missing or changed");
+      }
+      const bytes = new Uint8Array(yield* attempt("readBytes", () => object.arrayBuffer()));
+      yield* verifyDigest(metadata, bytes);
+      return bytes;
+    }),
 });
 
 const decodeMetadata = (object: R2Object, contentId: ContentId) =>
   Effect.gen(function* () {
     const encoded = object.customMetadata?.osfo;
-    if (encoded === undefined) {
-      return yield* integrityFailure(contentId, "The retained Client Content has no Osfo metadata");
-    }
+    if (encoded === undefined)
+      return yield* integrityFailure(contentId, "Artifact metadata is missing");
     const metadata = yield* Schema.decodeEffect(Metadata)(encoded).pipe(
       Effect.mapError(
-        () =>
-          new ArtifactIntegrityFailure({
-            contentId,
-            message: "The retained Client Content metadata is invalid",
-          }),
+        () => new ArtifactIntegrityFailure({ contentId, message: "Artifact metadata is invalid" }),
       ),
     );
     if (
       metadata.artifact.content.contentId !== contentId ||
-      metadata.artifact.content.byteLength !== object.size ||
-      object.size > DocumentArtifact.maximumDocumentBytes
+      metadata.artifact.content.byteLength !== object.size
     ) {
-      return yield* integrityFailure(
-        contentId,
-        "The retained Client Content identity or bounded length does not match",
-      );
+      return yield* integrityFailure(contentId, "Artifact identity or length does not match");
     }
     return metadata satisfies StoredArtifactMetadata;
   });
 
-const readBytes = (bucket: R2Bucket, metadata: StoredArtifactMetadata) =>
+const verifyDigest = (metadata: StoredArtifactMetadata, bytes: Uint8Array) =>
   Effect.gen(function* () {
-    if (metadata.retention !== "accounted") {
-      return yield* integrityFailure(
-        metadata.artifact.content.contentId,
-        "Retained Client Content allowance evidence is not complete",
-      );
-    }
-    if (metadata.artifact.artifactRole._tag !== "GeneratedDocumentV1") {
-      return yield* integrityFailure(
-        metadata.artifact.content.contentId,
-        "The retained Client Content is not a generated document",
-      );
-    }
-    const content = metadata.artifact.content;
-    const object = yield* attempt("readBytes", () => bucket.get(contentKeyFor(content.contentId)));
-    if (object === null) {
-      return yield* integrityFailure(content.contentId, "The retained Client Content is missing");
-    }
-    if (object.size > DocumentArtifact.maximumDocumentBytes || object.size !== content.byteLength) {
-      return yield* integrityFailure(
-        content.contentId,
-        "The retained Client Content exceeds or differs from its trusted length",
-      );
-    }
-    const bytes = new Uint8Array(yield* attempt("readBytes", () => object.arrayBuffer()));
-    const parsed = yield* DocumentArtifactValidation.validate(
-      content.contentId,
-      metadata.format,
-      bytes,
-      metadata.artifact.artifactRole.pageCount,
-    ).pipe(
-      Effect.mapError(
-        () =>
-          new ArtifactIntegrityFailure({
-            contentId: content.contentId,
-            message: "The retained Client Content bytes are invalid",
-          }),
-      ),
+    const digest = yield* Effect.promise(() =>
+      crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer),
     );
+    const sha256 = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
     if (
-      parsed.content.sha256 !== content.sha256 ||
-      parsed.content.byteLength !== content.byteLength ||
-      parsed.content.mediaType !== content.mediaType ||
-      parsed.artifactRole._tag !== "GeneratedDocumentV1" ||
-      parsed.artifactRole.pageCount !== metadata.artifact.artifactRole.pageCount
+      bytes.byteLength !== metadata.artifact.content.byteLength ||
+      sha256 !== metadata.artifact.content.sha256
     ) {
       return yield* integrityFailure(
-        content.contentId,
-        "The retained Client Content digest does not match",
+        metadata.artifact.content.contentId,
+        "Artifact digest or length does not match",
       );
     }
-    return bytes;
+    return undefined;
   });
 
 const encodeMetadata = (stored: StoredArtifact) =>
@@ -221,8 +177,8 @@ const encodeMetadata = (stored: StoredArtifact) =>
     allowancePeriodId: stored.allowancePeriodId,
     artifact: stored.artifact,
     cost: stored.cost,
-    format: stored.format,
     intentDigest: stored.intentDigest,
+    intentTag: stored.intentTag,
     owner: stored.owner,
     retention: stored.retention,
     userId: stored.userId,
@@ -237,7 +193,7 @@ const attempt = <A>(
     catch: (cause) =>
       new ArtifactStoreUnavailable({
         cause,
-        message: `R2 could not ${operation} the generated document`,
+        message: `R2 could not ${operation} the generated artifact`,
         operation,
       }),
   });
@@ -245,10 +201,12 @@ const attempt = <A>(
 const integrityFailure = (contentId: ContentId, message: string) =>
   Effect.fail(new ArtifactIntegrityFailure({ contentId, message }));
 
-const sameStoredArtifact = (left: StoredArtifactMetadata, right: StoredArtifactMetadata) =>
+const sameMetadata = (left: StoredArtifactMetadata, right: StoredArtifactMetadata) =>
   left.artifact.content.sha256 === right.artifact.content.sha256 &&
   left.intentDigest === right.intentDigest &&
+  left.intentTag === right.intentTag &&
   left.userId === right.userId &&
+  left.artifact.lineage.sourceContentId === right.artifact.lineage.sourceContentId &&
   DocumentArtifact.sameOwner(left.owner, right.owner) &&
   sameCost(left.cost, right.cost);
 
@@ -263,4 +221,4 @@ const sameCost = (left: CostEvidence, right: CostEvidence) =>
       left.providerOperationId === right.providerOperationId &&
       left.usdMicros === right.usdMicros);
 
-export * as DocumentArtifacts from "./document-artifacts";
+export * as ArtifactStore from "./artifact-store";

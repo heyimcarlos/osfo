@@ -63,6 +63,19 @@ export const layer = (options: Options) => {
           DocumentDownload.serve(
             options.env.ARTIFACTS,
             AuthMiddleware.currentDownloadUser(options.config.auth),
+            "document",
+          ),
+        ).pipe(HttpRouter.provideRequest(options.authDependencies));
+  const artifactDownload =
+    options.env.ARTIFACTS === undefined
+      ? Layer.empty
+      : HttpRouter.add(
+          "GET",
+          "/artifacts/export",
+          DocumentDownload.serve(
+            options.env.ARTIFACTS,
+            AuthMiddleware.currentDownloadUser(options.config.auth),
+            "artifact",
           ),
         ).pipe(HttpRouter.provideRequest(options.authDependencies));
   const webhooks = WebhookHandlers.layer({
@@ -96,6 +109,7 @@ export const layer = (options: Options) => {
 
   return Layer.mergeAll(
     api,
+    artifactDownload,
     webhooks,
     webAgent,
     documentDownload,

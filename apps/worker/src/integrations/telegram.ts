@@ -45,6 +45,7 @@ export const makeTelegramChannel = (options: TelegramChannelOptions): ChannelDef
     tools: (all) => {
       const selected = { ...all };
       delete selected.exportDocument;
+      delete selected.exportArtifact;
       return selected;
     },
   };

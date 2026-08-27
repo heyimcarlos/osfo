@@ -177,6 +177,20 @@ export const capabilityIntentPolicy = {
     matches: everyIntentGroup(["delete", "remove"], ["document", "docx", "pdf"]),
     taskKinds: ["document"],
   },
+  "artifact-read": {
+    matches: everyIntentGroup(
+      ["download", "export", "open", "read"],
+      ["artifact", "deck", "diagram", "image", "pptx", "presentation"],
+    ),
+    taskKinds: ["diagram", "document", "image"],
+  },
+  "artifact-delete": {
+    matches: everyIntentGroup(
+      ["delete", "remove"],
+      ["artifact", "deck", "diagram", "image", "pptx", "presentation"],
+    ),
+    taskKinds: ["diagram", "document", "image"],
+  },
   "web-search": {
     matches: anyIntentPhrase(
       "current events",
@@ -200,15 +214,24 @@ export const capabilityIntentPolicy = {
     taskKinds: ["research"],
   },
   "presentation-generation": {
-    matches: anyIntentPhrase("deck", "presentation", "pptx", "slides"),
+    matches: everyIntentGroup(
+      ["create", "draft", "generate", "make", "revise", "update"],
+      ["deck", "presentation", "pptx", "slides"],
+    ),
     taskKinds: ["document"],
   },
   "image-generation": {
-    matches: anyIntentPhrase("graphic", "image", "picture"),
+    matches: everyIntentGroup(
+      ["create", "draft", "generate", "make"],
+      ["graphic", "image", "picture"],
+    ),
     taskKinds: ["image"],
   },
   "diagram-generation": {
-    matches: anyIntentPhrase("chart", "diagram", "flowchart"),
+    matches: everyIntentGroup(
+      ["create", "draft", "generate", "make"],
+      ["chart", "diagram", "flowchart"],
+    ),
     taskKinds: ["diagram"],
   },
   "skill-management": {

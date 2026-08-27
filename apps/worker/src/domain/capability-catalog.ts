@@ -14,6 +14,8 @@ const capabilityIdValues = [
   "document-generation",
   "document-read",
   "document-delete",
+  "artifact-read",
+  "artifact-delete",
   "web-search",
   "page-read",
   "research-report",
@@ -37,6 +39,9 @@ export type CapabilityId = typeof CapabilityId.Type;
 
 /** Closed self-serve capability identities in deterministic catalog order. */
 export const closedCapabilityIds: ReadonlyArray<CapabilityId> = capabilityIdValues;
+
+/** Upper bound shared by retained inputs that may name every closed Capability. */
+export const maximumCapabilityIds = capabilityIdValues.length;
 
 /** Stable identity shared by every retained governed-capabilities-v1 snapshot. */
 export const governedCapabilitiesV1Version = CapabilityCatalogVersion.make(

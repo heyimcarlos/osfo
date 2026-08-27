@@ -49,6 +49,7 @@ import {
 } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
 import { AuthSessionId } from "../../domain/auth-session";
+import { ContentId } from "../../domain/client-content";
 import type { AuthorizationOperation } from "../../domain/authorization-operation";
 import {
   CapabilityId,
@@ -63,7 +64,9 @@ import {
   type SkillLearningCandidate,
 } from "../../domain/personal-skill";
 import { DocumentArtifact } from "../../domain/document-artifact";
+import { ArtifactGenerationComposition } from "../../composition/artifact-generation";
 import { DocumentGenerationComposition } from "../../composition/document-generation";
+import { ArtifactGeneration } from "../../services/artifact-generation";
 import { IntegrationComposition } from "../../composition/integrations";
 import { Db } from "../../db";
 import { BillingDb } from "../../db/billing";
@@ -256,6 +259,7 @@ import {
   ThinkApprovalUnavailable,
 } from "./think-action-approvals";
 import {
+  artifactDeleteActionName,
   coreMemoryClearActionName,
   documentDeleteActionName,
   type ForgetKnowledgeInput,
@@ -379,8 +383,13 @@ class SkillLearningModelUnavailable extends Data.TaggedError("SkillLearningModel
 const authorization = Authorization.make(retainedCatalog);
 const capabilityActionNames = [
   "analyzeFile",
+  "deleteArtifact",
   "deleteDocument",
+  "generateDiagram",
   "generateDocument",
+  "generateImage",
+  "generatePresentation",
+  "revisePresentation",
   "osfoClearCoreMemory",
   "osfoDeleteSession",
   "osfoForgetKnowledge",
@@ -489,6 +498,13 @@ const GenerateDocumentInput = Schema.Struct({
   format: DocumentArtifact.DocumentFormat,
   source: DocumentGeneration.DocumentSource,
 });
+const GeneratePresentationInput = Schema.Struct({ source: ArtifactGeneration.PresentationSource });
+const RevisePresentationInput = Schema.Struct({
+  source: ArtifactGeneration.PresentationSource,
+  sourceContentId: ContentId,
+});
+const GenerateImageInput = Schema.Struct({ source: ArtifactGeneration.ImageSource });
+const GenerateDiagramInput = Schema.Struct({ source: ArtifactGeneration.DiagramSource });
 // Think 0.15.1 documents and forwards both fields, but its StepConfig Omit loses
 // them when AI SDK 7's PrepareStepResult union includes undefined.
 type CapabilityStepConfig = StepConfig & {
@@ -784,6 +800,7 @@ export class OsfoAgent extends Think<Env> {
     {
       readonly actionPresentation: ActionPresentation;
       readonly operation:
+        | "artifact.delete"
         | "file.delete"
         | "integration.effect"
         | "memory.clear"
@@ -959,6 +976,11 @@ export class OsfoAgent extends Think<Env> {
     exportDocument: tool({
       description: "Export one retained generated PDF or DOCX owned by the current User.",
       execute: (input, context) => this.#exportDocument(input, context.toolCallId),
+      inputSchema: effectToolSchema(RetainedDocumentInput),
+    }),
+    exportArtifact: tool({
+      description: "Export one retained presentation, image, or diagram owned by the current User.",
+      execute: (input, context) => this.#exportArtifact(input, context.toolCallId),
       inputSchema: effectToolSchema(RetainedDocumentInput),
     }),
     loadSkill: tool({
@@ -1201,6 +1223,18 @@ export class OsfoAgent extends Think<Env> {
   /** Register document and test actions in their owning stages. */
   override getActions() {
     const documentActions = {
+      [artifactDeleteActionName]: action({
+        approval: true,
+        approvalRisk: "high",
+        approvalSummary: "Delete the retained generated artifact",
+        description:
+          "Delete one retained presentation, image, or diagram owned by the current User.",
+        execute: (input, context) => this.#deleteArtifact(input, context.toolCallId),
+        idempotencyKey: ({ ctx }) => `artifact-delete:${ctx.toolCallId}`,
+        inputSchema: effectToolSchema(RetainedDocumentInput),
+        kind: "durable-pause",
+        permissions: ["files:delete"],
+      }),
       [documentDeleteActionName]: action({
         approval: true,
         approvalRisk: "high",
@@ -1218,6 +1252,44 @@ export class OsfoAgent extends Think<Env> {
         idempotencyKey: ({ ctx }) => `document-generate:${ctx.toolCallId}`,
         inputSchema: effectToolSchema(GenerateDocumentInput),
         permissions: ["documents:generate"],
+        timeoutMs: 90_000,
+      }),
+      generatePresentation: action({
+        description: "Generate one validated PPTX with at most 20 slides and 20 MB.",
+        execute: (input, context) =>
+          this.#generateArtifact(
+            { _tag: "Presentation", source: input.source },
+            context.toolCallId,
+          ),
+        idempotencyKey: ({ ctx }) => `presentation-generate:${ctx.toolCallId}`,
+        inputSchema: effectToolSchema(GeneratePresentationInput),
+        permissions: ["artifacts:generate"],
+        timeoutMs: 90_000,
+      }),
+      revisePresentation: action({
+        description: "Revise one owned PPTX into a new immutable validated presentation.",
+        execute: (input, context) => this.#revisePresentation(input, context.toolCallId),
+        idempotencyKey: ({ ctx }) => `presentation-revise:${ctx.toolCallId}`,
+        inputSchema: effectToolSchema(RevisePresentationInput),
+        permissions: ["artifacts:generate"],
+        timeoutMs: 90_000,
+      }),
+      generateImage: action({
+        description: "Generate one validated PNG with bounded dimensions and size.",
+        execute: (input, context) =>
+          this.#generateArtifact({ _tag: "Image", source: input.source }, context.toolCallId),
+        idempotencyKey: ({ ctx }) => `image-generate:${ctx.toolCallId}`,
+        inputSchema: effectToolSchema(GenerateImageInput),
+        permissions: ["artifacts:generate"],
+        timeoutMs: 90_000,
+      }),
+      generateDiagram: action({
+        description: "Generate one validated deterministic PNG diagram.",
+        execute: (input, context) =>
+          this.#generateArtifact({ _tag: "Diagram", source: input.source }, context.toolCallId),
+        idempotencyKey: ({ ctx }) => `diagram-generate:${ctx.toolCallId}`,
+        inputSchema: effectToolSchema(GenerateDiagramInput),
+        permissions: ["artifacts:generate"],
         timeoutMs: 90_000,
       }),
     };
@@ -3447,7 +3519,8 @@ export class OsfoAgent extends Think<Env> {
                 const actionId = found.presentation.actionId;
                 if (
                   parsed.decision === "approve" &&
-                  (found.presentation.operation === "memory.clear" ||
+                  (found.presentation.operation === "artifact.delete" ||
+                    found.presentation.operation === "memory.clear" ||
                     found.presentation.operation === "file.delete" ||
                     found.presentation.operation === "memory.forgetKnowledge" ||
                     found.presentation.operation === "session.delete" ||
@@ -4021,6 +4094,146 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  async #generateArtifact(intent: ArtifactGeneration.ArtifactIntent, toolCallId: string) {
+    await this.#migrationsReady;
+    const actionId = ActionId.make(toolCallId);
+    const currentAuthorization = () =>
+      this.#currentArtifactAuthorization(
+        ArtifactGenerationComposition.conservativeArtifactVendorUsdMicros,
+      );
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) throw invalidOsfoEnvironment;
+    const env = this.env;
+    return runtime.runPromise(
+      this.#accountDeletionFence.run(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const currentContext = yield* currentAuthorization();
+            const database = yield* Db.database;
+            return yield* ArtifactGenerationComposition.make(
+              env,
+              database,
+              currentAuthorization,
+            ).generate({
+              actionId,
+              authorization: currentContext,
+              intent,
+              owner: { _tag: "ToolCall", toolCallId },
+            });
+          }),
+        ),
+        () =>
+          new ArtifactGeneration.ArtifactAuthorizationUnavailable({
+            cause: "account deletion fence",
+            message: "Artifact generation is unavailable while account deletion is pending",
+          }),
+      ),
+    );
+  }
+
+  async #revisePresentation(input: typeof RevisePresentationInput.Type, toolCallId: string) {
+    await this.#migrationsReady;
+    const actionId = ActionId.make(toolCallId);
+    const currentAuthorization = () =>
+      this.#currentArtifactAuthorization(
+        ArtifactGenerationComposition.conservativeArtifactVendorUsdMicros,
+      );
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) throw invalidOsfoEnvironment;
+    const env = this.env;
+    return runtime.runPromise(
+      this.#accountDeletionFence.run(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const currentContext = yield* currentAuthorization();
+            const database = yield* Db.database;
+            return yield* ArtifactGenerationComposition.make(
+              env,
+              database,
+              currentAuthorization,
+            ).revise({
+              actionId,
+              authorization: currentContext,
+              intent: { _tag: "Presentation", source: input.source },
+              owner: { _tag: "ToolCall", toolCallId },
+              sourceContentId: input.sourceContentId,
+            });
+          }),
+        ),
+        () =>
+          new ArtifactGeneration.ArtifactAuthorizationUnavailable({
+            cause: "account deletion fence",
+            message: "Presentation revision is unavailable while account deletion is pending",
+          }),
+      ),
+    );
+  }
+
+  async #exportArtifact(input: RetainedDocumentInput, toolCallId: string) {
+    await this.#migrationsReady;
+    const currentAuthorization = () => this.#currentArtifactAuthorization(0n);
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) throw invalidOsfoEnvironment;
+    const env = this.env;
+    const artifact = await runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const currentContext = yield* currentAuthorization();
+          const database = yield* Db.database;
+          return yield* ArtifactGenerationComposition.make(
+            env,
+            database,
+            currentAuthorization,
+          ).reference({
+            actionId: ActionId.make(toolCallId),
+            authorization: currentContext,
+            contentId: input.contentId,
+          });
+        }),
+      ),
+    );
+    return { artifact, delivery: "authenticated-retained-content" } as const;
+  }
+
+  async #deleteArtifact(input: RetainedDocumentInput, toolCallId: string) {
+    await this.#migrationsReady;
+    const actionId = ActionId.make(toolCallId);
+    const approved = this.#currentApprovedActions.get(actionId);
+    if (
+      approved === undefined ||
+      approved.operation !== "artifact.delete" ||
+      !hasExactActionInput(approved.actionPresentation, "artifact.delete", input.contentId)
+    ) {
+      throw new ArtifactGeneration.ArtifactAuthorizationUnavailable({
+        cause: actionId,
+        message: "The approved artifact presentation is unavailable",
+      });
+    }
+    const currentAuthorization = () =>
+      this.#currentArtifactAuthorization(0n, {
+        actionId,
+        operation: "artifact.delete",
+        presentation: approved.presentation,
+      });
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) throw invalidOsfoEnvironment;
+    const env = this.env;
+    await runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const currentContext = yield* currentAuthorization();
+          const database = yield* Db.database;
+          return yield* ArtifactGenerationComposition.make(
+            env,
+            database,
+            currentAuthorization,
+          ).delete({ actionId, authorization: currentContext, contentId: input.contentId });
+        }),
+      ),
+    );
+    return { contentId: input.contentId, deleted: true } as const;
+  }
+
   async #generateDocument(input: typeof GenerateDocumentInput.Type, toolCallId: string) {
     await this.#migrationsReady;
     const actionId = ActionId.make(toolCallId);
@@ -4128,6 +4341,60 @@ export class OsfoAgent extends Think<Env> {
       ),
     );
     return { contentId: input.contentId, deleted: true } as const;
+  }
+
+  #currentArtifactAuthorization(
+    requestVendorUsdMicros: bigint,
+    approval?: {
+      readonly actionId: ActionId;
+      readonly operation: "artifact.delete";
+      readonly presentation: ApprovalPresentation;
+    },
+  ) {
+    // oxlint-disable-next-line effecttsgo/prefer-typed-schema-decoder -- Agent metadata is optional and supplied by the external Think boundary.
+    return Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ArtifactGeneration.ArtifactAuthorizationUnavailable({
+            cause,
+            message: "The active ToolCall has no trusted provider authority identity",
+          }),
+      ),
+      Effect.flatMap((metadata) => {
+        const authority = metadata.authorityIdentity;
+        if (authority._tag === "ChannelLink") {
+          return this.#inspectCurrentChannelLinkAuthorization(authority).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ArtifactGeneration.ArtifactAuthorizationUnavailable({
+                  cause,
+                  message: "Current artifact authorization facts could not be loaded",
+                }),
+            ),
+          );
+        }
+        return Effect.fail(
+          new ArtifactGeneration.ArtifactAuthorizationUnavailable({
+            cause: { authority: authority._tag },
+            message: "The active ToolCall has no channel authority",
+          }),
+        );
+      }),
+      Effect.map((currentContext) =>
+        AuthorizationContext.make({
+          ...currentContext,
+          approval:
+            approval === undefined
+              ? null
+              : approvalFor(
+                  currentContext.user.userId,
+                  { actionId: approval.actionId, kind: approval.operation },
+                  approval.presentation,
+                ),
+          requestVendorUsdMicros,
+        }),
+      ),
+    );
   }
 
   #currentDocumentAuthorization(
