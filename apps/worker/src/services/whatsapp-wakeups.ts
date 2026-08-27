@@ -1,6 +1,6 @@
 import { users } from "@osfo/db/schema/auth";
 import { channelLinks } from "@osfo/db/schema/channel-links";
-import { whatsappWakeups } from "@osfo/db/schema/whatsapp-wakeups";
+import { whatsappWakeups, whatsappWakeupSources } from "@osfo/db/schema/whatsapp-wakeups";
 import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Context, Crypto, DateTime, Duration, Effect, Encoding, Layer, Schema } from "effect";
@@ -155,6 +155,7 @@ export interface Interface {
   readonly drainPending: (options?: {
     readonly leaseDuration?: Duration.Input;
     readonly limit?: number;
+    readonly requestTimeout?: Duration.Input;
   }) => Effect.Effect<DrainResult, WakeUpUnavailable>;
   readonly consumeInbound: (input: {
     readonly channelLinkId: ChannelLinkId;
@@ -254,13 +255,16 @@ export const make = Effect.gen(function* () {
           return { _tag: "Unavailable" as const };
         }
         const [exact] = await transaction
-          .select({ fingerprint: whatsappWakeups.fingerprint })
-          .from(whatsappWakeups)
-          .where(eq(whatsappWakeups.wakeup_id, input.wakeUpId))
+          .select({
+            fingerprint: whatsappWakeupSources.fingerprint,
+            wakeUpId: whatsappWakeupSources.wakeup_id,
+          })
+          .from(whatsappWakeupSources)
+          .where(eq(whatsappWakeupSources.request_wakeup_id, input.wakeUpId))
           .limit(1);
         if (exact !== undefined) {
           return exact.fingerprint === fingerprint
-            ? { _tag: "Replayed" as const }
+            ? { _tag: "Replayed" as const, wakeUpId: exact.wakeUpId }
             : { _tag: "Conflict" as const };
         }
         const [active] = await transaction
@@ -274,6 +278,16 @@ export const make = Effect.gen(function* () {
           )
           .limit(1);
         if (active !== undefined) {
+          await transaction.insert(whatsappWakeupSources).values({
+            created_at: now,
+            fingerprint,
+            request_wakeup_id: input.wakeUpId,
+            source_committed_at: committed.committedAt,
+            source_identity: input.source.identity,
+            source_kind: sourceKind,
+            trace_id: input.traceId,
+            wakeup_id: active.wakeUpId,
+          });
           return { _tag: "Coalesced" as const, wakeUpId: active.wakeUpId };
         }
         await transaction.insert(whatsappWakeups).values({
@@ -292,6 +306,16 @@ export const make = Effect.gen(function* () {
           user_id: input.userId,
           wakeup_id: input.wakeUpId,
         });
+        await transaction.insert(whatsappWakeupSources).values({
+          created_at: now,
+          fingerprint,
+          request_wakeup_id: input.wakeUpId,
+          source_committed_at: committed.committedAt,
+          source_identity: input.source.identity,
+          source_kind: sourceKind,
+          trace_id: input.traceId,
+          wakeup_id: input.wakeUpId,
+        });
         return { _tag: "Created" as const };
       }),
     );
@@ -299,23 +323,32 @@ export const make = Effect.gen(function* () {
     if (result._tag === "Unavailable") {
       return yield* unavailable("request.recheck", input.channelLinkId);
     }
-    return result._tag === "Coalesced"
+    return result._tag === "Coalesced" || result._tag === "Replayed"
       ? { _tag: result._tag, wakeUpId: WakeUpId.make(result.wakeUpId) }
       : { _tag: result._tag, wakeUpId: input.wakeUpId };
   });
 
   const drainPending = Effect.fn("WhatsAppWakeUps.drainPending")(function* (
-    options: { readonly leaseDuration?: Duration.Input; readonly limit?: number } = {},
+    options: {
+      readonly leaseDuration?: Duration.Input;
+      readonly limit?: number;
+      readonly requestTimeout?: Duration.Input;
+    } = {},
   ) {
     const limit = Math.max(1, Math.min(options.limit ?? 25, 100));
     const leaseDuration = Duration.fromInputUnsafe(options.leaseDuration ?? { minutes: 2 });
-    const counts = { accepted: 0, ambiguous: 0, canceled: 0, rejected: 0 };
+    const requestTimeout = Duration.fromInputUnsafe(options.requestTimeout ?? { minutes: 2 });
+    const counts = {
+      accepted: 0,
+      ambiguous: yield* reconcileStaleRequested(requestTimeout),
+      canceled: 0,
+      rejected: 0,
+    };
     for (let index = 0; index < limit; index += 1) {
       const claim = yield* claimPending(leaseDuration);
       if (claim === null) break;
-      const source = yield* decodeSource(claim.sourceKind, claim.sourceIdentity);
-      const committed = yield* sourceAuthority.inspect(claim.userId, source);
-      if (committed === null) {
+      const authorizedSources = yield* retainAuthorizedSources(claim.userId, claim.wakeUpId);
+      if (authorizedSources.length === 0) {
         yield* cancelClaim(claim.wakeUpId, claim.leaseId, "sourceCanceled");
         counts.canceled += 1;
         continue;
@@ -391,24 +424,10 @@ export const make = Effect.gen(function* () {
           .for("update")
           .limit(1);
         if (row === undefined) return null;
-        if (row.state === "requested") {
-          await transaction
-            .update(whatsappWakeups)
-            .set({ consume_requested_at: now, updated_at: now })
-            .where(eq(whatsappWakeups.wakeup_id, row.wakeUpId));
-        } else {
-          await transaction
-            .update(whatsappWakeups)
-            .set({
-              consumed_at: now,
-              lease_expires_at: null,
-              lease_id: null,
-              safe_failure_class: row.state === "pending" ? "inboundBeforeSend" : null,
-              state: "consumed",
-              updated_at: now,
-            })
-            .where(eq(whatsappWakeups.wakeup_id, row.wakeUpId));
-        }
+        await transaction
+          .update(whatsappWakeups)
+          .set({ consume_requested_at: now, updated_at: now })
+          .where(eq(whatsappWakeups.wakeup_id, row.wakeUpId));
         return WakeUpId.make(row.wakeUpId);
       }),
     );
@@ -416,6 +435,24 @@ export const make = Effect.gen(function* () {
     // oxlint-disable-next-line unicorn/no-array-sort -- The Worker target lacks ES2023 toSorted; this array is a fresh copy.
     const pending = [...(yield* sourceAuthority.pendingForUser(input.userId))].sort(compareSources);
     yield* sourceAuthority.exposePending(input.userId, pending);
+    yield* attempt("consumeInbound.commit", () =>
+      database
+        .update(whatsappWakeups)
+        .set({
+          consumed_at: now,
+          lease_expires_at: null,
+          lease_id: null,
+          safe_failure_class: sql`case when ${whatsappWakeups.state} = 'pending' then 'inboundBeforeSend' else ${whatsappWakeups.safe_failure_class} end`,
+          state: "consumed",
+          updated_at: now,
+        })
+        .where(
+          and(
+            eq(whatsappWakeups.wakeup_id, consumed),
+            inArray(whatsappWakeups.state, ["pending", "accepted", "ambiguous"]),
+          ),
+        ),
+    );
     return { pending, wakeUpId: consumed };
   });
 
@@ -425,28 +462,62 @@ export const make = Effect.gen(function* () {
   }) {
     const now = DateTime.toDateUtc(yield* DateTime.now);
     yield* attempt("cancelSource", () =>
-      database
-        .update(whatsappWakeups)
-        .set({
-          canceled_at: now,
-          lease_expires_at: null,
-          lease_id: null,
-          safe_failure_class: "sourceCanceled",
-          state: "canceled",
-          updated_at: now,
-        })
-        .where(
-          and(
-            eq(whatsappWakeups.user_id, input.userId),
-            eq(whatsappWakeups.source_kind, sourceKindOf(input.source)),
-            eq(whatsappWakeups.source_identity, input.source.identity),
-            or(
-              eq(whatsappWakeups.state, "pending"),
-              eq(whatsappWakeups.state, "accepted"),
-              eq(whatsappWakeups.state, "ambiguous"),
+      database.transaction(async (transaction) => {
+        const rows = await transaction
+          .select({ wakeUpId: whatsappWakeupSources.wakeup_id })
+          .from(whatsappWakeupSources)
+          .innerJoin(
+            whatsappWakeups,
+            eq(whatsappWakeups.wakeup_id, whatsappWakeupSources.wakeup_id),
+          )
+          .where(
+            and(
+              eq(whatsappWakeups.user_id, input.userId),
+              eq(whatsappWakeupSources.source_kind, sourceKindOf(input.source)),
+              eq(whatsappWakeupSources.source_identity, input.source.identity),
+              inArray(whatsappWakeups.state, activeStates),
             ),
-          ),
-        ),
+          )
+          .for("update");
+        if (rows.length === 0) return;
+        const wakeUpIds = [...new Set(rows.map(({ wakeUpId }) => wakeUpId))];
+        await transaction
+          .delete(whatsappWakeupSources)
+          .where(
+            and(
+              inArray(whatsappWakeupSources.wakeup_id, wakeUpIds),
+              eq(whatsappWakeupSources.source_kind, sourceKindOf(input.source)),
+              eq(whatsappWakeupSources.source_identity, input.source.identity),
+            ),
+          );
+        for (const wakeUpId of wakeUpIds) {
+          // oxlint-disable-next-line eslint/no-await-in-loop -- Each check observes the association deletion earlier in this same transaction.
+          const [remaining] = await transaction
+            .select({ requestWakeUpId: whatsappWakeupSources.request_wakeup_id })
+            .from(whatsappWakeupSources)
+            .where(eq(whatsappWakeupSources.wakeup_id, wakeUpId))
+            .limit(1);
+          if (remaining !== undefined) continue;
+          // oxlint-disable-next-line eslint/no-await-in-loop -- The transaction closes each now-unowned latch deterministically.
+          await transaction
+            .update(whatsappWakeups)
+            .set({
+              cancel_requested_at: sql`case when ${whatsappWakeups.state} = 'requested' then ${now.toISOString()}::timestamptz else ${whatsappWakeups.cancel_requested_at} end`,
+              canceled_at: sql`case when ${whatsappWakeups.state} = 'requested' then null else ${now.toISOString()}::timestamptz end`,
+              lease_expires_at: null,
+              lease_id: null,
+              safe_failure_class: "sourceCanceled",
+              state: sql`case when ${whatsappWakeups.state} = 'requested' then 'requested' else 'canceled' end`,
+              updated_at: now,
+            })
+            .where(
+              and(
+                eq(whatsappWakeups.wakeup_id, wakeUpId),
+                inArray(whatsappWakeups.state, activeStates),
+              ),
+            );
+        }
+      }),
     );
   });
 
@@ -485,6 +556,70 @@ export const make = Effect.gen(function* () {
     return { endpoint: row.endpoint, locale: row.locale };
   });
 
+  const retainAuthorizedSources = Effect.fn("WhatsAppWakeUps.retainAuthorizedSources")(function* (
+    userId: UserId,
+    wakeUpId: WakeUpId,
+  ) {
+    const rows = yield* attempt("retainAuthorizedSources.load", () =>
+      database
+        .select({
+          requestWakeUpId: whatsappWakeupSources.request_wakeup_id,
+          sourceIdentity: whatsappWakeupSources.source_identity,
+          sourceKind: whatsappWakeupSources.source_kind,
+        })
+        .from(whatsappWakeupSources)
+        .where(eq(whatsappWakeupSources.wakeup_id, wakeUpId))
+        .orderBy(
+          asc(whatsappWakeupSources.source_committed_at),
+          asc(whatsappWakeupSources.request_wakeup_id),
+        ),
+    );
+    const inspected = yield* Effect.forEach(rows, (row) =>
+      decodeSource(row.sourceKind, row.sourceIdentity).pipe(
+        Effect.flatMap((source) => sourceAuthority.inspect(userId, source)),
+        Effect.map((committed) => ({ committed, requestWakeUpId: row.requestWakeUpId })),
+      ),
+    );
+    const unavailableRequestIds = inspected.flatMap(({ committed, requestWakeUpId }) =>
+      committed === null ? [requestWakeUpId] : [],
+    );
+    if (unavailableRequestIds.length > 0) {
+      yield* attempt("retainAuthorizedSources.remove", () =>
+        database
+          .delete(whatsappWakeupSources)
+          .where(inArray(whatsappWakeupSources.request_wakeup_id, unavailableRequestIds)),
+      );
+    }
+    return inspected.flatMap(({ committed }) => (committed === null ? [] : [committed]));
+  });
+
+  const reconcileStaleRequested = Effect.fn("WhatsAppWakeUps.reconcileStaleRequested")(function* (
+    requestTimeout: Duration.Duration,
+  ) {
+    const nowDateTime = yield* DateTime.now;
+    const now = DateTime.toDateUtc(nowDateTime);
+    const cutoff = DateTime.toDateUtc(
+      DateTime.subtract(nowDateTime, { milliseconds: Duration.toMillis(requestTimeout) }),
+    );
+    const recovered = yield* attempt("reconcileStaleRequested", () =>
+      database
+        .update(whatsappWakeups)
+        .set({
+          consumed_at: sql`case when ${whatsappWakeups.consume_requested_at} is null then null else ${whatsappWakeups.consume_requested_at} end`,
+          provider_outcome: "ambiguous",
+          safe_failure_class: "connectionLost",
+          settled_at: now,
+          state: sql`case when ${whatsappWakeups.consume_requested_at} is null then 'ambiguous' else 'consumed' end`,
+          updated_at: now,
+        })
+        .where(
+          and(eq(whatsappWakeups.state, "requested"), lt(whatsappWakeups.requested_at, cutoff)),
+        )
+        .returning({ wakeUpId: whatsappWakeups.wakeup_id }),
+    );
+    return recovered.length;
+  });
+
   const claimPending = Effect.fn("WhatsAppWakeUps.claimPending")(function* (
     leaseDuration: Duration.Duration,
   ) {
@@ -515,6 +650,7 @@ export const make = Effect.gen(function* () {
           .where(
             and(
               eq(whatsappWakeups.state, "pending"),
+              isNull(whatsappWakeups.consume_requested_at),
               or(
                 isNull(whatsappWakeups.lease_expires_at),
                 lt(whatsappWakeups.lease_expires_at, now),
@@ -614,6 +750,7 @@ export const make = Effect.gen(function* () {
               eq(whatsappWakeups.wakeup_id, claim.wakeUpId),
               eq(whatsappWakeups.state, "pending"),
               eq(whatsappWakeups.lease_id, claim.leaseId),
+              isNull(whatsappWakeups.consume_requested_at),
             ),
           )
           .for("update")
@@ -672,7 +809,10 @@ export const make = Effect.gen(function* () {
     yield* attempt("settle", () =>
       database.transaction(async (transaction) => {
         const [row] = await transaction
-          .select({ consumeRequestedAt: whatsappWakeups.consume_requested_at })
+          .select({
+            cancelRequestedAt: whatsappWakeups.cancel_requested_at,
+            consumeRequestedAt: whatsappWakeups.consume_requested_at,
+          })
           .from(whatsappWakeups)
           .where(
             and(eq(whatsappWakeups.wakeup_id, wakeUpId), eq(whatsappWakeups.state, "requested")),
@@ -681,15 +821,17 @@ export const make = Effect.gen(function* () {
           .limit(1);
         if (row === undefined) return;
         const consumed = row.consumeRequestedAt !== null && outcome._tag !== "rejected";
+        const canceled = !consumed && row.cancelRequestedAt !== null && outcome._tag !== "rejected";
         await transaction
           .update(whatsappWakeups)
           .set({
+            canceled_at: canceled ? row.cancelRequestedAt : null,
             consumed_at: consumed ? row.consumeRequestedAt : null,
             provider_message_id_hash: providerMessageIdHash,
             provider_outcome: outcome._tag,
             safe_failure_class: outcome._tag === "accepted" ? null : outcome.failureClass,
             settled_at: now,
-            state: consumed ? "consumed" : outcome._tag,
+            state: consumed ? "consumed" : canceled ? "canceled" : outcome._tag,
             updated_at: now,
           })
           .where(eq(whatsappWakeups.wakeup_id, wakeUpId));
@@ -726,11 +868,12 @@ export const cancelChannelLinkRows = (database: Db.Database, channelLinkId: Chan
       database
         .update(whatsappWakeups)
         .set({
-          canceled_at: now,
+          cancel_requested_at: sql`case when ${whatsappWakeups.state} = 'requested' then ${now.toISOString()}::timestamptz else ${whatsappWakeups.cancel_requested_at} end`,
+          canceled_at: sql`case when ${whatsappWakeups.state} = 'requested' then null else ${now.toISOString()}::timestamptz end`,
           lease_expires_at: null,
           lease_id: null,
           safe_failure_class: "authorityLost",
-          state: "canceled",
+          state: sql`case when ${whatsappWakeups.state} = 'requested' then 'requested' else 'canceled' end`,
           updated_at: now,
         })
         .where(
@@ -738,12 +881,37 @@ export const cancelChannelLinkRows = (database: Db.Database, channelLinkId: Chan
             eq(whatsappWakeups.channel_link_id, channelLinkId),
             or(
               eq(whatsappWakeups.state, "pending"),
+              eq(whatsappWakeups.state, "requested"),
               eq(whatsappWakeups.state, "accepted"),
               eq(whatsappWakeups.state, "ambiguous"),
             ),
           ),
         ),
     );
+  });
+
+/** Delete only after every provider request that durably started has reached a closed outcome. */
+export const deleteUserRowsBeforeAgentTeardown = (
+  database: Db.Database,
+  userId: UserId,
+): Promise<boolean> =>
+  database.transaction(async (transaction) => {
+    const [user] = await transaction
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, userId))
+      .for("update")
+      .limit(1);
+    if (user === undefined) return true;
+    const [inFlight] = await transaction
+      .select({ wakeUpId: whatsappWakeups.wakeup_id })
+      .from(whatsappWakeups)
+      .where(and(eq(whatsappWakeups.user_id, userId), eq(whatsappWakeups.state, "requested")))
+      .for("update")
+      .limit(1);
+    if (inFlight !== undefined) return false;
+    await transaction.delete(whatsappWakeups).where(eq(whatsappWakeups.user_id, userId));
+    return true;
   });
 
 const attempt = <A>(operation: string, run: () => PromiseLike<A>) =>
@@ -785,21 +953,25 @@ const sourceKindOf = (source: Source) => {
 
 const decodeSource = (
   kind: string,
-  identity: SourceIdentity,
-): Effect.Effect<Source, WakeUpUnavailable> => {
-  switch (kind) {
-    case "reminder":
-      return Effect.succeed(Source.cases.Reminder.make({ identity }));
-    case "researchReport":
-      return Effect.succeed(Source.cases.ResearchReport.make({ identity }));
-    case "documentBuild":
-      return Effect.succeed(Source.cases.DocumentBuild.make({ identity }));
-    case "scheduledEmail":
-      return Effect.succeed(Source.cases.ScheduledEmail.make({ identity }));
-    default:
-      return Effect.fail(unavailable("drain.sourceKind", kind));
-  }
-};
+  encodedIdentity: string,
+): Effect.Effect<Source, WakeUpUnavailable> =>
+  Effect.gen(function* () {
+    const identity = yield* Schema.decodeEffect(SourceIdentity)(encodedIdentity).pipe(
+      Effect.mapError((cause) => unavailable("drain.sourceIdentity", cause)),
+    );
+    switch (kind) {
+      case "reminder":
+        return Source.cases.Reminder.make({ identity });
+      case "researchReport":
+        return Source.cases.ResearchReport.make({ identity });
+      case "documentBuild":
+        return Source.cases.DocumentBuild.make({ identity });
+      case "scheduledEmail":
+        return Source.cases.ScheduledEmail.make({ identity });
+      default:
+        return yield* unavailable("drain.sourceKind", kind);
+    }
+  });
 
 const encodeSource = (source: Source) => ({
   kind: sourceKindOf(source),

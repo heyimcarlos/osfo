@@ -1,7 +1,7 @@
 import { BrowserCrypto } from "@effect/platform-browser";
 import type { Database } from "@osfo/db";
 import { allowanceUsage } from "@osfo/db/schema/allowances";
-import { whatsappWakeups } from "@osfo/db/schema/whatsapp-wakeups";
+import { whatsappWakeups, whatsappWakeupSources } from "@osfo/db/schema/whatsapp-wakeups";
 import { env } from "cloudflare:workers";
 import { expect, it } from "@effect/vitest";
 import { eq } from "drizzle-orm";
@@ -21,7 +21,7 @@ import { spawnApp } from "../support/spawn-app";
 it.effect(
   "replays exact requests, rejects changed identity, and coalesces later committed work",
   () =>
-    withFixture(({ link, sources, userId, wakeUps }) =>
+    withFixture(({ calls, link, sources, userId, wakeUps }) =>
       Effect.gen(function* () {
         const reminder = WhatsAppWakeUps.Source.cases.Reminder.make({
           identity: WhatsAppWakeUps.SourceIdentity.make("reminder-1"),
@@ -63,7 +63,17 @@ it.effect(
             wakeUpId: WhatsAppWakeUps.WakeUpId.make("wakeup-2"),
           }),
         ).toEqual({ _tag: "Coalesced", wakeUpId: "wakeup-1" });
+        expect(
+          yield* wakeUps.request({
+            ...input,
+            source: report,
+            traceId: WhatsAppWakeUps.TraceId.make("trace-coalesced-replay"),
+            wakeUpId: WhatsAppWakeUps.WakeUpId.make("wakeup-2"),
+          }),
+        ).toEqual({ _tag: "Replayed", wakeUpId: "wakeup-1" });
         yield* wakeUps.cancelSource({ source: reminder, userId });
+        expect((yield* wakeUps.drainPending()).accepted).toBe(1);
+        expect((yield* Ref.get(calls)).length).toBe(1);
       }),
     ),
 );
@@ -129,6 +139,37 @@ it.effect(
         ).toBeNull();
       }),
     ),
+);
+
+it.effect("retries owner exposure when it fails before consumption commits", () =>
+  withFixture(({ failExposure, link, sources, userId, wakeUps }) =>
+    Effect.gen(function* () {
+      const source = WhatsAppWakeUps.Source.cases.DocumentBuild.make({
+        identity: WhatsAppWakeUps.SourceIdentity.make("document-exposure-retry"),
+      });
+      yield* Ref.set(sources, [{ committedAt: new Date("2026-08-27T12:00:00.000Z"), source }]);
+      yield* wakeUps.request({
+        channelLinkId: link.channelLinkId,
+        source,
+        traceId: WhatsAppWakeUps.TraceId.make("trace-exposure-retry"),
+        userId,
+        wakeUpId: WhatsAppWakeUps.WakeUpId.make("wakeup-exposure-retry"),
+      });
+      yield* Ref.set(failExposure, true);
+      expect(
+        yield* wakeUps.consumeInbound({ channelLinkId: link.channelLinkId, userId }).pipe(
+          Effect.flip,
+          Effect.map((failure) => failure._tag),
+        ),
+      ).toBe("WhatsAppWakeUpUnavailable");
+      yield* Ref.set(failExposure, false);
+      expect(
+        (yield* wakeUps.consumeInbound({ channelLinkId: link.channelLinkId, userId }))?.pending.map(
+          ({ source: pendingSource }) => pendingSource.identity,
+        ),
+      ).toEqual(["document-exposure-retry"]);
+    }),
+  ),
 );
 
 it.effect("never resends an ambiguous provider request", () =>
@@ -227,29 +268,52 @@ it.effect("recovers only an expired pre-I/O lease", () =>
   ),
 );
 
-it.effect("does not resend after process interruption once provider I/O starts", () =>
-  withFixture(({ blockSender, calls, link, senderStarted, sources, userId, wakeUps }) =>
-    Effect.gen(function* () {
-      const source = WhatsAppWakeUps.Source.cases.DocumentBuild.make({
-        identity: WhatsAppWakeUps.SourceIdentity.make("interrupted-document"),
-      });
-      yield* Ref.set(sources, [{ committedAt: new Date("2026-08-27T12:00:00.000Z"), source }]);
-      yield* Ref.set(blockSender, true);
-      yield* wakeUps.request({
-        channelLinkId: link.channelLinkId,
-        source,
-        traceId: WhatsAppWakeUps.TraceId.make("trace-interrupted"),
-        userId,
-        wakeUpId: WhatsAppWakeUps.WakeUpId.make("wakeup-interrupted"),
-      });
-      const drain = yield* wakeUps.drainPending().pipe(Effect.forkChild);
-      yield* Deferred.await(senderStarted);
-      yield* Fiber.interrupt(drain);
-      yield* Ref.set(blockSender, false);
-      expect((yield* wakeUps.drainPending()).accepted).toBe(0);
-      expect((yield* Ref.get(calls)).length).toBe(1);
-    }),
-  ),
+it.effect(
+  "reconciles process interruption after provider I/O starts as ambiguous without resend",
+  () =>
+    withFixture(({ blockSender, calls, database, link, senderStarted, sources, userId, wakeUps }) =>
+      Effect.gen(function* () {
+        const source = WhatsAppWakeUps.Source.cases.DocumentBuild.make({
+          identity: WhatsAppWakeUps.SourceIdentity.make("interrupted-document"),
+        });
+        yield* Ref.set(sources, [{ committedAt: new Date("2026-08-27T12:00:00.000Z"), source }]);
+        yield* Ref.set(blockSender, true);
+        yield* wakeUps.request({
+          channelLinkId: link.channelLinkId,
+          source,
+          traceId: WhatsAppWakeUps.TraceId.make("trace-interrupted"),
+          userId,
+          wakeUpId: WhatsAppWakeUps.WakeUpId.make("wakeup-interrupted"),
+        });
+        const drain = yield* wakeUps.drainPending().pipe(Effect.forkChild);
+        yield* Deferred.await(senderStarted);
+        yield* Fiber.interrupt(drain);
+        yield* Ref.set(blockSender, false);
+        yield* Effect.promise(() =>
+          database
+            .update(whatsappWakeups)
+            .set({ requested_at: new Date(-1) })
+            .where(eq(whatsappWakeups.wakeup_id, "wakeup-interrupted")),
+        );
+        expect(yield* wakeUps.drainPending({ requestTimeout: 0 })).toEqual({
+          accepted: 0,
+          ambiguous: 1,
+          canceled: 0,
+          rejected: 0,
+        });
+        expect((yield* Ref.get(calls)).length).toBe(1);
+        const [stored] = yield* Effect.promise(() =>
+          database
+            .select({
+              failureClass: whatsappWakeups.safe_failure_class,
+              state: whatsappWakeups.state,
+            })
+            .from(whatsappWakeups)
+            .where(eq(whatsappWakeups.wakeup_id, "wakeup-interrupted")),
+        );
+        expect(stored).toEqual({ failureClass: "connectionLost", state: "ambiguous" });
+      }),
+    ),
 );
 
 it.effect("cancels a pending latch atomically with Channel Link revocation", () =>
@@ -274,6 +338,111 @@ it.effect("cancels a pending latch atomically with Channel Link revocation", () 
       expect((yield* wakeUps.drainPending()).accepted).toBe(0);
       expect(yield* Ref.get(calls)).toEqual([]);
     }),
+  ),
+);
+
+it.effect("records a Channel Link revocation that races an already-started provider call", () =>
+  withFixture(
+    ({
+      blockSender,
+      channelLinks,
+      database,
+      link,
+      senderRelease,
+      senderStarted,
+      sources,
+      userId,
+      wakeUps,
+    }) =>
+      Effect.gen(function* () {
+        const source = WhatsAppWakeUps.Source.cases.ResearchReport.make({
+          identity: WhatsAppWakeUps.SourceIdentity.make("revoked-race-report"),
+        });
+        yield* Ref.set(sources, [{ committedAt: new Date("2026-08-27T12:00:00.000Z"), source }]);
+        yield* Ref.set(blockSender, true);
+        yield* wakeUps.request({
+          channelLinkId: link.channelLinkId,
+          source,
+          traceId: WhatsAppWakeUps.TraceId.make("trace-revoked-race"),
+          userId,
+          wakeUpId: WhatsAppWakeUps.WakeUpId.make("wakeup-revoked-race"),
+        });
+        const drain = yield* wakeUps.drainPending().pipe(Effect.forkChild);
+        yield* Deferred.await(senderStarted);
+        yield* channelLinks.revoke({
+          actorId: ChannelLinks.ChannelLinkActorId.make(`user:${userId}`),
+          channelLinkId: link.channelLinkId,
+          reason: ChannelLinks.ChannelLinkRevocationReason.make("User disconnected WhatsApp"),
+        });
+        yield* Deferred.succeed(senderRelease, undefined);
+        yield* Fiber.join(drain);
+        const [stored] = yield* Effect.promise(() =>
+          database
+            .select({ outcome: whatsappWakeups.provider_outcome, state: whatsappWakeups.state })
+            .from(whatsappWakeups)
+            .where(eq(whatsappWakeups.wakeup_id, "wakeup-revoked-race")),
+        );
+        expect(stored).toEqual({ outcome: "accepted", state: "canceled" });
+      }),
+  ),
+);
+
+it.effect("does not erase an in-flight request before its provider outcome settles", () =>
+  withFixture(
+    ({ blockSender, database, link, senderRelease, senderStarted, sources, userId, wakeUps }) =>
+      Effect.gen(function* () {
+        const source = WhatsAppWakeUps.Source.cases.Reminder.make({
+          identity: WhatsAppWakeUps.SourceIdentity.make("deletion-race-reminder"),
+        });
+        yield* Ref.set(sources, [{ committedAt: new Date("2026-08-27T12:00:00.000Z"), source }]);
+        yield* Ref.set(blockSender, true);
+        yield* wakeUps.request({
+          channelLinkId: link.channelLinkId,
+          source,
+          traceId: WhatsAppWakeUps.TraceId.make("trace-deletion-race"),
+          userId,
+          wakeUpId: WhatsAppWakeUps.WakeUpId.make("wakeup-deletion-race"),
+        });
+        const drain = yield* wakeUps.drainPending().pipe(Effect.forkChild);
+        yield* Deferred.await(senderStarted);
+        const teardownCount = yield* Ref.make(-1);
+        const portLayer = AccountDeletionComposition.portLayer({
+          integrationAuthorityDeletion:
+            AccountDeletionComposition.integrationAuthorityDeletionNotDelivered,
+          OSFO_DIRECTORY: {
+            getByName: () => ({
+              deleteAgent: () => Promise.resolve(),
+              quiesceAgentAccountDeletion: async () => {
+                const rows = await database
+                  .select({ wakeUpId: whatsappWakeups.wakeup_id })
+                  .from(whatsappWakeups)
+                  .where(eq(whatsappWakeups.user_id, userId));
+                await Effect.runPromise(Ref.set(teardownCount, rows.length));
+              },
+            }),
+          },
+        }).pipe(Layer.provide(Db.layerFromDatabase(database)));
+        expect(
+          yield* AccountDeletion.Port.pipe(
+            Effect.flatMap((port) =>
+              port.agents.quiesce(AgentId.make("agent-deletion-race"), userId),
+            ),
+            Effect.flip,
+            Effect.map((failure) => failure._tag),
+            Effect.provide(portLayer),
+          ),
+        ).toBe("AccountDeletionUnavailable");
+        expect(yield* Ref.get(teardownCount)).toBe(-1);
+        yield* Deferred.succeed(senderRelease, undefined);
+        yield* Fiber.join(drain);
+        yield* AccountDeletion.Port.pipe(
+          Effect.flatMap((port) =>
+            port.agents.quiesce(AgentId.make("agent-deletion-race"), userId),
+          ),
+          Effect.provide(portLayer),
+        );
+        expect(yield* Ref.get(teardownCount)).toBe(0);
+      }),
   ),
 );
 
@@ -321,6 +490,14 @@ it.effect("removes every User Wake-up row before Agent teardown begins", () =>
             .where(eq(whatsappWakeups.user_id, userId)),
         ),
       ).toEqual([]);
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select({ wakeUpId: whatsappWakeupSources.wakeup_id })
+            .from(whatsappWakeupSources)
+            .where(eq(whatsappWakeupSources.wakeup_id, "wakeup-deletion")),
+        ),
+      ).toEqual([]);
     }),
   ),
 );
@@ -345,11 +522,13 @@ const withFixture = <A, E>(
         .slice(0, 10)}`;
       const sources = yield* Ref.make<ReadonlyArray<WhatsAppWakeUps.CommittedSource>>([]);
       const exposedSources = yield* Ref.make<ReadonlyArray<WhatsAppWakeUps.CommittedSource>>([]);
+      const failExposure = yield* Ref.make(false);
       const calls = yield* Ref.make<
         ReadonlyArray<{ readonly endpoint: string; readonly locale: "en" | "es" }>
       >([]);
       const blockSender = yield* Ref.make(false);
       const senderStarted = yield* Deferred.make<void>();
+      const senderRelease = yield* Deferred.make<void>();
       const nextFailure = yield* Ref.make<
         WhatsAppWakeUps.ProviderAmbiguous | WhatsAppWakeUps.ProviderRejected | null
       >(null);
@@ -357,7 +536,16 @@ const withFixture = <A, E>(
         WhatsAppWakeUps.SourceAuthority,
         WhatsAppWakeUps.SourceAuthority.of({
           exposePending: (owner, committed) =>
-            owner === userId ? Ref.set(exposedSources, committed) : Effect.void,
+            Effect.gen(function* () {
+              if (yield* Ref.get(failExposure)) {
+                return yield* new WhatsAppWakeUps.WakeUpUnavailable({
+                  cause: "source owner unavailable",
+                  operation: "test.exposePending",
+                });
+              }
+              if (owner === userId) yield* Ref.set(exposedSources, committed);
+              return undefined;
+            }),
           inspect: (owner, source) =>
             Ref.get(sources).pipe(
               Effect.map(
@@ -380,7 +568,7 @@ const withFixture = <A, E>(
             Effect.gen(function* () {
               yield* Ref.update(calls, (current) => [...current, input]);
               yield* Deferred.succeed(senderStarted, undefined);
-              if (yield* Ref.get(blockSender)) return yield* Effect.never;
+              if (yield* Ref.get(blockSender)) yield* Deferred.await(senderRelease);
               const failure = yield* Ref.getAndSet(nextFailure, null);
               if (failure !== null) return yield* failure;
               return "meta-message-1";
@@ -417,9 +605,11 @@ const withFixture = <A, E>(
           database,
           endpoint,
           exposedSources,
+          failExposure,
           link,
           nextFailure,
           senderStarted,
+          senderRelease,
           sources,
           userId,
           wakeUps,
@@ -437,11 +627,13 @@ interface Fixture {
   readonly database: Database;
   readonly endpoint: string;
   readonly exposedSources: Ref.Ref<ReadonlyArray<WhatsAppWakeUps.CommittedSource>>;
+  readonly failExposure: Ref.Ref<boolean>;
   readonly link: typeof ChannelLinks.ChannelLink.Type;
   readonly nextFailure: Ref.Ref<
     WhatsAppWakeUps.ProviderAmbiguous | WhatsAppWakeUps.ProviderRejected | null
   >;
   readonly senderStarted: Deferred.Deferred<void>;
+  readonly senderRelease: Deferred.Deferred<void>;
   readonly sources: Ref.Ref<ReadonlyArray<WhatsAppWakeUps.CommittedSource>>;
   readonly userId: UserId;
   readonly wakeUps: WhatsAppWakeUps.Interface;

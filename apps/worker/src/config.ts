@@ -343,8 +343,7 @@ const parseWhatsAppWakeUp = (env: CloudflareEnv): WhatsAppConfig["wakeUp"] => {
   const policyVersion = env.WHATSAPP_WAKEUP_TEMPLATE_POLICY_VERSION?.trim();
   const approval = env.WHATSAPP_WAKEUP_TEMPLATE_APPROVAL?.trim();
   if (
-    templateName === undefined ||
-    templateName.length === 0 ||
+    templateName !== "osfo_update" ||
     policyVersion !== "whatsapp-wakeup-v1" ||
     approval !== `approved:${policyVersion}:${templateName}:en,es`
   ) {

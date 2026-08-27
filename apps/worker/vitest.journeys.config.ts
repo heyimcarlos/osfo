@@ -32,6 +32,7 @@ let fileNumber = 0;
 
 /** Full public Worker journeys with one native PostgreSQL clone per test file. */
 export default defineConfig({
+  root: import.meta.dirname,
   plugins: [
     cloudflareTest(async ({ inject }) => {
       const context = inject("osfoJourney");

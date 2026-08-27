@@ -64,6 +64,7 @@ describe("Postgres migrations", () => {
             "verifications",
             "webhook_events",
             "webhook_jobs",
+            "whatsapp_wakeup_sources",
             "whatsapp_wakeups",
           ]);
           expect(deletionCaseColumns.rows.map(({ column_name }) => column_name)).toContain(

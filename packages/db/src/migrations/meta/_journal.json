@@ -92,6 +92,20 @@
       "when": 1787863235227,
       "tag": "0012_lowly_mordo",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1787866193769,
+      "tag": "0013_special_black_tom",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1787866882570,
+      "tag": "0014_hard_lord_tyger",
+      "breakpoints": true
     }
   ]
 }

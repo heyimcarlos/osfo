@@ -16,13 +16,13 @@ usage() {
     '  control-osfo identity <run-id>' \
     '  control-osfo journeys <run-id>' \
     '  control-osfo account-deletion-envelope-journey <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay> start' \
-    '  control-osfo record <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay> <action|result> <summary>' \
-    '  control-osfo observe <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> start' \
+    '  control-osfo record <run-id> <registration|channel-linking|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> <action|result> <summary>' \
+    '  control-osfo observe <run-id> <registration|channel-linking|billing|whatsapp-wakeup|account-deletion|account-deletion-replay>' \
     '  control-osfo channel-invite <run-id>' \
     '  control-osfo seed-account-deletion <run-id>' \
     '  control-osfo reconcile-account-deletion <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay> finish' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> finish' \
     '  control-osfo cleanup <run-id>'
 }
 
@@ -36,7 +36,7 @@ require_run_id() {
 
 require_feature() {
   case "${1:-}" in
-    registration|channel-linking|billing|account-deletion|account-deletion-replay) ;;
+    registration|channel-linking|billing|whatsapp-wakeup|account-deletion|account-deletion-replay) ;;
     *)
       printf 'Unknown browser feature: %s\n' "${1:-}" >&2
       exit 2
@@ -904,6 +904,48 @@ observe_billing() {
     "$feature_dir/state.json" "$feature_dir/provider.json"
 }
 
+observe_whatsapp_wakeup() {
+  local run_id state_dir feature_dir container_id provider_origin user_id state_json
+  run_id="$1"
+  state_dir="$(state_dir_for "$run_id")"
+  feature_dir="$(feature_artifact_dir_for "$run_id" whatsapp-wakeup)"
+  begin_observation "$feature_dir"
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  user_id="$(state_value "$run_id" account-deletion-user-id)"
+  require_owned_identifier 'User ID' "$user_id"
+  state_json="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userExists', exists(select 1 from users where id = '$user_id'),
+      'wakeUpCount', (select count(*) from whatsapp_wakeups where user_id = '$user_id'),
+      'sourceCount', (
+        select count(*) from whatsapp_wakeup_sources s
+        join whatsapp_wakeups w on w.wakeup_id = s.wakeup_id
+        where w.user_id = '$user_id'
+      ),
+      'usageCount', (select count(*) from allowance_usage where user_id = '$user_id')
+    );")"
+  printf '%s\n' "$state_json" | jq . >"$feature_dir/state.json"
+  curl --fail --silent --show-error "$provider_origin/_test/whatsapp/ledger" \
+    | jq . >"$feature_dir/provider.json"
+  jq --exit-status \
+    '.userExists == false and .wakeUpCount == 0 and .sourceCount == 0 and .usageCount == 0' \
+    "$feature_dir/state.json" >/dev/null
+  jq --exit-status \
+    'length == 1 and
+      (.[0].body | fromjson) as $body |
+      $body.type == "template" and
+      $body.template.name == "osfo_update" and
+      ($body.template.language.code == "en" or $body.template.language.code == "es") and
+      ($body.template | has("components") | not) and
+      ($body | has("text") | not)' \
+    "$feature_dir/provider.json" >/dev/null
+  complete_observation "$run_id" "$feature_dir"
+  printf 'observed whatsapp-wakeup state=%s provider=%s\n' \
+    "$feature_dir/state.json" "$feature_dir/provider.json"
+}
+
 observe_account_deletion() {
   local run_id state_dir feature_dir container_id provider_origin phone user_id agent_id
   local channel_link_id target_tag unrelated_tag files_bucket target_key unrelated_key
@@ -947,6 +989,12 @@ observe_account_deletion() {
       'channelAuditExists', exists(select 1 from channel_link_audit_events where user_id = '$user_id'),
       'billingExists', exists(select 1 from billing_subscriptions where user_id = '$user_id'),
       'allowanceExists', exists(select 1 from allowance_periods where user_id = '$user_id'),
+      'whatsAppWakeUpExists', exists(select 1 from whatsapp_wakeups where user_id = '$user_id'),
+      'whatsAppWakeUpSourceExists', exists(
+        select 1 from whatsapp_wakeup_sources s
+        join whatsapp_wakeups w on w.wakeup_id = s.wakeup_id
+        where w.user_id = '$user_id'
+      ),
       'phoneVerificationExists', exists(select 1 from verifications where identifier = '$phone')
     );")"
   agent_runtime="$(inspect_agent_runtime "$run_id" "$agent_id")"
@@ -996,7 +1044,8 @@ observe_account_deletion() {
     --argjson deleteRequests "$([[ "$proof_shape" == retained-replay ]] && printf 2 || printf 1)" \
     '(.userExists or .agentExists or .authSessionExists or .deletionCaseExists or
       .channelLinkExists or .acceptedInviteExists or .channelAuditExists or
-      .billingExists or .allowanceExists or .phoneVerificationExists) == false and
+      .billingExists or .allowanceExists or .whatsAppWakeUpExists or
+      .whatsAppWakeUpSourceExists or .phoneVerificationExists) == false and
       .agentRuntime.inspectable == false and .agentRuntime.registered == false and
       .accountHttp.presentationRequests == 1 and
       .accountHttp.presentationSuccesses == 1 and
@@ -1148,6 +1197,7 @@ case "$command_name" in
       registration) observe_registration "$2" ;;
       channel-linking) observe_channel_linking "$2" ;;
       billing) observe_billing "$2" ;;
+      whatsapp-wakeup) observe_whatsapp_wakeup "$2" ;;
       account-deletion|account-deletion-replay) observe_account_deletion "$2" "$3" ;;
     esac
     ;;

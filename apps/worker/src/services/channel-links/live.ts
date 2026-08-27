@@ -6,7 +6,7 @@ import {
 import { whatsappWakeups } from "@osfo/db/schema/whatsapp-wakeups";
 import type { ChannelLinkInviteToken } from "@osfo/api";
 import { users } from "@osfo/db/schema/auth";
-import { and, desc, eq, inArray, isNull, lte } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import { Context, Crypto, DateTime, Duration, Effect, Layer, Redacted, Schema } from "effect";
 
 import { Db } from "../../db";
@@ -667,17 +667,23 @@ export const layer = (options: Options) =>
               await transaction
                 .update(whatsappWakeups)
                 .set({
-                  canceled_at: now,
+                  cancel_requested_at: sql`case when ${whatsappWakeups.state} = 'requested' then ${now.toISOString()}::timestamptz else ${whatsappWakeups.cancel_requested_at} end`,
+                  canceled_at: sql`case when ${whatsappWakeups.state} = 'requested' then null else ${now.toISOString()}::timestamptz end`,
                   lease_expires_at: null,
                   lease_id: null,
                   safe_failure_class: "authorityLost",
-                  state: "canceled",
+                  state: sql`case when ${whatsappWakeups.state} = 'requested' then 'requested' else 'canceled' end`,
                   updated_at: now,
                 })
                 .where(
                   and(
                     eq(whatsappWakeups.channel_link_id, input.channelLinkId),
-                    inArray(whatsappWakeups.state, ["pending", "accepted", "ambiguous"]),
+                    inArray(whatsappWakeups.state, [
+                      "pending",
+                      "requested",
+                      "accepted",
+                      "ambiguous",
+                    ]),
                   ),
                 );
               await transaction.insert(channelLinkAuditEvents).values({

@@ -32,6 +32,7 @@ export const whatsappWakeups = pgTable(
     requested_at: timestamp({ withTimezone: true }),
     settled_at: timestamp({ withTimezone: true }),
     consume_requested_at: timestamp({ withTimezone: true }),
+    cancel_requested_at: timestamp({ withTimezone: true }),
     consumed_at: timestamp({ withTimezone: true }),
     canceled_at: timestamp({ withTimezone: true }),
     created_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
@@ -100,5 +101,45 @@ export const whatsappWakeups = pgTable(
       table.created_at,
     ),
     index("whatsapp_wakeups_channel_link_index").on(table.channel_link_id, table.state),
+  ],
+);
+
+/** Replay identity and opaque source authority attached to one User latch. */
+export const whatsappWakeupSources = pgTable(
+  "whatsapp_wakeup_sources",
+  {
+    request_wakeup_id: text().primaryKey(),
+    wakeup_id: text()
+      .notNull()
+      .references(() => whatsappWakeups.wakeup_id, { onDelete: "cascade" }),
+    fingerprint: text().notNull(),
+    source_kind: text().notNull(),
+    source_identity: text().notNull(),
+    source_committed_at: timestamp({ withTimezone: true }).notNull(),
+    trace_id: text().notNull(),
+    created_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "whatsapp_wakeup_sources_identity_check",
+      sql`length(btrim(${table.request_wakeup_id})) > 0
+        and ${table.fingerprint} ~ '^[0-9a-f]{64}$'
+        and length(btrim(${table.source_identity})) > 0
+        and length(btrim(${table.trace_id})) > 0`,
+    ),
+    check(
+      "whatsapp_wakeup_sources_kind_check",
+      sql`${table.source_kind} in ('reminder', 'researchReport', 'documentBuild', 'scheduledEmail')`,
+    ),
+    index("whatsapp_wakeup_sources_latch_index").on(
+      table.wakeup_id,
+      table.source_committed_at,
+      table.request_wakeup_id,
+    ),
+    index("whatsapp_wakeup_sources_authority_index").on(
+      table.wakeup_id,
+      table.source_kind,
+      table.source_identity,
+    ),
   ],
 );

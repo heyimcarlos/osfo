@@ -1,0 +1,1 @@
+ALTER TABLE "whatsapp_wakeups" ADD COLUMN "cancel_requested_at" timestamp with time zone;

@@ -61,6 +61,18 @@ const SupermemorySeedRequestFromJson = Schema.fromJsonString(
 const SupermemoryDeleteFailuresFromJson = Schema.fromJsonString(
   Schema.Struct({ count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)) }),
 );
+const WhatsAppTemplateRequestFromJson = Schema.fromJsonString(
+  Schema.Struct({
+    messaging_product: Schema.Literal("whatsapp"),
+    recipient_type: Schema.Literal("individual"),
+    template: Schema.Struct({
+      language: Schema.Struct({ code: Schema.Literals(["en", "es"]) }),
+      name: Schema.Literal("osfo_update"),
+    }),
+    to: Schema.String.check(Schema.isPattern(/^\d{5,20}$/u)),
+    type: Schema.Literal("template"),
+  }),
+);
 
 /** Local HTTP providers and their request ledgers for composed Worker journeys. */
 export interface ProviderEmulator {
@@ -77,6 +89,7 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
     const telegramLedger: Array<TelegramLedgerEntry> = [];
     const twilioLedger: Array<TwilioLedgerEntry> = [];
     const whatsAppLedger: Array<WhatsAppLedgerEntry> = [];
+    let whatsAppTemplateOnly = false;
     const server = createServer((request, response) => {
       const rawUrl = request.url ?? "/";
       const pathname = new URL(
@@ -91,6 +104,7 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         telegramLedger.length = 0;
         twilioLedger.length = 0;
         whatsAppLedger.length = 0;
+        whatsAppTemplateOnly = false;
         response.statusCode = 204;
         response.end();
         return;
@@ -170,6 +184,12 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         respondJson(response, 200, whatsAppLedger);
         return;
       }
+      if (request.method === "POST" && pathname === "/_test/whatsapp/template-only") {
+        whatsAppTemplateOnly = true;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
       if (request.method === "POST" && pathname === "/events/track") {
         readTextBody(request)
           .then(() => respondJson(response, 200, {}))
@@ -206,6 +226,17 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         readTextBody(request)
           .then((body) => {
             whatsAppLedger.push({ body, method: request.method ?? "POST", path: pathname });
+            const decoded = Schema.decodeOption(WhatsAppTemplateRequestFromJson)(body);
+            if (
+              whatsAppTemplateOnly &&
+              (Option.isNone(decoded) ||
+                /"(?:components|buttons|media|text|url|parameters)"\s*:/iu.test(body))
+            ) {
+              respondJson(response, 422, {
+                error: "Only the fixed variable-free template is accepted",
+              });
+              return;
+            }
             respondJson(response, 200, {
               contacts: [{ input: "redacted", wa_id: "redacted" }],
               messages: [{ id: `wamid.emulated.${whatsAppLedger.length}` }],

@@ -15,6 +15,11 @@ const Ledger = Schema.Array(
 it.effect("uses only the fixed variable-free Meta template shape for en and es", () =>
   Effect.gen(function* () {
     const config = loadConfig(env);
+    yield* Effect.promise(() =>
+      fetch(`${config.whatsApp.apiBaseURL ?? ""}/_test/whatsapp/template-only`, {
+        method: "POST",
+      }),
+    );
     const sender = yield* WhatsAppWakeUps.Sender;
     yield* sender.sendTemplate({
       endpoint: WhatsAppWakeUps.EndpointIdentity.make("15551234567"),
