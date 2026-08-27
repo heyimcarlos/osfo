@@ -64,10 +64,66 @@ describe("Postgres migrations", () => {
             "verifications",
             "webhook_events",
             "webhook_jobs",
+            "whatsapp_wakeup_sources",
+            "whatsapp_wakeups",
           ]);
           expect(deletionCaseColumns.rows.map(({ column_name }) => column_name)).toContain(
             "access_fenced_at",
           );
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("enforces one active WhatsApp Wake-up per User and closed lifecycle rows", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      ({ client }) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(client);
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO users (id, name, email, locale, registration_completed_at, updated_at)
+              VALUES ('wakeup-user', 'Wake-up User', 'wakeup@example.test', 'en', now(), now());
+              INSERT INTO channel_links (channel_link_id, channel_id, author_id, user_id)
+              VALUES ('wakeup-link', 'whatsapp', '15551234567', 'wakeup-user');
+              INSERT INTO whatsapp_wakeups (
+                wakeup_id, fingerprint, user_id, channel_link_id, endpoint_fingerprint,
+                source_kind, source_identity, source_committed_at, locale,
+                template_policy_version, trace_id
+              ) VALUES (
+                'wakeup-1', repeat('a', 64), 'wakeup-user', 'wakeup-link', repeat('b', 64),
+                'reminder', 'reminder-1', now(), 'en', 'whatsapp-wakeup-v1', 'trace-1'
+              );
+            `),
+          );
+
+          const secondActive = yield* Effect.tryPromise({
+            try: () =>
+              client.exec(`
+                INSERT INTO whatsapp_wakeups (
+                  wakeup_id, fingerprint, user_id, channel_link_id, endpoint_fingerprint,
+                  source_kind, source_identity, source_committed_at, locale,
+                  template_policy_version, trace_id
+                ) VALUES (
+                  'wakeup-2', repeat('c', 64), 'wakeup-user', 'wakeup-link', repeat('d', 64),
+                  'researchReport', 'report-1', now(), 'en', 'whatsapp-wakeup-v1', 'trace-2'
+                )
+              `),
+            catch: (cause) => new MigrationConstraintRejected({ cause }),
+          }).pipe(Effect.exit);
+          expect(Exit.isFailure(secondActive)).toBe(true);
+
+          const invalidAccepted = yield* Effect.tryPromise({
+            try: () =>
+              client.exec(`
+                UPDATE whatsapp_wakeups
+                SET state = 'accepted', provider_outcome = 'accepted', settled_at = now()
+                WHERE wakeup_id = 'wakeup-1'
+              `),
+            catch: (cause) => new MigrationConstraintRejected({ cause }),
+          }).pipe(Effect.exit);
+          expect(Exit.isFailure(invalidAccepted)).toBe(true);
         }),
       closeTestDatabase,
     ),

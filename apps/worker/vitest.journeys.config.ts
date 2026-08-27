@@ -32,6 +32,7 @@ let fileNumber = 0;
 
 /** Full public Worker journeys with one native PostgreSQL clone per test file. */
 export default defineConfig({
+  root: import.meta.dirname,
   plugins: [
     cloudflareTest(async ({ inject }) => {
       const context = inject("osfoJourney");
@@ -50,6 +51,10 @@ export default defineConfig({
             STRIPE_API_BASE_URL: context.providerOrigin,
             SUPERMEMORY_API_BASE_URL: context.providerOrigin,
             TWILIO_VERIFY_API_BASE_URL: context.providerOrigin,
+            WHATSAPP_API_BASE_URL: context.providerOrigin,
+            WHATSAPP_WAKEUP_TEMPLATE_APPROVAL: "approved:whatsapp-wakeup-v1:osfo_update:en,es",
+            WHATSAPP_WAKEUP_TEMPLATE_NAME: "osfo_update",
+            WHATSAPP_WAKEUP_TEMPLATE_POLICY_VERSION: "whatsapp-wakeup-v1",
           },
         },
         wrangler: { configPath: "./test/wrangler.journeys.jsonc" },

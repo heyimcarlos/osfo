@@ -30,10 +30,23 @@ export interface TelegramLedgerEntry {
   readonly method: string;
 }
 
+/** One observed Meta messages API request. */
+export interface WhatsAppLedgerEntry {
+  readonly body: string;
+  readonly method: string;
+  readonly path: string;
+}
+
 interface TelegramPayload {
   readonly chatId: number | string;
   readonly messageId?: number;
   readonly text: string;
+}
+
+type JsonValue = boolean | number | string | null | JsonObject | ReadonlyArray<JsonValue>;
+
+interface JsonObject {
+  readonly [key: string]: JsonValue;
 }
 
 const TelegramRequest = Schema.Struct({
@@ -54,6 +67,7 @@ const SupermemorySeedRequestFromJson = Schema.fromJsonString(
 const SupermemoryDeleteFailuresFromJson = Schema.fromJsonString(
   Schema.Struct({ count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)) }),
 );
+const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
 
 /** Local HTTP providers and their request ledgers for composed Worker journeys. */
 export interface ProviderEmulator {
@@ -69,8 +83,13 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
     const supermemoryLedger: Array<SupermemoryLedgerEntry> = [];
     const telegramLedger: Array<TelegramLedgerEntry> = [];
     const twilioLedger: Array<TwilioLedgerEntry> = [];
+    const whatsAppLedger: Array<WhatsAppLedgerEntry> = [];
+    let whatsAppNextResponseStatus: number | null = null;
+    let whatsAppTemplateOnly = false;
     const server = createServer((request, response) => {
-      const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+      const rawUrl = request.url ?? "/";
+      const url = new URL(rawUrl.startsWith("//") ? rawUrl.slice(1) : rawUrl, "http://localhost");
+      const pathname = url.pathname;
       if (request.method === "POST" && pathname === "/_test/reset") {
         stripeLedger.length = 0;
         supermemoryContainers.clear();
@@ -78,6 +97,9 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         supermemoryLedger.length = 0;
         telegramLedger.length = 0;
         twilioLedger.length = 0;
+        whatsAppLedger.length = 0;
+        whatsAppNextResponseStatus = null;
+        whatsAppTemplateOnly = false;
         response.statusCode = 204;
         response.end();
         return;
@@ -153,6 +175,27 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         respondJson(response, 200, telegramLedger);
         return;
       }
+      if (request.method === "GET" && pathname === "/_test/whatsapp/ledger") {
+        respondJson(response, 200, whatsAppLedger);
+        return;
+      }
+      if (request.method === "POST" && pathname === "/_test/whatsapp/template-only") {
+        whatsAppTemplateOnly = true;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      if (request.method === "POST" && pathname === "/_test/whatsapp/next-response") {
+        const status = Number.parseInt(url.searchParams.get("status") ?? "", 10);
+        if (![400, 429, 503].includes(status)) {
+          respondJson(response, 400, { error: "Unsupported WhatsApp test response" });
+          return;
+        }
+        whatsAppNextResponseStatus = status;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
       if (request.method === "POST" && pathname === "/events/track") {
         readTextBody(request)
           .then(() => respondJson(response, 200, {}))
@@ -185,6 +228,37 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         handleTelegram(request, response, pathname, telegramLedger);
         return;
       }
+      if (request.method === "POST" && pathname.endsWith("/messages")) {
+        readTextBody(request)
+          .then((body) => {
+            whatsAppLedger.push({ body, method: request.method ?? "POST", path: pathname });
+            const decoded = Schema.decodeOption(UnknownFromJsonString)(body);
+            if (
+              whatsAppTemplateOnly &&
+              (Option.isNone(decoded) || !isExactWhatsAppTemplateRequest(decoded.value))
+            ) {
+              respondJson(response, 422, {
+                error: "Only the fixed variable-free template is accepted",
+              });
+              return;
+            }
+            if (whatsAppNextResponseStatus !== null) {
+              const status = whatsAppNextResponseStatus;
+              whatsAppNextResponseStatus = null;
+              respondJson(response, status, {
+                error: { code: status === 400 ? 132001 : status, message: "emulated" },
+              });
+              return;
+            }
+            respondJson(response, 200, {
+              contacts: [{ input: "redacted", wa_id: "redacted" }],
+              messages: [{ id: `wamid.emulated.${whatsAppLedger.length}` }],
+              messaging_product: "whatsapp",
+            });
+          })
+          .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
+        return;
+      }
       respondJson(response, 404, {
         error: "Not found",
         method: request.method ?? null,
@@ -204,6 +278,35 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
       });
     });
   });
+
+const isExactWhatsAppTemplateRequest = (value: unknown): boolean => {
+  if (!hasExactKeys(value, ["messaging_product", "recipient_type", "template", "to", "type"])) {
+    return false;
+  }
+  const template = value.template;
+  if (
+    value.messaging_product !== "whatsapp" ||
+    value.recipient_type !== "individual" ||
+    value.type !== "template" ||
+    typeof value.to !== "string" ||
+    !/^\d{5,20}$/u.test(value.to) ||
+    !hasExactKeys(template, ["language", "name"])
+  ) {
+    return false;
+  }
+  const language = template.language;
+  return (
+    template.name === "osfo_update" &&
+    hasExactKeys(language, ["code"]) &&
+    (language.code === "en" || language.code === "es")
+  );
+};
+
+const hasExactKeys = (value: unknown, keys: ReadonlyArray<string>): value is JsonObject => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const actualKeys = Object.keys(value);
+  return actualKeys.length === keys.length && keys.every((key) => actualKeys.includes(key));
+};
 
 const handleSupermemorySeed = (
   request: IncomingMessage,

@@ -43,10 +43,14 @@ type RawConfigBinding =
   | "TWILIO_VERIFY_API_BASE_URL"
   | "TWILIO_VERIFY_SERVICE_SID"
   | "WHATSAPP_ACCESS_TOKEN"
+  | "WHATSAPP_API_BASE_URL"
   | "WHATSAPP_APP_SECRET"
   | "WHATSAPP_BOT_USERNAME"
   | "WHATSAPP_PHONE_NUMBER_ID"
-  | "WHATSAPP_VERIFY_TOKEN";
+  | "WHATSAPP_VERIFY_TOKEN"
+  | "WHATSAPP_WAKEUP_TEMPLATE_APPROVAL"
+  | "WHATSAPP_WAKEUP_TEMPLATE_NAME"
+  | "WHATSAPP_WAKEUP_TEMPLATE_POLICY_VERSION";
 
 type GeneratedCloudflareBindings = Omit<Env, RawConfigBinding>;
 
@@ -79,10 +83,14 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly TWILIO_VERIFY_API_BASE_URL?: string;
   readonly TWILIO_VERIFY_SERVICE_SID?: string;
   readonly WHATSAPP_ACCESS_TOKEN?: string;
+  readonly WHATSAPP_API_BASE_URL?: string;
   readonly WHATSAPP_APP_SECRET?: string;
   readonly WHATSAPP_BOT_USERNAME?: string;
   readonly WHATSAPP_PHONE_NUMBER_ID?: string;
   readonly WHATSAPP_VERIFY_TOKEN?: string;
+  readonly WHATSAPP_WAKEUP_TEMPLATE_APPROVAL?: string;
+  readonly WHATSAPP_WAKEUP_TEMPLATE_NAME?: string;
+  readonly WHATSAPP_WAKEUP_TEMPLATE_POLICY_VERSION?: string;
 }
 
 /** Better Auth and dashboard configuration. */
@@ -107,10 +115,18 @@ export const publicWebBaseUrl = (config: AuthConfig): URL =>
 /** WhatsApp webhook, delivery, and public identity configuration. */
 export interface WhatsAppConfig {
   readonly accessToken: Redacted.Redacted;
+  readonly apiBaseURL?: string | undefined;
   readonly appSecret: Redacted.Redacted;
   readonly botUsername: string;
   readonly phoneNumberId: string;
   readonly verifyToken: Redacted.Redacted;
+  readonly wakeUp:
+    | { readonly _tag: "Inactive" }
+    | {
+        readonly _tag: "Active";
+        readonly templateName: string;
+        readonly templatePolicyVersion: "whatsapp-wakeup-v1";
+      };
 }
 
 /** Stripe billing configuration. */
@@ -257,10 +273,12 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
     },
     whatsApp: {
       accessToken: Redacted.make(required(env, "WHATSAPP_ACCESS_TOKEN")),
+      apiBaseURL: optionalUrl(env, "WHATSAPP_API_BASE_URL"),
       appSecret: Redacted.make(required(env, "WHATSAPP_APP_SECRET")),
       botUsername: required(env, "WHATSAPP_BOT_USERNAME").trim(),
       phoneNumberId: required(env, "WHATSAPP_PHONE_NUMBER_ID").trim(),
       verifyToken: Redacted.make(required(env, "WHATSAPP_VERIFY_TOKEN")),
+      wakeUp: parseWhatsAppWakeUp(env),
     },
   };
 };
@@ -274,6 +292,10 @@ type RequiredBinding = Exclude<
   | "SUPERMEMORY_API_BASE_URL"
   | "TELEGRAM_API_BASE_URL"
   | "TWILIO_VERIFY_API_BASE_URL"
+  | "WHATSAPP_API_BASE_URL"
+  | "WHATSAPP_WAKEUP_TEMPLATE_APPROVAL"
+  | "WHATSAPP_WAKEUP_TEMPLATE_NAME"
+  | "WHATSAPP_WAKEUP_TEMPLATE_POLICY_VERSION"
 >;
 
 const required = (env: CloudflareEnv, binding: RequiredBinding): string => {
@@ -307,12 +329,27 @@ const optionalUrl = (
     | "STRIPE_API_BASE_URL"
     | "SUPERMEMORY_API_BASE_URL"
     | "TELEGRAM_API_BASE_URL"
-    | "TWILIO_VERIFY_API_BASE_URL",
+    | "TWILIO_VERIFY_API_BASE_URL"
+    | "WHATSAPP_API_BASE_URL",
 ): string | undefined => {
   const value = env[binding];
   return value === undefined || value.trim().length === 0
     ? undefined
     : parseUrl(binding, value).href;
+};
+
+const parseWhatsAppWakeUp = (env: CloudflareEnv): WhatsAppConfig["wakeUp"] => {
+  const templateName = env.WHATSAPP_WAKEUP_TEMPLATE_NAME?.trim();
+  const policyVersion = env.WHATSAPP_WAKEUP_TEMPLATE_POLICY_VERSION?.trim();
+  const approval = env.WHATSAPP_WAKEUP_TEMPLATE_APPROVAL?.trim();
+  if (
+    templateName !== "osfo_update" ||
+    policyVersion !== "whatsapp-wakeup-v1" ||
+    approval !== `approved:${policyVersion}:${templateName}:en,es`
+  ) {
+    return { _tag: "Inactive" };
+  }
+  return { _tag: "Active", templateName, templatePolicyVersion: policyVersion };
 };
 
 const parseTrustedOrigins = (value: string): ReadonlyArray<string> => {

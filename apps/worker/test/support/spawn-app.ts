@@ -103,17 +103,20 @@ interface MintVerifiedUserOptions {
 }
 
 let nextPhoneNumber = 1_000_000;
+let nextClientAddress = 1;
 
 /** Create one stateful HTTP client and observation surface for a Worker journey. */
 export const spawnApp = async () => {
   const context = inject("osfoJourney");
+  const clientAddress = `127.0.${Math.floor(nextClientAddress / 250)}.${(nextClientAddress % 250) + 1}`;
+  nextClientAddress += 1;
   const reset = await fetch(`${context.providerOrigin}/_test/reset`, { method: "POST" });
   if (!reset.ok) throw new Error(`Provider emulator reset failed with ${reset.status}`);
   let cookie = "";
 
   const request = async (path: string, init?: RequestInit): Promise<Response> => {
     const headers = new Headers(init?.headers);
-    headers.set("cf-connecting-ip", "127.0.0.1");
+    headers.set("cf-connecting-ip", clientAddress);
     headers.set("origin", "https://osfo.test");
     if (cookie.length > 0) headers.set("cookie", cookie);
     return exports.default.fetch(new Request(`https://osfo.test${path}`, { ...init, headers }));

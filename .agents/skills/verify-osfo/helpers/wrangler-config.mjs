@@ -63,10 +63,15 @@ config.vars = {
   TWILIO_VERIFY_API_BASE_URL: providerOrigin,
   TWILIO_VERIFY_SERVICE_SID: "VA22222222222222222222222222222222",
   WHATSAPP_ACCESS_TOKEN: "test-only-whatsapp-access-token",
+  WHATSAPP_API_BASE_URL: providerOrigin,
   WHATSAPP_APP_SECRET: "test-only-whatsapp-app-secret",
   WHATSAPP_BOT_USERNAME: "osfo_verify_whatsapp",
   WHATSAPP_PHONE_NUMBER_ID: "123456789",
   WHATSAPP_VERIFY_TOKEN: "test-only-whatsapp-verify-token",
+  WHATSAPP_WAKEUP_TEMPLATE_APPROVAL:
+    "approved:whatsapp-wakeup-v1:osfo_update:en,es",
+  WHATSAPP_WAKEUP_TEMPLATE_NAME: "osfo_update",
+  WHATSAPP_WAKEUP_TEMPLATE_POLICY_VERSION: "whatsapp-wakeup-v1",
 };
 
 config.hyperdrive = replaceBinding(config.hyperdrive, "DB", (binding) => ({

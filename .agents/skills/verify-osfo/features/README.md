@@ -16,6 +16,7 @@ This map covers User-visible behavior that the local Worker and web UI can drive
 - [Register a User](registration.md) is the foundation. It proves SMS verification, session creation, registration, Agent creation, and Free Plan provisioning.
 - [Link a Telegram channel](channel-linking.md) proves provider delivery, private invite presentation, browser acceptance, and the durable Channel Link.
 - [Inspect Free billing](billing.md) is the highest-value adjacent authenticated path. The local harness proves the visible Free Plan and committed allowance; the hosted Stripe page remains outside the local browser run.
+- [Consume a WhatsApp Wake-up](whatsapp-wakeup.md) proves the fixed local Utility-template boundary, one authorized reply, ordered source-owned exposure, revocation, and deletion cleanup without treating the template as result delivery.
 - [Delete an account](account-deletion.md) proves exact destructive confirmation, signed-out completion, and User-scoped erasure across PostgreSQL, Agent SQLite, R2, and Supermemory while unrelated sentinels survive.
 - [Resume account deletion](account-deletion-replay.md) separately proves that an exact browser-retained request can recover a lost successful response after normal session access is fenced.
 

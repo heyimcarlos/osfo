@@ -8,8 +8,9 @@ import { Db } from "../db";
 import { AccountDeletionCloudflare } from "../integrations/cloudflare/account-deletion";
 import { AccountDeletionPostgres } from "../integrations/postgres/account-deletion";
 import { AccountDeletion } from "../services/account-deletion";
+import { WhatsAppWakeUps } from "../services/whatsapp-wakeups";
 
-/* oxlint-disable eslint/no-underscore-dangle -- Closed capability variants use the canonical _tag discriminator. */
+/* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Closed capability variants use the canonical _tag discriminator, and the deletion preflight adapts one Promise transaction at its Effect boundary. */
 
 interface DirectoryDeletionStub {
   readonly deleteAgent: (agentId: string) => Promise<void>;
@@ -47,18 +48,35 @@ const makePort = (bindings: Bindings) =>
       inspectAuthorization: AccountDeletionPostgres.inspectAuthorization(database),
       agents: {
         quiesce: (agentId: AgentId, userId) =>
-          Effect.tryPromise({
-            try: () =>
-              bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).quiesceAgentAccountDeletion(
-                agentId,
-                userId,
-              ),
-            catch: (cause) =>
-              new AccountDeletion.AccountDeletionUnavailable({
-                cause,
-                message: "Agent provider activity could not be quiesced",
-                operation: "quiesceAgentAccountDeletion",
-              }),
+          Effect.gen(function* () {
+            yield* Effect.tryPromise({
+              try: async () => {
+                const deleted = await WhatsAppWakeUps.deleteUserRowsBeforeAgentTeardown(
+                  database,
+                  userId,
+                );
+                if (!deleted) throw new Error("A WhatsApp provider request is still in flight");
+              },
+              catch: (cause) =>
+                new AccountDeletion.AccountDeletionUnavailable({
+                  cause,
+                  message: "WhatsApp Wake-up deletion preflight is unavailable",
+                  operation: "deleteWhatsAppWakeUps",
+                }),
+            });
+            yield* Effect.tryPromise({
+              try: () =>
+                bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).quiesceAgentAccountDeletion(
+                  agentId,
+                  userId,
+                ),
+              catch: (cause) =>
+                new AccountDeletion.AccountDeletionUnavailable({
+                  cause,
+                  message: "Agent provider activity could not be quiesced",
+                  operation: "quiesceAgentAccountDeletion",
+                }),
+            });
           }),
         remove: (agentId: AgentId) =>
           Effect.tryPromise({
