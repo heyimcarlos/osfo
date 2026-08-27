@@ -1,10 +1,22 @@
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 
 import { ActionId } from "../../domain/action-execution";
 import { ContentId } from "../../domain/client-content";
 import type { ActionPresentationPersistence } from "../../services/action-approvals";
 import { ApprovalPresentation } from "../../services/authorization";
-import { ClearCoreMemoryInput, coreMemoryLabelFor } from "./core-memory";
+import {
+  ClearCoreMemoryInput,
+  coreMemoryLabelFor,
+  type CoreMemoryInspected,
+  type CoreMemoryUnavailable,
+} from "./core-memory";
+import {
+  ApprovedCoreMemoryCorrections,
+  ForgetKnowledgeInput,
+  forgetKnowledgeActionName,
+  SessionDeleteInput,
+  sessionDeleteActionName,
+} from "./deletion-actions";
 import {
   ActionPresentation,
   ActionPresentationId,
@@ -25,12 +37,19 @@ export type RetainedDocumentInput = typeof RetainedDocumentInput.Type;
 /** Project one registered Action into its definition-owned immutable presentation. */
 export const presentOsfoAction = Effect.fn("ActionPresentation.present")(function* (
   pending: PendingThinkAction,
+  inspectCurrentCoreMemory?: Effect.Effect<CoreMemoryInspected, CoreMemoryUnavailable>,
 ) {
   if (pending.descriptor.action === "osfoClearCoreMemory") {
     return yield* presentCoreMemoryClearAction(pending);
   }
   if (pending.descriptor.action === documentDeleteActionName) {
     return yield* presentDocumentDeleteAction(pending);
+  }
+  if (pending.descriptor.action === forgetKnowledgeActionName) {
+    return yield* presentForgetKnowledgeAction(pending, inspectCurrentCoreMemory);
+  }
+  if (pending.descriptor.action === sessionDeleteActionName) {
+    return yield* presentSessionDeleteAction(pending);
   }
   return yield* new ActionPresentationUnavailable({
     action: pending.descriptor.action,
@@ -92,6 +111,56 @@ export const hasExactActionInput = (
   );
 };
 
+/** Verify the complete Knowledge deletion target and Native Memory correction. */
+export const hasExactForgetKnowledgeInput = (
+  presentation: ActionPresentation,
+  input: typeof ForgetKnowledgeInput.Encoded,
+): boolean => Option.isSome(approvedForgetKnowledgeCorrections(presentation, input));
+
+/** Recover the immutable server-observed preimages paired with the exact approved correction. */
+export const approvedForgetKnowledgeCorrections = (
+  presentation: ActionPresentation,
+  input: typeof ForgetKnowledgeInput.Encoded,
+): Option.Option<typeof ApprovedCoreMemoryCorrections.Type> => {
+  const preimages = Schema.decodeOption(
+    Schema.fromJsonString(
+      Schema.Array(
+        Schema.Struct({
+          block: Schema.Literals(["userContext", "agentNotes"]),
+          expectedContent: Schema.String.check(Schema.isMaxLength(10_000)),
+        }),
+      ),
+    ),
+  )(readSplitPresentationField(presentation.fields, "coreMemoryPreimages"));
+  return Option.flatMap(preimages, (decoded) => {
+    const approved = input.coreMemory.map((replacement) => {
+      const preimage = decoded.find(({ block }) => block === replacement.block);
+      return preimage === undefined ? undefined : { ...replacement, ...preimage };
+    });
+    if (approved.some((replacement) => replacement === undefined)) return Option.none();
+    const candidate = approved.filter((replacement) => replacement !== undefined);
+    return Schema.decodeUnknownOption(ApprovedCoreMemoryCorrections)(candidate).pipe(
+      Option.filter(() =>
+        hasExactFields(
+          presentation,
+          "memory.forgetKnowledge",
+          "osfo-forget-knowledge-v2",
+          forgetKnowledgePresentationFields(input, decoded),
+        ),
+      ),
+    );
+  });
+};
+
+/** Verify the exact Session selected for deletion. */
+export const hasExactSessionDeleteInput = (
+  presentation: ActionPresentation,
+  input: typeof SessionDeleteInput.Encoded,
+): boolean =>
+  hasExactFields(presentation, "session.delete", "osfo-session-delete-v1", [
+    { name: "sessionId", value: input.sessionId },
+  ]);
+
 const presentCoreMemoryClearAction = Effect.fn("ActionPresentation.presentCoreMemoryClear")(
   function* (pending: PendingThinkAction) {
     const input = yield* Schema.decodeUnknownEffect(ClearCoreMemoryInput)(
@@ -144,6 +213,170 @@ const presentDocumentDeleteAction = Effect.fn("ActionPresentation.presentDocumen
     });
   },
 );
+
+const presentForgetKnowledgeAction = Effect.fn("ActionPresentation.presentForgetKnowledge")(
+  function* (
+    pending: PendingThinkAction,
+    inspectCurrentCoreMemory?: Effect.Effect<CoreMemoryInspected, CoreMemoryUnavailable>,
+  ) {
+    const input = yield* Schema.decodeUnknownEffect(ForgetKnowledgeInput)(
+      pending.descriptor.input,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "The Knowledge deletion input cannot be projected safely",
+          }),
+      ),
+    );
+    if (inspectCurrentCoreMemory === undefined) {
+      return yield* new ActionPresentationUnavailable({
+        action: pending.descriptor.action,
+        message: "Current Core Memory cannot be bound to the deletion presentation",
+      });
+    }
+    const current = yield* inspectCurrentCoreMemory.pipe(
+      Effect.mapError(
+        () =>
+          new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "Current Core Memory cannot be inspected safely",
+          }),
+      ),
+    );
+    const preimages = input.coreMemory.map(({ block }) => ({
+      block,
+      expectedContent: current[block].content,
+    }));
+    const coreMemoryConsequences = input.coreMemory.map(
+      ({ block }) => `Immediately replace the ${coreMemoryLabelFor(block)} Core Memory block.`,
+    );
+    return yield* ActionPresentation.makeEffect({
+      actionDefinitionVersion: "osfo-forget-knowledge-v2",
+      actionId: ActionId.make(pending.descriptor.toolCallId),
+      consequences: [
+        ...coreMemoryConsequences,
+        `Permanently forget ${input.memoryIds.length} selected Knowledge Base ${input.memoryIds.length === 1 ? "memory" : "memories"}.`,
+        "Keep the original Session transcript.",
+      ],
+      description: "Apply the exact Native Memory correction and provider forgetting shown here.",
+      fields: forgetKnowledgePresentationFields(input, preimages),
+      operation: "memory.forgetKnowledge",
+      presentationId: ActionPresentationId.make(pending.executionId),
+      title: "Forget selected knowledge",
+    }).pipe(
+      Effect.mapError(
+        () =>
+          new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "The Knowledge deletion presentation could not be bounded safely",
+          }),
+      ),
+    );
+  },
+);
+
+const presentSessionDeleteAction = Effect.fn("ActionPresentation.presentSessionDelete")(function* (
+  pending: PendingThinkAction,
+) {
+  const input = yield* Schema.decodeUnknownEffect(SessionDeleteInput)(
+    pending.descriptor.input,
+  ).pipe(
+    Effect.mapError(
+      () =>
+        new ActionPresentationUnavailable({
+          action: pending.descriptor.action,
+          message: "The Session deletion input cannot be projected safely",
+        }),
+    ),
+  );
+  return ActionPresentation.make({
+    actionDefinitionVersion: "osfo-session-delete-v1",
+    actionId: ActionId.make(pending.descriptor.toolCallId),
+    consequences: [
+      "Permanently delete the selected Session transcript and search history.",
+      "Create a replacement first when this is the current Session.",
+      "Permanently delete the matching Knowledge Base conversation.",
+    ],
+    description: "Delete the exact Session shown here.",
+    fields: [{ label: "Session", name: "sessionId", value: input.sessionId }],
+    operation: "session.delete",
+    presentationId: ActionPresentationId.make(pending.executionId),
+    title: "Delete Session",
+  });
+});
+
+const hasExactFields = (
+  presentation: ActionPresentation,
+  operation: string,
+  version: string,
+  expected: ReadonlyArray<{ readonly name: string; readonly value: string }>,
+) =>
+  presentation.operation === operation &&
+  presentation.actionDefinitionVersion === version &&
+  presentation.fields.length === expected.length &&
+  expected.every(
+    (field, index) =>
+      presentation.fields[index]?.name === field.name &&
+      presentation.fields[index]?.value === field.value,
+  );
+
+const presentationFieldValueLimit = 2_000;
+
+const forgetKnowledgePresentationFields = (
+  input: typeof ForgetKnowledgeInput.Encoded,
+  preimages: ReadonlyArray<{ readonly block: string; readonly expectedContent: string }>,
+) => [
+  // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Approval fields retain canonical JSON for exact array comparison.
+  ...splitExactPresentationField("Provider memories", "memoryIds", JSON.stringify(input.memoryIds)),
+  // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Approval fields retain canonical JSON for exact array comparison.
+  ...splitExactPresentationField(
+    "Core Memory replacements",
+    "coreMemory",
+    JSON.stringify(input.coreMemory),
+  ),
+  // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Approval fields retain canonical JSON for exact preimage comparison.
+  ...splitExactPresentationField(
+    "Current Core Memory",
+    "coreMemoryPreimages",
+    JSON.stringify(preimages),
+  ),
+];
+
+const readSplitPresentationField = (fields: ActionPresentation["fields"], name: string): string => {
+  const direct = fields.find((field) => field.name === name);
+  if (direct !== undefined) return direct.value;
+  const parts = fields
+    .filter((field) => field.name.startsWith(`${name}.`))
+    .map((field) => {
+      const match = /\.(\d+)-of-(\d+)$/u.exec(field.name);
+      return match === null
+        ? undefined
+        : { index: Number(match[1]), total: Number(match[2]), value: field.value };
+    });
+  if (parts.some((part) => part === undefined)) return "";
+  const exact = parts.filter((part) => part !== undefined);
+  const total = exact[0]?.total;
+  return total !== undefined &&
+    exact.length === total &&
+    exact.every((part, index) => part.index === index + 1 && part.total === total)
+    ? exact.map(({ value }) => value).join("")
+    : "";
+};
+
+const splitExactPresentationField = (label: string, name: string, value: string) => {
+  const partCount = Math.ceil(value.length / presentationFieldValueLimit);
+  if (partCount === 1) return [{ label, name, value }];
+  return Array.from({ length: partCount }, (_, index) => ({
+    label: `${label} (${index + 1}/${partCount})`,
+    name: `${name}.${index + 1}-of-${partCount}`,
+    value: value.slice(
+      index * presentationFieldValueLimit,
+      (index + 1) * presentationFieldValueLimit,
+    ),
+  }));
+};
 
 const actionPresentationStorageKey = (presentationId: ActionPresentationId) =>
   `osfo:action-presentation:${presentationId}`;

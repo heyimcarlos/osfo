@@ -15,11 +15,14 @@ usage() {
     '  control-osfo doctor <run-id>' \
     '  control-osfo identity <run-id>' \
     '  control-osfo journeys <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|billing> start' \
-    '  control-osfo record <run-id> <registration|channel-linking|billing> <action|result> <summary>' \
-    '  control-osfo observe <run-id> <registration|channel-linking|billing>' \
+    '  control-osfo account-deletion-envelope-journey <run-id>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay> start' \
+    '  control-osfo record <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay> <action|result> <summary>' \
+    '  control-osfo observe <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay>' \
     '  control-osfo channel-invite <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|billing> finish' \
+    '  control-osfo seed-account-deletion <run-id>' \
+    '  control-osfo reconcile-account-deletion <run-id>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay> finish' \
     '  control-osfo cleanup <run-id>'
 }
 
@@ -33,7 +36,7 @@ require_run_id() {
 
 require_feature() {
   case "${1:-}" in
-    registration|channel-linking|billing) ;;
+    registration|channel-linking|billing|account-deletion|account-deletion-replay) ;;
     *)
       printf 'Unknown browser feature: %s\n' "${1:-}" >&2
       exit 2
@@ -154,7 +157,7 @@ process_group_is_owned() {
     [[ -n "$member" ]] || continue
     found=true
     if ! tr '\0' '\n' <"/proc/$member/environ" \
-      | rg --fixed-strings --line-regexp --quiet "OSFO_VERIFICATION_RUN_ID=$run_id"; then
+      | grep -F -x -q -- "OSFO_VERIFICATION_RUN_ID=$run_id"; then
       return 1
     fi
   done < <(process_group_members "$process_group_id")
@@ -206,6 +209,81 @@ write_wrangler_config() {
   bun "$script_dir/wrangler-config.mjs" \
     "$repo_root/apps/worker/wrangler.jsonc" "$state_dir/wrangler.json" \
     "$run_id" "$postgres_url" "$provider_origin" "$worker_origin" "$web_origin"
+}
+
+start_worker_process() {
+  local run_id state_dir artifact_dir worker_origin worker_port inspector_port worker_pid
+  run_id="$1"
+  state_dir="$(state_dir_for "$run_id")"
+  artifact_dir="$(artifact_dir_for "$run_id")"
+  worker_origin="$(state_value "$run_id" worker-origin)"
+  worker_port="${worker_origin##*:}"
+  inspector_port="$(pick_port)"
+  setsid env OSFO_VERIFICATION_RUN_ID="$run_id" \
+    "$repo_root/apps/worker/node_modules/.bin/wrangler" dev \
+    --config "$state_dir/wrangler.json" \
+    --ip 127.0.0.1 \
+    --port "$worker_port" \
+    --inspector-port "$inspector_port" \
+    --persist-to "$state_dir/wrangler-state" \
+    --show-interactive-dev-session false \
+    >>"$artifact_dir/logs/worker.log" 2>&1 &
+  worker_pid="$!"
+  record_process "$state_dir" worker "$worker_pid"
+  if ! wait_for_url "$worker_origin/auth/get-session" 'Worker' "$worker_pid"; then
+    printf 'Worker log follows:\n' >&2
+    tail -n 200 "$artifact_dir/logs/worker.log" >&2 || true
+    return 1
+  fi
+}
+
+inspect_agent_runtime() {
+  local run_id agent_id state_dir artifact_dir observer_origin observer_port inspector_port
+  local observer_pid observation status
+  run_id="$1"
+  agent_id="$2"
+  state_dir="$(state_dir_for "$run_id")"
+  artifact_dir="$(artifact_dir_for "$run_id")"
+  observer_port="$(pick_port)"
+  inspector_port="$(pick_port)"
+  observer_origin="http://127.0.0.1:$observer_port"
+
+  stop_process "$state_dir" worker
+  setsid env OSFO_VERIFICATION_RUN_ID="$run_id" \
+    "$repo_root/apps/worker/node_modules/.bin/wrangler" dev \
+    "$repo_root/apps/worker/test/support/agent-runtime-observer.ts" \
+    --config "$state_dir/wrangler.json" \
+    --ip 127.0.0.1 \
+    --port "$observer_port" \
+    --inspector-port "$inspector_port" \
+    --persist-to "$state_dir/wrangler-state" \
+    --show-interactive-dev-session false \
+    >>"$artifact_dir/logs/agent-runtime-observer.log" 2>&1 &
+  observer_pid="$!"
+  record_process "$state_dir" agent-observer "$observer_pid"
+
+  status=0
+  if ! wait_for_url "$observer_origin/health" 'Agent runtime observer' "$observer_pid"; then
+    status=1
+  fi
+  observation=''
+  if [[ "$status" == '0' ]] && \
+    ! observation="$(curl --fail --silent --show-error --get \
+      --data-urlencode "agentId=$agent_id" "$observer_origin/agent")"; then
+    status=1
+  fi
+  if ! stop_process "$state_dir" agent-observer; then
+    status=1
+  fi
+  if ! start_worker_process "$run_id"; then
+    status=1
+  fi
+  if [[ "$status" != '0' ]]; then
+    printf 'Agent runtime observation failed; see %s\n' \
+      "$artifact_dir/logs/agent-runtime-observer.log" >&2
+    return 1
+  fi
+  printf '%s\n' "$observation"
 }
 
 wait_for_file() {
@@ -280,10 +358,9 @@ write_identity() {
 
 start_run() {
   local run_id state_dir artifact_dir container_id postgres_port postgres_url
-  local provider_origin worker_port web_port inspector_port worker_origin web_origin
-  local provider_pid worker_pid web_pid identity_lock_fd launch_checkout
+  local provider_origin worker_port web_port worker_origin web_origin
+  local provider_pid web_pid identity_lock_fd launch_checkout
   run_id="$1"
-  doctor_tools
   state_dir="$(state_dir_for "$run_id")"
   artifact_dir="$(artifact_dir_for "$run_id")"
   mkdir -p "$state_parent"
@@ -293,6 +370,11 @@ start_run() {
     printf 'Run state already exists: %s\n' "$state_dir" >&2
     exit 1
   fi
+  if [[ -e "$artifact_dir" ]]; then
+    printf 'Preserved evidence already exists for run %s. Choose a fresh run ID.\n' "$run_id" >&2
+    exit 1
+  fi
+  doctor_tools
   mkdir -p "$state_dir" "$artifact_dir/logs"
   printf '%s\n' "$(git -C "$repo_root" rev-parse HEAD)" >"$state_dir/commit"
   if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]]; then
@@ -341,7 +423,6 @@ start_run() {
 
   worker_port="$(pick_port)"
   web_port="$(pick_port)"
-  inspector_port="$(pick_port)"
   worker_origin="http://127.0.0.1:$worker_port"
   web_origin="http://127.0.0.1:$web_port"
   printf '%s\n' "$worker_origin" >"$state_dir/worker-origin"
@@ -349,17 +430,7 @@ start_run() {
   write_wrangler_config \
     "$run_id" "$state_dir" "$postgres_url" "$provider_origin" "$worker_origin" "$web_origin"
 
-  setsid env OSFO_VERIFICATION_RUN_ID="$run_id" \
-    "$repo_root/apps/worker/node_modules/.bin/wrangler" dev \
-    --config "$state_dir/wrangler.json" \
-    --ip 127.0.0.1 \
-    --port "$worker_port" \
-    --inspector-port "$inspector_port" \
-    --persist-to "$state_dir/wrangler-state" \
-    --show-interactive-dev-session false \
-    >"$artifact_dir/logs/worker.log" 2>&1 &
-  worker_pid="$!"
-  record_process "$state_dir" worker "$worker_pid"
+  start_worker_process "$run_id"
 
   setsid env --chdir="$repo_root/apps/web" \
     OSFO_VERIFICATION_RUN_ID="$run_id" VITE_API_URL="$worker_origin" \
@@ -369,7 +440,6 @@ start_run() {
   web_pid="$!"
   record_process "$state_dir" web "$web_pid"
 
-  wait_for_url "$worker_origin/auth/get-session" 'Worker' "$worker_pid"
   wait_for_url "$web_origin/get-started" 'Web UI' "$web_pid"
   printf 'run_id=%s\nlaunch_commit=%s\nlaunch_checkout=%s\nstarted_at=%s\nworker_origin=%s\nweb_origin=%s\n' \
     "$run_id" "$(<"$state_dir/commit")" "$launch_checkout" \
@@ -429,10 +499,25 @@ show_identity() {
     "$twilio_code" "$(state_value "$run_id" web-origin)"
 }
 
+qualify_account_deletion_envelope() {
+  local run_id postgres_port worker_origin phone
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  postgres_port="$(state_value "$run_id" postgres-port)"
+  worker_origin="$(state_value "$run_id" worker-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  OSFO_TEST_WORKER_URL="$worker_origin" \
+    OSFO_TEST_DATABASE_URL="postgres://osfo:osfo@127.0.0.1:$postgres_port/osfo" \
+    OSFO_TEST_PHONE_NUMBER="$phone" \
+    bun run --cwd "$repo_root/apps/worker" test:journeys:account-deletion-envelope
+  printf 'account_deletion_envelope_qualified run=%s worker=%s phone=%s terminal_cleanup=confirmed\n' \
+    "$run_id" "$worker_origin" "$phone"
+}
+
 qualify_journeys() {
   local run_id postgres_port
   run_id="$1"
-  doctor_run "$run_id" >/dev/null
+  qualify_account_deletion_envelope "$run_id"
   postgres_port="$(state_value "$run_id" postgres-port)"
   OSFO_TEST_POSTGRES_URL="postgres://osfo:osfo@127.0.0.1:$postgres_port/postgres" \
     bun run --cwd "$repo_root/apps/worker" test:journeys
@@ -569,7 +654,7 @@ channel_invite() {
     curl --fail --silent --show-error "$provider_origin/_test/telegram/ledger" | jq . >"$ledger_path"
     invite_url="$(jq --raw-output \
       '.[].body | fromjson? | (.text? // .rich_message.markdown? // empty)' "$ledger_path" \
-      | rg --only-matching "${web_origin//./\\.}/verify/[A-Za-z0-9_-]+" \
+      | grep -E -o "${web_origin//./\\.}/verify/[A-Za-z0-9_-]+" \
       | tail -n 1 || true)"
     if [[ -n "$invite_url" ]]; then
       break
@@ -583,6 +668,146 @@ channel_invite() {
   fi
   printf '%s\n' "$invite_url" >"$state_dir/channel-invite-url"
   printf 'invite_ready url=%s author=%s\n' "$invite_url" "$telegram_author"
+}
+
+r2_object_exists() {
+  local state_dir bucket key
+  state_dir="$1"
+  bucket="$2"
+  key="$3"
+  "$repo_root/apps/worker/node_modules/.bin/wrangler" r2 object get "$bucket/$key" \
+    --config "$state_dir/wrangler.json" \
+    --local \
+    --persist-to "$state_dir/wrangler-state" \
+    --pipe >/dev/null 2>&1
+}
+
+put_r2_object() {
+  local state_dir bucket key content
+  state_dir="$1"
+  bucket="$2"
+  key="$3"
+  content="$4"
+  printf '%s' "$content" \
+    | "$repo_root/apps/worker/node_modules/.bin/wrangler" r2 object put "$bucket/$key" \
+      --config "$state_dir/wrangler.json" \
+      --force \
+      --local \
+      --persist-to "$state_dir/wrangler-state" \
+      --pipe >/dev/null
+}
+
+require_owned_identifier() {
+  local label value
+  label="$1"
+  value="$2"
+  if [[ ! "$value" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    printf 'Run-owned %s is not safe to inspect: %s\n' "$label" "$value" >&2
+    exit 1
+  fi
+}
+
+seed_account_deletion() {
+  local run_id state_dir container_id provider_origin phone seed_state user_id agent_id
+  local channel_link_id target_seed unrelated_seed target_tag unrelated_tag files_bucket
+  local target_key unrelated_key containers_json agent_runtime
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  state_dir="$(state_dir_for "$run_id")"
+  if [[ -e "$state_dir/account-deletion-user-id" ]]; then
+    printf 'Account-deletion evidence is already seeded for run %s\n' "$run_id" >&2
+    exit 1
+  fi
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  seed_state="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userId', u.id,
+      'agentId', a.agent_id,
+      'channelLinkId', cl.channel_link_id
+    ) from users u
+    join agents a on a.user_id = u.id
+    join channel_links cl on cl.user_id = u.id
+    where u.phone_number = '$phone' and cl.channel_id = 'telegram' and cl.revoked_at is null;")"
+  if [[ -z "$seed_state" ]]; then
+    printf 'Complete registration and Telegram channel linking before deletion seeding\n' >&2
+    exit 1
+  fi
+  user_id="$(jq --exit-status --raw-output '.userId' <<<"$seed_state")"
+  agent_id="$(jq --exit-status --raw-output '.agentId' <<<"$seed_state")"
+  channel_link_id="$(jq --exit-status --raw-output '.channelLinkId' <<<"$seed_state")"
+  require_owned_identifier 'User ID' "$user_id"
+  require_owned_identifier 'Agent ID' "$agent_id"
+  require_owned_identifier 'Channel Link ID' "$channel_link_id"
+  printf '%s\n' "$user_id" >"$state_dir/account-deletion-user-id"
+  printf '%s\n' "$agent_id" >"$state_dir/account-deletion-agent-id"
+  printf '%s\n' "$channel_link_id" >"$state_dir/account-deletion-channel-link-id"
+
+  agent_runtime="$(inspect_agent_runtime "$run_id" "$agent_id")"
+  jq --exit-status \
+    '.inspectable == true and .registered == true' <<<"$agent_runtime" >/dev/null
+  jq . <<<"$agent_runtime" >"$state_dir/account-deletion-agent-runtime-before.json"
+
+  target_seed="$(curl --fail --silent --show-error \
+    --header 'content-type: application/json' \
+    --data "$(jq --null-input --compact-output --arg userId "$user_id" '{ userId: $userId }')" \
+    "$provider_origin/_test/supermemory/seed")"
+  unrelated_seed="$(curl --fail --silent --show-error \
+    --header 'content-type: application/json' \
+    --data "$(jq --null-input --compact-output --arg userId "unrelated-$run_id" '{ userId: $userId }')" \
+    "$provider_origin/_test/supermemory/seed")"
+  target_tag="$(jq --exit-status --raw-output '.containerTag' <<<"$target_seed")"
+  unrelated_tag="$(jq --exit-status --raw-output '.containerTag' <<<"$unrelated_seed")"
+  printf '%s\n' "$target_tag" >"$state_dir/account-deletion-target-provider-tag"
+  printf '%s\n' "$unrelated_tag" >"$state_dir/account-deletion-unrelated-provider-tag"
+  containers_json="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/supermemory/containers")"
+  jq --exit-status --arg target "$target_tag" --arg unrelated "$unrelated_tag" \
+    'index($target) != null and index($unrelated) != null' <<<"$containers_json" >/dev/null
+
+  files_bucket="$(jq --exit-status --raw-output \
+    '.r2_buckets[] | select(.binding == "FILES") | .bucket_name' "$state_dir/wrangler.json")"
+  target_key="users/$user_id/trusted-evidence/$run_id.txt"
+  unrelated_key="users/unrelated-$run_id/trusted-evidence/$run_id.txt"
+  printf '%s\n' "$files_bucket" >"$state_dir/account-deletion-files-bucket"
+  printf '%s\n' "$target_key" >"$state_dir/account-deletion-target-r2-key"
+  printf '%s\n' "$unrelated_key" >"$state_dir/account-deletion-unrelated-r2-key"
+  put_r2_object "$state_dir" "$files_bucket" "$target_key" \
+    "run-owned trusted evidence for $user_id"
+  put_r2_object "$state_dir" "$files_bucket" "$unrelated_key" \
+    "unrelated User sentinel for $run_id"
+  r2_object_exists "$state_dir" "$files_bucket" "$target_key"
+  r2_object_exists "$state_dir" "$files_bucket" "$unrelated_key"
+
+  printf 'deletion_seed_ready user=%s agent=%s channel_link=%s provider_target=%s r2_target=%s unrelated_sentinels=provider,r2\n' \
+    "$user_id" "$agent_id" "$channel_link_id" "$target_tag" "$target_key"
+}
+
+reconcile_account_deletion() {
+  local run_id state_dir container_id worker_origin user_id attempt user_exists
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  state_dir="$(state_dir_for "$run_id")"
+  container_id="$(state_value "$run_id" container-id)"
+  worker_origin="$(state_value "$run_id" worker-origin)"
+  user_id="$(state_value "$run_id" account-deletion-user-id)"
+  require_owned_identifier 'User ID' "$user_id"
+  curl --fail --silent --show-error "$worker_origin/cdn-cgi/handler/scheduled" >/dev/null
+  for attempt in {1..120}; do
+    user_exists="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+      psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+      --command "select exists(select 1 from users where id = '$user_id');")"
+    if [[ "$user_exists" == f ]]; then
+      printf 'scheduled_account_deletion_complete user=%s\n' "$user_id"
+      return 0
+    fi
+    sleep 0.5
+  done
+  printf 'Production scheduled reconciliation did not complete account deletion for %s\n' \
+    "$user_id" >&2
+  exit 1
 }
 
 observe_channel_linking() {
@@ -679,6 +904,121 @@ observe_billing() {
     "$feature_dir/state.json" "$feature_dir/provider.json"
 }
 
+observe_account_deletion() {
+  local run_id state_dir feature_dir container_id provider_origin phone user_id agent_id
+  local channel_link_id target_tag unrelated_tag files_bucket target_key unrelated_key
+  local postgres_state agent_runtime provider_ledger provider_containers target_exists unrelated_exists
+  local worker_log account_http feature proof_shape
+  run_id="$1"
+  feature="$2"
+  if [[ "$feature" == account-deletion-replay ]]; then
+    proof_shape=retained-replay
+  else
+    proof_shape=one-click
+  fi
+  state_dir="$(state_dir_for "$run_id")"
+  feature_dir="$(feature_artifact_dir_for "$run_id" "$feature")"
+  begin_observation "$feature_dir"
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  user_id="$(state_value "$run_id" account-deletion-user-id)"
+  agent_id="$(state_value "$run_id" account-deletion-agent-id)"
+  channel_link_id="$(state_value "$run_id" account-deletion-channel-link-id)"
+  target_tag="$(state_value "$run_id" account-deletion-target-provider-tag)"
+  unrelated_tag="$(state_value "$run_id" account-deletion-unrelated-provider-tag)"
+  files_bucket="$(state_value "$run_id" account-deletion-files-bucket)"
+  target_key="$(state_value "$run_id" account-deletion-target-r2-key)"
+  unrelated_key="$(state_value "$run_id" account-deletion-unrelated-r2-key)"
+  worker_log="$(artifact_dir_for "$run_id")/logs/worker.log"
+  require_owned_identifier 'User ID' "$user_id"
+  require_owned_identifier 'Agent ID' "$agent_id"
+  require_owned_identifier 'Channel Link ID' "$channel_link_id"
+
+  postgres_state="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userExists', exists(select 1 from users where id = '$user_id'),
+      'agentExists', exists(select 1 from agents where agent_id = '$agent_id'),
+      'authSessionExists', exists(select 1 from sessions where user_id = '$user_id'),
+      'deletionCaseExists', exists(select 1 from deletion_cases where user_id = '$user_id'),
+      'channelLinkExists', exists(select 1 from channel_links where channel_link_id = '$channel_link_id'),
+      'acceptedInviteExists', exists(select 1 from channel_link_invites where accepted_user_id = '$user_id'),
+      'channelAuditExists', exists(select 1 from channel_link_audit_events where user_id = '$user_id'),
+      'billingExists', exists(select 1 from billing_subscriptions where user_id = '$user_id'),
+      'allowanceExists', exists(select 1 from allowance_periods where user_id = '$user_id'),
+      'phoneVerificationExists', exists(select 1 from verifications where identifier = '$phone')
+    );")"
+  agent_runtime="$(inspect_agent_runtime "$run_id" "$agent_id")"
+  if r2_object_exists "$state_dir" "$files_bucket" "$target_key"; then
+    target_exists=true
+  else
+    target_exists=false
+  fi
+  if r2_object_exists "$state_dir" "$files_bucket" "$unrelated_key"; then
+    unrelated_exists=true
+  else
+    unrelated_exists=false
+  fi
+  account_http="$("$script_dir/inspect-account-http-log" "$worker_log" "$proof_shape")"
+  jq --null-input \
+    --argjson postgres "$postgres_state" \
+    --argjson agentRuntime "$agent_runtime" \
+    --argjson targetR2Exists "$target_exists" \
+    --argjson unrelatedR2Exists "$unrelated_exists" \
+    --argjson accountHttp "$account_http" \
+    --arg targetR2Key "$target_key" \
+    --arg unrelatedR2Key "$unrelated_key" \
+    '$postgres + {
+      agentRuntime: $agentRuntime,
+      accountHttp: $accountHttp,
+      targetR2Exists: $targetR2Exists,
+      targetR2Key: $targetR2Key,
+      unrelatedR2Exists: $unrelatedR2Exists,
+      unrelatedR2Key: $unrelatedR2Key
+    }' >"$feature_dir/state.json"
+  cp "$state_dir/account-deletion-agent-runtime-before.json" \
+    "$feature_dir/agent-runtime-before.json"
+
+  provider_ledger="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/supermemory/ledger")"
+  provider_containers="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/supermemory/containers")"
+  jq --null-input \
+    --argjson containers "$provider_containers" \
+    --argjson ledger "$provider_ledger" \
+    --arg targetTag "$target_tag" \
+    --arg unrelatedTag "$unrelated_tag" \
+    '{ containers: $containers, ledger: $ledger, targetTag: $targetTag, unrelatedTag: $unrelatedTag }' \
+    >"$feature_dir/provider.json"
+
+  jq --exit-status \
+    --argjson deleteRequests "$([[ "$proof_shape" == retained-replay ]] && printf 2 || printf 1)" \
+    '(.userExists or .agentExists or .authSessionExists or .deletionCaseExists or
+      .channelLinkExists or .acceptedInviteExists or .channelAuditExists or
+      .billingExists or .allowanceExists or .phoneVerificationExists) == false and
+      .agentRuntime.inspectable == false and .agentRuntime.registered == false and
+      .accountHttp.presentationRequests == 1 and
+      .accountHttp.presentationSuccesses == 1 and
+      .accountHttp.deleteRequests == $deleteRequests and
+      .accountHttp.deleteSuccesses == $deleteRequests and
+      .targetR2Exists == false and .unrelatedR2Exists == true' \
+    "$feature_dir/state.json" >/dev/null
+  jq --exit-status \
+    '.inspectable == true and .registered == true' \
+    "$feature_dir/agent-runtime-before.json" >/dev/null
+  jq --exit-status --arg target "$target_tag" --arg unrelated "$unrelated_tag" \
+    '(.containers | index($target)) == null and
+      (.containers | index($unrelated)) != null and
+      [.ledger[] | select(.method == "DELETE")] == [
+        { method: "DELETE", path: ("/v3/container-tags/" + $target) }
+      ]' "$feature_dir/provider.json" >/dev/null
+  complete_observation "$run_id" "$feature_dir"
+  printf 'observed %s state=%s provider=%s agent_before=%s\n' "$feature" \
+    "$feature_dir/state.json" "$feature_dir/provider.json" \
+    "$feature_dir/agent-runtime-before.json"
+}
+
 evidence_finish() {
   local run_id feature feature_dir current_commit launch_commit launch_checkout
   run_id="$1"
@@ -707,9 +1047,29 @@ evidence_finish() {
       exit 1
     fi
   done
-  if ! rg --quiet 'phase=action ' "$feature_dir/browser-actions.txt" || \
-    ! rg --quiet 'phase=result ' "$feature_dir/browser-actions.txt"; then
+  if ! grep -q 'phase=action ' "$feature_dir/browser-actions.txt" || \
+    ! grep -q 'phase=result ' "$feature_dir/browser-actions.txt"; then
     printf 'Evidence needs both action and result browser records\n' >&2
+    exit 1
+  fi
+  if [[ "$feature" == account-deletion ]] && \
+    { ! grep -F -q 'Permanent account removal requires confirmation.' \
+        "$feature_dir/browser-actions.txt" || \
+      ! grep -F -q 'Permanently delete this account and all of its data.' \
+        "$feature_dir/browser-actions.txt" || \
+      ! grep -F -q 'exactly one server-owned consequence' \
+        "$feature_dir/browser-actions.txt" || \
+      ! grep -F -q 'Sign in and Get started' \
+        "$feature_dir/browser-actions.txt"; }; then
+    printf 'Account-deletion evidence needs the generic prefetch, one exact server consequence, and signed-out result\n' >&2
+    exit 1
+  fi
+  if [[ "$feature" == account-deletion-replay ]] && \
+    { ! grep -F -q 'exact retained request after refresh' \
+        "$feature_dir/browser-actions.txt" || \
+      ! grep -F -q 'Sign in and Get started' \
+        "$feature_dir/browser-actions.txt"; }; then
+    printf 'Account-deletion replay evidence needs the exact retained request after refresh and signed-out result\n' >&2
     exit 1
   fi
   printf 'completed_at=%s\nresult=PASS\ncommit=%s\n' \
@@ -762,6 +1122,10 @@ case "$command_name" in
     require_run_id "${2:-}"
     qualify_journeys "$2"
     ;;
+  account-deletion-envelope-journey)
+    require_run_id "${2:-}"
+    qualify_account_deletion_envelope "$2"
+    ;;
   evidence)
     require_run_id "${2:-}"
     require_feature "${3:-}"
@@ -784,11 +1148,20 @@ case "$command_name" in
       registration) observe_registration "$2" ;;
       channel-linking) observe_channel_linking "$2" ;;
       billing) observe_billing "$2" ;;
+      account-deletion|account-deletion-replay) observe_account_deletion "$2" "$3" ;;
     esac
     ;;
   channel-invite)
     require_run_id "${2:-}"
     channel_invite "$2"
+    ;;
+  seed-account-deletion)
+    require_run_id "${2:-}"
+    seed_account_deletion "$2"
+    ;;
+  reconcile-account-deletion)
+    require_run_id "${2:-}"
+    reconcile_account_deletion "$2"
     ;;
   cleanup)
     require_run_id "${2:-}"

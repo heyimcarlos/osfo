@@ -11,6 +11,7 @@ import {
   SessionRecallCursorInvalid,
   type SessionRecallCandidate,
 } from "../../../services/session-recall";
+import { MemoryProvider } from "../../../services/memory-provider";
 import {
   AgentId,
   AgentInitializationId,
@@ -32,14 +33,23 @@ import {
   agentInitialization,
   committedTurns,
   conversationRoutes,
+  memoryProviderOutbox,
   sessionRecallCursors,
   sessionOwnership,
 } from "./schema";
 import type { ConversationSnapshotProjection } from "../memory-provider-projection";
 import {
   enqueueConversationSnapshotTransaction,
+  enqueueMemoryProviderDeletionTransaction,
   inspectConversationSnapshotTransaction,
+  settleMemoryProviderDeletionPreparationTransaction,
+  type MemoryProviderDeletionProgress,
+  type MemoryProviderOutboxId,
+  type MemoryProviderDeletionPayload,
 } from "./memory-provider-outbox";
+import type { UserId } from "../../../domain";
+import type { DeletionAuthorization } from "../deletion-actions";
+import type { SessionReplacementGeneration } from "../session-deletion";
 
 const sqliteCurrentTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u;
 
@@ -48,6 +58,17 @@ interface ReplaceCurrentSessionRecordInput {
   readonly replacedAt: DbTimestamp;
   readonly replacementSessionId: SessionId;
   readonly routeId: ConversationRouteId;
+}
+
+type RollbackCurrentSessionReplacementInput = ReplaceCurrentSessionRecordInput;
+
+interface DeleteHistoricalSessionInput {
+  readonly authorization: DeletionAuthorization;
+  readonly deletedAt: DbTimestamp;
+  readonly outboxId: MemoryProviderOutboxId;
+  readonly sessionId: SessionId;
+  readonly userId: UserId;
+  readonly replacementGeneration?: SessionReplacementGeneration;
 }
 
 type AgentTransaction = Parameters<Parameters<AgentDb["transaction"]>[0]>[0];
@@ -109,6 +130,58 @@ const replaceCurrentSessionTransaction = (
     })
     .run();
   return { kind: "Replaced" as const };
+};
+
+const rollbackCurrentSessionReplacementTransaction = (
+  transaction: AgentTransaction,
+  input: RollbackCurrentSessionReplacementInput,
+) => {
+  const current = transaction
+    .select({ sessionId: sessionOwnership.session_id })
+    .from(sessionOwnership)
+    .where(and(eq(sessionOwnership.route_id, input.routeId), isNull(sessionOwnership.replaced_at)))
+    .limit(1)
+    .get();
+  const historical = transaction
+    .select({ replacedAt: sessionOwnership.replaced_at })
+    .from(sessionOwnership)
+    .where(
+      and(
+        eq(sessionOwnership.route_id, input.routeId),
+        eq(sessionOwnership.session_id, input.expectedCurrentSessionId),
+        eq(sessionOwnership.replaced_at, input.replacedAt),
+      ),
+    )
+    .limit(1)
+    .get();
+  if (current?.sessionId !== input.replacementSessionId || historical === undefined) return false;
+  const removed = transaction
+    .delete(sessionOwnership)
+    .where(
+      and(
+        eq(sessionOwnership.route_id, input.routeId),
+        eq(sessionOwnership.session_id, input.replacementSessionId),
+        isNull(sessionOwnership.replaced_at),
+      ),
+    )
+    .returning({ sessionId: sessionOwnership.session_id })
+    .all();
+  const restored = transaction
+    .update(sessionOwnership)
+    .set({ replaced_at: null })
+    .where(
+      and(
+        eq(sessionOwnership.route_id, input.routeId),
+        eq(sessionOwnership.session_id, input.expectedCurrentSessionId),
+        eq(sessionOwnership.replaced_at, input.replacedAt),
+      ),
+    )
+    .returning({ sessionId: sessionOwnership.session_id })
+    .all();
+  if (removed.length !== 1 || restored.length !== 1) {
+    throw new Error("Current Session replacement rollback lost its exact ownership facts");
+  }
+  return true;
 };
 
 type ReplaceCurrentSessionOutcome = ReturnType<typeof replaceCurrentSessionTransaction>;
@@ -237,6 +310,12 @@ const PrimaryFactsRecord = Schema.Struct({
 const RouteSessionRecord = Schema.Struct({
   replacedAt: Schema.NullOr(DbTimestamp),
   sessionId: SessionId,
+});
+
+const SessionDeletionFactsRecord = Schema.Struct({
+  currentReplacesTarget: Schema.Boolean,
+  currentSessionId: SessionId,
+  routeId: ConversationRouteId,
 });
 
 const SessionIdRecord = Schema.Struct({ sessionId: SessionId });
@@ -561,7 +640,7 @@ export const makeAgentStore = (db: AgentDb) => {
       // The Durable SQLite driver implements this exact compare-and-replace with transactionSync.
       db.transaction((transaction) => {
         const current = transaction
-          .select({ sessionId: sessionOwnership.session_id })
+          .select({ routeId: sessionOwnership.route_id, sessionId: sessionOwnership.session_id })
           .from(sessionOwnership)
           .where(
             and(eq(sessionOwnership.route_id, input.routeId), isNull(sessionOwnership.replaced_at)),
@@ -597,6 +676,16 @@ export const makeAgentStore = (db: AgentDb) => {
     });
   });
 
+  const rollbackCurrentSessionReplacement = Effect.fn(
+    "AgentStore.rollbackCurrentSessionReplacement",
+  )((input: RollbackCurrentSessionReplacementInput) =>
+    execute("rollbackCurrentSessionReplacement", () =>
+      db.transaction((transaction) =>
+        rollbackCurrentSessionReplacementTransaction(transaction, input),
+      ),
+    ),
+  );
+
   const ownsSession = (sessionId: SessionId) =>
     execute("readSessionOwnership", () =>
       db
@@ -612,6 +701,93 @@ export const makeAgentStore = (db: AgentDb) => {
           : decodeSessionId("readSessionOwnership", row).pipe(Effect.as(true)),
       ),
     );
+
+  const readSessionDeletionFacts = Effect.fn("AgentStore.readSessionDeletionFacts")(function* (
+    sessionId: SessionId,
+  ) {
+    const facts = yield* execute("readSessionOwnership", () =>
+      db.transaction((transaction) => {
+        const target = transaction
+          .select({ replacedAt: sessionOwnership.replaced_at, routeId: sessionOwnership.route_id })
+          .from(sessionOwnership)
+          .where(eq(sessionOwnership.session_id, sessionId))
+          .limit(1)
+          .get();
+        if (target === undefined) return undefined;
+        const current = transaction
+          .select({
+            becameCurrentAt: sessionOwnership.became_current_at,
+            currentSessionId: sessionOwnership.session_id,
+          })
+          .from(sessionOwnership)
+          .where(
+            and(
+              eq(sessionOwnership.route_id, target.routeId),
+              isNull(sessionOwnership.replaced_at),
+            ),
+          )
+          .limit(1)
+          .get();
+        return {
+          currentReplacesTarget:
+            current?.currentSessionId.startsWith("session-delete-") === true &&
+            target.replacedAt === current.becameCurrentAt,
+          currentSessionId: current?.currentSessionId ?? null,
+          routeId: target.routeId,
+        };
+      }),
+    );
+    if (facts === undefined) return undefined;
+    return yield* Schema.decodeUnknownEffect(SessionDeletionFactsRecord)(facts).pipe(
+      Effect.mapError(() => invalidStoreRecord("readSessionOwnership")),
+    );
+  });
+
+  const readSessionReplacementGeneration = Effect.fn("AgentStore.readSessionReplacementGeneration")(
+    function* (historicalSessionId: SessionId, replacementSessionId: SessionId) {
+      const generation = yield* execute("readSessionOwnership", () => {
+        const replacement = db
+          .select({ routeId: sessionOwnership.route_id })
+          .from(sessionOwnership)
+          .where(
+            and(
+              eq(sessionOwnership.session_id, replacementSessionId),
+              isNull(sessionOwnership.replaced_at),
+            ),
+          )
+          .limit(1)
+          .get();
+        if (replacement === undefined) return undefined;
+        const historical = db
+          .select({ replacedAt: sessionOwnership.replaced_at })
+          .from(sessionOwnership)
+          .where(
+            and(
+              eq(sessionOwnership.route_id, replacement.routeId),
+              eq(sessionOwnership.session_id, historicalSessionId),
+              isNotNull(sessionOwnership.replaced_at),
+            ),
+          )
+          .limit(1)
+          .get();
+        return historical?.replacedAt === null || historical === undefined
+          ? undefined
+          : {
+              expectedCurrentSessionId: historicalSessionId,
+              replacedAt: historical.replacedAt,
+              replacementSessionId,
+              routeId: replacement.routeId,
+            };
+      });
+      if (generation === undefined) {
+        return yield* new AgentStateNotFound({
+          message: "The exact Session deletion replacement generation is unavailable",
+          subject: "session",
+        });
+      }
+      return generation;
+    },
+  );
 
   const readSessionIds = execute("readSessionOwnership", () =>
     db
@@ -657,6 +833,173 @@ export const makeAgentStore = (db: AgentDb) => {
       Effect.forEach(rows, (row) => decodeCommittedTurnReceipt("readCommittedTurns", row)),
     ),
   );
+
+  const deleteHistoricalSession = Effect.fn("AgentStore.deleteHistoricalSession")(function* (
+    input: DeleteHistoricalSessionInput,
+  ) {
+    const outcome = yield* execute("deleteSession", () =>
+      db.transaction((transaction) => {
+        const owned = transaction
+          .select({ replacedAt: sessionOwnership.replaced_at, routeId: sessionOwnership.route_id })
+          .from(sessionOwnership)
+          .where(eq(sessionOwnership.session_id, input.sessionId))
+          .limit(1)
+          .get();
+        if (owned === undefined) {
+          const retained = inspectRetainedSessionDeletionTransaction(transaction, input);
+          if (retained === "Exact") return "AlreadyDeleted";
+          if (retained === "Mismatch") return "Invalid";
+          return enqueueMemoryProviderDeletionTransaction(transaction, {
+            enqueuedAt: input.deletedAt,
+            outboxId: input.outboxId,
+            payload: deleteSessionPayload(input),
+          })
+            ? "AlreadyDeleted"
+            : "Invalid";
+        }
+        if (owned.replacedAt === null) return "Current";
+        const current = transaction
+          .select({
+            becameCurrentAt: sessionOwnership.became_current_at,
+            routeId: sessionOwnership.route_id,
+            sessionId: sessionOwnership.session_id,
+          })
+          .from(sessionOwnership)
+          .where(
+            and(eq(sessionOwnership.route_id, owned.routeId), isNull(sessionOwnership.replaced_at)),
+          )
+          .limit(1)
+          .get();
+        if (current === undefined) return "Invalid";
+        if (
+          current.sessionId.startsWith("session-delete-") &&
+          current.becameCurrentAt === owned.replacedAt &&
+          input.replacementGeneration === undefined
+        ) {
+          return "Invalid";
+        }
+        if (
+          input.replacementGeneration !== undefined &&
+          (current.sessionId !== input.replacementGeneration.replacementSessionId ||
+            current.routeId !== input.replacementGeneration.routeId ||
+            input.sessionId !== input.replacementGeneration.expectedCurrentSessionId ||
+            owned.replacedAt !== input.replacementGeneration.replacedAt)
+        ) {
+          return "Invalid";
+        }
+        transaction
+          .update(agentInitialization)
+          .set({ initial_session_id: current.sessionId })
+          .where(eq(agentInitialization.initial_session_id, input.sessionId))
+          .run();
+        transaction
+          .delete(committedTurns)
+          .where(eq(committedTurns.session_id, input.sessionId))
+          .run();
+        const providerSubmissionEvidence = transaction
+          .select({
+            providerAcceptedAt: memoryProviderOutbox.provider_accepted_at,
+            providerDocumentId: memoryProviderOutbox.provider_document_id,
+            providerStatus: memoryProviderOutbox.provider_status,
+            providerSubmissionAmbiguous: memoryProviderOutbox.provider_submission_ambiguous,
+            sequence: memoryProviderOutbox.sequence,
+            status: memoryProviderOutbox.status,
+          })
+          .from(memoryProviderOutbox)
+          .where(
+            and(
+              eq(memoryProviderOutbox.operation_type, "saveConversation"),
+              sql`json_extract(${memoryProviderOutbox.payload_json}, '$.projection.sessionId') = ${input.sessionId}`,
+            ),
+          )
+          .orderBy(asc(memoryProviderOutbox.sequence))
+          .all()
+          .filter((row) => row.providerAcceptedAt !== null || row.providerSubmissionAmbiguous);
+        if (
+          providerSubmissionEvidence.some(
+            (row) =>
+              (row.providerAcceptedAt !== null) !==
+                (row.providerDocumentId !== null && row.providerStatus !== null) ||
+              (row.providerAcceptedAt !== null && row.providerSubmissionAmbiguous),
+          ) ||
+          providerSubmissionEvidence.filter((row) => row.providerSubmissionAmbiguous).length > 1
+        )
+          return "Invalid";
+        const acceptedTargets = providerSubmissionEvidence.flatMap((row) =>
+          row.providerDocumentId === null
+            ? []
+            : [
+                {
+                  documentId: Schema.decodeOption(MemoryProvider.ProviderDocumentId)(
+                    row.providerDocumentId,
+                  ),
+                  status:
+                    row.status === "completed" && row.providerStatus === "done"
+                      ? ("observed" as const)
+                      : ("accepted" as const),
+                },
+              ],
+        );
+        if (acceptedTargets.some((target) => Option.isNone(target.documentId))) return "Invalid";
+        const targetStatusByDocumentId = acceptedTargets.reduce((statuses, target) => {
+          const documentId = Option.getOrThrow(target.documentId);
+          const retainedStatus = statuses.get(documentId);
+          statuses.set(
+            documentId,
+            retainedStatus === "accepted" || target.status === "accepted" ? "accepted" : "observed",
+          );
+          return statuses;
+        }, new Map<MemoryProvider.ProviderDocumentId, "accepted" | "observed">());
+        const awaitingDiscovery = providerSubmissionEvidence.some(
+          (row) => row.providerSubmissionAmbiguous,
+        );
+        const targets = [...targetStatusByDocumentId].map(([documentId, status]) => ({
+          documentId,
+          status,
+        }));
+        const deletionProgress: MemoryProviderDeletionProgress | undefined =
+          targets.length === 0 && !awaitingDiscovery
+            ? undefined
+            : { _tag: "DeleteSessionConversation", awaitingDiscovery, targets };
+        transaction
+          .update(memoryProviderOutbox)
+          .set({
+            claim_expires_at: null,
+            claim_token: null,
+            completed_at: input.deletedAt,
+            last_error: null,
+            status: "completed",
+          })
+          .where(
+            and(
+              eq(memoryProviderOutbox.operation_type, "saveConversation"),
+              sql`json_extract(${memoryProviderOutbox.payload_json}, '$.projection.sessionId') = ${input.sessionId}`,
+            ),
+          )
+          .run();
+        transaction
+          .delete(sessionOwnership)
+          .where(eq(sessionOwnership.session_id, input.sessionId))
+          .run();
+        return settleMemoryProviderDeletionPreparationTransaction(transaction, {
+          deletionProgress,
+          enqueuedAt: input.deletedAt,
+          outboxId: input.outboxId,
+          payload: deleteSessionPayload(input),
+        })
+          ? "Deleted"
+          : "Invalid";
+      }),
+    );
+    if (outcome === "Current") {
+      return yield* new AgentStoreRecordInvalid({
+        message: "The current Session must be replaced before deletion",
+        operation: "deleteSession",
+      });
+    }
+    if (outcome === "Invalid") return yield* invalidStoreRecord("deleteSession");
+    return { _tag: "SessionDeleted", sessionId: input.sessionId } as const;
+  });
 
   const readPrimaryFacts = (operation: AgentStoreOperation) =>
     Effect.gen(function* () {
@@ -711,6 +1054,7 @@ export const makeAgentStore = (db: AgentDb) => {
     });
 
   return {
+    deleteHistoricalSession,
     initialize,
     inspect,
     ownsSession,
@@ -718,10 +1062,53 @@ export const makeAgentStore = (db: AgentDb) => {
     readPrimarySessionId,
     readRoute,
     readRouteSessionPage,
+    readSessionDeletionFacts,
     readSessionIds,
+    readSessionReplacementGeneration,
     recordCommittedTurn,
     replaceCurrentSession,
+    rollbackCurrentSessionReplacement,
   };
+};
+
+const deleteSessionPayload = (
+  input: DeleteHistoricalSessionInput,
+): MemoryProviderDeletionPayload =>
+  input.replacementGeneration === undefined
+    ? {
+        _tag: "DeleteSessionConversation" as const,
+        authorization: input.authorization,
+        sessionId: input.sessionId,
+        userId: input.userId,
+      }
+    : {
+        _tag: "DeleteSessionConversation" as const,
+        authorization: input.authorization,
+        replacementGeneration: input.replacementGeneration,
+        sessionId: input.sessionId,
+        userId: input.userId,
+      };
+
+const inspectRetainedSessionDeletionTransaction = (
+  transaction: AgentTransaction,
+  input: DeleteHistoricalSessionInput,
+) => {
+  const retained = transaction
+    .select({
+      operationType: memoryProviderOutbox.operation_type,
+      orderingKey: memoryProviderOutbox.ordering_key,
+      payloadJson: memoryProviderOutbox.payload_json,
+    })
+    .from(memoryProviderOutbox)
+    .where(eq(memoryProviderOutbox.outbox_id, input.outboxId))
+    .limit(1)
+    .get();
+  if (retained === undefined) return "Missing" as const;
+  return retained.operationType === "deleteSessionConversation" &&
+    retained.orderingKey === `user:${input.userId}` &&
+    retained.payloadJson === JSON.stringify(deleteSessionPayload(input))
+    ? ("Exact" as const)
+    : ("Mismatch" as const);
 };
 
 interface RecordCommittedTurnTransactionInput {

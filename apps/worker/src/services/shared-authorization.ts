@@ -128,7 +128,7 @@ export const authorizeShared = (
     operation.kind === "conversation.run" &&
     context.liveFacts.concurrentExhaustedConversations <
       BigInt(capabilityCatalog.exhaustedConversation.concurrentOperations) &&
-    !exceedsGovernedOperationLimit(operation, capabilityCatalog, "exhaustedConversation")
+    !exceedsExhaustedConversationLimit(operation, capabilityCatalog)
   ) {
     return support.admitted(capabilityCatalog, "exhaustedConversation");
   }
@@ -194,37 +194,7 @@ const exceedsGovernedOperationLimit = (
   mode: "normalPlanUsage" | "exhaustedConversation",
 ) => {
   if (mode === "exhaustedConversation") {
-    if (operation.kind !== "conversation.run") return true;
-    const limits = catalog.exhaustedConversation;
-    return (
-      operation.inputTokens === undefined ||
-      operation.documentChunks === undefined ||
-      operation.outputTokens === undefined ||
-      operation.queryRewrites === undefined ||
-      operation.rerankingPasses === undefined ||
-      operation.retries === undefined ||
-      operation.skillInstructions === undefined ||
-      operation.skillLearningJobs === undefined ||
-      operation.toolExecutions === undefined ||
-      operation.memoryRecalls === undefined ||
-      operation.memoryDeadlineMilliseconds === undefined ||
-      operation.memoryProfileTokens === undefined ||
-      operation.memoryQueryTokens === undefined ||
-      operation.inputTokens > BigInt(limits.inputTokens) ||
-      operation.outputTokens > BigInt(limits.outputTokens) ||
-      operation.modelSteps > BigInt(limits.modelSteps) ||
-      operation.retries > BigInt(limits.retries) ||
-      operation.skillInstructions !== limits.skillInstructions ||
-      operation.memoryRecalls > BigInt(limits.memoryRecalls) ||
-      operation.memoryDeadlineMilliseconds > BigInt(limits.memoryDeadlineMilliseconds) ||
-      operation.memoryProfileTokens > BigInt(limits.memoryProfileTokens) ||
-      operation.memoryQueryTokens > BigInt(limits.memoryQueryTokens) ||
-      operation.documentChunks > 0n ||
-      operation.queryRewrites > 0n ||
-      operation.rerankingPasses > 0n ||
-      operation.skillLearningJobs > 0n ||
-      operation.toolExecutions > 0n
-    );
+    return exceedsExhaustedConversationLimit(operation, catalog);
   }
   const limits = catalog.operationLimits;
   switch (operation.kind) {
@@ -264,6 +234,44 @@ const exceedsGovernedOperationLimit = (
     default:
       return false;
   }
+};
+
+/** Check the company-funded conversation envelope used after ordinary allowance exhaustion. */
+export const exceedsExhaustedConversationLimit = (
+  operation: AuthorizationOperation,
+  catalog: CapabilityCatalog,
+) => {
+  if (operation.kind !== "conversation.run") return true;
+  const limits = catalog.exhaustedConversation;
+  return (
+    operation.inputTokens === undefined ||
+    operation.documentChunks === undefined ||
+    operation.outputTokens === undefined ||
+    operation.queryRewrites === undefined ||
+    operation.rerankingPasses === undefined ||
+    operation.retries === undefined ||
+    operation.skillInstructions === undefined ||
+    operation.skillLearningJobs === undefined ||
+    operation.toolExecutions === undefined ||
+    operation.memoryRecalls === undefined ||
+    operation.memoryDeadlineMilliseconds === undefined ||
+    operation.memoryProfileTokens === undefined ||
+    operation.memoryQueryTokens === undefined ||
+    operation.inputTokens > BigInt(limits.inputTokens) ||
+    operation.outputTokens > BigInt(limits.outputTokens) ||
+    operation.modelSteps > BigInt(limits.modelSteps) ||
+    operation.retries > BigInt(limits.retries) ||
+    operation.skillInstructions !== limits.skillInstructions ||
+    operation.memoryRecalls > BigInt(limits.memoryRecalls) ||
+    operation.memoryDeadlineMilliseconds > BigInt(limits.memoryDeadlineMilliseconds) ||
+    operation.memoryProfileTokens > BigInt(limits.memoryProfileTokens) ||
+    operation.memoryQueryTokens > BigInt(limits.memoryQueryTokens) ||
+    operation.documentChunks > 0n ||
+    operation.queryRewrites > 0n ||
+    operation.rerankingPasses > 0n ||
+    operation.skillLearningJobs > 0n ||
+    operation.toolExecutions > 0n
+  );
 };
 
 const manifestForOperation = (

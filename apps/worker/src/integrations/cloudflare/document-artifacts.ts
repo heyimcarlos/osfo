@@ -14,7 +14,8 @@ import {
   type StoredArtifact,
   type StoredArtifactMetadata,
 } from "../../services/document-generation";
-import { attemptKeyFor, contentKeyFor } from "./document-storage-keys";
+import { attemptKeyFor, contentKeyFor, ownerKeyFor } from "./document-storage-keys";
+import { DocumentOwnershipIndex } from "./document-ownership-index";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Persisted unions use the _tag discriminator. */
 
@@ -88,9 +89,13 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
       }
       return undefined;
     }),
-  delete: (contentId) =>
+  delete: (metadata) =>
     attempt("delete", () =>
-      bucket.delete([contentKeyFor(contentId), attemptKeyFor(contentId)]),
+      bucket.delete([
+        contentKeyFor(metadata.artifact.content.contentId),
+        attemptKeyFor(metadata.artifact.content.contentId),
+        ownerKeyFor(metadata.userId, metadata.artifact.content.contentId),
+      ]),
     ).pipe(Effect.asVoid),
   inspect: (contentId) =>
     Effect.gen(function* () {
@@ -100,6 +105,9 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
   put: (stored) =>
     Effect.gen(function* () {
       const content = stored.artifact.content;
+      yield* attempt("put", () =>
+        DocumentOwnershipIndex.ensure(bucket, stored.userId, content.contentId),
+      );
       const result = yield* attempt("put", () =>
         bucket.put(contentKeyFor(content.contentId), stored.bytes, {
           customMetadata: { osfo: encodeMetadata(stored) },

@@ -86,6 +86,7 @@ export const memoryProviderOutbox = sqliteTable(
     claim_expires_at: timestamp(),
     claim_token: text(),
     completed_at: timestamp(),
+    deletion_progress_json: text(),
     enqueued_at: timestamp().notNull(),
     last_error: text(),
     operation_type: text({
@@ -101,6 +102,7 @@ export const memoryProviderOutbox = sqliteTable(
     payload_json: text().notNull(),
     provider_accepted_at: timestamp(),
     provider_document_id: text(),
+    provider_submission_ambiguous: integer({ mode: "boolean" }).notNull().default(false),
     provider_status: text({
       enum: ["processing", "done", "failed"],
     }),

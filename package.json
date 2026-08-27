@@ -21,7 +21,8 @@
     "lint": "oxlint --deny-warnings .",
     "prepare": "effect-tsgo patch --typescript --oxlint",
     "pull:references": "bun run scripts/pull-references.ts",
-    "test": "vitest run tools/oxlint/test && bun run --cwd packages/model-quality test && bun run --cwd packages/auth test && bun run --cwd packages/db test && bun run --cwd packages/ui test && bun run --cwd apps/worker test && bun run --cwd apps/web test",
+    "test": "bun run test:verify-osfo && vitest run tools/oxlint/test && bun run --cwd packages/model-quality test && bun run --cwd packages/auth test && bun run --cwd packages/db test && bun run --cwd packages/ui test && bun run --cwd apps/worker test && bun run --cwd apps/web test",
+    "test:verify-osfo": "bash .agents/skills/verify-osfo/helpers/account-http-log.test.sh && bash .agents/skills/verify-osfo/helpers/agent-runtime-observer.test.sh && bash .agents/skills/verify-osfo/helpers/run-artifact-guard.test.sh",
     "typecheck": "tsc --project tools/oxlint/tsconfig.json && bun run --cwd packages/api typecheck && bun run --cwd packages/model-quality typecheck && bun run --cwd packages/auth typecheck && bun run --cwd packages/db typecheck && bun run --cwd packages/ui typecheck && bun run --cwd apps/worker typecheck && bun run --cwd apps/web typecheck && tsc --project tsconfig.infra.json"
   },
   "dependencies": {},

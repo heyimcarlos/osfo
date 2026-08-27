@@ -6,7 +6,7 @@ export const OriginatingAuthority = Schema.Union([
   Schema.TaggedStruct("ChannelLink", { channelLinkId: Schema.String }),
   Schema.TaggedStruct("DurableTrigger", {
     triggerId: Schema.String,
-    triggerType: Schema.Literals(["scheduledTask", "workflow"]),
+    triggerType: Schema.Literals(["deletionCase", "scheduledTask", "workflow"]),
   }),
 ]);
 

@@ -118,6 +118,7 @@ export const ManagedTurnMetadata = Schema.TaggedStruct("OsfoManagedTurn", {
   ),
   conservativeVendorUsdMicros: positiveInteger,
   coreMemoryAuthorization: CoreMemoryAuthorizationSnapshotEncoded,
+  executionMode: Schema.optionalKey(Schema.Literals(["exhaustedConversation", "normalPlanUsage"])),
   maxInputTokens: positiveInteger,
   maxOutputTokens: positiveInteger,
   maxRetries: Schema.Literal(0),

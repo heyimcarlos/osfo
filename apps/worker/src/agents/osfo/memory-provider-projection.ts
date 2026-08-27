@@ -191,6 +191,7 @@ const findCommittedTurnAttribution = (
     if (Option.isNone(envelope)) continue;
     const terminal = envelope.value.osfoCommittedTurn?.attribution;
     if (terminal?.sessionId === sessionId) {
+      if (terminal.executionMode === "exhaustedConversation") return Option.none();
       return Option.some({
         allowancePeriodId: terminal.allowancePeriodId,
         userId: terminal.userId,
@@ -198,6 +199,7 @@ const findCommittedTurnAttribution = (
     }
     const turn = envelope.value.turnMetadata;
     if (message.role === "user" && turn?.sessionId === sessionId) {
+      if (turn.executionMode === "exhaustedConversation") return Option.none();
       return Option.some({
         allowancePeriodId: turn.allowancePeriodId,
         userId: turn.authorityIdentity.userId,

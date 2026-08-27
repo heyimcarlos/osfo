@@ -8,13 +8,13 @@ import {
   retainedCatalog,
   type PlanPolicyNotFound,
 } from "../domain/plan-policy";
+import { currentCapabilityCatalog } from "../domain/capability-catalog";
 import {
   launchModelAccessPolicy,
   ManagedRouteUnavailable,
   selectManagedRoute,
 } from "../domain/model-access-policy";
 import { ManagedTurnAuthorityIdentity, ManagedTurnMetadata } from "../domain/managed-conversation";
-import { currentCapabilityCatalog } from "../domain/capability-catalog";
 import {
   AuthorizationContext,
   AuthorizationDenialReason,
@@ -23,6 +23,7 @@ import {
   snapshotCoreMemoryAuthorization,
 } from "./authorization";
 import { CoreMemoryAuthorizationSnapshot } from "../domain/core-memory-authorization";
+import { isDeletionOrDataRightsIntent } from "./capability-intent-policy";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Authority identities use the _tag discriminator. */
 
@@ -112,39 +113,91 @@ export const admitManagedConversation = (
       });
     }
     const operationLimits = policyFor(planPolicy, plan).operationLimits;
-    const maxSteps = Number(operationLimits.modelStepsPerRequest);
     const maxVendorUsdMicros = operationLimits.vendorUsdMicrosPerRequest;
-    const admission = Authorization.make(retainedCatalog).admit(
-      { ...input.authorization, requestVendorUsdMicros: maxVendorUsdMicros },
-      {
-        actionId: input.submissionId,
-        kind: "conversation.run",
-        modelSteps: operationLimits.modelStepsPerRequest,
-      },
-    );
+    const authorization = Authorization.make(retainedCatalog);
+    const authorizationContext = {
+      ...input.authorization,
+      requestVendorUsdMicros: maxVendorUsdMicros,
+    };
+    const ordinaryAdmission = authorization.admit(authorizationContext, {
+      actionId: input.submissionId,
+      kind: "conversation.run",
+      modelSteps: operationLimits.modelStepsPerRequest,
+    });
+    const exhaustedLimits = currentCapabilityCatalog.exhaustedConversation;
+    const admission =
+      Predicate.isTagged(ordinaryAdmission, "Denied") &&
+      ordinaryAdmission.reason === "allowanceExhausted" &&
+      isDeletionOrDataRightsIntent(input.message)
+        ? authorization.admit(authorizationContext, {
+            actionId: input.submissionId,
+            documentChunks: 0n,
+            exhaustedContinuity: "deletionOrDataRights",
+            inputTokens: BigInt(exhaustedLimits.inputTokens),
+            kind: "conversation.run",
+            memoryDeadlineMilliseconds: BigInt(exhaustedLimits.memoryDeadlineMilliseconds),
+            memoryProfileTokens: BigInt(exhaustedLimits.memoryProfileTokens),
+            memoryQueryTokens: BigInt(exhaustedLimits.memoryQueryTokens),
+            memoryRecalls: BigInt(exhaustedLimits.memoryRecalls),
+            modelSteps: BigInt(exhaustedLimits.modelSteps),
+            outputTokens: BigInt(exhaustedLimits.outputTokens),
+            queryRewrites: 0n,
+            rerankingPasses: 0n,
+            retries: BigInt(exhaustedLimits.retries),
+            skillInstructions: exhaustedLimits.skillInstructions,
+            skillLearningJobs: 0n,
+            toolExecutions: 0n,
+          })
+        : ordinaryAdmission;
     if (!Predicate.isTagged(admission, "Admitted")) {
       return denied(admission);
     }
-    if (!Predicate.isTagged(admission.allowancePeriod, "Metered")) {
+    if (!Predicate.isTagged(input.authorization.allowance, "Metered")) {
       return {
         _tag: "ManagedConversationDenied",
         reason: "allowancePeriodUnavailable",
         resetAt: null,
       } as const;
     }
+    const exhausted = admission.executionMode === "exhaustedConversation";
+    const maxInputTokens = exhausted ? exhaustedLimits.inputTokens : profile.context.maxInputTokens;
+    const maxOutputTokens = exhausted
+      ? exhaustedLimits.outputTokens
+      : profile.context.maxOutputTokens;
+    const maxSteps = exhausted
+      ? exhaustedLimits.modelSteps
+      : Number(operationLimits.modelStepsPerRequest);
+    const targetInputTokens = exhausted
+      ? Math.min(profile.context.targetInputTokens, exhaustedLimits.inputTokens - 1)
+      : profile.context.targetInputTokens;
     const coreMemoryAuthorization = yield* Schema.encodeEffect(CoreMemoryAuthorizationSnapshot)(
       snapshotCoreMemoryAuthorization(input.authorization),
     ).pipe(Effect.orDie);
     const origin = input.authorization.originatingAuthority;
-    const authorityIdentity =
-      origin._tag !== "ChannelLink"
-        ? ManagedTurnAuthorityIdentity.make({
+    if (origin._tag === "DurableTrigger" && origin.triggerType === "deletionCase") {
+      return yield* Effect.die(
+        new Error("A Deletion Case authority cannot originate a managed conversation"),
+      );
+    }
+    const managedOrigin =
+      origin._tag === "DurableTrigger"
+        ? {
             ...origin,
+            triggerType:
+              origin.triggerType === "scheduledTask"
+                ? ("scheduledTask" as const)
+                : ("workflow" as const),
+          }
+        : origin;
+    const authorityIdentity =
+      managedOrigin._tag !== "ChannelLink"
+        ? ManagedTurnAuthorityIdentity.make({
+            ...managedOrigin,
             userId: input.authorization.user.userId,
           })
         : Predicate.isTagged(input.authorization.authority, "ChannelLink")
           ? ManagedTurnAuthorityIdentity.make({
-              ...origin,
+              ...managedOrigin,
               address: input.authorization.authority.address,
               userId: input.authorization.user.userId,
             })
@@ -157,7 +210,7 @@ export const admitManagedConversation = (
       message: input.message,
       metadata: ManagedTurnMetadata.make({
         _tag: "OsfoManagedTurn",
-        allowancePeriodId: admission.allowancePeriod.allowancePeriodId,
+        allowancePeriodId: input.authorization.allowance.allowancePeriodId,
         authorityIdentity,
         capabilityCatalogVersion: currentCapabilityCatalog.version,
         capabilityTurnState: {
@@ -167,8 +220,9 @@ export const admitManagedConversation = (
         },
         conservativeVendorUsdMicros: Number(maxVendorUsdMicros),
         coreMemoryAuthorization,
-        maxInputTokens: profile.context.maxInputTokens,
-        maxOutputTokens: profile.context.maxOutputTokens,
+        executionMode: exhausted ? "exhaustedConversation" : "normalPlanUsage",
+        maxInputTokens,
+        maxOutputTokens,
         maxRetries: profile.maxRetries,
         maxSteps,
         originatingAuthority: input.authorization.originatingAuthority,
@@ -178,7 +232,7 @@ export const admitManagedConversation = (
         route: profile.route,
         sessionId: session.currentSessionId,
         submissionId: input.submissionId,
-        targetInputTokens: profile.context.targetInputTokens,
+        targetInputTokens,
       }),
       submissionId: input.submissionId,
     } as const;

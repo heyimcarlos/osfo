@@ -1,5 +1,5 @@
 import {
-  createRootRoute,
+  createRootRouteWithContext,
   createRoute,
   createRouter,
   lazyRouteComponent,
@@ -9,15 +9,21 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 
+import { AccountDeletionReplayStateProvider } from "./account-deletion-replay-state";
 import { AuthenticatedGate } from "./components/authenticated-gate";
 import { LoadingScreen } from "./components/loading-screen";
 import { NotFoundScreen } from "./components/not-found-screen";
 import { SettingsShell } from "./components/settings-shell";
 import { billingReturnQuery, parseBillingReturnSearchString } from "./lib/billing-return";
+import {
+  captureBrowserAccountDeletionReplay,
+  type BrowserAccountDeletionReplayCapture,
+} from "./lib/account-deletion-replay";
 import { useDocumentLanguage } from "./lib/document-language";
 import { parseLocaleSearch, parseRegistrationSearch } from "./lib/route-locale";
 
 const RootLayout = () => {
+  const { accountDeletionReplay } = rootRoute.useRouteContext();
   const location = useRouterState({ select: (state) => state.location });
   const localizedRouteOwnsLanguage =
     location.pathname === "/get-started" ||
@@ -25,10 +31,21 @@ const RootLayout = () => {
     location.pathname === "/privacy" ||
     location.pathname.startsWith("/verify/");
   useDocumentLanguage(localizedRouteOwnsLanguage ? null : "en");
-  return <Outlet />;
+  return (
+    <AccountDeletionReplayStateProvider initial={accountDeletionReplay}>
+      <Outlet />
+    </AccountDeletionReplayStateProvider>
+  );
 };
 
-const rootRoute = createRootRoute({ component: RootLayout, notFoundComponent: NotFoundScreen });
+interface RouterContext {
+  readonly accountDeletionReplay: BrowserAccountDeletionReplayCapture;
+}
+
+const rootRoute = createRootRouteWithContext<RouterContext>()({
+  component: RootLayout,
+  notFoundComponent: NotFoundScreen,
+});
 const homeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
@@ -38,6 +55,14 @@ const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "login",
   component: lazyRouteComponent(() => import("./pages/login-page"), "LoginPage"),
+});
+const accountDeletionRecoveryRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "account-deletion/recovery",
+  component: lazyRouteComponent(
+    () => import("./pages/account-deletion-recovery-page"),
+    "AccountDeletionRecoveryPage",
+  ),
 });
 const getStartedRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -149,6 +174,7 @@ const legacyBillingReturnRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   homeRoute,
   loginRoute,
+  accountDeletionRecoveryRoute,
   getStartedRoute,
   channelLinkRoute,
   privacyRoute,
@@ -172,6 +198,7 @@ const routeTree = rootRoute.addChildren([
 export const createAppRouter = ({ history }: { readonly history?: RouterHistory } = {}) =>
   history === undefined
     ? createRouter({
+        context: { accountDeletionReplay: captureBrowserAccountDeletionReplay() },
         routeTree,
         defaultPendingComponent: LoadingScreen,
         defaultPendingMs: 100,
@@ -179,6 +206,7 @@ export const createAppRouter = ({ history }: { readonly history?: RouterHistory 
         scrollRestoration: true,
       })
     : createRouter({
+        context: { accountDeletionReplay: captureBrowserAccountDeletionReplay() },
         routeTree,
         history,
         defaultPendingComponent: LoadingScreen,

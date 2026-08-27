@@ -2,12 +2,14 @@ import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import { Clock, Effect, Random, Schema } from "effect";
 
 import type { ContentId } from "../../domain/client-content";
-import { AllowancePeriodId } from "../../domain";
+import { AllowancePeriodId, UserId } from "../../domain";
 import { DocumentArtifact } from "../../domain/document-artifact";
+import type { Denied } from "../../services/authorization";
 import {
   DocumentSource,
   DocumentCleanupUnavailable,
   DocumentComputeInterrupted,
+  type DocumentAuthorizationUnavailable,
   DocumentIntentDigest,
   DocumentIntentConflict,
   type CostEvidence,
@@ -15,6 +17,7 @@ import {
   type DisposableCompute,
 } from "../../services/document-generation";
 import { attemptKeyFor } from "./document-storage-keys";
+import { DocumentOwnershipIndex } from "./document-ownership-index";
 
 export interface AttemptEvidence {
   readonly cost: Extract<CostEvidence, { _tag: "Incurred" }>;
@@ -23,6 +26,7 @@ export interface AttemptEvidence {
   readonly intentDigest: DocumentIntentDigest;
   readonly renderedPageCount: number | null;
   readonly status: "claimed" | "started" | "completed";
+  readonly userId?: UserId;
 }
 
 /** Expected failure when durable attempt evidence cannot be reconciled. */
@@ -38,6 +42,7 @@ export interface AttemptEvidenceStore {
     intentDigest: DocumentIntentDigest,
     cost: AttemptEvidence["cost"],
     executionLeaseExpiresAt: number,
+    userId: UserId,
   ) => Promise<
     | {
         readonly _tag: "Claimed";
@@ -133,6 +138,8 @@ export const makeWithSandbox = (
   generate: (input) =>
     Effect.gen(function* () {
       const clock = yield* Clock.Clock;
+      const context = yield* Effect.context();
+      const runPromise = Effect.runPromiseWith(context);
       const [high, low] = yield* Effect.all([Random.next, Random.next]);
       return yield* Effect.promise(() =>
         render(
@@ -140,6 +147,12 @@ export const makeWithSandbox = (
           attempts,
           conservativeVendorUsdMicros,
           input,
+          () =>
+            runPromise(
+              input.authorizeWrite.pipe(
+                Effect.match({ onFailure: (failure) => failure, onSuccess: () => null }),
+              ),
+            ),
           `cloudflare-sandbox:${input.contentId}:${high.toString(16)}${low.toString(16)}`,
           () => clock.currentTimeMillisUnsafe(),
           deadlines,
@@ -182,7 +195,9 @@ const render = async (
     readonly format: DocumentArtifact.DocumentFormat;
     readonly intentDigest: DocumentIntentDigest;
     readonly source: DocumentSource;
+    readonly userId: UserId;
   },
+  authorizeWrite: () => Promise<Denied | DocumentAuthorizationUnavailable | null>,
   attemptOperationId: string,
   currentTimeMillis: () => number,
   deadlines: Deadlines,
@@ -193,6 +208,14 @@ const render = async (
   let durableAttemptClaimed = false;
   let providerUsePossible = false;
   try {
+    const claimAuthorizationFailure = await authorizeWrite();
+    if (claimAuthorizationFailure !== null) {
+      return {
+        _tag: "AuthorizationFailure",
+        cost: { _tag: "ProvenNoUse" },
+        failure: claimAuthorizationFailure,
+      };
+    }
     const proposedCost = incurred(
       input.allowancePeriodId,
       providerOperationId,
@@ -203,6 +226,7 @@ const render = async (
       input.intentDigest,
       proposedCost,
       currentTimeMillis() + executionLeaseMs,
+      input.userId,
     );
     // oxlint-disable-next-line eslint/no-underscore-dangle -- Persisted outcomes use _tag.
     if (claimed._tag === "IntentConflict") {
@@ -229,6 +253,10 @@ const render = async (
           cost,
           evidence: "Another caller owns the durable Sandbox execution transition",
         };
+      }
+      const startAuthorizationFailure = await authorizeWrite();
+      if (startAuthorizationFailure !== null) {
+        return { _tag: "AuthorizationFailure", cost, failure: startAuthorizationFailure };
       }
       const started = await attempts.start(
         input.contentId,
@@ -278,6 +306,10 @@ const render = async (
         return interrupted(cost, `The document renderer exited with code ${result.exitCode}`);
       }
       renderedPageCount = decodeRenderedPageCount(result.stdout);
+      const completionAuthorizationFailure = await authorizeWrite();
+      if (completionAuthorizationFailure !== null) {
+        return { _tag: "AuthorizationFailure", cost, failure: completionAuthorizationFailure };
+      }
       await withDeadline(
         attempts.complete(input.contentId, {
           ...claimed.evidence,
@@ -343,6 +375,7 @@ const AttemptEvidenceMetadata = Schema.fromJsonString(
       Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(20)),
     ),
     status: Schema.Literals(["claimed", "started", "completed"]),
+    userId: Schema.optionalKey(UserId),
   }),
 );
 
@@ -395,7 +428,8 @@ const interrupted = (cost: AttemptEvidence["cost"], evidence: string): ComputeRe
 /** Construct durable R2-backed execution identity evidence. */
 export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore => ({
   // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
-  claim: async (contentId, intentDigest, cost, executionLeaseExpiresAt) => {
+  claim: async (contentId, intentDigest, cost, executionLeaseExpiresAt, userId) => {
+    await DocumentOwnershipIndex.ensure(bucket, userId, contentId);
     const key = attemptKeyFor(contentId);
     const proposed = {
       cost,
@@ -403,6 +437,7 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
       intentDigest,
       renderedPageCount: null,
       status: "claimed" as const,
+      userId,
     };
     const created = await bucket.put(key, new Uint8Array(), {
       customMetadata: { osfo: encodeAttemptEvidence(proposed) },

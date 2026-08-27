@@ -1,5 +1,7 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-fetch -- Worker journeys intentionally exercise raw HTTP and provider boundaries. */
 import { exports } from "cloudflare:workers";
+import { AccountDeletionAction } from "@osfo/api";
+import type { AccountDeletionActionPresentation } from "@osfo/api";
 import { Schema } from "effect";
 import { inject } from "vitest";
 
@@ -24,6 +26,23 @@ const StripeLedger = Schema.Array(
     path: Schema.String,
   }),
 );
+
+const SupermemoryLedger = Schema.Array(
+  Schema.Struct({ method: Schema.String, path: Schema.String }),
+);
+const SupermemoryContainers = Schema.Array(Schema.String);
+const SupermemorySeedResponse = Schema.Struct({ containerTag: Schema.String });
+type PresentedAccountDeletionAction = AccountDeletionActionPresentation & {
+  readonly presentationVersion: string;
+  readonly replayToken: string;
+};
+
+const StoredAccountDeletion = Schema.Struct({
+  agent_exists: Schema.Boolean,
+  auth_session_exists: Schema.Boolean,
+  deletion_case_exists: Schema.Boolean,
+  user_exists: Schema.Boolean,
+});
 
 const StoredRegistration = Schema.Struct({
   agent_id: Schema.String,
@@ -63,12 +82,25 @@ interface RegistrationProfile {
   readonly preferredName: string | null;
 }
 
+type JsonRequestBody =
+  | PhoneOtpRequest
+  | PhoneOtpVerificationRequest
+  | RegistrationProfile
+  | { readonly userId: string }
+  | {
+      readonly approval: {
+        readonly decision: "approved";
+        readonly presentation: AccountDeletionActionPresentation;
+      };
+      readonly confirmation: "delete-my-account";
+      readonly presentationVersion: string;
+      readonly replayToken: string;
+    };
+
 interface MintVerifiedUserOptions {
   readonly phoneNumber?: string;
   readonly profile?: RegistrationProfile;
 }
-
-type JsonRequestBody = PhoneOtpRequest | PhoneOtpVerificationRequest | RegistrationProfile;
 
 let nextPhoneNumber = 1_000_000;
 
@@ -124,13 +156,85 @@ export const spawnApp = async () => {
 
   return {
     fetch: request,
+    account: {
+      delete: (action: PresentedAccountDeletionAction) =>
+        jsonRequest(request, "/v1/account", "DELETE", {
+          approval: {
+            decision: "approved",
+            presentation: {
+              actionId: action.actionId,
+              confirmation: action.confirmation,
+              consequence: action.consequence,
+              operation: action.operation,
+              title: action.title,
+            },
+          },
+          confirmation: "delete-my-account",
+          presentationVersion: action.presentationVersion,
+          replayToken: action.replayToken,
+        }),
+      present: async () => {
+        const response = await request("/v1/account/deletion-action");
+        return {
+          body: response.ok
+            ? await Schema.decodeUnknownPromise(AccountDeletionAction)(await response.json()).then(
+                ({ presentation, presentationVersion, replayToken }) => ({
+                  ...presentation,
+                  presentationVersion,
+                  replayToken,
+                }),
+              )
+            : undefined,
+          response,
+        };
+      },
+    },
     auth: {
+      clearCookie: () => {
+        cookie = "";
+      },
       mintVerifiedUser,
       session: () => request("/auth/get-session"),
       sendPhoneOtp,
       verifyPhoneOtp,
     },
     database: {
+      expireAccountDeletionAction: async (userId: string, actionId: string) => {
+        const response = await fetch(
+          `${context.databaseObserverOrigin}/expire-account-deletion-action`,
+          {
+            body: JSON.stringify({ actionId, userId }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          },
+        );
+        await requireSuccessfulResponse(response, "Expire account deletion Action");
+      },
+      versionAccountDeletionAction: async (
+        userId: string,
+        actionId: string,
+        presentationVersion: string,
+      ) => {
+        const response = await fetch(
+          `${context.databaseObserverOrigin}/version-account-deletion-action`,
+          {
+            body: JSON.stringify({ actionId, presentationVersion, userId }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          },
+        );
+        await requireSuccessfulResponse(response, "Version account deletion Action");
+      },
+      accountDeletion: async (userId: string) => {
+        const response = await fetch(`${context.databaseObserverOrigin}/account-deletion`, {
+          body: JSON.stringify({ userId }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        });
+        return Schema.decodeUnknownPromise(Schema.NullOr(StoredAccountDeletion))(
+          await response.json(),
+        );
+      },
       billingCheckout: async (userId: string) => {
         const response = await fetch(`${context.databaseObserverOrigin}/billing-checkout`, {
           body: JSON.stringify({ userId }),
@@ -176,6 +280,36 @@ export const spawnApp = async () => {
       ledger: async () => {
         const response = await fetch(`${context.providerOrigin}/_test/stripe/ledger`);
         return Schema.decodeUnknownPromise(StripeLedger)(await response.json());
+      },
+    },
+    supermemory: {
+      containers: async () => {
+        const response = await fetch(`${context.providerOrigin}/_test/supermemory/containers`);
+        return Schema.decodeUnknownPromise(SupermemoryContainers)(await response.json());
+      },
+      ledger: async () => {
+        const response = await fetch(`${context.providerOrigin}/_test/supermemory/ledger`);
+        return Schema.decodeUnknownPromise(SupermemoryLedger)(await response.json());
+      },
+      failDeletes: async (count: number) => {
+        const response = await fetch(
+          `${context.providerOrigin}/_test/supermemory/delete-failures`,
+          {
+            body: JSON.stringify({ count }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          },
+        );
+        await requireSuccessfulResponse(response, "Configure Supermemory deletion failures");
+      },
+      seedUser: async (userId: string) => {
+        const response = await fetch(`${context.providerOrigin}/_test/supermemory/seed`, {
+          body: JSON.stringify({ userId }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        });
+        await requireSuccessfulResponse(response, "Seed Supermemory User container");
+        return Schema.decodeUnknownPromise(SupermemorySeedResponse)(await response.json());
       },
     },
     dispose: () => {

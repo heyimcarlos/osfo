@@ -40,6 +40,43 @@ const matchesClosedIntent =
   (task) =>
     patterns.some((pattern) => pattern.test(normalizeIntentText(task)));
 
+/** Exact launch-only intent that keeps destructive and data-rights help reachable after exhaustion. */
+export const isDeletionOrDataRightsIntent: CapabilityIntentPredicate = (task) => {
+  const normalized = normalizeIntentText(task).replace(
+    /^(?:(?:like|okay|ok|so|um|uh|well|yeah) )+/,
+    "",
+  );
+  return [
+    /^(?:(?:can|could|would|will) you (?:please )?(?:just )?|how do i |i (?:need|want|would like) (?:you )?to |please (?:just )?|just )?(?:clear|delete|erase|forget|remove|wipe) (?:all (?:of )?)?(?:(?:my|the|this|that) )?(?:account|chat history|conversation|conversation history|current session|data|memories|memory|remembered knowledge|session)(?:(?: for me| now| permanently| please))*$/,
+    /^(?:(?:can|could|would|will) you (?:please )?(?:just )?|how do i |i (?:need|want|would like) (?:you )?to |please (?:just )?|just )?(?:clear|delete|erase|forget|remove|wipe) (?:(?:all (?:of )?)?(?:(?:my|the|your) )?(?:knowledge|memories|memory) (?:about|of) me|(?:everything|what) (?:that )?you (?:know|remember) about me|everything about me)(?:(?: for me| now| permanently| please))*$/,
+    /^(?:(?:can|could|would|will) you (?:please )?|how do i |i (?:need|want|would like) to |please )?(?:exercise|request) (?:my )?(?:data rights|privacy rights)(?:(?: now| please))*$/,
+  ].some((pattern) => pattern.test(normalized));
+};
+
+const matchesSessionDeleteIntent = matchesClosedIntent(
+  /^(?:(?:can|could|would|will) you (?:please )?(?:just )?|i (?:need|want|would like) (?:you )?to |please (?:just )?|just )?(?:clear|delete|erase|remove|wipe) (?:all (?:of )?)?(?:(?:my|the|this|that) )?(?:chat history|conversation history|current session|session)(?:(?: for me| now| permanently| please))*$/,
+);
+
+const matchesSessionRecallIntent = anyIntentPhrase(
+  "did i tell you",
+  "do you remember",
+  "earlier",
+  "history",
+  "last time",
+  "last week",
+  "previous conversation",
+  "previous session",
+  "recall",
+  "told you",
+  "what did i mention",
+  "what did i say",
+  "what did we discuss",
+  "what did we talk about",
+  "what i said",
+  "what i told you",
+  "what were we talking about",
+);
+
 export const capabilityIntentPolicy = {
   conversation: { matches: () => true, taskKinds: ["conversation"] },
   "core-memory": {
@@ -70,26 +107,30 @@ export const capabilityIntentPolicy = {
     ),
     taskKinds: ["memory"],
   },
-  "session-recall": {
-    matches: anyIntentPhrase(
-      "did i tell you",
-      "do you remember",
-      "earlier",
-      "history",
-      "last time",
-      "last week",
-      "previous conversation",
-      "previous session",
-      "recall",
-      "told you",
-      "what did i mention",
-      "what did i say",
-      "what did we discuss",
-      "what did we talk about",
-      "what i said",
-      "what i told you",
-      "what were we talking about",
+  "knowledge-forget": {
+    matches: everyIntentGroup(
+      ["delete", "erase", "forget", "remove", "wipe"],
+      [
+        "knowledge",
+        "memories",
+        "memory",
+        "remembered knowledge",
+        "remember about me",
+        "what you know about me",
+        "everything you know about me",
+        "what you remember about me",
+        "everything you remember about me",
+        "everything about me",
+      ],
     ),
+    taskKinds: ["memory"],
+  },
+  "session-delete": {
+    matches: matchesSessionDeleteIntent,
+    taskKinds: ["memory"],
+  },
+  "session-recall": {
+    matches: (task) => !matchesSessionDeleteIntent(task) && matchesSessionRecallIntent(task),
     taskKinds: ["memory"],
   },
   "file-read": {

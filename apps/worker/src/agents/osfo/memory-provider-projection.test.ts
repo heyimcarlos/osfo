@@ -148,6 +148,38 @@ describe("committed conversation projection", () => {
     ]);
   });
 
+  it("does not enqueue provider ingestion for an exhausted continuity turn", () => {
+    const history = [
+      {
+        id: "user-1",
+        metadata: managedMetadata(),
+        parts: [{ text: "Delete my current session", type: "text" }],
+        role: "user",
+      },
+      {
+        id: "assistant-2",
+        metadata: {
+          osfoCommittedTurn: {
+            attribution: {
+              allowancePeriodId: "allowance-1",
+              executionMode: "exhaustedConversation",
+              sessionId: "session-1",
+              userId: "user-1",
+            },
+            requestId: "request-2",
+            status: "completed",
+          },
+        },
+        parts: [{ text: "Please confirm deletion", type: "text" }],
+        role: "assistant",
+      },
+    ] as const;
+
+    expect(projectTerminalMarkedCommittedTurns(history, sessionId)).toMatchObject([
+      { assistantMessageId: "assistant-2", projection: undefined },
+    ]);
+  });
+
   it("excludes an earlier terminal-marked aborted assistant from later snapshots", () => {
     const finalAssistantMessageId = AssistantMessageId.make("assistant-3");
     const history = [

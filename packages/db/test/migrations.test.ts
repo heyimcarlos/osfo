@@ -30,10 +30,19 @@ describe("Postgres migrations", () => {
                 ORDER BY table_name
               `),
           );
+          const deletionCaseColumns = yield* Effect.promise(() =>
+            client.query<{ readonly column_name: string }>(`
+              SELECT column_name
+              FROM information_schema.columns
+              WHERE table_schema = 'public' AND table_name = 'deletion_cases'
+            `),
+          );
 
           expect(applied.rows.length).toBe(migrations.length);
           expect(tables.rows.map(({ table_name }) => table_name)).toEqual([
+            "account_deletion_actions",
             "accounts",
+            "administrative_authorities",
             "agents",
             "allowance_periods",
             "allowance_usage",
@@ -56,9 +65,223 @@ describe("Postgres migrations", () => {
             "webhook_events",
             "webhook_jobs",
           ]);
+          expect(deletionCaseColumns.rows.map(({ column_name }) => column_name)).toContain(
+            "access_fenced_at",
+          );
         }),
       closeTestDatabase,
     ),
+  );
+
+  it.effect("backfills retained administrative cases before adding the authority foreign key", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      ({ client }) =>
+        Effect.gen(function* () {
+          const migrations = yield* readMigrations;
+          const authorityMigration = migrations.find(
+            ({ name }) => name === "0009_dashing_vin_gonzales.sql",
+          );
+          if (authorityMigration === undefined) {
+            return yield* Effect.die(new Error("Administrative authority migration is missing"));
+          }
+          yield* applyMigrations(
+            client,
+            migrations.filter(({ name }) => name !== authorityMigration.name),
+          );
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO users (id, name, email, updated_at)
+              VALUES ('legacy-user', 'Legacy User', 'legacy-user@example.test', now());
+              INSERT INTO deletion_cases (
+                deletion_case_id, user_id, requested_by_admin_id, reason
+              ) VALUES (
+                'legacy-deletion-case', 'legacy-user', 'legacy-admin', 'Required erasure'
+              );
+            `),
+          );
+
+          yield* applyMigrations(client, migrations);
+          const authorities = yield* Effect.promise(() =>
+            client.query<{ readonly admin_actor_id: string; readonly revoked_at: Date | null }>(`
+              SELECT admin_actor_id, revoked_at
+              FROM administrative_authorities
+              WHERE admin_actor_id = 'legacy-admin'
+            `),
+          );
+
+          expect(authorities.rows).toEqual([{ admin_actor_id: "legacy-admin", revoked_at: null }]);
+          const rejected = yield* Effect.tryPromise({
+            try: () =>
+              client.exec(`
+                INSERT INTO users (id, name, email, updated_at)
+                VALUES ('new-user', 'New User', 'new-user@example.test', now());
+                INSERT INTO deletion_cases (
+                  deletion_case_id, user_id, requested_by_admin_id, reason
+                ) VALUES (
+                  'new-deletion-case', 'new-user', 'unknown-admin', 'Required erasure'
+                );
+              `),
+            catch: (cause) => new MigrationConstraintRejected({ cause }),
+          }).pipe(Effect.exit);
+          expect(Exit.isFailure(rejected)).toBe(true);
+          return undefined;
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("rejects malformed deletion actors before the approval migration", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      ({ client }) =>
+        Effect.gen(function* () {
+          const migrations = yield* readMigrations;
+          yield* applyMigrations(
+            client,
+            migrations.filter(({ name }) => name <= "0006_milky_bishop.sql"),
+          );
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO users (id, name, email, updated_at)
+              VALUES ('staged-user', 'Staged User', 'staged-user@example.test', now()),
+                     ('   ', 'Blank User', 'blank-staged-user@example.test', now());
+              INSERT INTO deletion_cases (
+                deletion_case_id, user_id, requested_by_user_id, reason
+              ) VALUES (
+                'staged-valid-self-case', 'staged-user', 'staged-user', 'User request'
+              );
+            `),
+          );
+
+          const malformedStatements = [
+            `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_admin_id, requested_by_user_id, reason)
+             VALUES ('staged-null-actors', 'staged-user', NULL, NULL, 'User request')`,
+            `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_user_id, reason)
+             VALUES ('staged-blank-requester', '   ', '   ', 'User request')`,
+          ];
+          for (const statement of malformedStatements) {
+            const result = yield* Effect.tryPromise({
+              try: () => client.exec(statement),
+              catch: (cause) => new MigrationConstraintRejected({ cause }),
+            }).pipe(Effect.exit);
+            expect(Exit.isFailure(result)).toBe(true);
+          }
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect(
+    "binds consumed account deletion actions to a deletion case owned by the same User",
+    () =>
+      Effect.acquireUseRelease(
+        makeTestDatabase,
+        ({ client }) =>
+          Effect.gen(function* () {
+            yield* applyMigrations(client);
+            yield* Effect.promise(() =>
+              client.exec(`
+              INSERT INTO users (id, name, email, updated_at)
+              VALUES ('action-user-1', 'Action User 1', 'action-1@example.test', now()),
+                     ('action-user-2', 'Action User 2', 'action-2@example.test', now()),
+                     ('action-user-3', 'Action User 3', 'action-3@example.test', now()),
+                     ('   ', 'Blank User', 'blank-action-user@example.test', now());
+              INSERT INTO administrative_authorities (admin_actor_id)
+              VALUES ('action-admin');
+              INSERT INTO deletion_cases (
+                deletion_case_id, user_id, requested_by_admin_id, reason
+              ) VALUES
+                ('action-case-1', 'action-user-1', 'action-admin', 'Required erasure'),
+                ('action-case-2', 'action-user-2', 'action-admin', 'Required erasure');
+              INSERT INTO account_deletion_actions (
+                action_id, user_id, auth_session_id, replay_token_hash,
+                presentation, presentation_version,
+                expires_at, consumed_at, deletion_case_id
+              ) VALUES (
+                'action-exact', 'action-user-1', 'session-1', repeat('a', 64),
+                '{}', 'account-deletion-v1',
+                now() + interval '5 minutes', now(), 'action-case-1'
+              );
+              INSERT INTO account_deletion_actions (
+                action_id, user_id, auth_session_id, replay_token_hash,
+                presentation, presentation_version, expires_at
+              ) VALUES (
+                'action-unconsumed', 'action-user-3', 'session-3', repeat('b', 64), '{}',
+                'account-deletion-v1', now() + interval '5 minutes'
+              );
+            `),
+            );
+
+            const rejectedStatements = [
+              `INSERT INTO account_deletion_actions (
+               action_id, user_id, auth_session_id, replay_token_hash,
+               presentation, presentation_version,
+               expires_at, consumed_at, deletion_case_id
+             ) VALUES (
+               'action-missing-case', 'action-user-3', 'session-3', repeat('c', 64), '{}',
+               'account-deletion-v1', now() + interval '5 minutes', now(), 'missing-case'
+             )`,
+              `INSERT INTO account_deletion_actions (
+               action_id, user_id, auth_session_id, replay_token_hash,
+               presentation, presentation_version,
+               expires_at, consumed_at, deletion_case_id
+             ) VALUES (
+               'action-wrong-user', 'action-user-1', 'session-1', repeat('d', 64), '{}',
+               'account-deletion-v1', now() + interval '5 minutes', now(), 'action-case-2'
+             )`,
+              `INSERT INTO account_deletion_actions (
+               action_id, user_id, auth_session_id, replay_token_hash,
+               presentation, presentation_version,
+               expires_at, consumed_at
+             ) VALUES (
+               'action-consumed-without-case', 'action-user-3', 'session-3', repeat('e', 64), '{}',
+               'account-deletion-v1', now() + interval '5 minutes', now()
+             )`,
+              `INSERT INTO account_deletion_actions (
+               action_id, user_id, auth_session_id, replay_token_hash,
+               presentation, presentation_version,
+               expires_at, consumed_at, deletion_case_id
+             ) VALUES (
+               'action-consumed-blank-case', 'action-user-3', 'session-3', repeat('f', 64), '{}',
+               'account-deletion-v1', now() + interval '5 minutes', now(), '   '
+             )`,
+              `INSERT INTO account_deletion_actions (
+               action_id, user_id, auth_session_id, replay_token_hash,
+               presentation, presentation_version,
+               expires_at, deletion_case_id
+             ) VALUES (
+               'action-unconsumed-with-case', 'action-user-3', 'session-3', repeat('0', 64), '{}',
+               'account-deletion-v1', now() + interval '5 minutes', 'action-case-1'
+             )`,
+              `INSERT INTO account_deletion_actions (
+               action_id, user_id, auth_session_id, replay_token_hash,
+               presentation, presentation_version, expires_at
+             ) VALUES (
+               'action-blank-user', '   ', 'session-blank-user', repeat('1', 64), '{}',
+               'account-deletion-v1', now() + interval '5 minutes'
+             )`,
+              `INSERT INTO account_deletion_actions (
+               action_id, user_id, auth_session_id, replay_token_hash,
+               presentation, presentation_version, expires_at
+             ) VALUES (
+               'action-bad-replay-hash', 'action-user-3', 'session-3', 'not-a-sha256', '{}',
+               'account-deletion-v1', now() + interval '5 minutes'
+             )`,
+            ];
+
+            for (const statement of rejectedStatements) {
+              const result = yield* Effect.tryPromise({
+                try: () => client.exec(statement),
+                catch: (cause) => new MigrationConstraintRejected({ cause }),
+              }).pipe(Effect.exit);
+              expect(Exit.isFailure(result)).toBe(true);
+            }
+          }),
+        closeTestDatabase,
+      ),
   );
 
   it.effect("enforces Channel Link lifecycle and active-address invariants", () =>
@@ -190,7 +413,8 @@ describe("Postgres migrations", () => {
               client.exec(`
               INSERT INTO users (id, name, email, updated_at)
               VALUES ('user-1', 'User 1', 'user-1@example.test', now()),
-                     ('user-2', 'User 2', 'user-2@example.test', now());
+                     ('user-2', 'User 2', 'user-2@example.test', now()),
+                     ('   ', 'Blank User', 'blank-self-user@example.test', now());
               INSERT INTO billing_subscriptions (
                 billing_subscription_id, user_id, plan, plan_policy_version
               ) VALUES
@@ -203,6 +427,8 @@ describe("Postgres migrations", () => {
                 'period-1', 'user-1', 'subscription-1',
                 'free', 'launch-v1', '2026-08-01T00:00:00Z', '2026-09-01T00:00:00Z'
               );
+              INSERT INTO administrative_authorities (admin_actor_id)
+              VALUES ('admin-1');
               INSERT INTO deletion_cases (
                 deletion_case_id, user_id, requested_by_admin_id, reason
               ) VALUES ('deletion-case-1', 'user-1', 'admin-1', 'User request');
@@ -249,15 +475,46 @@ describe("Postgres migrations", () => {
               `INSERT INTO user_suspension_events
                (event_id, user_id, action, admin_actor_id, reason)
              VALUES ('event-blank-reason', 'user-1', 'suspended', 'admin-1', '   ')`,
+              `INSERT INTO administrative_authorities (admin_actor_id)
+             VALUES ('   ')`,
               `INSERT INTO deletion_cases
                (deletion_case_id, user_id, requested_by_admin_id, reason)
              VALUES ('deletion-case-blank-actor', 'user-2', '   ', 'Valid reason')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_admin_id, reason)
+             VALUES ('deletion-case-untrusted-admin', 'user-2', 'admin-2', 'Valid reason')`,
               `INSERT INTO deletion_cases
                (deletion_case_id, user_id, requested_by_admin_id, reason)
              VALUES ('deletion-case-blank-reason', 'user-2', 'admin-1', '   ')`,
               `INSERT INTO deletion_cases
                (deletion_case_id, user_id, requested_by_admin_id, reason)
              VALUES ('deletion-case-duplicate', 'user-1', 'admin-1', 'Duplicate')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_user_id, reason)
+             VALUES ('self-case-null-action', 'user-2', 'user-2', 'User request')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, approval_action_id, approval_presentation, reason)
+             VALUES ('self-case-null-requester', 'user-2',
+                     'account-delete:null-requester', '{}', 'User request')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_user_id, approval_action_id,
+                approval_presentation, reason)
+             VALUES ('self-case-null-presentation', 'user-2', 'user-2',
+                     'account-delete:null-presentation', NULL, 'User request')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_user_id, approval_action_id,
+                approval_presentation, reason)
+             VALUES ('self-case-blank-action', 'user-2', 'user-2', '   ', '{}', 'User request')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_user_id, approval_action_id,
+                approval_presentation, reason)
+             VALUES ('self-case-blank-presentation', 'user-2', 'user-2',
+                     'account-delete:blank-presentation', '   ', 'User request')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_user_id, approval_action_id,
+                approval_presentation, reason)
+             VALUES ('self-case-blank-requester', '   ', '   ',
+                     'account-delete:blank-requester', '{}', 'User request')`,
             ];
 
             for (const statement of rejectedStatements) {

@@ -57,6 +57,77 @@ const context = (
 });
 
 describe("governed Authorization", () => {
+  it("permits only an exact Deletion Case trigger to continue fenced account deletion", () => {
+    const authorization = make(retainedCatalog);
+    const operation = { actionId: "account-delete-1", kind: "account.delete" } as const;
+    const presentation = ApprovalPresentation.make("Delete this exact account");
+    const fenced = {
+      ...context("free"),
+      allowance: { _tag: "Unavailable" as const },
+      approval: approvalFor(userId, operation, presentation),
+      authority: {
+        _tag: "DurableTrigger" as const,
+        triggerId: "deletion-case-1",
+        triggerType: "deletionCase" as const,
+        userId,
+      },
+      deletionAccess: { _tag: "DeletionAccessRevoked" as const },
+      originatingAuthority: {
+        _tag: "DurableTrigger" as const,
+        triggerId: "deletion-case-1",
+        triggerType: "deletionCase" as const,
+      },
+    };
+
+    expect(authorization.recheck(fenced, operation)).toEqual({ _tag: "Permitted" });
+    expect(
+      authorization.recheck(
+        { ...fenced, resourceOwnerUserId: UserId.make("another-user") },
+        operation,
+      ),
+    ).toMatchObject({ _tag: "Denied", reason: "ownershipRequired" });
+    expect(
+      authorization.recheck({ ...fenced, user: { _tag: "SuspendedUser", userId } }, operation),
+    ).toMatchObject({ _tag: "Denied", reason: "userSuspended" });
+    expect(
+      authorization.recheck(
+        {
+          ...fenced,
+          approval: Approval.make({
+            ...fenced.approval,
+            presentation: ApprovalPresentation.make("Changed approval"),
+          }),
+        },
+        operation,
+      ),
+    ).toMatchObject({ _tag: "Denied", reason: "approvalRequired" });
+    expect(
+      authorization.recheck(
+        {
+          ...fenced,
+          subscription: {
+            ...fenced.subscription,
+            planPolicyVersion: PlanPolicyVersion.make("missing-policy"),
+          },
+        },
+        operation,
+      ),
+    ).toMatchObject({ _tag: "Denied", reason: "policyUnavailable" });
+    expect(
+      authorization.recheck(
+        {
+          ...fenced,
+          authority: { ...fenced.authority, triggerType: "scheduledTask" },
+          originatingAuthority: {
+            ...fenced.originatingAuthority,
+            triggerType: "scheduledTask",
+          },
+        },
+        operation,
+      ),
+    ).toMatchObject({ _tag: "Denied", reason: "authorityMismatch" });
+  });
+
   it("admits the same self-serve artifact operation for both Plans", () => {
     const authorization = make(retainedCatalog);
     const operation = {

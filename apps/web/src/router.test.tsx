@@ -7,6 +7,7 @@ import { DateTime } from "effect";
 
 import { AuthStateProvider, type AuthState } from "./auth-state";
 import { parseBillingReturnSearch, parseBillingReturnSearchString } from "./lib/billing-return";
+import { saveAccountDeletionReplay } from "./lib/account-deletion-replay";
 import { createAppRouter } from "./router";
 
 /* oxlint-disable effecttsgo/async-function -- Router navigation and Testing Library own browser Promises. */
@@ -36,9 +37,14 @@ const registrationIncomplete: AuthState = {
   isPending: false,
   refreshFromAuthority,
 };
+const localStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 
 afterEach(() => {
   cleanup();
+  if (localStorageDescriptor !== undefined) {
+    Object.defineProperty(globalThis, "localStorage", localStorageDescriptor);
+  }
+  localStorage.clear();
 });
 
 const renderAt = (path: string, authState: AuthState = signedOut) => {
@@ -200,6 +206,107 @@ describe("Osfo route tree", () => {
 
     renderAt(first.router.state.location.href, signedIn);
     await waitFor(() => expect(screen.getByRole("heading", { name: "Privacy" })).toBeTruthy());
+  });
+
+  it.each(["/", "/settings/privacy"])(
+    "routes signed-out %s through one captured deletion-replay storage access",
+    async (path) => {
+      const storage = localStorage;
+      saveAccountDeletionReplay(storage, {
+        approval: {
+          decision: "approved",
+          presentation: {
+            actionId: "account-delete:retained-action",
+            confirmation: "delete-my-account",
+            consequence: "Permanently delete this account and all of its data.",
+            operation: "account.delete",
+            title: "Delete Account",
+          },
+        },
+        confirmation: "delete-my-account",
+        presentationVersion: "account-deletion-v1",
+        replayToken: "a".repeat(43),
+      });
+      let getterReads = 0;
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        get: () => {
+          getterReads += 1;
+          if (getterReads > 1) throw new Error("localStorage getter read twice");
+          return storage;
+        },
+      });
+
+      const { router } = renderAt(path, signedOut);
+
+      await waitFor(() =>
+        expect(screen.getByRole("heading", { name: "Account Deletion Recovery" })).toBeTruthy(),
+      );
+      expect(router.state.location.pathname).toBe("/account-deletion/recovery");
+      expect(screen.getByText("Delete Account")).toBeTruthy();
+      expect(screen.getByText("Permanently delete this account and all of its data.")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Retry Account Deletion" })).toBeTruthy();
+      expect(getterReads).toBe(1);
+    },
+  );
+
+  it("renders deletion recovery unavailable when the browser storage getter is blocked", async () => {
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get: () => {
+        throw new Error("localStorage getter blocked");
+      },
+    });
+
+    renderAt("/account-deletion/recovery", signedOut);
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Account Deletion Recovery" })).toBeTruthy(),
+    );
+    expect(screen.getByRole("alert").textContent).toContain("Browser storage is unavailable");
+    expect(screen.queryByRole("button", { name: "Retry Account Deletion" })).toBeNull();
+  });
+
+  it("clears retained recovery through one captured browser storage access", async () => {
+    const storage = localStorage;
+    saveAccountDeletionReplay(storage, {
+      approval: {
+        decision: "approved",
+        presentation: {
+          actionId: "account-delete:clear-action",
+          confirmation: "delete-my-account",
+          consequence: "Permanently delete this account and all of its data.",
+          operation: "account.delete",
+          title: "Delete Account",
+        },
+      },
+      confirmation: "delete-my-account",
+      presentationVersion: "account-deletion-v1",
+      replayToken: "b".repeat(43),
+    });
+    let getterReads = 0;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get: () => {
+        getterReads += 1;
+        if (getterReads > 1) throw new Error("localStorage getter read twice");
+        return storage;
+      },
+    });
+    renderAt("/account-deletion/recovery", signedOut);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Clear saved request" })).toBeTruthy(),
+    );
+
+    act(() => screen.getByRole("button", { name: "Clear saved request" }).click());
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("There is no saved account deletion request to resume."),
+      ).toBeTruthy(),
+    );
+    expect(getterReads).toBe(1);
+    expect(storage.getItem("osfo-account-deletion-replay")).toBeNull();
   });
 
   it("renders a responsive master-detail shell with normal mobile back navigation", async () => {

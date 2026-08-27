@@ -1,5 +1,7 @@
 import {
   Api,
+  type AccountDeletionAction,
+  type AccountDeletionRequest,
   type BillingReconciliationRequest,
   ChannelLinkInviteToken,
   type HelpArea,
@@ -80,3 +82,29 @@ export const reconcileBilling = (payload: BillingReconciliationRequest) =>
     }
     return yield* client.billing.reconcile({ payload });
   });
+
+/** Fetch the exact server-owned Action that can permanently delete this account. */
+export const presentAccountDeletion = Effect.gen(function* () {
+  const client = yield* apiClient;
+  return yield* client.account.presentAccountDeletion();
+});
+
+/** Consume the caller's exact Approval and start permanent account deletion. */
+export const requestAccountDeletion = (request: AccountDeletionRequest) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    if (request.presentationVersion === "account-deletion-v1") {
+      return yield* client.account.deleteAccount({ payload: request });
+    }
+    return yield* client.account.deleteAccount({ payload: request });
+  });
+
+/** Build the only caller decision accepted for one exact server-owned presentation. */
+export const accountDeletionRequestFor = (
+  action: AccountDeletionAction,
+): AccountDeletionRequest => ({
+  approval: { decision: "approved", presentation: action.presentation },
+  confirmation: action.presentation.confirmation,
+  presentationVersion: action.presentationVersion,
+  replayToken: action.replayToken,
+});

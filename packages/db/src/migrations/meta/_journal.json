@@ -43,6 +43,48 @@
       "when": 1787547033834,
       "tag": "0005_light_red_wolf",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787558116631,
+      "tag": "0006_milky_bishop",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787560171494,
+      "tag": "0007_stale_leo",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787681576240,
+      "tag": "0008_grey_sandman",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787686074964,
+      "tag": "0009_dashing_vin_gonzales",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1787697038512,
+      "tag": "0010_nosy_karnak",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1787701272289,
+      "tag": "0011_cheerful_swordsman",
+      "breakpoints": true
     }
   ]
 }

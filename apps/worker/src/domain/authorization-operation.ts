@@ -71,6 +71,7 @@ export const AuthorizationOperation = Schema.Union([
   Schema.Struct({
     actionId: Schema.String,
     documentChunks: Schema.optionalKey(nonNegative),
+    exhaustedContinuity: Schema.optionalKey(Schema.Literal("deletionOrDataRights")),
     kind: Schema.Literal("conversation.run"),
     inputTokens: Schema.optionalKey(nonNegative),
     memoryDeadlineMilliseconds: Schema.optionalKey(nonNegative),

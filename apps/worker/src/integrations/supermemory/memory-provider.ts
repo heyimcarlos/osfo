@@ -40,9 +40,37 @@ const GetConversationStatusResponse = Schema.Struct({
   id: MemoryProvider.ProviderDocumentId,
   status: Schema.optionalKey(Schema.Unknown),
 });
+const SessionConversationDocument = Schema.Struct({
+  containerTags: Schema.NonEmptyArray(NonEmptyString),
+  customId: NonEmptyString,
+  id: MemoryProvider.ProviderDocumentId,
+});
+const SessionConversationDocumentSummary = Schema.Struct({
+  containerTags: Schema.NonEmptyArray(NonEmptyString),
+  customId: Schema.NullOr(NonEmptyString),
+  id: MemoryProvider.ProviderDocumentId,
+});
+type SessionConversationDocumentSummary = typeof SessionConversationDocumentSummary.Type;
+const SessionConversationDocumentsPage = Schema.Struct({
+  memories: Schema.Array(SessionConversationDocumentSummary),
+  pagination: Schema.Struct({
+    currentPage: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+    totalItems: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    totalPages: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  }),
+});
 const ForgetResponse = Schema.Struct({
   forgotten: Schema.Literal(true),
   id: NonEmptyString,
+});
+const DeleteUserKnowledgeResponse = Schema.Struct({
+  containerTag: NonEmptyString,
+  deletedDocumentsCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  deletedMemoriesCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  success: Schema.Literal(true),
+});
+const UserKnowledgeContainer = Schema.Struct({
+  containerTag: NonEmptyString,
 });
 const ProfileResponse = Schema.Struct({
   profile: Schema.Struct({
@@ -434,46 +462,109 @@ const make = (options: Options) =>
       input: MemoryProvider.ForgetKnowledgeInput,
     ) {
       const containerTag = yield* providerIdentity(crypto, "u", input.userId, "forgetKnowledge");
-      const results = yield* Effect.forEach(
-        input.memoryIds,
-        (id) =>
-          sdk
-            .useDeletion("forgetKnowledge", [404, 409], (client, signal) =>
-              client.memories.forget({ containerTag, id }, { signal }),
-            )
-            .pipe(
-              Effect.flatMap(
-                (
-                  result,
-                ): Effect.Effect<
-                  MemoryProvider.DeletionResult,
-                  MemoryProvider.MemoryProviderUnavailable
-                > => {
-                  if (result._tag === "AlreadyAbsent") return Effect.succeed(result);
-                  return decodeResponse("forgetKnowledge", ForgetResponse, result.response).pipe(
-                    Effect.as({ _tag: "Deleted" } as const),
-                  );
-                },
-              ),
-            ),
-        { concurrency: 1 },
+      return yield* sdk
+        .useDeletion("forgetKnowledge", [404, 409], (client, signal) =>
+          client.memories.forget({ containerTag, id: input.memoryId }, { signal }),
+        )
+        .pipe(
+          Effect.flatMap(
+            (
+              result,
+            ): Effect.Effect<
+              MemoryProvider.DeletionResult,
+              MemoryProvider.MemoryProviderUnavailable
+            > => {
+              if (result._tag === "AlreadyAbsent") return Effect.succeed(result);
+              return decodeResponse("forgetKnowledge", ForgetResponse, result.response).pipe(
+                Effect.flatMap((decoded) =>
+                  decoded.id === input.memoryId
+                    ? Effect.succeed({ _tag: "Deleted" } as const)
+                    : providerUnavailable("forgetKnowledge", "identityMismatch"),
+                ),
+              );
+            },
+          ),
+        );
+    });
+
+    const findSessionConversation = Effect.fn("SupermemoryMemoryProvider.findSessionConversation")(
+      function* (input: MemoryProvider.FindSessionConversationInput) {
+        const [containerTag, customId] = yield* Effect.all([
+          providerIdentity(crypto, "u", input.userId, "deleteSessionConversation"),
+          providerIdentity(crypto, "s", input.sessionId, "deleteSessionConversation"),
+        ]);
+        const candidates: Array<SessionConversationDocumentSummary> = [];
+        let page = 1;
+        while (true) {
+          const response = yield* sdk.use("deleteSessionConversation", (client, signal) =>
+            client.documents.list({ containerTags: [containerTag], limit: 100, page }, { signal }),
+          );
+          const decoded = yield* decodeResponse(
+            "deleteSessionConversation",
+            SessionConversationDocumentsPage,
+            response,
+          );
+          if (
+            decoded.pagination.currentPage !== page ||
+            (decoded.pagination.totalPages > 0 && decoded.pagination.totalPages < page)
+          ) {
+            return yield* providerUnavailable("deleteSessionConversation", "responseDecoding");
+          }
+          const matches = decoded.memories.filter((document) => document.customId === customId);
+          if (
+            matches.some((document) => !belongsOnlyToUser(document.containerTags, containerTag))
+          ) {
+            return yield* providerUnavailable("deleteSessionConversation", "identityMismatch");
+          }
+          candidates.push(...matches);
+          if (page >= decoded.pagination.totalPages) break;
+          page += 1;
+        }
+        const documentIds = candidates.map(({ id }) => id);
+        if (new Set(documentIds).size !== documentIds.length) {
+          return yield* providerUnavailable("deleteSessionConversation", "identityMismatch");
+        }
+        const [firstDocumentId, ...remainingDocumentIds] = documentIds;
+        return firstDocumentId === undefined
+          ? ({ _tag: "AlreadyAbsent" } as const)
+          : ({
+              _tag: "Found",
+              documentIds: [firstDocumentId, ...remainingDocumentIds],
+            } as const);
+      },
+    );
+
+    const verifySessionConversation = Effect.fn(
+      "SupermemoryMemoryProvider.verifySessionConversation",
+    )(function* (input: MemoryProvider.DeleteSessionConversationInput) {
+      const [containerTag, customId] = yield* Effect.all([
+        providerIdentity(crypto, "u", input.userId, "deleteSessionConversation"),
+        providerIdentity(crypto, "s", input.sessionId, "deleteSessionConversation"),
+      ]);
+      const lookup = yield* sdk.useDeletion("deleteSessionConversation", [404], (client, signal) =>
+        client.documents.get(input.documentId, { signal }),
       );
-      return results.some((result) => result._tag === "Deleted")
-        ? ({ _tag: "Deleted" } as const)
-        : ({ _tag: "AlreadyAbsent" } as const);
+      if (lookup._tag === "AlreadyAbsent") return lookup;
+      const document = yield* decodeResponse(
+        "deleteSessionConversation",
+        SessionConversationDocument,
+        lookup.response,
+      );
+      if (
+        document.id !== input.documentId ||
+        document.customId !== customId ||
+        !belongsOnlyToUser(document.containerTags, containerTag)
+      ) {
+        return yield* providerUnavailable("deleteSessionConversation", "identityMismatch");
+      }
+      return { _tag: "Verified" } as const;
     });
 
     const deleteSessionConversation = Effect.fn(
       "SupermemoryMemoryProvider.deleteSessionConversation",
     )(function* (input: MemoryProvider.DeleteSessionConversationInput) {
-      const customId = yield* providerIdentity(
-        crypto,
-        "s",
-        input.sessionId,
-        "deleteSessionConversation",
-      );
       const result = yield* sdk.useDeletion("deleteSessionConversation", [404], (client, signal) =>
-        client.documents.delete(customId, { signal }),
+        client.documents.delete(input.documentId, { signal }),
       );
       return result._tag === "AlreadyAbsent" ? result : ({ _tag: "Deleted" } as const);
     });
@@ -499,7 +590,53 @@ const make = (options: Options) =>
           ),
         );
         if (response.status === 404) return { _tag: "AlreadyAbsent" } as const;
-        if (response.status >= 200 && response.status < 300) return { _tag: "Deleted" } as const;
+        if (response.status >= 200 && response.status < 300) {
+          const confirmation = yield* HttpClientResponse.schemaBodyJson(
+            DeleteUserKnowledgeResponse,
+          )(response).pipe(
+            Effect.mapError(() => providerUnavailable("deleteUserKnowledge", "responseDecoding")),
+          );
+          if (confirmation.containerTag !== containerTag) {
+            return yield* providerUnavailable("deleteUserKnowledge", "identityMismatch");
+          }
+          return { _tag: "Deleted" } as const;
+        }
+        return yield* providerStatusFailure("deleteUserKnowledge", response.status);
+      },
+    );
+
+    const verifyUserKnowledge = Effect.fn("SupermemoryMemoryProvider.verifyUserKnowledge")(
+      function* (input: MemoryProvider.DeleteUserKnowledgeInput) {
+        const containerTag = yield* providerIdentity(
+          crypto,
+          "u",
+          input.userId,
+          "deleteUserKnowledge",
+        );
+        const request = HttpClientRequest.get(
+          `${apiBaseURL}/v3/container-tags/${encodeURIComponent(containerTag)}`,
+        ).pipe(HttpClientRequest.bearerToken(options.apiKey));
+        const response = yield* httpClient.execute(request).pipe(
+          Effect.mapError(
+            () =>
+              new MemoryProvider.MemoryProviderUnavailable({
+                message: "The MemoryProvider is unavailable",
+                operation: "deleteUserKnowledge",
+              }),
+          ),
+        );
+        if (response.status === 404) return { _tag: "AlreadyAbsent" } as const;
+        if (response.status >= 200 && response.status < 300) {
+          const container = yield* HttpClientResponse.schemaBodyJson(UserKnowledgeContainer)(
+            response,
+          ).pipe(
+            Effect.mapError(() => providerUnavailable("deleteUserKnowledge", "responseDecoding")),
+          );
+          if (container.containerTag !== containerTag) {
+            return yield* providerUnavailable("deleteUserKnowledge", "identityMismatch");
+          }
+          return { _tag: "Verified" } as const;
+        }
         return yield* providerStatusFailure("deleteUserKnowledge", response.status);
       },
     );
@@ -510,10 +647,13 @@ const make = (options: Options) =>
       configureUserGuidance,
       deleteSessionConversation,
       deleteUserKnowledge,
+      findSessionConversation,
       forgetKnowledge,
       getConversationStatus,
       recall,
       saveConversation,
+      verifySessionConversation,
+      verifyUserKnowledge,
     });
   });
 
@@ -534,6 +674,12 @@ export const layerFromConfig = (config: SupermemoryConfig) =>
     apiKey: config.apiKey,
     rateCard: publicRateCard,
   });
+
+const belongsOnlyToUser = (containerTags: ReadonlyArray<string>, expectedUserTag: string) => {
+  // Stable Osfo User containers are `u_` identities; other non-User grouping tags do not own data.
+  const userTags = containerTags.filter((containerTag) => containerTag.startsWith("u_"));
+  return userTags.length === 1 && userTags[0] === expectedUserTag;
+};
 
 const providerIdentity = (
   crypto: Crypto.Crypto,

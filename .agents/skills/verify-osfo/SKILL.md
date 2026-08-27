@@ -1,6 +1,6 @@
 ---
 name: verify-osfo
-description: Verify Osfo registration, SMS phone authentication, Telegram channel linking, or the Free billing summary in Chrome with a disposable verified User, local provider boundaries, committed state, and durable evidence. Use after implementing or reviewing one of those browser paths.
+description: Verify Osfo registration, SMS phone authentication, Telegram channel linking, the Free billing summary, permanent account deletion, or retained deletion replay in Chrome with a disposable verified User, local provider boundaries, committed state, and durable evidence. Use after implementing or reviewing one of those browser paths.
 ---
 
 # Verify Osfo
@@ -54,11 +54,13 @@ Open the selected feature file for its only authoritative drive and completion c
 - [registration](features/registration.md)
 - [channel linking](features/channel-linking.md)
 - [Free billing summary](features/billing.md)
+- [account deletion](features/account-deletion.md)
+- [account deletion replay](features/account-deletion-replay.md)
 
 For any mapped feature, start evidence before its first action. Save `action.png` when the named action is ready and `result.png` only after the named result appears. Record both visible facts, observe committed state, and finish:
 
 ```sh
-FEATURE=registration # registration, channel-linking, or billing
+FEATURE=registration # registration, channel-linking, billing, account-deletion, or account-deletion-replay
 ./.agents/skills/verify-osfo/helpers/control-osfo evidence "$RUN_ID" "$FEATURE" start
 # Save Chrome screenshots to the exact action.png and result.png paths printed above.
 ./.agents/skills/verify-osfo/helpers/control-osfo record "$RUN_ID" "$FEATURE" action \
@@ -87,13 +89,24 @@ If HEAD changes after launch, discard the run as stale and repeat. A screenshot 
 
 `start` records whether the checkout was clean. A run launched dirty remains a draft even if the checkout is later restored. `evidence finish` records PASS only when the run launched clean, HEAD is unchanged, the checkout is still clean, and the observer wrote its post-assertion marker. Commit the implementation, start a fresh run, and repeat the proof before handoff.
 
-The composed Worker journeys remain useful isolation tests. Run them against the run-owned PostgreSQL maintenance database without copying its dynamic port:
+Run IDs are single-use evidence identities. `start` fails if either active scratch
+state or a preserved artifact directory already exists. Cleanup removes only scratch
+state and keeps evidence, so always choose a fresh run ID instead of appending to an
+earlier run's logs.
+
+The composed Worker journeys remain useful isolation tests. The standard command derives the run-owned Worker, PostgreSQL, and disposable phone details from run state. It first proves that the live account-deletion endpoint rejects one edited retained envelope without consuming it, accepts the untouched request, and reaches terminal scheduled deletion; then it runs the remaining Worker journeys:
 
 ```sh
 ./.agents/skills/verify-osfo/helpers/control-osfo journeys "$RUN_ID"
 ```
 
 Report them as Worker qualification. They do not replace the Chrome evidence above.
+
+To repeat only the live edited-envelope proof, use the standard subcommand. It creates a fresh User for the run-owned phone and terminally removes the User, Action, Deletion Case, fence, and sessions before returning, including through its failure finalizer:
+
+```sh
+./.agents/skills/verify-osfo/helpers/control-osfo account-deletion-envelope-journey "$RUN_ID"
+```
 
 ## Cleanup
 

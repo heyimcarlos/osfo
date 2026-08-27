@@ -1,16 +1,21 @@
-import { and, asc, desc, eq, max, ne } from "drizzle-orm";
-import { Array, Effect, Option, Schema } from "effect";
+import { and, asc, desc, eq, isNull, max, ne, or, sql } from "drizzle-orm";
+import { Array, Effect, Option, Result, Schema } from "effect";
 
-import { ResourcePriceVersion, SessionId, UserId } from "../../../domain";
+import { ConversationRouteId, ResourcePriceVersion, SessionId, UserId } from "../../../domain";
 import type { AllowancePeriodId, AssistantMessageId } from "../../../domain";
-import type { DbTimestamp } from "../../../db";
+import { DbTimestamp } from "../../../db";
 import { UsageActivity } from "../../../domain/usage";
 import { MemoryProvider } from "../../../services/memory-provider";
+import {
+  ApprovedCoreMemoryCorrections,
+  CoreMemoryReplacement,
+  DeletionAuthorization,
+} from "../deletion-actions";
 import { ConversationSnapshotProjection } from "../memory-provider-projection";
 import type { ConversationSnapshotProjection as ConversationSnapshotProjectionType } from "../memory-provider-projection";
 import type { AgentDb } from "./client";
 import { AgentStoreRecordInvalid, AgentStoreUnavailable } from "./errors";
-import { memoryProviderConfiguration, memoryProviderOutbox } from "./schema";
+import { memoryProviderConfiguration, memoryProviderOutbox, sessionOwnership } from "./schema";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect tagged payloads use the canonical _tag discriminator. */
 
@@ -23,7 +28,15 @@ export type MemoryProviderOutboxId = typeof MemoryProviderOutboxId.Type;
 export const SaveConversationPayload = Schema.TaggedStruct("SaveConversation", {
   projection: ConversationSnapshotProjection,
 });
+export const SessionReplacementGeneration = Schema.Struct({
+  expectedCurrentSessionId: SessionId,
+  replacedAt: DbTimestamp,
+  replacementSessionId: SessionId,
+  routeId: ConversationRouteId,
+});
 export const DeleteSessionConversationPayload = Schema.TaggedStruct("DeleteSessionConversation", {
+  authorization: DeletionAuthorization,
+  replacementGeneration: Schema.optionalKey(SessionReplacementGeneration),
   sessionId: SessionId,
   userId: UserId,
 });
@@ -31,6 +44,8 @@ export const DeleteUserKnowledgePayload = Schema.TaggedStruct("DeleteUserKnowled
   userId: UserId,
 });
 export const ForgetKnowledgePayload = Schema.TaggedStruct("ForgetKnowledge", {
+  authorization: DeletionAuthorization,
+  coreMemory: ApprovedCoreMemoryCorrections,
   memoryIds: Schema.NonEmptyArray(MemoryProvider.KnowledgeMemoryId),
   userId: UserId,
 });
@@ -52,10 +67,52 @@ export const MemoryProviderDeletionPayload = Schema.Union([
 ]);
 export type MemoryProviderDeletionPayload = typeof MemoryProviderDeletionPayload.Type;
 
+// Retained rows from before deletion authority was mandatory must decode only far enough to fail
+// closed. New callers cannot construct either legacy variant through the public payload contract.
+const StoredMemoryProviderOutboxPayload = Schema.Union([
+  SaveConversationPayload,
+  Schema.TaggedStruct("DeleteSessionConversation", {
+    authorization: Schema.optionalKey(DeletionAuthorization),
+    replacementGeneration: Schema.optionalKey(SessionReplacementGeneration),
+    sessionId: SessionId,
+    userId: UserId,
+  }),
+  DeleteUserKnowledgePayload,
+  Schema.TaggedStruct("ForgetKnowledge", {
+    authorization: Schema.optionalKey(DeletionAuthorization),
+    coreMemory: Schema.optionalKey(Schema.Array(CoreMemoryReplacement)),
+    memoryIds: Schema.NonEmptyArray(MemoryProvider.KnowledgeMemoryId),
+    userId: UserId,
+  }),
+]);
+
+export const MemoryProviderDeletionProgress = Schema.Union([
+  Schema.TaggedStruct("ForgetKnowledge", {
+    coreMemoryState: Schema.optionalKey(Schema.Literals(["committed", "refreshed"])),
+    completedMemoryIds: Schema.Array(MemoryProvider.KnowledgeMemoryId),
+  }),
+  Schema.TaggedStruct("DeleteSessionConversation", {
+    awaitingDiscovery: Schema.Boolean,
+    targets: Schema.Array(
+      Schema.Struct({
+        documentId: MemoryProvider.ProviderDocumentId,
+        status: Schema.Literals(["accepted", "observed", "deleted"]),
+      }),
+    ),
+  }),
+]);
+export type MemoryProviderDeletionProgress = typeof MemoryProviderDeletionProgress.Type;
+
 export interface EnqueueMemoryProviderDeletion {
+  readonly deletionProgress?: MemoryProviderDeletionProgress | undefined;
   readonly enqueuedAt: DbTimestamp;
   readonly outboxId: MemoryProviderOutboxId;
   readonly payload: MemoryProviderDeletionPayload;
+}
+
+export interface RetainMemoryProviderDeletionPreparation extends EnqueueMemoryProviderDeletion {
+  readonly claimExpiresAt: DbTimestamp;
+  readonly claimToken: string;
 }
 
 const StoredUsageEvidence = Schema.Struct({
@@ -101,6 +158,7 @@ export interface ClaimedMemoryProviderWork {
   readonly allowancePeriodId: AllowancePeriodId | null;
   readonly attemptCount: number;
   readonly claimToken: string;
+  readonly deletionProgress?: MemoryProviderDeletionProgress | null;
   readonly outboxId: MemoryProviderOutboxId;
   readonly payload: MemoryProviderOutboxPayload;
   readonly providerAcceptance: AcceptedConversationDocument | null;
@@ -172,6 +230,7 @@ export const enqueueConversationSnapshotTransaction = (
 ) =>
   enqueueTransaction(transaction, {
     allowancePeriodId: projection.allowancePeriodId,
+    deletionProgress: undefined,
     enqueuedAt,
     operationType: "saveConversation",
     orderingKey: userOrderingKey(projection.userId),
@@ -357,6 +416,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
       db.transaction((transaction) =>
         enqueueTransaction(transaction, {
           allowancePeriodId: null,
+          deletionProgress: input.deletionProgress,
           enqueuedAt: input.enqueuedAt,
           operationType: operationType(input.payload),
           orderingKey: userOrderingKey(input.payload.userId),
@@ -368,6 +428,63 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     if (!accepted) return yield* invalidRecord("enqueueMemoryProviderOutbox");
     return undefined;
   });
+
+  const retainDeletionPreparation = Effect.fn("MemoryProviderOutbox.retainDeletionPreparation")(
+    function* (input: RetainMemoryProviderDeletionPreparation) {
+      const retained = yield* execute("enqueueMemoryProviderOutbox", () =>
+        db.transaction((transaction) => {
+          const payloadJson = JSON.stringify(input.payload);
+          const deletionProgressJson = encodeOptionalDeletionProgress(input.deletionProgress);
+          const existing = transaction
+            .select()
+            .from(memoryProviderOutbox)
+            .where(eq(memoryProviderOutbox.outbox_id, input.outboxId))
+            .limit(1)
+            .get();
+          if (existing !== undefined) {
+            if (
+              existing.payload_json !== payloadJson ||
+              existing.deletion_progress_json !== deletionProgressJson
+            )
+              return { _tag: "Conflict" as const };
+            return existing.status === "claimed" && existing.claim_token === input.claimToken
+              ? { _tag: "Claimed" as const, row: existing }
+              : { _tag: "Existing" as const };
+          }
+          const maximumSequence =
+            transaction
+              .select({ value: max(memoryProviderOutbox.sequence) })
+              .from(memoryProviderOutbox)
+              .get()?.value ?? 0;
+          const row = transaction
+            .insert(memoryProviderOutbox)
+            .values({
+              allowance_period_id: null,
+              attempt_count: 1,
+              available_at: input.enqueuedAt,
+              claim_expires_at: input.claimExpiresAt,
+              claim_token: input.claimToken,
+              deletion_progress_json: deletionProgressJson,
+              enqueued_at: input.enqueuedAt,
+              operation_type: operationType(input.payload),
+              ordering_key: userOrderingKey(input.payload.userId),
+              outbox_id: input.outboxId,
+              payload_json: payloadJson,
+              sequence: maximumSequence + 1,
+              status: "claimed",
+            })
+            .returning()
+            .get();
+          return { _tag: "Claimed" as const, row };
+        }),
+      );
+      if (retained._tag === "Conflict") {
+        return yield* invalidRecord("enqueueMemoryProviderOutbox");
+      }
+      if (retained._tag === "Existing") return Option.none<ClaimedMemoryProviderWork>();
+      return Option.some(yield* decodeClaim(retained.row));
+    },
+  );
 
   const claimNext = Effect.fn("MemoryProviderOutbox.claimNext")(function* (
     now: DbTimestamp,
@@ -412,23 +529,202 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     return Option.some(yield* decodeClaim(claimed));
   });
 
-  const markProviderAccepted = Effect.fn("MemoryProviderOutbox.markProviderAccepted")(
-    (
-      claim: ClaimedMemoryProviderWork,
-      result: MemoryProvider.SaveConversationResult,
-      acceptedAt: DbTimestamp,
-    ) =>
+  const beginProviderSubmission = Effect.fn("MemoryProviderOutbox.beginProviderSubmission")(
+    (claim: ClaimedMemoryProviderWork) =>
       updateClaim("completeMemoryProviderOutbox", claim, {
-        provider_accepted_at: acceptedAt,
-        provider_document_id: result.documentId,
-        provider_status: result.processingStatus,
-        usage_json: encodeUsage(result.usage),
+        provider_submission_ambiguous: true,
       }),
+  );
+
+  const markProviderAccepted = Effect.fn("MemoryProviderOutbox.markProviderAccepted")(function* (
+    claim: ClaimedMemoryProviderWork,
+    result: MemoryProvider.SaveConversationResult,
+    acceptedAt: DbTimestamp,
+  ) {
+    if (claim.payload._tag !== "SaveConversation") {
+      return yield* invalidRecord("completeMemoryProviderOutbox");
+    }
+    const projection = claim.payload.projection;
+    const outcome = yield* execute("completeMemoryProviderOutbox", () =>
+      db.transaction((transaction) => {
+        const current = transaction
+          .select()
+          .from(memoryProviderOutbox)
+          .where(eq(memoryProviderOutbox.outbox_id, claim.outboxId))
+          .limit(1)
+          .get();
+        if (
+          current === undefined ||
+          current.operation_type !== "saveConversation" ||
+          current.payload_json !== JSON.stringify(claim.payload)
+        ) {
+          return "Invalid" as const;
+        }
+        if (current.provider_accepted_at !== null) {
+          return current.provider_document_id === result.documentId
+            ? ("Accepted" as const)
+            : ("Invalid" as const);
+        }
+        const acceptance = {
+          provider_accepted_at: acceptedAt,
+          provider_document_id: result.documentId,
+          provider_submission_ambiguous: false,
+          provider_status: result.processingStatus,
+          usage_json: encodeUsage(result.usage),
+        } as const;
+        if (current.status === "claimed" && current.claim_token === claim.claimToken) {
+          transaction
+            .update(memoryProviderOutbox)
+            .set(acceptance)
+            .where(eq(memoryProviderOutbox.outbox_id, claim.outboxId))
+            .run();
+          return "Accepted" as const;
+        }
+        if (!current.provider_submission_ambiguous) return "Stale" as const;
+
+        const ownedSession = transaction
+          .select({ sessionId: sessionOwnership.session_id })
+          .from(sessionOwnership)
+          .where(eq(sessionOwnership.session_id, projection.sessionId))
+          .limit(1)
+          .get();
+        if (ownedSession !== undefined) {
+          transaction
+            .update(memoryProviderOutbox)
+            .set({
+              ...acceptance,
+              available_at: acceptedAt,
+              claim_expires_at: null,
+              claim_token: null,
+              completed_at: null,
+              last_error: null,
+              status: "pending",
+            })
+            .where(eq(memoryProviderOutbox.outbox_id, claim.outboxId))
+            .run();
+          return "Accepted" as const;
+        }
+
+        const deletionRows = transaction
+          .select({
+            deletionProgressJson: memoryProviderOutbox.deletion_progress_json,
+            outboxId: memoryProviderOutbox.outbox_id,
+            payloadJson: memoryProviderOutbox.payload_json,
+          })
+          .from(memoryProviderOutbox)
+          .where(
+            and(
+              eq(memoryProviderOutbox.operation_type, "deleteSessionConversation"),
+              sql`json_extract(${memoryProviderOutbox.payload_json}, '$.sessionId') = ${projection.sessionId}`,
+              sql`json_extract(${memoryProviderOutbox.payload_json}, '$.userId') = ${projection.userId}`,
+            ),
+          )
+          .all();
+        const [deletion] = deletionRows;
+        if (deletion === undefined || deletionRows.length !== 1) return "Invalid" as const;
+        const deletionPayload = Schema.decodeResult(
+          Schema.fromJsonString(DeleteSessionConversationPayload),
+        )(deletion.payloadJson);
+        if (
+          Result.isFailure(deletionPayload) ||
+          deletionPayload.success.sessionId !== projection.sessionId ||
+          deletionPayload.success.userId !== projection.userId
+        ) {
+          return "Invalid" as const;
+        }
+        const decodedProgress =
+          deletion.deletionProgressJson === null
+            ? Result.succeed<MemoryProviderDeletionProgress>({
+                _tag: "DeleteSessionConversation",
+                awaitingDiscovery: true,
+                targets: [],
+              })
+            : Schema.decodeResult(Schema.fromJsonString(MemoryProviderDeletionProgress))(
+                deletion.deletionProgressJson,
+              );
+        if (
+          Result.isFailure(decodedProgress) ||
+          decodedProgress.success._tag !== "DeleteSessionConversation"
+        ) {
+          return "Invalid" as const;
+        }
+        const otherUncertainSubmissions = transaction
+          .select({ outboxId: memoryProviderOutbox.outbox_id })
+          .from(memoryProviderOutbox)
+          .where(
+            and(
+              eq(memoryProviderOutbox.operation_type, "saveConversation"),
+              ne(memoryProviderOutbox.outbox_id, claim.outboxId),
+              eq(memoryProviderOutbox.provider_submission_ambiguous, true),
+              isNull(memoryProviderOutbox.provider_accepted_at),
+              sql`json_extract(${memoryProviderOutbox.payload_json}, '$.projection.sessionId') = ${projection.sessionId}`,
+            ),
+          )
+          .limit(1)
+          .all();
+        const retainedTarget = decodedProgress.success.targets.find(
+          ({ documentId }) => documentId === result.documentId,
+        );
+        const progress: MemoryProviderDeletionProgress = {
+          _tag: "DeleteSessionConversation",
+          awaitingDiscovery: otherUncertainSubmissions.length > 0,
+          targets:
+            retainedTarget === undefined
+              ? [
+                  ...decodedProgress.success.targets,
+                  { documentId: result.documentId, status: "accepted" },
+                ]
+              : decodedProgress.success.targets,
+        };
+        transaction
+          .update(memoryProviderOutbox)
+          .set({
+            available_at: acceptedAt,
+            claim_expires_at: null,
+            claim_token: null,
+            completed_at: null,
+            deletion_progress_json: encodeDeletionProgress(progress),
+            last_error: null,
+            status: "pending",
+          })
+          .where(
+            and(
+              eq(memoryProviderOutbox.outbox_id, deletion.outboxId),
+              eq(memoryProviderOutbox.payload_json, deletion.payloadJson),
+            ),
+          )
+          .run();
+        transaction
+          .update(memoryProviderOutbox)
+          .set(acceptance)
+          .where(eq(memoryProviderOutbox.outbox_id, claim.outboxId))
+          .run();
+        return "HandedOff" as const;
+      }),
+    );
+    if (outcome === "Invalid") return yield* invalidRecord("completeMemoryProviderOutbox");
+    return outcome !== "Stale";
+  });
+
+  const retainAmbiguousProviderSubmission = Effect.fn(
+    "MemoryProviderOutbox.retainAmbiguousProviderSubmission",
+  )((claim: ClaimedMemoryProviderWork, message: string) =>
+    updateClaim("retryMemoryProviderOutbox", claim, {
+      last_error: message,
+      provider_submission_ambiguous: true,
+    }),
   );
 
   const markProviderStatus = Effect.fn("MemoryProviderOutbox.markProviderStatus")(
     (claim: ClaimedMemoryProviderWork, status: MemoryProvider.ConversationProcessingStatus) =>
       updateClaim("completeMemoryProviderOutbox", claim, { provider_status: status }),
+  );
+
+  const recordDeletionProgress = Effect.fn("MemoryProviderOutbox.recordDeletionProgress")(
+    (claim: ClaimedMemoryProviderWork, progress: MemoryProviderDeletionProgress) =>
+      updateClaim("completeMemoryProviderOutbox", claim, {
+        deletion_progress_json: encodeDeletionProgress(progress),
+      }),
   );
 
   const failProviderAcceptance = Effect.fn("MemoryProviderOutbox.failProviderAcceptance")(
@@ -476,6 +772,99 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
       }),
   );
 
+  const releaseDeletionPreparation = Effect.fn("MemoryProviderOutbox.releaseDeletionPreparation")(
+    function* (claim: ClaimedMemoryProviderWork, availableAt: DbTimestamp) {
+      const progress = claim.deletionProgress;
+      if (
+        claim.payload._tag === "ForgetKnowledge" &&
+        progress !== null &&
+        progress !== undefined &&
+        progress._tag !== "ForgetKnowledge"
+      ) {
+        return yield* invalidRecord();
+      }
+      const release = {
+        available_at: availableAt,
+        claim_expires_at: null,
+        claim_token: null,
+        last_error: null,
+        status: "pending" as const,
+      };
+      if (claim.payload._tag !== "ForgetKnowledge") {
+        return yield* updateClaim("retryMemoryProviderOutbox", claim, release);
+      }
+      return yield* updateClaim("retryMemoryProviderOutbox", claim, {
+        ...release,
+        deletion_progress_json: encodeDeletionProgress(
+          progress?._tag === "ForgetKnowledge"
+            ? { ...progress, coreMemoryState: "refreshed" }
+            : {
+                _tag: "ForgetKnowledge",
+                coreMemoryState: "refreshed",
+                completedMemoryIds: [],
+              },
+        ),
+      });
+    },
+  );
+
+  const markForgetKnowledgeCorrectionCommitted = Effect.fn(
+    "MemoryProviderOutbox.markForgetKnowledgeCorrectionCommitted",
+  )(function* (claim: ClaimedMemoryProviderWork) {
+    if (claim.payload._tag !== "ForgetKnowledge") {
+      return yield* invalidRecord("completeMemoryProviderOutbox");
+    }
+    const progress = claim.deletionProgress;
+    if (progress !== null && progress !== undefined && progress._tag !== "ForgetKnowledge") {
+      return yield* invalidRecord("completeMemoryProviderOutbox");
+    }
+    const committed: MemoryProviderDeletionProgress = {
+      _tag: "ForgetKnowledge",
+      coreMemoryState: "committed",
+      completedMemoryIds: progress?.completedMemoryIds ?? [],
+    };
+    const updated = yield* execute("completeMemoryProviderOutbox", () =>
+      db
+        .update(memoryProviderOutbox)
+        .set({ deletion_progress_json: encodeDeletionProgress(committed) })
+        .where(
+          and(
+            eq(memoryProviderOutbox.outbox_id, claim.outboxId),
+            eq(memoryProviderOutbox.status, "claimed"),
+            eq(memoryProviderOutbox.claim_token, claim.claimToken),
+          ),
+        )
+        .returning({ outboxId: memoryProviderOutbox.outbox_id })
+        .get(),
+    );
+    if (updated === undefined) {
+      return yield* invalidRecord("completeMemoryProviderOutbox");
+    }
+    return undefined;
+  });
+
+  const cancelDeletionPreparation = Effect.fn("MemoryProviderOutbox.cancelDeletionPreparation")(
+    (claim: ClaimedMemoryProviderWork) =>
+      execute("completeMemoryProviderOutbox", () =>
+        db.transaction((transaction) => {
+          const removed = transaction
+            .delete(memoryProviderOutbox)
+            .where(
+              and(
+                eq(memoryProviderOutbox.outbox_id, claim.outboxId),
+                eq(memoryProviderOutbox.status, "claimed"),
+                eq(memoryProviderOutbox.claim_token, claim.claimToken),
+                isNull(memoryProviderOutbox.provider_accepted_at),
+                isNull(memoryProviderOutbox.deletion_progress_json),
+              ),
+            )
+            .returning({ outboxId: memoryProviderOutbox.outbox_id })
+            .get();
+          return removed !== undefined;
+        }),
+      ),
+  );
+
   const retry = Effect.fn("MemoryProviderOutbox.retry")(
     (claim: ClaimedMemoryProviderWork, availableAt: DbTimestamp, message: string) =>
       updateClaim("retryMemoryProviderOutbox", claim, {
@@ -518,6 +907,78 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     );
   });
 
+  const hasUnsettledProviderConversationWork = execute("inspectMemoryProviderOutbox", () =>
+    db
+      .select({ outboxId: memoryProviderOutbox.outbox_id })
+      .from(memoryProviderOutbox)
+      .where(
+        and(
+          eq(memoryProviderOutbox.operation_type, "saveConversation"),
+          ne(memoryProviderOutbox.status, "completed"),
+          or(
+            eq(memoryProviderOutbox.provider_status, "processing"),
+            and(
+              eq(memoryProviderOutbox.status, "claimed"),
+              isNull(memoryProviderOutbox.provider_accepted_at),
+            ),
+          ),
+        ),
+      )
+      .limit(1)
+      .all(),
+  ).pipe(Effect.map((rows) => rows.length > 0));
+
+  const expediteProcessingConversationWork = Effect.fn(
+    "MemoryProviderOutbox.expediteProcessingConversationWork",
+  )((availableAt: DbTimestamp) =>
+    execute("retryMemoryProviderOutbox", () =>
+      db
+        .update(memoryProviderOutbox)
+        .set({
+          available_at: availableAt,
+          claim_expires_at: null,
+          claim_token: null,
+          completed_at: null,
+          status: "pending",
+        })
+        .where(
+          and(
+            eq(memoryProviderOutbox.operation_type, "saveConversation"),
+            eq(memoryProviderOutbox.provider_status, "processing"),
+            ne(memoryProviderOutbox.status, "completed"),
+          ),
+        )
+        .run(),
+    ).pipe(Effect.asVoid),
+  );
+
+  const isClaimCurrent = Effect.fn("MemoryProviderOutbox.isClaimCurrent")(
+    (claim: ClaimedMemoryProviderWork) =>
+      execute("inspectMemoryProviderOutbox", () =>
+        db.transaction((transaction) => {
+          const current = transaction
+            .select({
+              claimToken: memoryProviderOutbox.claim_token,
+              status: memoryProviderOutbox.status,
+            })
+            .from(memoryProviderOutbox)
+            .where(eq(memoryProviderOutbox.outbox_id, claim.outboxId))
+            .limit(1)
+            .get();
+          if (current?.status !== "claimed" || current.claimToken !== claim.claimToken)
+            return false;
+          if (claim.payload._tag !== "SaveConversation") return true;
+          const session = transaction
+            .select({ sessionId: sessionOwnership.session_id })
+            .from(sessionOwnership)
+            .where(eq(sessionOwnership.session_id, claim.payload.projection.sessionId))
+            .limit(1)
+            .get();
+          return session !== undefined;
+        }),
+      ),
+  );
+
   const updateClaim = Effect.fn("MemoryProviderOutbox.updateClaim")(function* (
     operation: "completeMemoryProviderOutbox" | "retryMemoryProviderOutbox",
     claim: ClaimedMemoryProviderWork,
@@ -546,18 +1007,28 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
   });
 
   return {
+    beginProviderSubmission,
     claimNext,
+    cancelDeletionPreparation,
     completeConfiguration,
     complete,
     enqueueDeletion,
     fail,
     failProviderAcceptance,
+    expediteProcessingConversationWork,
+    hasUnsettledProviderConversationWork,
     hasRetryableWork,
     inspectConfiguration,
+    isClaimCurrent,
     awaitProvider,
     markProviderAccepted,
+    markForgetKnowledgeCorrectionCommitted,
     markProviderStatus,
+    recordDeletionProgress,
+    retainAmbiguousProviderSubmission,
     readRecentTurnBridge,
+    releaseDeletionPreparation,
+    retainDeletionPreparation,
     requireConfiguration,
     retry,
   };
@@ -567,6 +1038,7 @@ export type MemoryProviderOutboxStore = ReturnType<typeof makeMemoryProviderOutb
 
 interface EnqueueMemoryProviderWork {
   readonly allowancePeriodId: AllowancePeriodId | null;
+  readonly deletionProgress: MemoryProviderDeletionProgress | undefined;
   readonly enqueuedAt: DbTimestamp;
   readonly operationType: (typeof memoryProviderOutbox.$inferInsert)["operation_type"];
   readonly orderingKey: string;
@@ -576,13 +1048,20 @@ interface EnqueueMemoryProviderWork {
 
 const enqueueTransaction = (transaction: AgentTransaction, input: EnqueueMemoryProviderWork) => {
   const payloadJson = JSON.stringify(input.payload);
+  const deletionProgressJson = encodeOptionalDeletionProgress(input.deletionProgress);
   const existing = transaction
-    .select({ payloadJson: memoryProviderOutbox.payload_json })
+    .select({
+      deletionProgressJson: memoryProviderOutbox.deletion_progress_json,
+      payloadJson: memoryProviderOutbox.payload_json,
+    })
     .from(memoryProviderOutbox)
     .where(eq(memoryProviderOutbox.outbox_id, input.outboxId))
     .limit(1)
     .get();
-  if (existing !== undefined) return existing.payloadJson === payloadJson;
+  if (existing !== undefined)
+    return (
+      existing.payloadJson === payloadJson && existing.deletionProgressJson === deletionProgressJson
+    );
   const maximumSequence =
     transaction
       .select({ value: max(memoryProviderOutbox.sequence) })
@@ -593,6 +1072,7 @@ const enqueueTransaction = (transaction: AgentTransaction, input: EnqueueMemoryP
     .values({
       allowance_period_id: input.allowancePeriodId,
       available_at: input.enqueuedAt,
+      deletion_progress_json: deletionProgressJson,
       enqueued_at: input.enqueuedAt,
       operation_type: input.operationType,
       ordering_key: input.orderingKey,
@@ -601,6 +1081,69 @@ const enqueueTransaction = (transaction: AgentTransaction, input: EnqueueMemoryP
       sequence: maximumSequence + 1,
       status: "pending",
     })
+    .run();
+  return true;
+};
+
+/** Insert one exact deletion operation inside a wider Agent-local transaction. */
+export const enqueueMemoryProviderDeletionTransaction = (
+  transaction: AgentTransaction,
+  input: EnqueueMemoryProviderDeletion,
+) =>
+  enqueueTransaction(transaction, {
+    allowancePeriodId: null,
+    deletionProgress: input.deletionProgress,
+    enqueuedAt: input.enqueuedAt,
+    operationType: operationType(input.payload),
+    orderingKey: userOrderingKey(input.payload.userId),
+    outboxId: input.outboxId,
+    payload: input.payload,
+  });
+
+/**
+ * Atomically release an exact retained deletion preparation after its local destructive
+ * preconditions have committed. A preparation may acquire its initial provider targets during
+ * that same transaction, but it may never replace progress already recorded by reconciliation.
+ */
+export const settleMemoryProviderDeletionPreparationTransaction = (
+  transaction: AgentTransaction,
+  input: EnqueueMemoryProviderDeletion,
+) => {
+  const payloadJson = JSON.stringify(input.payload);
+  const deletionProgressJson = encodeOptionalDeletionProgress(input.deletionProgress);
+  const existing = transaction
+    .select({
+      deletionProgressJson: memoryProviderOutbox.deletion_progress_json,
+      operationType: memoryProviderOutbox.operation_type,
+      orderingKey: memoryProviderOutbox.ordering_key,
+      payloadJson: memoryProviderOutbox.payload_json,
+    })
+    .from(memoryProviderOutbox)
+    .where(eq(memoryProviderOutbox.outbox_id, input.outboxId))
+    .limit(1)
+    .get();
+  if (existing === undefined) return enqueueMemoryProviderDeletionTransaction(transaction, input);
+  if (
+    existing.operationType !== operationType(input.payload) ||
+    existing.orderingKey !== userOrderingKey(input.payload.userId) ||
+    existing.payloadJson !== payloadJson ||
+    (existing.deletionProgressJson !== null &&
+      existing.deletionProgressJson !== deletionProgressJson)
+  ) {
+    return false;
+  }
+  transaction
+    .update(memoryProviderOutbox)
+    .set({
+      available_at: input.enqueuedAt,
+      claim_expires_at: null,
+      claim_token: null,
+      completed_at: null,
+      deletion_progress_json: deletionProgressJson,
+      last_error: null,
+      status: "pending",
+    })
+    .where(eq(memoryProviderOutbox.outbox_id, input.outboxId))
     .run();
   return true;
 };
@@ -618,9 +1161,25 @@ const userOrderingKey = (userId: UserId): string => `user:${userId}`;
 const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
   row: typeof memoryProviderOutbox.$inferSelect,
 ) {
+  const storedPayload = yield* Schema.decodeEffect(
+    Schema.fromJsonString(StoredMemoryProviderOutboxPayload),
+  )(row.payload_json).pipe(Effect.mapError(() => invalidRecord()));
+  if (
+    (storedPayload._tag === "DeleteSessionConversation" ||
+      storedPayload._tag === "ForgetKnowledge") &&
+    storedPayload.authorization === undefined
+  ) {
+    return yield* invalidRecord();
+  }
   const payload = yield* Schema.decodeEffect(Schema.fromJsonString(MemoryProviderOutboxPayload))(
     row.payload_json,
   ).pipe(Effect.mapError(() => invalidRecord()));
+  const deletionProgress =
+    row.deletion_progress_json === null
+      ? null
+      : yield* decodeDeletionProgress(row.deletion_progress_json).pipe(
+          Effect.mapError(() => invalidRecord()),
+        );
   const usage =
     row.usage_json === null
       ? null
@@ -643,7 +1202,26 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
     hasProviderAcceptance !== (usage !== null) ||
     hasProviderAcceptance !== (providerDocumentId !== null) ||
     hasProviderAcceptance !== (providerStatus !== null) ||
-    providerStatus === "failed"
+    providerStatus === "failed" ||
+    (hasProviderAcceptance && row.provider_submission_ambiguous)
+  ) {
+    return yield* invalidRecord();
+  }
+  if (
+    (deletionProgress !== null && deletionProgress._tag !== payload._tag) ||
+    (deletionProgress !== null && payload._tag === "SaveConversation") ||
+    (deletionProgress !== null && payload._tag === "DeleteUserKnowledge") ||
+    (deletionProgress?._tag === "ForgetKnowledge" &&
+      payload._tag === "ForgetKnowledge" &&
+      (new Set(deletionProgress.completedMemoryIds).size !==
+        deletionProgress.completedMemoryIds.length ||
+        deletionProgress.completedMemoryIds.some(
+          (memoryId) => !payload.memoryIds.includes(memoryId),
+        ))) ||
+    (deletionProgress?._tag === "DeleteSessionConversation" &&
+      ((deletionProgress.targets.length === 0 && !deletionProgress.awaitingDiscovery) ||
+        new Set(deletionProgress.targets.map((target) => target.documentId)).size !==
+          deletionProgress.targets.length))
   ) {
     return yield* invalidRecord();
   }
@@ -669,6 +1247,7 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
     allowancePeriodId: row.allowance_period_id,
     attemptCount: row.attempt_count,
     claimToken: row.claim_token,
+    deletionProgress,
     outboxId,
     payload,
     providerAcceptance:
@@ -681,6 +1260,16 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
 });
 
 const encodeUsage = Schema.encodeSync(Schema.fromJsonString(StoredUsageEvidence));
+const encodeDeletionProgress = Schema.encodeSync(
+  Schema.fromJsonString(MemoryProviderDeletionProgress),
+);
+
+const encodeOptionalDeletionProgress = (
+  progress: MemoryProviderDeletionProgress | undefined,
+): string | null => (progress === undefined ? null : encodeDeletionProgress(progress));
+
+const decodeDeletionProgress = (json: string) =>
+  Schema.decodeEffect(Schema.fromJsonString(MemoryProviderDeletionProgress))(json);
 
 const decodeUsage = (json: string) =>
   Schema.decodeEffect(Schema.fromJsonString(StoredUsageEvidence))(json).pipe(
@@ -690,6 +1279,7 @@ const decodeUsage = (json: string) =>
 const invalidRecord = (
   operation:
     | "claimMemoryProviderOutbox"
+    | "completeMemoryProviderOutbox"
     | "enqueueMemoryProviderOutbox"
     | "inspectMemoryProviderOutbox" = "claimMemoryProviderOutbox",
 ) =>

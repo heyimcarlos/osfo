@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+worker_log="${1:-}"
+proof_shape="${2:-one-click}"
+if [[ ! -f "$worker_log" ]]; then
+  printf 'Worker log does not exist: %s\n' "$worker_log" >&2
+  exit 1
+fi
+
+count_matches() {
+  local pattern count
+  pattern="$1"
+  if command -v rg >/dev/null 2>&1; then
+    count="$(rg --count-matches "$pattern" "$worker_log" || true)"
+  else
+    count="$(grep -E -c -- "$pattern" "$worker_log" || true)"
+  fi
+  printf '%s\n' "${count:-0}"
+}
+
+presentation_requests="$(count_matches '^\[wrangler:info\] GET /v1/account/deletion-action [0-9]{3}( |$)')"
+presentation_successes="$(count_matches '^\[wrangler:info\] GET /v1/account/deletion-action 200 OK( \([0-9]+ms\))?$')"
+delete_requests="$(count_matches '^\[wrangler:info\] DELETE /v1/account [0-9]{3}( |$)')"
+delete_successes="$(count_matches '^\[wrangler:info\] DELETE /v1/account 200 OK( \([0-9]+ms\))?$')"
+
+counts="$(jq --null-input \
+  --argjson presentationRequests "$presentation_requests" \
+  --argjson presentationSuccesses "$presentation_successes" \
+  --argjson deleteRequests "$delete_requests" \
+  --argjson deleteSuccesses "$delete_successes" \
+  '{
+    presentationRequests: $presentationRequests,
+    presentationSuccesses: $presentationSuccesses,
+    deleteRequests: $deleteRequests,
+    deleteSuccesses: $deleteSuccesses
+  }')"
+
+case "$proof_shape" in
+  one-click)
+    expected_delete_requests=1
+    ;;
+  retained-replay)
+    expected_delete_requests=2
+    ;;
+  *)
+    printf 'Unknown account deletion proof shape: %s\n' "$proof_shape" >&2
+    exit 2
+    ;;
+esac
+
+if ! jq --exit-status --argjson deletes "$expected_delete_requests" '
+  .presentationRequests == 1 and .presentationSuccesses == 1 and
+  .deleteRequests == $deletes and .deleteSuccesses == $deletes
+' <<<"$counts" >/dev/null; then
+  printf 'Account deletion HTTP evidence does not match %s proof: %s\n' "$proof_shape" \
+    "$(jq --compact-output . <<<"$counts")" >&2
+  exit 1
+fi
+
+printf '%s\n' "$counts"

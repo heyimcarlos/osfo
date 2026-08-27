@@ -187,20 +187,45 @@ export interface CheckConversationSearchabilityInput {
 
 /** Exact approved derived memories to forget within one User scope. */
 export interface ForgetKnowledgeInput {
-  readonly memoryIds: readonly [KnowledgeMemoryId, ...ReadonlyArray<KnowledgeMemoryId>];
+  readonly memoryId: KnowledgeMemoryId;
   readonly userId: UserId;
 }
 
 /** One Session conversation to delete from the Knowledge Base. */
 export interface DeleteSessionConversationInput {
+  readonly documentId: ProviderDocumentId;
   readonly sessionId: SessionId;
   readonly userId: UserId;
 }
+
+/** One Session conversation identity to discover without performing deletion. */
+export interface FindSessionConversationInput {
+  readonly sessionId: SessionId;
+  readonly userId: UserId;
+}
+
+/** Fenced provider target discovered for a Session conversation deletion. */
+export type SessionConversationDiscovery =
+  | { readonly _tag: "AlreadyAbsent" }
+  | {
+      readonly _tag: "Found";
+      readonly documentIds: readonly [ProviderDocumentId, ...ReadonlyArray<ProviderDocumentId>];
+    };
+
+/** Current provider proof for an exact discovered Session conversation target. */
+export type SessionConversationVerification =
+  | { readonly _tag: "AlreadyAbsent" }
+  | { readonly _tag: "Verified" };
 
 /** All Knowledge Base data to delete for one User. */
 export interface DeleteUserKnowledgeInput {
   readonly userId: UserId;
 }
+
+/** Current provider proof for the exact User container after deletion. */
+export type UserKnowledgeVerification =
+  | { readonly _tag: "AlreadyAbsent" }
+  | { readonly _tag: "Verified" };
 
 /** Confirmed live absence after a provider deletion operation. */
 export type DeletionResult = { readonly _tag: "AlreadyAbsent" } | { readonly _tag: "Deleted" };
@@ -291,12 +316,27 @@ export interface Interface {
   readonly deleteSessionConversation: (
     input: DeleteSessionConversationInput,
   ) => Effect.Effect<DeletionResult, MemoryProviderRejected | MemoryProviderUnavailable>;
+  readonly findSessionConversation: (
+    input: FindSessionConversationInput,
+  ) => Effect.Effect<
+    SessionConversationDiscovery,
+    MemoryProviderRejected | MemoryProviderUnavailable
+  >;
   readonly deleteUserKnowledge: (
     input: DeleteUserKnowledgeInput,
   ) => Effect.Effect<DeletionResult, MemoryProviderRejected | MemoryProviderUnavailable>;
+  readonly verifyUserKnowledge: (
+    input: DeleteUserKnowledgeInput,
+  ) => Effect.Effect<UserKnowledgeVerification, MemoryProviderRejected | MemoryProviderUnavailable>;
   readonly forgetKnowledge: (
     input: ForgetKnowledgeInput,
   ) => Effect.Effect<DeletionResult, MemoryProviderRejected | MemoryProviderUnavailable>;
+  readonly verifySessionConversation: (
+    input: DeleteSessionConversationInput,
+  ) => Effect.Effect<
+    SessionConversationVerification,
+    MemoryProviderRejected | MemoryProviderUnavailable
+  >;
   readonly recall: (
     input: RecallInput,
   ) => Effect.Effect<RecallResult, MemoryProviderRejected | MemoryProviderUnavailable>;

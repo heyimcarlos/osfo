@@ -22,6 +22,7 @@ export const DbOperation = Schema.Literals([
   "inspectChannelLinkAuthorization",
   "inspectUserSuspension",
   "inspectDeletionCase",
+  "inspectAccountDeletionObjects",
   "inspectBillingSubscription",
   "suspendUser",
   "restoreUser",

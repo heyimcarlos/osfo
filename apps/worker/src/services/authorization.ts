@@ -36,7 +36,7 @@ import {
   requiresGmailConnection,
   requiresOwnership,
 } from "./authorization-operation-policy";
-import { authorizeShared } from "./shared-authorization";
+import { authorizeShared, exceedsExhaustedConversationLimit } from "./shared-authorization";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Authorization and manifest outcomes use the standard Effect _tag discriminator. */
 import { AuthSessionAuthorityFact, AuthSessionId } from "../domain/auth-session";
@@ -49,7 +49,7 @@ const ActingAuthority = Schema.Union([
   ChannelLinkAuthorityFact,
   Schema.TaggedStruct("DurableTrigger", {
     triggerId: Schema.String,
-    triggerType: Schema.Literals(["scheduledTask", "workflow"]),
+    triggerType: Schema.Literals(["deletionCase", "scheduledTask", "workflow"]),
     userId: UserId,
   }),
 ]);
@@ -60,7 +60,7 @@ export const OriginatingAuthority = Schema.Union([
   Schema.TaggedStruct("ChannelLink", { channelLinkId: ChannelLinkId }),
   Schema.TaggedStruct("DurableTrigger", {
     triggerId: Schema.String,
-    triggerType: Schema.Literals(["scheduledTask", "workflow"]),
+    triggerType: Schema.Literals(["deletionCase", "scheduledTask", "workflow"]),
   }),
 ]);
 
@@ -378,7 +378,14 @@ const authorize = (
     return denied("authorityMismatch");
   }
   if (Predicate.isTagged(context.user, "SuspendedUser")) return denied("userSuspended");
-  if (Predicate.isTagged(context.deletionAccess, "DeletionAccessRevoked")) {
+  const continuesExactDeletionCase =
+    operation.kind === "account.delete" &&
+    Predicate.isTagged(authority, "DurableTrigger") &&
+    authority.triggerType === "deletionCase";
+  if (
+    Predicate.isTagged(context.deletionAccess, "DeletionAccessRevoked") &&
+    !continuesExactDeletionCase
+  ) {
     return denied("deletionAccessRevoked");
   }
   if (requiresOwnership(operation) && context.resourceOwnerUserId !== context.user.userId) {
@@ -448,13 +455,23 @@ const authorize = (
   }
   const allowanceRules = policyFor(allowancePolicy, allowance.plan);
   const relevantKinds = [...allowanceKindsFor(operation), "vendorUsdMicros" as const];
-  for (const allowanceKind of relevantKinds) {
-    if (allowanceKind === "planUsageMicros") continue;
+  const allowanceExhausted = relevantKinds.some((allowanceKind) => {
+    if (allowanceKind === "planUsageMicros") return false;
     const recorded =
       allowance.usage.find((usage) => usage.allowanceKind === allowanceKind)?.quantity ?? 0n;
-    if (recorded >= allowanceRules.allowanceLimits[allowanceKind]) {
-      return denied("allowanceExhausted", allowance.endsAt);
+    return recorded >= allowanceRules.allowanceLimits[allowanceKind];
+  });
+  if (allowanceExhausted) {
+    if (
+      operation.kind === "conversation.run" &&
+      operation.exhaustedContinuity === "deletionOrDataRights" &&
+      context.liveFacts.concurrentExhaustedConversations <
+        BigInt(capabilityCatalog.exhaustedConversation.concurrentOperations) &&
+      !exceedsExhaustedConversationLimit(operation, capabilityCatalog)
+    ) {
+      return admitted(capabilityCatalog, "exhaustedConversation");
     }
+    return denied("allowanceExhausted", allowance.endsAt);
   }
   return {
     _tag: "Admitted",

@@ -50,6 +50,7 @@ it.effect("orders bounded provider evidence after Native Memory policy", () => {
     );
     expect(result.providerContext).toContain('"Prefers small releases"');
     expect(result.providerContext).toContain("Production deploys require approval");
+    expect(result.providerContext).toContain("id=memory-1");
     expect(result.providerContext).toContain("Approval is no longer required");
     expect(result.providerContext).toContain("Indexed conversation source evidence");
     expect(result.usage.completedNonModelCost).toEqual([
@@ -201,38 +202,53 @@ it.effect("fails open when provider recall exceeds its strict deadline", () =>
   }).pipe(Effect.provide(memoryLayerWithRecall(() => Effect.never))),
 );
 
-it.effect("uses the bounded profile-and-query path without source retrieval when exhausted", () => {
-  const recalledModes: Array<MemoryProvider.RecallMode> = [];
-  return PromptAssembly.assemble({
-    agentInstructions: "Agent instructions",
-    mode: "exhausted",
-    recentTurns: [
-      {
-        messages: [{ content: "Local bridge must not be used", role: "user" }],
-        recordedAt: "2026-08-24T10:00:00.000Z",
-        sourceId: "conversation-2",
-      },
-    ],
-    query: "deployment",
-    userId,
-  }).pipe(
-    Effect.map((result) => {
-      expect(recalledModes).toEqual(["exhausted"]);
-      expect(result.providerContext).not.toContain("Local bridge must not be used");
-      expect(result.providerContext).not.toContain("Indexed conversation source evidence");
-    }),
-    Effect.provide(
-      memoryLayerWithRecall((input) => {
-        recalledModes.push(input.mode);
-        return Effect.succeed({
-          profile: { dynamic: [], static: ["Profile fact"] },
-          relevantMemories: [],
-          sourceChunks: [],
-          usage: testUsage,
+it.effect(
+  "skips provider recall and provider usage when managed deletion help is exhausted",
+  () => {
+    const recalledModes: Array<MemoryProvider.RecallMode> = [];
+    return PromptAssembly.forModelTurn({
+      agentInstructions: "Agent instructions",
+      continuation: false,
+      messages: [{ content: "Please forget what you know about me", role: "user" }],
+      mode: "exhausted",
+      userId,
+    }).pipe(
+      Effect.map((result) => {
+        expect(recalledModes).toEqual([]);
+        expect(result).toMatchObject({
+          _tag: "ProviderRecallSkipped",
+          providerContext: null,
+          usage: null,
+        });
+        expect(PromptAssembly.policyForManagedExecution("exhaustedConversation")).toEqual({
+          recallMode: "exhausted",
+          recordProviderRecallUsage: false,
         });
       }),
-    ),
-  );
+      Effect.provide(
+        memoryLayerWithRecall((input) => {
+          recalledModes.push(input.mode);
+          return Effect.succeed({
+            profile: { dynamic: [], static: ["Profile fact"] },
+            relevantMemories: [],
+            sourceChunks: [],
+            usage: testUsage,
+          });
+        }),
+      ),
+    );
+  },
+);
+
+it("keeps ordinary managed turns on recall with provider usage accounting", () => {
+  expect(PromptAssembly.policyForManagedExecution("normalPlanUsage")).toEqual({
+    recallMode: "normal",
+    recordProviderRecallUsage: true,
+  });
+  expect(PromptAssembly.policyForManagedExecution(undefined)).toEqual({
+    recallMode: "normal",
+    recordProviderRecallUsage: true,
+  });
 });
 
 it.effect("keeps the newest provider and bridge evidence when item bounds are reached", () => {
@@ -519,10 +535,13 @@ const memoryLayerWithRecall = (recall: MemoryProvider.Interface["recall"]) =>
       configureUserGuidance: () => Effect.die(new Error("unexpected User configuration")),
       deleteSessionConversation: () => Effect.die(new Error("unexpected Session delete")),
       deleteUserKnowledge: () => Effect.die(new Error("unexpected User delete")),
+      findSessionConversation: () => Effect.die(new Error("unexpected Session discovery")),
       forgetKnowledge: () => Effect.die(new Error("unexpected forget")),
       getConversationStatus: () => Effect.die(new Error("unexpected conversation status read")),
       recall,
       saveConversation: () => Effect.die(new Error("unexpected conversation save")),
+      verifySessionConversation: () => Effect.die(new Error("unexpected Session verification")),
+      verifyUserKnowledge: () => Effect.die(new Error("unexpected User verification")),
     }),
   );
 

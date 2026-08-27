@@ -18,6 +18,8 @@ export const registeredToolNameValues = [
   "generatePresentation",
   "loadSkill",
   "osfoClearCoreMemory",
+  "osfoDeleteSession",
+  "osfoForgetKnowledge",
   "readFile",
   "sessionRecall",
   "set_context",

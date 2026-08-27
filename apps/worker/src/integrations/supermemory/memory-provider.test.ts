@@ -14,6 +14,54 @@ import { MemoryProvider } from "../../services/memory-provider";
 import { PromptAssembly } from "../../services/prompt-assembly";
 import { SupermemoryMemoryProvider } from "./memory-provider";
 
+const forgetKnowledge = (
+  memory: MemoryProvider.Interface,
+  input: {
+    readonly memoryIds: readonly [
+      MemoryProvider.KnowledgeMemoryId,
+      ...ReadonlyArray<MemoryProvider.KnowledgeMemoryId>,
+    ];
+    readonly userId: UserId;
+  },
+) =>
+  Effect.forEach(input.memoryIds, (memoryId) =>
+    memory.forgetKnowledge({ memoryId, userId: input.userId }),
+  ).pipe(
+    Effect.map((results) =>
+      results.some((result) => result._tag === "Deleted")
+        ? ({ _tag: "Deleted" } as const)
+        : ({ _tag: "AlreadyAbsent" } as const),
+    ),
+  );
+
+const deleteSessionConversation = (
+  memory: MemoryProvider.Interface,
+  input: MemoryProvider.FindSessionConversationInput,
+) =>
+  memory.findSessionConversation(input).pipe(
+    Effect.flatMap((discovered) => {
+      if (discovered._tag === "AlreadyAbsent") return Effect.succeed(discovered);
+      return Effect.forEach(discovered.documentIds, (documentId) => {
+        const target = { ...input, documentId };
+        return memory
+          .verifySessionConversation(target)
+          .pipe(
+            Effect.flatMap((verified) =>
+              verified._tag === "AlreadyAbsent"
+                ? Effect.succeed(verified)
+                : memory.deleteSessionConversation(target),
+            ),
+          );
+      }).pipe(
+        Effect.map((results) =>
+          results.some((result) => result._tag === "Deleted")
+            ? ({ _tag: "Deleted" } as const)
+            : ({ _tag: "AlreadyAbsent" } as const),
+        ),
+      );
+    }),
+  );
+
 it.effect("recalls User-scoped profile and relevant Knowledge Base evidence", () =>
   withProvider(({ requests, origin, respondWith }) =>
     Effect.gen(function* () {
@@ -525,7 +573,7 @@ it.effect("forgets only exact approved memory IDs within the User scope", () =>
         { body: { forgotten: true, id: "memory-2" }, status: 200 },
       );
       const memory = yield* MemoryProvider.Service;
-      const result = yield* memory.forgetKnowledge({
+      const result = yield* forgetKnowledge(memory, {
         memoryIds: [
           MemoryProvider.KnowledgeMemoryId.make("memory-1"),
           MemoryProvider.KnowledgeMemoryId.make("memory-2"),
@@ -558,12 +606,78 @@ it.effect("forgets only exact approved memory IDs within the User scope", () =>
   ),
 );
 
-it.effect("deletes one Session conversation by its stable provider identity", () =>
+it.effect("keeps an exact memory deletion pending when the provider confirms another ID", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({ body: { forgotten: true, id: "different-memory" }, status: 200 });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .forgetKnowledge({
+          memoryId: MemoryProvider.KnowledgeMemoryId.make("memory-1"),
+          userId: UserId.make("user-1"),
+        })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "identityMismatch",
+        operation: "forgetKnowledge",
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("deletes every Session conversation document by stable provider identity", () =>
   withProvider(({ requests, origin, respondWith }) =>
     Effect.gen(function* () {
-      respondWith({ status: 204 });
+      respondWith(
+        {
+          body: {
+            memories: [
+              {
+                containerTags: ["u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
+                customId: "s_rOWDOMu6gfHVler-5_5Pqai1QTLVqrovuxZcQccEncE",
+                id: "document-1",
+              },
+            ],
+            pagination: { currentPage: 1, totalItems: 2, totalPages: 2 },
+          },
+          status: 200,
+        },
+        {
+          body: {
+            memories: [
+              {
+                containerTags: ["shared_project", "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
+                customId: "s_rOWDOMu6gfHVler-5_5Pqai1QTLVqrovuxZcQccEncE",
+                id: "document-2",
+              },
+            ],
+            pagination: { currentPage: 2, totalItems: 2, totalPages: 2 },
+          },
+          status: 200,
+        },
+        {
+          body: {
+            containerTags: ["shared_project", "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
+            customId: "s_rOWDOMu6gfHVler-5_5Pqai1QTLVqrovuxZcQccEncE",
+            id: "document-1",
+          },
+          status: 200,
+        },
+        { status: 204 },
+        {
+          body: {
+            containerTags: ["shared_project", "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
+            customId: "s_rOWDOMu6gfHVler-5_5Pqai1QTLVqrovuxZcQccEncE",
+            id: "document-2",
+          },
+          status: 200,
+        },
+        { status: 204 },
+      );
       const memory = yield* MemoryProvider.Service;
-      const result = yield* memory.deleteSessionConversation({
+      const result = yield* deleteSessionConversation(memory, {
         sessionId: SessionId.make("session:with/provider-invalid characters"),
         userId: UserId.make("user:with/provider-invalid characters"),
       });
@@ -572,9 +686,47 @@ it.effect("deletes one Session conversation by its stable provider identity", ()
       expect(requests).toEqual([
         {
           authorization: "Bearer test-api-key",
+          body: {
+            containerTags: ["u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
+            limit: 100,
+            page: 1,
+          },
+          method: "POST",
+          path: "/v3/documents/list",
+        },
+        {
+          authorization: "Bearer test-api-key",
+          body: {
+            containerTags: ["u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
+            limit: 100,
+            page: 2,
+          },
+          method: "POST",
+          path: "/v3/documents/list",
+        },
+        {
+          authorization: "Bearer test-api-key",
+          body: undefined,
+          method: "GET",
+          path: "/v3/documents/document-1",
+        },
+        {
+          authorization: "Bearer test-api-key",
           body: undefined,
           method: "DELETE",
-          path: "/v3/documents/s_rOWDOMu6gfHVler-5_5Pqai1QTLVqrovuxZcQccEncE",
+          path: "/v3/documents/document-1",
+        },
+        {
+          authorization: "Bearer test-api-key",
+          body: undefined,
+          method: "GET",
+          path: "/v3/documents/document-2",
+        },
+        {
+          authorization: "Bearer test-api-key",
+          body: undefined,
+          method: "DELETE",
+          path: "/v3/documents/document-2",
         },
       ]);
     }).pipe(Effect.provide(providerLayer(origin))),
@@ -584,14 +736,35 @@ it.effect("deletes one Session conversation by its stable provider identity", ()
 it.effect("keeps a processing conflict retryable when deleting a Session conversation", () =>
   withProvider(({ origin, respondWith }) =>
     Effect.gen(function* () {
-      respondWith({ body: { error: "Document is still processing" }, status: 409 });
+      respondWith(
+        {
+          body: {
+            memories: [
+              {
+                containerTags: ["u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs"],
+                customId: "s_hAl4KPwxqMjSkhDfSJAahd5_0BP2hrF7530b4py3qYs",
+                id: "document-1",
+              },
+            ],
+            pagination: { currentPage: 1, totalItems: 1, totalPages: 1 },
+          },
+          status: 200,
+        },
+        {
+          body: {
+            containerTags: ["u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs"],
+            customId: "s_hAl4KPwxqMjSkhDfSJAahd5_0BP2hrF7530b4py3qYs",
+            id: "document-1",
+          },
+          status: 200,
+        },
+        { body: { error: "Document is still processing" }, status: 409 },
+      );
       const memory = yield* MemoryProvider.Service;
-      const failure = yield* memory
-        .deleteSessionConversation({
-          sessionId: SessionId.make("session-1"),
-          userId: UserId.make("user-1"),
-        })
-        .pipe(Effect.flip);
+      const failure = yield* deleteSessionConversation(memory, {
+        sessionId: SessionId.make("session-1"),
+        userId: UserId.make("user-1"),
+      }).pipe(Effect.flip);
 
       expect(failure).toMatchObject({
         _tag: "MemoryProviderRejected",
@@ -602,10 +775,127 @@ it.effect("keeps a processing conflict retryable when deleting a Session convers
   ),
 );
 
+it.effect("keeps a colliding Session document in another User container", () =>
+  withProvider(({ requests, origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: {
+          memories: [],
+          pagination: { currentPage: 1, totalItems: 0, totalPages: 0 },
+        },
+        status: 200,
+      });
+      const memory = yield* MemoryProvider.Service;
+      const result = yield* deleteSessionConversation(memory, {
+        sessionId: SessionId.make("session-1"),
+        userId: UserId.make("user-1"),
+      });
+
+      expect(result).toEqual({ _tag: "AlreadyAbsent" });
+      expect(requests).toEqual([
+        {
+          authorization: "Bearer test-api-key",
+          body: {
+            containerTags: ["u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs"],
+            limit: 100,
+            page: 1,
+          },
+          method: "POST",
+          path: "/v3/documents/list",
+        },
+      ]);
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("refuses a Session document shared with another User container", () =>
+  withProvider(({ requests, origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: {
+          memories: [
+            {
+              containerTags: ["u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs", "u_unrelated"],
+              customId: "s_hAl4KPwxqMjSkhDfSJAahd5_0BP2hrF7530b4py3qYs",
+              id: "shared-document",
+            },
+          ],
+          pagination: { currentPage: 1, totalItems: 1, totalPages: 1 },
+        },
+        status: 200,
+      });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* deleteSessionConversation(memory, {
+        sessionId: SessionId.make("session-1"),
+        userId: UserId.make("user-1"),
+      }).pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "identityMismatch",
+        operation: "deleteSessionConversation",
+      });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ method: "POST", path: "/v3/documents/list" });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("refuses deletion when Session document ownership changes after lookup", () =>
+  withProvider(({ requests, origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith(
+        {
+          body: {
+            memories: [
+              {
+                containerTags: ["u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs"],
+                customId: "s_hAl4KPwxqMjSkhDfSJAahd5_0BP2hrF7530b4py3qYs",
+                id: "document-1",
+              },
+            ],
+            pagination: { currentPage: 1, totalItems: 1, totalPages: 1 },
+          },
+          status: 200,
+        },
+        {
+          body: {
+            containerTags: ["u_unrelated"],
+            customId: "s_hAl4KPwxqMjSkhDfSJAahd5_0BP2hrF7530b4py3qYs",
+            id: "document-1",
+          },
+          status: 200,
+        },
+      );
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* deleteSessionConversation(memory, {
+        sessionId: SessionId.make("session-1"),
+        userId: UserId.make("user-1"),
+      }).pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "identityMismatch",
+        operation: "deleteSessionConversation",
+      });
+      expect(requests).toHaveLength(2);
+      expect(requests.every(({ method }) => method !== "DELETE")).toBe(true);
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
 it.effect("deletes every Knowledge Base item in one User container", () =>
   withProvider(({ requests, origin, respondWith }) =>
     Effect.gen(function* () {
-      respondWith({ body: { success: true }, status: 200 });
+      respondWith({
+        body: {
+          containerTag: "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY",
+          deletedDocumentsCount: 2,
+          deletedMemoriesCount: 3,
+          success: true,
+        },
+        status: 200,
+      });
       const memory = yield* MemoryProvider.Service;
       const result = yield* memory.deleteUserKnowledge({
         userId: UserId.make("user:with/provider-invalid characters"),
@@ -624,20 +914,178 @@ it.effect("deletes every Knowledge Base item in one User container", () =>
   ),
 );
 
+it.effect(
+  "keeps an asynchronously deleted User container live until a fresh read proves absence",
+  () =>
+    withProvider(({ requests, origin, respondWith }) =>
+      Effect.gen(function* () {
+        respondWith(
+          {
+            body: {
+              containerTag: "u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs",
+              deletedDocumentsCount: 2,
+              deletedMemoriesCount: 3,
+              success: true,
+            },
+            status: 200,
+          },
+          {
+            body: {
+              containerTag: "u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs",
+              documentCount: 2,
+              memoryCount: 3,
+            },
+            status: 200,
+          },
+          { body: { error: "Container not found" }, status: 404 },
+        );
+        const memory = yield* MemoryProvider.Service;
+        const deleted = yield* memory.deleteUserKnowledge({ userId: UserId.make("user-1") });
+        const stillPresent = yield* memory.verifyUserKnowledge({ userId: UserId.make("user-1") });
+        const absent = yield* memory.verifyUserKnowledge({ userId: UserId.make("user-1") });
+
+        expect(deleted).toEqual({ _tag: "Deleted" });
+        expect(stillPresent).toEqual({ _tag: "Verified" });
+        expect(absent).toEqual({ _tag: "AlreadyAbsent" });
+        expect(requests.map(({ method, path }) => ({ method, path }))).toEqual([
+          {
+            method: "DELETE",
+            path: "/v3/container-tags/u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs",
+          },
+          {
+            method: "GET",
+            path: "/v3/container-tags/u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs",
+          },
+          {
+            method: "GET",
+            path: "/v3/container-tags/u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs",
+          },
+        ]);
+      }).pipe(Effect.provide(providerLayer(origin))),
+    ),
+);
+
+it.effect("fails closed when the post-delete User container read names another owner", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({ body: { containerTag: "u_unrelated" }, status: 200 });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .verifyUserKnowledge({ userId: UserId.make("user-1") })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "identityMismatch",
+        operation: "deleteUserKnowledge",
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("keeps User deletion pending when the post-delete absence read is unavailable", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({ body: { error: "temporarily unavailable" }, status: 503 });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .verifyUserKnowledge({ userId: UserId.make("user-1") })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        operation: "deleteUserKnowledge",
+        status: 503,
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("keeps account deletion pending when provider confirmation names another User", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: {
+          containerTag: "u_unrelated",
+          deletedDocumentsCount: 2,
+          deletedMemoriesCount: 3,
+          success: true,
+        },
+        status: 200,
+      });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .deleteUserKnowledge({ userId: UserId.make("user:with/provider-invalid characters") })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "identityMismatch",
+        operation: "deleteUserKnowledge",
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("keeps account deletion pending when the provider does not confirm success", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({ body: { success: false }, status: 200 });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .deleteUserKnowledge({ userId: UserId.make("user-1") })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "responseDecoding",
+        operation: "deleteUserKnowledge",
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("rejects an incomplete successful User deletion confirmation", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: { deletedDocumentsCount: 2, deletedMemoriesCount: 3, success: true },
+        status: 200,
+      });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .deleteUserKnowledge({ userId: UserId.make("user-1") })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "responseDecoding",
+        operation: "deleteUserKnowledge",
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
 it.effect("normalizes only deletion-specific absence responses", () =>
   withProvider(({ origin, respondWith }) =>
     Effect.gen(function* () {
       respondWith(
         { body: { error: "Already forgotten" }, status: 409 },
-        { body: { error: "Document not found" }, status: 404 },
+        {
+          body: {
+            memories: [],
+            pagination: { currentPage: 1, totalItems: 0, totalPages: 0 },
+          },
+          status: 200,
+        },
         { body: { error: "Container not found" }, status: 404 },
       );
       const memory = yield* MemoryProvider.Service;
-      const forgotten = yield* memory.forgetKnowledge({
+      const forgotten = yield* forgetKnowledge(memory, {
         memoryIds: [MemoryProvider.KnowledgeMemoryId.make("memory-1")],
         userId: UserId.make("user-1"),
       });
-      const session = yield* memory.deleteSessionConversation({
+      const session = yield* deleteSessionConversation(memory, {
         sessionId: SessionId.make("session-1"),
         userId: UserId.make("user-1"),
       });

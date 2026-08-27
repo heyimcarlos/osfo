@@ -1,8 +1,38 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/new-promise, effecttsgo/node-builtin-import -- Vitest global setup owns this Node HTTP boundary. */
-/* oxlint-disable osfo/no-runtime-typeof, osfo/no-unknown-parameters, osfo/no-unknown-returns -- This test-only observer decodes raw Node HTTP and database representations at its boundary. */
+/* oxlint-disable osfo/no-runtime-typeof, osfo/no-unknown-parameters, osfo/no-unknown-returns -- This test-only observer adapts raw Node HTTP and database representations at its boundary. */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
+import { Data, Schema } from "effect";
 import postgres from "postgres";
+
+const NonEmptyText = Schema.String.check(Schema.isMinLength(1));
+const UserRequestFromJson = Schema.fromJsonString(Schema.Struct({ userId: NonEmptyText }));
+const AccountDeletionActionRequestFromJson = Schema.fromJsonString(
+  Schema.Struct({ actionId: NonEmptyText, userId: NonEmptyText }),
+);
+const VersionedAccountDeletionActionRequestFromJson = Schema.fromJsonString(
+  Schema.Struct({
+    actionId: NonEmptyText,
+    presentationVersion: NonEmptyText,
+    userId: NonEmptyText,
+  }),
+);
+const decodeUserRequest = Schema.decodeUnknownPromise(UserRequestFromJson);
+const decodeAccountDeletionActionRequest = Schema.decodeUnknownPromise(
+  AccountDeletionActionRequestFromJson,
+);
+const decodeVersionedAccountDeletionActionRequest = Schema.decodeUnknownPromise(
+  VersionedAccountDeletionActionRequestFromJson,
+);
+
+type AccountDeletionActionRequest = typeof AccountDeletionActionRequestFromJson.Type;
+type VersionedAccountDeletionActionRequest =
+  typeof VersionedAccountDeletionActionRequestFromJson.Type;
+
+export interface DatabaseObserverAccountDeletionMutations {
+  readonly expire: (input: AccountDeletionActionRequest) => Promise<void>;
+  readonly version: (input: VersionedAccountDeletionActionRequest) => Promise<void>;
+}
 
 export interface DatabaseObserver {
   readonly close: () => Promise<void>;
@@ -10,6 +40,7 @@ export interface DatabaseObserver {
 }
 
 export interface DatabaseObserverOptions {
+  readonly accountDeletionMutations?: DatabaseObserverAccountDeletionMutations;
   readonly databaseNamePrefix: string;
   readonly maintenanceUrl: string;
 }
@@ -21,15 +52,49 @@ export const startDatabaseObserver = (
   new Promise((resolve, reject) => {
     const server = createServer((request, response) => {
       const path = new URL(request.url ?? "/", "http://localhost").pathname;
-      const query = path === "/registration" ? findRegistration : findBillingCheckout;
-      if (request.method !== "POST" || !["/registration", "/billing-checkout"].includes(path)) {
+      if (request.method === "POST" && path === "/expire-account-deletion-action") {
+        readAccountDeletionAction(request)
+          .then((input) =>
+            options.accountDeletionMutations === undefined
+              ? expireAccountDeletionAction(options, input.userId, input.actionId)
+              : options.accountDeletionMutations.expire(input),
+          )
+          .then(() => respondJson(response, 200, { status: "expired" }))
+          .catch((cause: unknown) => respondObserverFailure(response, cause));
+        return;
+      }
+      if (request.method === "POST" && path === "/version-account-deletion-action") {
+        readVersionedAccountDeletionAction(request)
+          .then((input) =>
+            options.accountDeletionMutations === undefined
+              ? versionAccountDeletionAction(
+                  options,
+                  input.userId,
+                  input.actionId,
+                  input.presentationVersion,
+                )
+              : options.accountDeletionMutations.version(input),
+          )
+          .then(() => respondJson(response, 200, { status: "versioned" }))
+          .catch((cause: unknown) => respondObserverFailure(response, cause));
+        return;
+      }
+      const query =
+        path === "/registration"
+          ? findRegistration
+          : path === "/billing-checkout"
+            ? findBillingCheckout
+            : path === "/account-deletion"
+              ? findAccountDeletion
+              : null;
+      if (request.method !== "POST" || query === null) {
         respondJson(response, 404, { error: "Not found" });
         return;
       }
       readUserId(request)
         .then((userId) => query(options, userId))
         .then((row) => respondJson(response, 200, row))
-        .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
+        .catch((cause: unknown) => respondObserverFailure(response, cause));
     });
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
@@ -44,6 +109,46 @@ export const startDatabaseObserver = (
       });
     });
   });
+
+const expireAccountDeletionAction = async (
+  options: DatabaseObserverOptions,
+  userId: string,
+  actionId: string,
+) => {
+  const expired = await findJourneyRow(options, async (client) => {
+    const [row] = await client`
+      update account_deletion_actions
+      set created_at = consumed_at - interval '2 seconds',
+          expires_at = consumed_at - interval '1 second'
+      where user_id = ${userId}
+        and action_id = ${actionId}
+        and consumed_at is not null
+      returning action_id
+    `;
+    return row;
+  });
+  if (expired === null) throw new Error("Consumed account deletion Action was not found");
+};
+
+const versionAccountDeletionAction = async (
+  options: DatabaseObserverOptions,
+  userId: string,
+  actionId: string,
+  presentationVersion: string,
+) => {
+  const versioned = await findJourneyRow(options, async (client) => {
+    const [row] = await client`
+      update account_deletion_actions
+      set presentation_version = ${presentationVersion}
+      where user_id = ${userId}
+        and action_id = ${actionId}
+        and consumed_at is null
+      returning action_id
+    `;
+    return row;
+  });
+  if (versioned === null) throw new Error("Unconsumed account deletion Action was not found");
+};
 
 const findBillingCheckout = async (options: DatabaseObserverOptions, userId: string) =>
   findJourneyRow(options, async (client) => {
@@ -86,6 +191,22 @@ const findRegistration = async (options: DatabaseObserverOptions, userId: string
     return row;
   });
 
+const findAccountDeletion = async (options: DatabaseObserverOptions, userId: string) =>
+  findJourneyRow(options, async (client) => {
+    const [row] = await client`
+      select
+        exists(select 1 from users where id = ${userId}) as user_exists,
+        exists(select 1 from agents where user_id = ${userId}) as agent_exists,
+        exists(select 1 from sessions where user_id = ${userId}) as auth_session_exists,
+        exists(select 1 from deletion_cases where user_id = ${userId}) as deletion_case_exists
+      where exists(select 1 from users where id = ${userId})
+        or exists(select 1 from agents where user_id = ${userId})
+        or exists(select 1 from sessions where user_id = ${userId})
+        or exists(select 1 from deletion_cases where user_id = ${userId})
+    `;
+    return row;
+  });
+
 const findJourneyRow = async (
   options: DatabaseObserverOptions,
   query: (client: ReturnType<typeof postgres>) => Promise<unknown>,
@@ -121,10 +242,29 @@ const withClient = async <A>(
 };
 
 const readUserId = async (request: IncomingMessage): Promise<string> => {
-  const body: unknown = JSON.parse(await readTextBody(request));
-  if (typeof body === "object" && body !== null && "userId" in body) return String(body.userId);
-  throw new Error("Database observation requires a userId");
+  const body = await readTextBody(request);
+  return decodeUserRequest(body)
+    .then(({ userId }) => userId)
+    .catch((cause: unknown) => {
+      throw new DatabaseObserverRequestInvalid({ cause });
+    });
 };
+
+const readAccountDeletionAction = async (
+  request: IncomingMessage,
+): Promise<AccountDeletionActionRequest> =>
+  decodeAccountDeletionActionRequest(await readTextBody(request)).catch((cause: unknown) => {
+    throw new DatabaseObserverRequestInvalid({ cause });
+  });
+
+const readVersionedAccountDeletionAction = async (
+  request: IncomingMessage,
+): Promise<VersionedAccountDeletionActionRequest> =>
+  decodeVersionedAccountDeletionActionRequest(await readTextBody(request)).catch(
+    (cause: unknown) => {
+      throw new DatabaseObserverRequestInvalid({ cause });
+    },
+  );
 
 const readTextBody = (request: IncomingMessage): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -148,3 +288,15 @@ const respondJson = (response: ServerResponse, status: number, body: unknown): v
   response.setHeader("content-type", "application/json");
   response.end(JSON.stringify(body));
 };
+
+const respondObserverFailure = (response: ServerResponse, cause: unknown): void => {
+  if (cause instanceof DatabaseObserverRequestInvalid) {
+    respondJson(response, 400, { error: "Invalid request body" });
+    return;
+  }
+  respondJson(response, 500, { error: String(cause) });
+};
+
+class DatabaseObserverRequestInvalid extends Data.TaggedError("DatabaseObserverRequestInvalid")<{
+  readonly cause: unknown;
+}> {}

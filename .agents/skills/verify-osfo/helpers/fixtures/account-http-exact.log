@@ -1,0 +1,2 @@
+[wrangler:info] GET /v1/account/deletion-action 200 OK (42ms)
+[wrangler:info] DELETE /v1/account 200 OK (104ms)
