@@ -199,6 +199,7 @@ describe("Composio Provider", () => {
       expect(result).toEqual({
         data: {
           content: "x".repeat(8),
+          fileId: "file-1",
           mimeType: "text/plain",
           name: "notes.txt",
           size: 8,

@@ -199,7 +199,8 @@ describe("Integration Capability Manifests", () => {
         evidence: {
           _tag: "CompletedIntegrationEffect",
           mutations: 1,
-          providerExecutionId: `gmail-effect:${operation}`,
+          providerLogId: `gmail-effect:${operation}`,
+          providerResourceId: "message-1",
         },
         identity: { manifestVersion: "gmail-v1", operation, toolkit: "gmail" },
         input: { body: "Message body", recipients: ["person@example.test"], subject: "Subject" },
@@ -228,7 +229,8 @@ describe("Integration Capability Manifests", () => {
         evidence: {
           _tag: "CompletedIntegrationEffect",
           mutations: 1,
-          providerExecutionId: "calendar-create",
+          providerLogId: "calendar-create",
+          providerResourceId: "event-created",
         },
         identity: {
           manifestVersion: "calendar-v1",
@@ -250,7 +252,8 @@ describe("Integration Capability Manifests", () => {
         evidence: {
           _tag: "CompletedIntegrationEffect",
           mutations: 1,
-          providerExecutionId: "calendar-update",
+          providerLogId: "calendar-update",
+          providerResourceId: "event-1",
         },
         identity: {
           manifestVersion: "calendar-v1",

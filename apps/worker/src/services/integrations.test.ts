@@ -722,6 +722,73 @@ describe("Integrations", () => {
     }),
   );
 
+  it.effect("rejects Drive metadata and content for a different requested file", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits.push({
+        connectedAccount: { id: "drive-account", status: "ACTIVE" },
+        isActive: true,
+        slug: "googledrive",
+      });
+      const integrations = make(harness);
+      harness.executeResult = {
+        data: { id: "different-file", mimeType: "text/plain", name: "notes.txt" },
+        error: null,
+        logId: "drive-metadata-log",
+      };
+
+      const metadataFailure = yield* Effect.flip(
+        integrations.execute({
+          authorize: Effect.void,
+          identity: {
+            manifestVersion: ManifestVersion.make("drive-v1"),
+            operation: "DRIVE_GET_METADATA",
+            toolkit: "googledrive",
+          },
+          input: { fileId: "file-1" },
+          userId,
+        }),
+      );
+      expect(metadataFailure).toMatchObject({
+        _tag: "IntegrationExecutionRejected",
+        code: "resultInvalid",
+      });
+
+      harness.executeResult = {
+        data: {
+          content: "bounded",
+          fileId: "different-file",
+          mimeType: "text/plain",
+          name: "notes.txt",
+          size: 7,
+          truncated: false,
+        },
+        error: null,
+        logId: "drive-read-log",
+      };
+      const contentFailure = yield* Effect.flip(
+        integrations.execute({
+          authorize: Effect.void,
+          identity: {
+            manifestVersion: ManifestVersion.make("drive-v1"),
+            operation: "DRIVE_READ_FILE",
+            toolkit: "googledrive",
+          },
+          input: {
+            expectedMediaType: "text/plain",
+            fileId: "file-1",
+            maximumBytes: 8,
+          },
+          userId,
+        }),
+      );
+      expect(contentFailure).toMatchObject({
+        _tag: "IntegrationExecutionRejected",
+        code: "resultInvalid",
+      });
+    }),
+  );
+
   it.effect("stages only the exact owned Drive artifact and replays its applied Action", () =>
     Effect.gen(function* () {
       const harness = makeHarness();

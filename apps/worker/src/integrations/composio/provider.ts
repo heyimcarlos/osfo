@@ -228,7 +228,12 @@ const adaptSession = (
         execution.error === null &&
         "fileId" in input &&
         "mime_type" in input
-          ? normalizeDriveDownload(execution, input.mime_type, constraints?.maximumDownloadBytes)
+          ? normalizeDriveDownload(
+              execution,
+              input.fileId,
+              input.mime_type,
+              constraints?.maximumDownloadBytes,
+            )
           : Effect.succeed(execution),
       ),
     ),
@@ -254,6 +259,7 @@ const adaptSession = (
 
 const normalizeDriveDownload = (
   execution: ProviderExecutionResult,
+  fileId: string,
   expectedMediaType: string,
   maximumBytes: number | undefined,
 ) =>
@@ -284,6 +290,7 @@ const normalizeDriveDownload = (
       ...execution,
       data: {
         content,
+        fileId,
         mimeType: downloaded.mimetype,
         name: downloaded.name,
         size: read.bytes.byteLength,

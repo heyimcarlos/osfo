@@ -6,6 +6,7 @@ import {
   CalendarDeleteEventInput,
   CalendarUpdateEventInput,
   DriveDeliverArtifactInput,
+  DriveGetMetadataInput,
   DriveReadFileInput,
   IntegrationManifestUnavailable,
   resolveManifest,
@@ -611,6 +612,7 @@ const normalizeRead = (
     let truncated = candidates.length > manifest.hardBounds.maximumRecords;
     for (const candidate of candidates.slice(0, manifest.hardBounds.maximumRecords)) {
       const projected = yield* projectSafeRecord(manifest, candidate);
+      yield* validateRequestedDriveFile(manifest, projected, input);
       const bounded = boundProjectedRecord(manifest.operation, projected, input);
       const next = [...records, bounded];
       if (byteLength(next) > manifest.hardBounds.maximumResponseBytes) {
@@ -631,6 +633,22 @@ const normalizeRead = (
       truncated,
     };
   });
+
+const validateRequestedDriveFile = (
+  manifest: ResolvedIntegrationManifestOperation,
+  record: Record<string, boolean | number | string | null>,
+  input: Schema.Json,
+) => {
+  if (manifest.operation === "DRIVE_GET_METADATA") {
+    const expected = Schema.decodeUnknownSync(DriveGetMetadataInput)(input).fileId;
+    return record.id === expected ? Effect.void : Effect.fail(invalidProviderResult(manifest));
+  }
+  if (manifest.operation === "DRIVE_READ_FILE") {
+    const expected = Schema.decodeUnknownSync(DriveReadFileInput)(input).fileId;
+    return record.fileId === expected ? Effect.void : Effect.fail(invalidProviderResult(manifest));
+  }
+  return Effect.void;
+};
 
 const boundProjectedRecord = (
   operation: string,

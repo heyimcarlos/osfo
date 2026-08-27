@@ -320,7 +320,8 @@ const readCompletedEvidence = (maximumRecords: number, maximumResponseBytes: big
 
 const CompletedIntegrationEffect = Schema.TaggedStruct("CompletedIntegrationEffect", {
   mutations: Schema.Literal(1),
-  providerExecutionId: boundedIdentity,
+  providerLogId: boundedIdentity,
+  providerResourceId: boundedIdentity,
 });
 
 const readSafeErrors = [
