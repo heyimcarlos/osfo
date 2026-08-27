@@ -48,6 +48,7 @@ import {
   UserId,
 } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
+import { AuthSessionId } from "../../domain/auth-session";
 import type { AuthorizationOperation } from "../../domain/authorization-operation";
 import {
   CapabilityId,
@@ -393,6 +394,23 @@ const settingsPersonalSkillAvailability: PersonalSkillAvailability = {
   capabilityIds: closedCapabilityIds,
   requirements: initialPersonalSkillAvailability.requirements,
 };
+const integrationSettingsMappings = [
+  {
+    description: "Search and read email on demand, then send only after exact approval.",
+    label: "Gmail",
+    provider: "gmail" as const,
+  },
+  {
+    description: "Read availability and manage exact events after approval.",
+    label: "Google Calendar",
+    provider: "googlecalendar" as const,
+  },
+  {
+    description: "Read owned files and deliver approved Osfo documents privately.",
+    label: "Google Drive",
+    provider: "googledrive" as const,
+  },
+];
 const PersonalSkillControlActor = Schema.Struct({
   decisionReference: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
   userId: UserId,
@@ -411,6 +429,22 @@ const PersonalSkillControlRead = Schema.Struct({
   actor: PersonalSkillControlActor,
   reference: Schema.String,
 });
+const IntegrationSettingsActor = Schema.Struct({
+  authSessionId: AuthSessionId,
+  userId: UserId,
+});
+const IntegrationSettingsToolkit = Schema.Literals(["gmail", "googlecalendar", "googledrive"]);
+const integrationSettingsSelection = {
+  actor: IntegrationSettingsActor,
+  toolkit: IntegrationSettingsToolkit,
+} as const;
+const IntegrationSettingsConnect = Schema.Struct({
+  ...integrationSettingsSelection,
+  callbackUrl: Schema.String.check(
+    Schema.makeFilter((value) => URL.canParse(value) || "must be a URL"),
+  ),
+});
+const IntegrationSettingsMutation = Schema.Struct(integrationSettingsSelection);
 const SkillLearningPrompt = Schema.Struct({
   corrections: Schema.Array(Schema.String),
   decisions: Schema.Array(Schema.String),
@@ -549,7 +583,7 @@ export type SessionHistoryRead = SessionHistoryFound | SessionHistoryNotFound;
 export class OsfoAgent extends Think<Env> {
   /** Construct the optional provider boundary at this Agent-owned storage partition. */
   protected makeIntegrations(): Option.Option<Integrations.Interface> {
-    return IntegrationComposition.make(loadConfig(this.env), this.ctx.storage);
+    return IntegrationComposition.make(loadConfig(this.env), this.ctx.storage, this.env.ARTIFACTS);
   }
 
   /** Keep shell execution unavailable until a concrete Osfo tool contract enables it. */
@@ -3410,6 +3444,77 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  /** Show safe current connection state without exposing provider account identities. */
+  async inspectIntegrationConnections(input: typeof IntegrationSettingsActor.Type) {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeEffect(IntegrationSettingsActor)(input).pipe(
+        Effect.flatMap((actor) => this.#integrationConnectionSummary(actor.userId)),
+      ),
+    );
+  }
+
+  /** Acquire one provider-hosted link after current connection-management authorization. */
+  async connectIntegrationFromSettings(input: typeof IntegrationSettingsConnect.Type) {
+    await this.#migrationsReady;
+    const accountDeletionFence = this.#accountDeletionFence;
+    const integrationsOption = this.#integrations;
+    const authorizeConnection = (
+      actor: typeof IntegrationSettingsActor.Type,
+      toolkit: typeof IntegrationSettingsToolkit.Type,
+    ) => this.#authorizeIntegrationConnection(actor, toolkit, "connect");
+    return runRpc(
+      Schema.decodeEffect(IntegrationSettingsConnect)(input).pipe(
+        Effect.flatMap((request) =>
+          Effect.gen(function* () {
+            yield* authorizeConnection(request.actor, request.toolkit);
+            const integrations = Option.getOrUndefined(integrationsOption);
+            if (integrations === undefined) return yield* settingsIntegrationUnavailable();
+            const link = yield* accountDeletionFence.run(
+              integrations.connectLink({
+                callbackUrl: new URL(request.callbackUrl),
+                toolkit: request.toolkit,
+                userId: request.actor.userId,
+              }),
+              settingsIntegrationUnavailable,
+            );
+            return { url: link.redirectUrl.href };
+          }),
+        ),
+      ),
+    );
+  }
+
+  /** Revoke the one current toolkit account after a fresh authority check. */
+  async disconnectIntegrationFromSettings(input: typeof IntegrationSettingsMutation.Type) {
+    await this.#migrationsReady;
+    const accountDeletionFence = this.#accountDeletionFence;
+    const integrationsOption = this.#integrations;
+    const authorizeConnection = (
+      actor: typeof IntegrationSettingsActor.Type,
+      toolkit: typeof IntegrationSettingsToolkit.Type,
+    ) => this.#authorizeIntegrationConnection(actor, toolkit, "revoke");
+    return runRpc(
+      Schema.decodeEffect(IntegrationSettingsMutation)(input).pipe(
+        Effect.flatMap((request) =>
+          Effect.gen(function* () {
+            yield* authorizeConnection(request.actor, request.toolkit);
+            const integrations = Option.getOrUndefined(integrationsOption);
+            if (integrations === undefined) return yield* settingsIntegrationUnavailable();
+            yield* accountDeletionFence.run(
+              integrations.disconnect({
+                toolkit: request.toolkit,
+                userId: request.actor.userId,
+              }),
+              settingsIntegrationUnavailable,
+            );
+            return { status: "missing" as const, toolkit: request.toolkit };
+          }),
+        ),
+      ),
+    );
+  }
+
   /** Commit one authenticated non-destructive personal Skill lifecycle change. */
   async changePersonalSkill(input: typeof PersonalSkillControlChange.Type) {
     await this.#migrationsReady;
@@ -3473,6 +3578,104 @@ export class OsfoAgent extends Think<Env> {
       decisionReference: () => actor.decisionReference,
       nowEpochMillis: Date.now,
     });
+  }
+
+  #integrationConnectionSummary(userId: UserId) {
+    const mappings = integrationSettingsMappings;
+    const integrations = Option.getOrUndefined(this.#integrations);
+    if (integrations === undefined) {
+      return Effect.succeed({
+        connections: mappings.map(({ description, label, provider }) => ({
+          description,
+          label,
+          status: "unavailable" as const,
+          toolkit: provider,
+        })),
+      });
+    }
+    return Effect.forEach(
+      mappings,
+      ({ description, label, provider }) =>
+        integrations.connectionEvidence({ toolkit: provider, userId }).pipe(
+          Effect.match({
+            onFailure: () => ({
+              description,
+              label,
+              status: "unavailable" as const,
+              toolkit: provider,
+            }),
+            onSuccess: (evidence) => ({
+              description,
+              label,
+              status:
+                evidence._tag === "IntegrationConnectionConnected"
+                  ? ("connected" as const)
+                  : evidence._tag === "IntegrationConnectionStale" ||
+                      evidence._tag === "IntegrationConnectionAmbiguous"
+                    ? ("stale" as const)
+                    : ("missing" as const),
+              toolkit: provider,
+            }),
+          }),
+        ),
+      { concurrency: 1 },
+    ).pipe(Effect.map((connections) => ({ connections })));
+  }
+
+  #authorizeIntegrationConnection(
+    actor: typeof IntegrationSettingsActor.Type,
+    toolkit: typeof IntegrationSettingsToolkit.Type,
+    change: "connect" | "revoke",
+  ) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) return Effect.fail(settingsIntegrationUnavailable());
+    const identity = {
+      _tag: "AuthSession" as const,
+      authSessionId: actor.authSessionId,
+      userId: actor.userId,
+    };
+    const operation = {
+      actionId: `settings:${actor.authSessionId}:${toolkit}:${change}`,
+      change,
+      kind: "integration.connection.manage" as const,
+      toolkit,
+    };
+    return this.#inspectSessionRecallAuthorization(identity).pipe(
+      Effect.flatMap((facts) =>
+        Effect.tryPromise({
+          try: () =>
+            runtime.runPromise(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const database = yield* Db.database;
+                  return yield* BillingDb.make(database).admit(facts.user.userId, facts.now);
+                }),
+              ),
+            ),
+          catch: settingsIntegrationUnavailable,
+        }).pipe(
+          Effect.flatMap((allowance) => {
+            const result = authorization.admit(
+              AuthorizationContext.make({
+                allowance: { _tag: "Metered", ...allowance },
+                approval: null,
+                gmailConnection: null,
+                integrationConnections: [],
+                liveFacts: emptyLiveResourceFacts,
+                originatingAuthority: { _tag: "AuthSession", authSessionId: actor.authSessionId },
+                requestVendorUsdMicros: 0n,
+                ...facts,
+              }),
+              operation,
+            );
+            return Predicate.isTagged(result, "Admitted")
+              ? Effect.void
+              : Effect.fail(settingsIntegrationUnavailable());
+          }),
+        ),
+      ),
+      Effect.mapError(settingsIntegrationUnavailable),
+    );
   }
 
   /** Read the current and historical Session identities for one route. */
@@ -3587,8 +3790,7 @@ export class OsfoAgent extends Think<Env> {
     input: IntegrationToolInput,
     actionId: ActionId,
   ) {
-    const approvalRequired =
-      identity.operation === "GMAIL_SEND_EMAIL" || identity.operation === "CALENDAR_UPDATE_EVENT";
+    const approvalRequired = true;
     const approved = approvalRequired ? this.#currentApprovedActions.get(actionId) : undefined;
     if (
       approvalRequired &&
@@ -4775,6 +4977,13 @@ const runRpc = <A, E>(effect: Effect.Effect<A, E>): Promise<A | E> =>
 const currentDbTimestamp = DateTime.now.pipe(
   Effect.map((time) => Db.DbTimestamp.make(DateTime.toDateUtc(time).toISOString())),
 );
+
+const settingsIntegrationUnavailable = () =>
+  new IntegrationToolUnavailable({
+    cause: "settings integration boundary",
+    message: "Integration connections are temporarily unavailable",
+    operation: "integration.connection.manage",
+  });
 
 const deletionApprovalUnavailable = (
   actionId: ActionId,

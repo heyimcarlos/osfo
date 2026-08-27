@@ -6,6 +6,7 @@ import { ChannelLinksGroup } from "./groups/channel-links";
 import { RegistrationGroup } from "./groups/registration";
 import { AccountGroup } from "./groups/account";
 import { SkillsGroup } from "./groups/skills";
+import { IntegrationsGroup } from "./groups/integrations";
 
 /** Shared HTTP contract implemented by the Worker and consumed by clients. */
 export const Api = HttpApi.make("osfo")
@@ -13,6 +14,7 @@ export const Api = HttpApi.make("osfo")
   .add(BillingGroup)
   .add(ChannelLinksGroup)
   .add(HealthGroup)
+  .add(IntegrationsGroup)
   .add(RegistrationGroup)
   .add(SkillsGroup)
   .annotateMerge(
@@ -24,6 +26,14 @@ export const Api = HttpApi.make("osfo")
   );
 
 export { HealthGroup, HealthResponse } from "./groups/health";
+export {
+  IntegrationConnectionChanged,
+  IntegrationConnectionSummary,
+  IntegrationConnectRedirect,
+  IntegrationToolkit,
+  IntegrationsGroup,
+  IntegrationsUnavailable,
+} from "./groups/integrations";
 export {
   AccountDeletionAction,
   AccountDeletionActionPresentation,

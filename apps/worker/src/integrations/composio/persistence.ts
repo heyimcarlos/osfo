@@ -18,12 +18,16 @@ const PersistedEffectResult = Schema.TaggedStruct("IntegrationEffectCompleted", 
   manifestVersion: ManifestVersion,
   mutations: Schema.Literal(1),
   operation: Schema.Literals([
+    // Retain the two pre-pack operation names so an old Action remains readable.
     "GMAIL_CREATE_DRAFT",
-    "GMAIL_SEND_EMAIL",
     "CALENDAR_CREATE_PRIVATE",
+    "GMAIL_SEND_EMAIL",
+    "CALENDAR_CREATE_EVENT",
     "CALENDAR_UPDATE_EVENT",
+    "CALENDAR_DELETE_EVENT",
+    "DRIVE_DELIVER_ARTIFACT",
   ]),
-  toolkit: Schema.Literals(["gmail", "googlecalendar"]),
+  toolkit: Schema.Literals(["gmail", "googlecalendar", "googledrive"]),
 });
 
 const PersistedAction = Schema.Union([

@@ -6,6 +6,7 @@ import {
   LogOut,
   MessagesSquare,
   MoreHorizontal,
+  Plug,
   Settings,
   ShieldCheck,
   Sparkles,
@@ -19,6 +20,7 @@ import { authClient } from "../lib/auth-client";
 type SettingsDestination =
   | "/settings/general"
   | "/settings/channels"
+  | "/settings/integrations"
   | "/settings/profile"
   | "/settings/privacy"
   | "/settings/billing"
@@ -34,6 +36,7 @@ type SettingsNavigationItem = {
 const settingsItems: ReadonlyArray<SettingsNavigationItem> = [
   { icon: Settings, label: "Settings", to: "/settings/general" },
   { icon: MessagesSquare, label: "Channels", to: "/settings/channels" },
+  { icon: Plug, label: "Integrations", to: "/settings/integrations" },
   { icon: UserRound, label: "Profile", to: "/settings/profile" },
   { icon: ShieldCheck, label: "Privacy", to: "/settings/privacy" },
   { icon: CreditCard, label: "Billing", to: "/settings/billing" },
@@ -48,6 +51,10 @@ const pageDetails = {
     title: "Messaging channel",
   },
   "/settings/general": { subtitle: "Customize your agent experience", title: "Settings" },
+  "/settings/integrations": {
+    subtitle: "Connect the services Osfo may use with your approval",
+    title: "Integrations",
+  },
   "/settings/marketplace": {
     subtitle: "Discover recipes and connectors for your agent",
     title: "Marketplace",
@@ -62,6 +69,7 @@ const getPageDetails = (pathname: string) => {
     case "/settings/billing":
     case "/settings/channels":
     case "/settings/general":
+    case "/settings/integrations":
     case "/settings/marketplace":
     case "/settings/privacy":
     case "/settings/profile":

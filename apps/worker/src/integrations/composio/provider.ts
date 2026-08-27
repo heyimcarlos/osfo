@@ -13,6 +13,7 @@ import {
 } from "../../services/integrations";
 
 const requestTimeoutMillis = 30_000;
+const maximumDriveReadBytes = 65_536;
 const composioApiBaseUrl = "https://backend.composio.dev";
 const toolkitVersions = {
   gmail: "20260817_00",
@@ -31,6 +32,12 @@ const ToolExecutionEnvelope = Schema.Struct({
   data: Schema.JsonObject,
   error: Schema.NullOr(Schema.String),
   successful: Schema.Boolean,
+});
+
+const DownloadedFile = Schema.Struct({
+  mimetype: Schema.String,
+  name: Schema.String,
+  s3url: Schema.String,
 });
 
 interface ComposioSessionPort {
@@ -67,10 +74,16 @@ interface ComposioClientPort {
     input: ProviderInput,
     connectedAccountId: string,
   ) => Promise<ProviderExecutionResult>;
+  readonly disconnect: (connectedAccountId: string) => Promise<void>;
   readonly listConnectedAccounts: (
     userId: string,
     toolkit: string,
   ) => Promise<ComposioConnectedAccountList>;
+  readonly uploadFile: (input: {
+    readonly bytes: Uint8Array;
+    readonly fileName: string;
+    readonly mediaType: string;
+  }) => Promise<{ readonly mimetype: string; readonly name: string; readonly s3key: string }>;
   readonly useSession: (providerSessionId: string) => Promise<ComposioSessionPort>;
 }
 
@@ -131,8 +144,16 @@ export const make = (apiKey: Redacted.Redacted): IntegrationProvider => {
     createSession: (userId, config) => composio.sessions.create(userId, config),
     executeOnce: (sessionId, providerTool, input, connectedAccountId) =>
       executeOnce(value, sessionId, providerTool, input, connectedAccountId),
+    disconnect: (connectedAccountId) =>
+      composio.connectedAccounts.delete(connectedAccountId).then(() => undefined),
     listConnectedAccounts: (userId, toolkit) =>
       listConnectedAccounts(composio.connectedAccounts, userId, toolkit),
+    uploadFile: ({ bytes, fileName, mediaType }) =>
+      composio.files.upload({
+        file: new File([Uint8Array.from(bytes).buffer], fileName, { type: mediaType }),
+        toolkitSlug: "googledrive",
+        toolSlug: "GOOGLEDRIVE_UPLOAD_FILE",
+      }),
     useSession: (providerSessionId) => composio.sessions.use(providerSessionId),
   });
 };
@@ -184,7 +205,18 @@ const adaptSession = (
   execute: (providerTool, input, connectedAccountId) =>
     providerCall("execute", () =>
       client.executeOnce(session.sessionId, providerTool, input, connectedAccountId),
+    ).pipe(
+      Effect.flatMap((execution) =>
+        providerTool === "GOOGLEDRIVE_DOWNLOAD_FILE" &&
+        execution.error === null &&
+        "file_id" in input &&
+        "mime_type" in input
+          ? normalizeDriveDownload(execution, input.mime_type)
+          : Effect.succeed(execution),
+      ),
     ),
+  disconnect: (connectedAccountId) =>
+    providerCall("disconnect", () => client.disconnect(connectedAccountId)),
   inspectToolkits: (toolkits) =>
     Effect.forEach(
       toolkits,
@@ -200,7 +232,92 @@ const adaptSession = (
         ),
       { concurrency: 1 },
     ).pipe(Effect.map((groups) => groups.flat())),
+  stageFile: (artifact) => providerCall("stageFile", () => client.uploadFile(artifact)),
 });
+
+const normalizeDriveDownload = (execution: ProviderExecutionResult, expectedMediaType: string) =>
+  Effect.gen(function* () {
+    const downloaded = yield* Schema.decodeUnknownEffect(DownloadedFile)(
+      execution.data.downloaded_file_content,
+    ).pipe(Effect.mapError(() => providerFailure("downloadFile")));
+    if (downloaded.mimetype !== expectedMediaType) return yield* providerFailure("downloadFile");
+    if (!isSafeDownloadUrl(downloaded.s3url)) return yield* providerFailure("downloadFile");
+    const response = yield* providerCall("downloadFile", () =>
+      // oxlint-disable-next-line osfo/no-raw-fetch, effecttsgo/global-fetch -- The provider adapter consumes one decoded, public HTTPS download reference.
+      fetch(downloaded.s3url, {
+        headers: { range: `bytes=0-${maximumDriveReadBytes}` },
+        signal: AbortSignal.timeout(requestTimeoutMillis),
+      }),
+    );
+    if (!response.ok && response.status !== 206) return yield* providerFailure("downloadFile");
+    const read = yield* readBoundedBody(response, maximumDriveReadBytes);
+    const content = yield* Effect.try({
+      try: () => new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(read.bytes),
+      catch: () => providerFailure("downloadFile"),
+    });
+    return {
+      ...execution,
+      data: {
+        content,
+        mimeType: downloaded.mimetype,
+        name: downloaded.name,
+        size: read.bytes.byteLength,
+        truncated: read.truncated,
+      },
+    };
+  });
+
+const readBoundedBody = (response: Response, maximumBytes: number) =>
+  Effect.tryPromise({
+    // oxlint-disable-next-line effecttsgo/async-function -- A response body reader is an ordered Promise-based resource boundary.
+    try: async () => {
+      if (response.body === null) throw new Error("Missing download body");
+      const reader = response.body.getReader();
+      const chunks: Array<Uint8Array> = [];
+      let length = 0;
+      let truncated = false;
+      while (length <= maximumBytes) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Stream chunks must be read and bounded in order.
+        const next = await reader.read();
+        if (next.done) break;
+        const remaining = maximumBytes - length;
+        if (next.value.byteLength > remaining) {
+          if (remaining > 0) chunks.push(next.value.slice(0, remaining));
+          length = maximumBytes;
+          truncated = true;
+          // oxlint-disable-next-line eslint/no-await-in-loop -- Cancel the current sequential stream before leaving its loop.
+          await reader.cancel();
+          break;
+        }
+        chunks.push(next.value);
+        length += next.value.byteLength;
+      }
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return { bytes, truncated };
+    },
+    catch: () => providerFailure("downloadFile"),
+  });
+
+const isSafeDownloadUrl = (value: string) => {
+  if (!URL.canParse(value)) return false;
+  const url = new URL(value);
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "") return false;
+  const host = url.hostname.toLowerCase();
+  return (
+    host !== "localhost" &&
+    !host.endsWith(".local") &&
+    !host.startsWith("127.") &&
+    !host.startsWith("10.") &&
+    !host.startsWith("192.168.") &&
+    !/^172\.(?:1[6-9]|2\d|3[01])\./u.test(host) &&
+    !host.includes(":")
+  );
+};
 
 // oxlint-disable-next-line effecttsgo/async-function -- The SDK list operation is this Promise-based provider boundary's resource lifetime.
 const listConnectedAccounts = async (

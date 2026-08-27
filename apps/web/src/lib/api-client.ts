@@ -5,6 +5,7 @@ import {
   type BillingReconciliationRequest,
   ChannelLinkInviteToken,
   type HelpArea,
+  type IntegrationToolkit,
   type RegistrationLocale,
   type SkillChangeRequest,
   type SkillDeletionPresentation,
@@ -63,6 +64,26 @@ export const inspectBilling = Effect.gen(function* () {
   const client = yield* apiClient;
   return yield* client.billing.inspect();
 });
+
+/** Inspect the authenticated User's safe Integration Connection state. */
+export const inspectIntegrations = Effect.gen(function* () {
+  const client = yield* apiClient;
+  return yield* client.integrations.inspect();
+});
+
+/** Acquire a provider-hosted connect URL for one exact toolkit. */
+export const connectIntegration = (toolkit: IntegrationToolkit) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    return yield* client.integrations.connect({ payload: { toolkit } });
+  });
+
+/** Revoke the one current connected account for an exact toolkit. */
+export const disconnectIntegration = (toolkit: IntegrationToolkit) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    return yield* client.integrations.disconnect({ payload: { toolkit } });
+  });
 
 /** Start or recover Stripe-hosted Adventurer Checkout. */
 export const startBillingCheckout = Effect.gen(function* () {

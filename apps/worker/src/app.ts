@@ -129,6 +129,12 @@ const adaptBindings = (env: CloudflareEnv): Bindings => ({
           Schema.decodePromise(AgentRpcTag)(await directory.initializeAgent(agentId, input)),
         deleteAgent: (agentId) => directory.deleteAgent(agentId),
         inspectPersonalSkills: (agentId, actor) => directory.inspectPersonalSkills(agentId, actor),
+        inspectIntegrationConnections: (agentId, actor) =>
+          directory.inspectIntegrationConnections(agentId, actor),
+        connectIntegrationFromSettings: (agentId, input) =>
+          directory.connectIntegrationFromSettings(agentId, input),
+        disconnectIntegrationFromSettings: (agentId, input) =>
+          directory.disconnectIntegrationFromSettings(agentId, input),
         changePersonalSkill: (agentId, input) => directory.changePersonalSkill(agentId, input),
         presentPersonalSkillDeletion: (agentId, input) =>
           directory.presentPersonalSkillDeletion(agentId, input),

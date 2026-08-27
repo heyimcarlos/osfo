@@ -407,6 +407,300 @@ describe("Integrations", () => {
       }),
   );
 
+  it.effect("translates provider-neutral bounded reads into exact provider inputs", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const integrations = make(harness);
+
+      harness.toolkits.splice(0, Infinity, {
+        connectedAccount: { id: "gmail-account", status: "ACTIVE" },
+        isActive: true,
+        slug: "gmail",
+      });
+      harness.executeResult = {
+        data: { messages: [{ id: "message-1", subject: "Subject" }] },
+        error: null,
+        logId: "gmail-search-log",
+      };
+      yield* integrations.execute({
+        authorize: Effect.void,
+        identity: {
+          manifestVersion: ManifestVersion.make("gmail-v1"),
+          operation: "GMAIL_SEARCH_EMAILS",
+          toolkit: "gmail",
+        },
+        input: {
+          includeSpamTrash: false,
+          maximumMessages: 5,
+          query: "after:2026/08/01",
+        },
+        userId,
+      });
+
+      harness.toolkits.splice(0, Infinity, {
+        connectedAccount: { id: "calendar-account", status: "ACTIVE" },
+        isActive: true,
+        slug: "googlecalendar",
+      });
+      harness.executeResult = {
+        data: {
+          freeSlots: [{ end: "2026-08-28T11:00:00-04:00", start: "2026-08-28T10:00:00-04:00" }],
+        },
+        error: null,
+        logId: "calendar-availability-log",
+      };
+      yield* integrations.execute({
+        authorize: Effect.void,
+        identity: {
+          manifestVersion: ManifestVersion.make("calendar-v1"),
+          operation: "CALENDAR_FIND_AVAILABILITY",
+          toolkit: "googlecalendar",
+        },
+        input: {
+          calendarId: "primary",
+          endsAt: "2026-08-28T18:00:00-04:00",
+          minimumSlotMinutes: 30,
+          startsAt: "2026-08-28T09:00:00-04:00",
+          timeZone: "America/Toronto",
+        },
+        userId,
+      });
+
+      harness.toolkits.splice(0, Infinity, {
+        connectedAccount: { id: "drive-account", status: "ACTIVE" },
+        isActive: true,
+        slug: "googledrive",
+      });
+      harness.executeResult = {
+        data: { files: [{ id: "file-1", name: "Notes" }] },
+        error: null,
+        logId: "drive-search-log",
+      };
+      yield* integrations.execute({
+        authorize: Effect.void,
+        identity: {
+          manifestVersion: ManifestVersion.make("drive-v1"),
+          operation: "DRIVE_SEARCH",
+          toolkit: "googledrive",
+        },
+        input: { maximumFiles: 7, query: "name contains 'Notes'", searchOwnedOnly: true },
+        userId,
+      });
+
+      expect(harness.executed).toEqual([
+        {
+          connectedAccountId: "gmail-account",
+          input: {
+            ids_only: false,
+            include_payload: false,
+            include_spam_trash: false,
+            max_results: 5,
+            query: "after:2026/08/01",
+            user_id: "me",
+            verbose: false,
+          },
+          providerTool: "GMAIL_FETCH_EMAILS",
+        },
+        {
+          connectedAccountId: "calendar-account",
+          input: {
+            calendar_expansion_max: 1,
+            group_expansion_max: 1,
+            items: ["primary"],
+            time_max: "2026-08-28T18:00:00-04:00",
+            time_min: "2026-08-28T09:00:00-04:00",
+            timezone: "America/Toronto",
+          },
+          providerTool: "GOOGLECALENDAR_FIND_FREE_SLOTS",
+        },
+        {
+          connectedAccountId: "drive-account",
+          input: {
+            corpora: "user",
+            fields:
+              "files(id,name,mimeType,size,modifiedTime,createdTime,parents,webViewLink,trashed)",
+            includeItemsFromAllDrives: false,
+            pageSize: 7,
+            q: "(name contains 'Notes') and 'me' in owners and trashed = false",
+            spaces: "drive",
+            supportsAllDrives: false,
+          },
+          providerTool: "GOOGLEDRIVE_FIND_FILE",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("translates exact-approved Calendar effects without broadening their scope", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits.push({
+        connectedAccount: { id: "calendar-account", status: "ACTIVE" },
+        isActive: true,
+        slug: "googlecalendar",
+      });
+      harness.executeResult = {
+        data: { id: "event-1" },
+        error: null,
+        logId: "calendar-log",
+      };
+      const integrations = make(harness);
+
+      yield* integrations.execute({
+        actionId: ActionId.make("calendar-create"),
+        authorize: Effect.void,
+        identity: {
+          manifestVersion: ManifestVersion.make("calendar-v1"),
+          operation: "CALENDAR_CREATE_EVENT",
+          toolkit: "googlecalendar",
+        },
+        input: {
+          attendeeCount: 0,
+          calendarId: "primary",
+          endsAt: "2026-09-01T11:00:00-04:00",
+          recurrence: { count: 5, frequency: "WEEKLY", interval: 2 },
+          sendNotifications: false,
+          startsAt: "2026-09-01T10:00:00-04:00",
+          timeZone: "America/Toronto",
+          title: "Planning",
+        },
+        userId,
+      });
+      yield* integrations.execute({
+        actionId: ActionId.make("calendar-update"),
+        authorize: Effect.void,
+        identity: {
+          manifestVersion: ManifestVersion.make("calendar-v1"),
+          operation: "CALENDAR_UPDATE_EVENT",
+          toolkit: "googlecalendar",
+        },
+        input: {
+          calendarId: "primary",
+          changes: { recurrence: null, title: "Updated planning" },
+          eventId: "event-1",
+          recurringScope: "event",
+          sendNotifications: false,
+        },
+        userId,
+      });
+      yield* integrations.execute({
+        actionId: ActionId.make("calendar-delete"),
+        authorize: Effect.void,
+        identity: {
+          manifestVersion: ManifestVersion.make("calendar-v1"),
+          operation: "CALENDAR_DELETE_EVENT",
+          toolkit: "googlecalendar",
+        },
+        input: {
+          calendarId: "primary",
+          eventId: "recurring-event",
+          recurringScope: "series",
+          sendNotifications: false,
+        },
+        userId,
+      });
+
+      expect(harness.executed).toEqual([
+        {
+          connectedAccountId: "calendar-account",
+          input: {
+            attendees: [],
+            calendar_id: "primary",
+            create_meeting_room: false,
+            end_datetime: "2026-09-01T11:00:00-04:00",
+            exclude_organizer: true,
+            recurrence: ["RRULE:FREQ=WEEKLY;INTERVAL=2;COUNT=5"],
+            send_updates: "none",
+            start_datetime: "2026-09-01T10:00:00-04:00",
+            summary: "Planning",
+            timezone: "America/Toronto",
+            visibility: "private",
+          },
+          providerTool: "GOOGLECALENDAR_CREATE_EVENT",
+        },
+        {
+          connectedAccountId: "calendar-account",
+          input: {
+            calendar_id: "primary",
+            event_id: "event-1",
+            recurrence: [],
+            send_updates: "none",
+            summary: "Updated planning",
+          },
+          providerTool: "GOOGLECALENDAR_PATCH_EVENT",
+        },
+        {
+          connectedAccountId: "calendar-account",
+          input: {
+            calendar_id: "primary",
+            event_id: "recurring-event",
+            send_updates: "none",
+          },
+          providerTool: "GOOGLECALENDAR_DELETE_EVENT",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("stages only the exact owned Drive artifact and replays its applied Action", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits.push({
+        connectedAccount: { id: "drive-account", status: "ACTIVE" },
+        isActive: true,
+        slug: "googledrive",
+      });
+      harness.executeResult = {
+        data: { id: "uploaded-file" },
+        error: null,
+        logId: "drive-upload-log",
+      };
+      const integrations = make({
+        ...harness,
+        readOwned: () =>
+          Effect.succeed({
+            bytes: new Uint8Array([1, 2, 3]),
+            fileName: "report.pdf",
+            mediaType: "application/pdf",
+          }),
+      });
+      const request = {
+        actionId: ActionId.make("drive-delivery"),
+        authorize: Effect.void,
+        identity: {
+          manifestVersion: ManifestVersion.make("drive-v1"),
+          operation: "DRIVE_DELIVER_ARTIFACT",
+          toolkit: "googledrive",
+        },
+        input: {
+          artifactId: "artifact-1",
+          expectedBytes: 3,
+          fileName: "report.pdf",
+          mediaType: "application/pdf",
+          targetFolderId: null,
+        },
+        userId,
+      } as const;
+
+      const completed = yield* integrations.execute(request);
+      expect(yield* integrations.execute(request)).toEqual(completed);
+      expect(harness.executed).toEqual([
+        {
+          connectedAccountId: "drive-account",
+          input: {
+            file_to_upload: {
+              mimetype: "application/pdf",
+              name: "report.pdf",
+              s3key: "staged-file-key",
+            },
+            folder_to_upload_to: null,
+          },
+          providerTool: "GOOGLEDRIVE_UPLOAD_FILE",
+        },
+      ]);
+    }),
+  );
+
   it.effect(
     "retains an ambiguous Action after provider transport loss and never retries it blindly",
     () =>
@@ -503,6 +797,59 @@ describe("Integrations", () => {
       expect(harness.executed).toHaveLength(2);
     }),
   );
+
+  it.effect("maps a Calendar provider conflict safely and permits an exact retry", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits.push({
+        connectedAccount: { id: "calendar-account", status: "ACTIVE" },
+        isActive: true,
+        slug: "googlecalendar",
+      });
+      harness.executeResult = {
+        data: {},
+        error: "409 conflict: provider-private-details",
+        logId: "calendar-conflict-log",
+      };
+      const integrations = make(harness);
+      const request = {
+        actionId: ActionId.make("calendar-conflict"),
+        authorize: Effect.void,
+        identity: {
+          manifestVersion: ManifestVersion.make("calendar-v1"),
+          operation: "CALENDAR_UPDATE_EVENT",
+          toolkit: "googlecalendar",
+        },
+        input: {
+          calendarId: "primary",
+          changes: { title: "Current intent" },
+          eventId: "event-1",
+          recurringScope: "event",
+          sendNotifications: false,
+        },
+        userId,
+      } as const;
+
+      const conflict = yield* Effect.flip(integrations.execute(request));
+      expect(conflict).toMatchObject({
+        _tag: "IntegrationExecutionRejected",
+        code: "conflict",
+        message: "The Calendar operation conflicts with current provider state",
+        providerLogId: "calendar-conflict-log",
+      });
+      expect(conflict).not.toHaveProperty("providerError");
+      harness.executeResult = {
+        data: { id: "event-1" },
+        error: null,
+        logId: "calendar-retry-log",
+      };
+      expect(yield* integrations.execute(request)).toMatchObject({
+        _tag: "IntegrationEffectCompleted",
+        evidence: { providerLogId: "calendar-retry-log" },
+      });
+      expect(harness.executed).toHaveLength(2);
+    }),
+  );
 });
 
 class TestAuthorityLost extends Schema.TaggedError<TestAuthorityLost>()("TestAuthorityLost", {
@@ -564,6 +911,7 @@ const makeHarness = (): IntegrationProvider &
       harness.authorized.push({ callbackUrl: callbackUrl.toString(), toolkit });
       return Effect.succeed(new URL("https://connect.composio.dev/link"));
     },
+    disconnect: () => Effect.void,
     execute: (providerTool, input, connectedAccountId) => {
       harness.executed.push({ connectedAccountId, input, providerTool });
       return harness.executeFailure === null
@@ -574,6 +922,12 @@ const makeHarness = (): IntegrationProvider &
       harness.toolkitsInspected += 1;
       return Effect.succeed(harness.toolkits);
     },
+    stageFile: (artifact) =>
+      Effect.succeed({
+        mimetype: artifact.mediaType,
+        name: artifact.fileName,
+        s3key: "staged-file-key",
+      }),
   });
   return Object.assign(harness, {
     createSession: (createdUserId: UserId, config: typeof directIntegrationProviderConfig) => {

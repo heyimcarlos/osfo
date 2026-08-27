@@ -279,6 +279,7 @@ it.effect("presents and fences the complete Calendar update", () =>
       calendarId: "calendar-1",
       changes: { location: "Room 2", title: "Updated title" },
       eventId: "event-1",
+      recurringScope: "event" as const,
       sendNotifications: false as const,
     };
     const presentation = yield* presentOsfoAction({
@@ -306,6 +307,127 @@ it.effect("presents and fences the complete Calendar update", () =>
       hasExactIntegrationActionInput(presentation, "CALENDAR_UPDATE_EVENT", {
         ...input,
         changes: { location: "Room 3", title: "Updated title" },
+      }),
+    ).toBe(false);
+  }),
+);
+
+it.effect("presents and fences the complete Calendar create", () =>
+  Effect.gen(function* () {
+    const input = {
+      attendeeCount: 0 as const,
+      calendarId: "primary",
+      endsAt: "2026-09-01T11:00:00-04:00",
+      recurrence: { count: 5, frequency: "WEEKLY" as const, interval: 2 },
+      sendNotifications: false as const,
+      startsAt: "2026-09-01T10:00:00-04:00",
+      timeZone: "America/Toronto",
+      title: "Planning",
+    };
+    const presentation = yield* presentOsfoAction({
+      descriptor: {
+        action: "calendarCreateEvent",
+        input,
+        kind: "durable-pause",
+        permissions: ["integrations:calendar:write"],
+        requestId: "request-calendar-create",
+        risk: "high",
+        summary: "Create the exact Google Calendar event shown",
+        toolCallId: "tool-call-calendar-create",
+      },
+      executionId: ActionPresentationId.make("execution-calendar-create"),
+      source: "action",
+    });
+
+    expect(presentation).toMatchObject({
+      actionDefinitionVersion: "osfo-calendar-create-v1",
+      operation: "integration.effect",
+      title: "Create calendar event",
+    });
+    expect(hasExactIntegrationActionInput(presentation, "CALENDAR_CREATE_EVENT", input)).toBe(true);
+    expect(
+      hasExactIntegrationActionInput(presentation, "CALENDAR_CREATE_EVENT", {
+        ...input,
+        title: "Changed after approval",
+      }),
+    ).toBe(false);
+  }),
+);
+
+it.effect("presents and fences the exact Calendar recurrence deletion target", () =>
+  Effect.gen(function* () {
+    const input = {
+      calendarId: "primary",
+      eventId: "recurring-event",
+      recurringScope: "series" as const,
+      sendNotifications: false as const,
+    };
+    const presentation = yield* presentOsfoAction({
+      descriptor: {
+        action: "calendarDeleteEvent",
+        input,
+        kind: "durable-pause",
+        permissions: ["integrations:calendar:write"],
+        requestId: "request-calendar-delete",
+        risk: "high",
+        summary: "Delete the exact Google Calendar target shown",
+        toolCallId: "tool-call-calendar-delete",
+      },
+      executionId: ActionPresentationId.make("execution-calendar-delete"),
+      source: "action",
+    });
+
+    expect(presentation).toMatchObject({
+      actionDefinitionVersion: "osfo-calendar-delete-v1",
+      operation: "integration.effect",
+      title: "Delete calendar event",
+    });
+    expect(hasExactIntegrationActionInput(presentation, "CALENDAR_DELETE_EVENT", input)).toBe(true);
+    expect(
+      hasExactIntegrationActionInput(presentation, "CALENDAR_DELETE_EVENT", {
+        ...input,
+        recurringScope: "event",
+      }),
+    ).toBe(false);
+  }),
+);
+
+it.effect("presents and fences the complete owned Drive artifact delivery", () =>
+  Effect.gen(function* () {
+    const input = {
+      artifactId: "artifact-1",
+      expectedBytes: 12_345,
+      fileName: "report.pdf",
+      mediaType: "application/pdf" as const,
+      targetFolderId: null,
+    };
+    const presentation = yield* presentOsfoAction({
+      descriptor: {
+        action: "driveDeliverArtifact",
+        input,
+        kind: "durable-pause",
+        permissions: ["integrations:drive:write"],
+        requestId: "request-drive-delivery",
+        risk: "high",
+        summary: "Deliver the exact owned document shown",
+        toolCallId: "tool-call-drive-delivery",
+      },
+      executionId: ActionPresentationId.make("execution-drive-delivery"),
+      source: "action",
+    });
+
+    expect(presentation).toMatchObject({
+      actionDefinitionVersion: "osfo-drive-delivery-v1",
+      operation: "integration.effect",
+      title: "Deliver document to Drive",
+    });
+    expect(hasExactIntegrationActionInput(presentation, "DRIVE_DELIVER_ARTIFACT", input)).toBe(
+      true,
+    );
+    expect(
+      hasExactIntegrationActionInput(presentation, "DRIVE_DELIVER_ARTIFACT", {
+        ...input,
+        expectedBytes: 12_346,
       }),
     ).toBe(false);
   }),

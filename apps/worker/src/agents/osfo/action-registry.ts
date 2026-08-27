@@ -21,7 +21,13 @@ import {
 } from "./deletion-actions";
 import { personalSkillDeleteActionName, SkillDeleteInput } from "./personal-skill-tools";
 import type { PersonalSkillId } from "../../domain/personal-skill";
-import { CalendarUpdateEventInput, GmailMessageInput } from "../../domain/integration-manifest";
+import {
+  CalendarCreateEventInput,
+  CalendarDeleteEventInput,
+  CalendarUpdateEventInput,
+  DriveDeliverArtifactInput,
+  GmailMessageInput,
+} from "../../domain/integration-manifest";
 
 export {
   ForgetKnowledgeInput,
@@ -35,7 +41,10 @@ type SanitizedPendingApprovalInput =
   | Partial<ClearCoreMemoryInput>
   | Partial<ForgetKnowledgeInput>
   | Partial<RetainedDocumentInput>
+  | Partial<typeof CalendarCreateEventInput.Type>
+  | Partial<typeof CalendarDeleteEventInput.Type>
   | Partial<typeof CalendarUpdateEventInput.Type>
+  | Partial<typeof DriveDeliverArtifactInput.Type>
   | Partial<typeof GmailMessageInput.Type>
   | Partial<SkillDeleteInput>
   | Partial<SessionDeleteInput>;
@@ -183,6 +192,30 @@ export const sanitizePendingApproval = (approval: PendingApproval): PendingAppro
     return withInput(
       approval,
       Schema.decodeUnknownOption(CalendarUpdateEventInput)(approval.descriptor.input).pipe(
+        Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
+      ),
+    );
+  }
+  if (approval.descriptor.action === "calendarCreateEvent") {
+    return withInput(
+      approval,
+      Schema.decodeUnknownOption(CalendarCreateEventInput)(approval.descriptor.input).pipe(
+        Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
+      ),
+    );
+  }
+  if (approval.descriptor.action === "calendarDeleteEvent") {
+    return withInput(
+      approval,
+      Schema.decodeUnknownOption(CalendarDeleteEventInput)(approval.descriptor.input).pipe(
+        Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
+      ),
+    );
+  }
+  if (approval.descriptor.action === "driveDeliverArtifact") {
+    return withInput(
+      approval,
+      Schema.decodeUnknownOption(DriveDeliverArtifactInput)(approval.descriptor.input).pipe(
         Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
       ),
     );

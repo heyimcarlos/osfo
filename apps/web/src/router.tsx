@@ -121,6 +121,14 @@ const settingsChannelsRoute = createRoute({
     "SettingsChannelsPage",
   ),
 });
+const settingsIntegrationsRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "settings/integrations",
+  component: lazyRouteComponent(
+    () => import("./pages/settings-integrations-page"),
+    "SettingsIntegrationsPage",
+  ),
+});
 const settingsPrivacyRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "settings/privacy",
@@ -189,6 +197,7 @@ const routeTree = rootRoute.addChildren([
     settingsRoute.addChildren([
       settingsGeneralRoute,
       settingsChannelsRoute,
+      settingsIntegrationsRoute,
       settingsPrivacyRoute,
       settingsProfileRoute,
       settingsBillingRoute,

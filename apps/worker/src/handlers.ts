@@ -6,8 +6,9 @@ import { ChannelLinksHandlers } from "./handlers/channel-links";
 import { HealthHandlers } from "./handlers/health";
 import { RegistrationHandlers } from "./handlers/registration";
 import { SkillsHandlers } from "./handlers/skills";
+import { IntegrationHandlers } from "./handlers/integrations";
 import type { ExecutionUnit } from "./layers";
-import type { CloudflareConfig } from "./config";
+import { publicWebBaseUrl, type CloudflareConfig } from "./config";
 import { AccountDeletionComposition } from "./composition/account-deletion";
 import { SupermemoryMemoryProvider } from "./integrations/supermemory/memory-provider";
 
@@ -15,7 +16,9 @@ import { SupermemoryMemoryProvider } from "./integrations/supermemory/memory-pro
 export const layer = (
   runtime: ManagedRuntime.ManagedRuntime<ExecutionUnit, never>,
   config: CloudflareConfig,
-  bindings: AccountDeletionComposition.Bindings & SkillsHandlers.Bindings,
+  bindings: AccountDeletionComposition.Bindings &
+    SkillsHandlers.Bindings &
+    IntegrationHandlers.Bindings,
 ) =>
   Layer.mergeAll(
     AccountHandlers.layer.pipe(
@@ -25,6 +28,10 @@ export const layer = (
     BillingHandlers.layer(config),
     ChannelLinksHandlers.layer,
     HealthHandlers.layer(runtime),
+    IntegrationHandlers.layer(
+      bindings,
+      new URL("/settings/integrations", publicWebBaseUrl(config.auth)),
+    ),
     RegistrationHandlers.layer,
     SkillsHandlers.layer(bindings),
   );

@@ -6,6 +6,14 @@ import { ConsequenceClass } from "./capability-catalog";
 const nonEmpty = Schema.String.check(Schema.isMinLength(1));
 const boundedIdentity = nonEmpty.check(Schema.isMaxLength(500));
 const boundedSummary = nonEmpty.check(Schema.isMaxLength(64_000));
+const rfc3339WithOffset = boundedIdentity.check(
+  Schema.makeFilter(
+    (value) =>
+      (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
+        Number.isFinite(Date.parse(value))) ||
+      "must be an RFC 3339 timestamp with an explicit UTC offset",
+  ),
+);
 const positiveIntegerAtMost = (maximum: number) =>
   Schema.Int.check(Schema.isBetween({ minimum: 1, maximum }));
 const nonNegativeIntegerAtMost = (maximum: number) =>
@@ -15,6 +23,7 @@ const nonNegativeBytesAtMost = (maximum: bigint) =>
 
 export const IntegrationManifestSafeError = Schema.Literals([
   "connectionUnavailable",
+  "conflict",
   "inputRejected",
   "notFound",
   "permissionDenied",
@@ -25,9 +34,10 @@ export const IntegrationManifestSafeError = Schema.Literals([
 
 export const IntegrationManifestHardBounds = Schema.Struct({
   maximumRecords: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  maximumRequestBytes: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
   maximumResponseBytes: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
   mutations: Schema.Literals([0, 1]),
-  providerExecutions: Schema.Literal(1),
+  providerExecutions: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 5 })),
 });
 /** Manifest-declared read that remains available under the shared exhausted envelope. */
 export const ExhaustedManifestRead = Schema.Union([
@@ -58,22 +68,33 @@ export const IntegrationManifestOperation = Schema.Struct({
   hardBounds: IntegrationManifestHardBounds,
   idempotency: Schema.Literals(["readOnly", "actionIdentity"]),
   inputContract: Schema.Literals([
+    "gmailSearchV1",
     "gmailFetchThreadV1",
     "gmailMessageV1",
     "calendarListEventsV1",
-    "calendarCreatePrivateV1",
+    "calendarAvailabilityV1",
+    "calendarCreateEventV1",
     "calendarUpdateEventV1",
+    "calendarDeleteEventV1",
+    "driveSearchV1",
     "driveGetMetadataV1",
+    "driveReadFileV1",
+    "driveDeliverArtifactV1",
   ]),
   manifestVersion: ManifestVersion,
   operation: nonEmpty,
   operationKind: Schema.Literals(["read", "effect"]),
   outputContract: Schema.Literals([
+    "gmailMessagesV1",
     "gmailThreadV1",
     "gmailMutationV1",
     "calendarEventsV1",
+    "calendarAvailabilityV1",
     "calendarMutationV1",
+    "driveFilesV1",
     "driveMetadataV1",
+    "driveContentV1",
+    "driveMutationV1",
   ]),
   providerTool: nonEmpty,
   requiredConnection: Schema.Literal(true),
@@ -149,35 +170,99 @@ export const GmailFetchThreadInput = Schema.Struct({
   threadId: boundedIdentity,
 });
 
+export const GmailSearchInput = Schema.Struct({
+  includeSpamTrash: Schema.Literal(false),
+  maximumMessages: positiveIntegerAtMost(20),
+  query: nonEmpty.check(Schema.isMaxLength(500)),
+});
+
 export const GmailMessageInput = Schema.Struct({
   body: boundedSummary,
   recipients: Schema.NonEmptyArray(boundedIdentity).check(Schema.isMaxLength(50)),
   subject: nonEmpty.check(Schema.isMaxLength(998)),
 });
 
-export const CalendarListEventsInput = Schema.Struct({
+const calendarWindow = {
   calendarId: boundedIdentity,
-  endsAt: boundedIdentity,
-  maximumEvents: positiveIntegerAtMost(10),
-  startsAt: boundedIdentity,
-});
+  endsAt: rfc3339WithOffset,
+  startsAt: rfc3339WithOffset,
+  timeZone: nonEmpty.check(Schema.isMaxLength(100)),
+} as const;
 
-export const CalendarCreatePrivateInput = Schema.Struct({
+const isOrderedWindowWithinDays = (
+  input: { readonly endsAt: string; readonly startsAt: string },
+  days: number,
+) => {
+  const startsAt = Date.parse(input.startsAt);
+  const endsAt = Date.parse(input.endsAt);
+  return (
+    Number.isFinite(startsAt) &&
+    Number.isFinite(endsAt) &&
+    endsAt > startsAt &&
+    endsAt - startsAt <= days * 86_400_000
+  );
+};
+
+export const CalendarListEventsInput = Schema.Struct({
+  ...calendarWindow,
+  maximumEvents: positiveIntegerAtMost(10),
+}).check(
+  Schema.makeFilter(
+    (input) => isOrderedWindowWithinDays(input, 14) || "Calendar window must be at most 14 days",
+  ),
+);
+
+export const CalendarAvailabilityInput = Schema.Struct({
+  ...calendarWindow,
+  minimumSlotMinutes: positiveIntegerAtMost(1_440),
+}).check(
+  Schema.makeFilter(
+    (input) =>
+      isOrderedWindowWithinDays(input, 14) || "Availability window must be at most 14 days",
+  ),
+);
+
+const CalendarRecurrence = Schema.NullOr(
+  Schema.Struct({
+    count: positiveIntegerAtMost(100),
+    frequency: Schema.Literals(["DAILY", "WEEKLY", "MONTHLY", "YEARLY"]),
+    interval: positiveIntegerAtMost(12),
+  }),
+);
+
+const recurringInstanceSuffix = /_\d{8}T\d{6}Z$/u;
+const validRecurringTarget = (input: {
+  readonly eventId: string;
+  readonly recurringScope: string;
+}) =>
+  (input.recurringScope === "occurrence" && recurringInstanceSuffix.test(input.eventId)) ||
+  (input.recurringScope !== "occurrence" && !recurringInstanceSuffix.test(input.eventId)) ||
+  "Recurring scope does not match the exact Calendar event identity";
+
+export const CalendarCreateEventInput = Schema.Struct({
   attendeeCount: Schema.Literal(0),
   calendarId: boundedIdentity,
-  endsAt: boundedIdentity,
+  endsAt: rfc3339WithOffset,
+  recurrence: CalendarRecurrence,
   sendNotifications: Schema.Literal(false),
-  startsAt: boundedIdentity,
+  startsAt: rfc3339WithOffset,
+  timeZone: nonEmpty.check(Schema.isMaxLength(100)),
   title: nonEmpty.check(Schema.isMaxLength(500)),
-});
+}).check(
+  Schema.makeFilter(
+    (input) => isOrderedWindowWithinDays(input, 366) || "Calendar event end must follow its start",
+  ),
+);
 
 export const CalendarUpdateEventInput = Schema.Struct({
   calendarId: boundedIdentity,
   changes: Schema.Struct({
     description: Schema.optional(boundedSummary),
-    endsAt: Schema.optional(boundedIdentity),
+    endsAt: Schema.optional(rfc3339WithOffset),
     location: Schema.optional(boundedIdentity),
-    startsAt: Schema.optional(boundedIdentity),
+    recurrence: Schema.optional(CalendarRecurrence),
+    startsAt: Schema.optional(rfc3339WithOffset),
+    timeZone: Schema.optional(nonEmpty.check(Schema.isMaxLength(100))),
     title: Schema.optional(nonEmpty.check(Schema.isMaxLength(500))),
   }).check(
     Schema.makeFilter(
@@ -185,12 +270,57 @@ export const CalendarUpdateEventInput = Schema.Struct({
         Object.values(changes).some((value) => value !== undefined) ||
         "at least one exact Calendar field must change",
     ),
+    Schema.makeFilter((changes) => {
+      if (changes.startsAt === undefined && changes.endsAt === undefined) return true;
+      if (
+        changes.startsAt === undefined ||
+        changes.endsAt === undefined ||
+        changes.timeZone === undefined
+      ) {
+        return "Calendar time changes require exact start, end, and time zone values";
+      }
+      return (
+        isOrderedWindowWithinDays({ endsAt: changes.endsAt, startsAt: changes.startsAt }, 366) ||
+        "Calendar event end must follow its start"
+      );
+    }),
   ),
   eventId: boundedIdentity,
+  recurringScope: Schema.Literals(["event", "occurrence", "series"]),
   sendNotifications: Schema.Literal(false),
+}).check(Schema.makeFilter(validRecurringTarget));
+
+export const CalendarDeleteEventInput = Schema.Struct({
+  calendarId: boundedIdentity,
+  eventId: boundedIdentity,
+  recurringScope: Schema.Literals(["event", "occurrence", "series"]),
+  sendNotifications: Schema.Literal(false),
+}).check(Schema.makeFilter(validRecurringTarget));
+
+export const DriveSearchInput = Schema.Struct({
+  maximumFiles: positiveIntegerAtMost(20),
+  query: nonEmpty.check(Schema.isMaxLength(500)),
+  searchOwnedOnly: Schema.Literal(true),
 });
 
 export const DriveGetMetadataInput = Schema.Struct({ fileId: boundedIdentity });
+
+export const DriveReadFileInput = Schema.Struct({
+  expectedMediaType: Schema.Literals(["text/csv", "text/markdown", "text/plain"]),
+  fileId: boundedIdentity,
+  maximumBytes: positiveIntegerAtMost(65_536),
+});
+
+export const DriveDeliverArtifactInput = Schema.Struct({
+  artifactId: boundedIdentity,
+  expectedBytes: positiveIntegerAtMost(5_000_000),
+  fileName: nonEmpty.check(Schema.isMaxLength(255)),
+  mediaType: Schema.Literals([
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ]),
+  targetFolderId: Schema.NullOr(boundedIdentity),
+});
 
 const readCompletedEvidence = (maximumRecords: number, maximumResponseBytes: bigint) =>
   Schema.TaggedStruct("CompletedIntegrationRead", {
@@ -223,8 +353,33 @@ const effectSafeErrors = [
   "resultInvalid",
 ] as const;
 
+const calendarEffectSafeErrors = ["conflict", ...effectSafeErrors] as const;
+
 const manifestInput = {
   manifests: [
+    {
+      completedEvidence: "zeroMarginalCost",
+      completedEvidenceContract: "boundedReadV1",
+      consequences: [],
+      exhaustedMode: null,
+      hardBounds: {
+        maximumRecords: 20,
+        maximumRequestBytes: 0n,
+        maximumResponseBytes: 65_536n,
+        mutations: 0,
+        providerExecutions: 1,
+      },
+      idempotency: "readOnly",
+      inputContract: "gmailSearchV1",
+      manifestVersion: "gmail-v1",
+      operation: "GMAIL_SEARCH_EMAILS",
+      operationKind: "read",
+      outputContract: "gmailMessagesV1",
+      providerTool: "GMAIL_FETCH_EMAILS",
+      requiredConnection: true,
+      safeErrors: readSafeErrors,
+      toolkit: "gmail",
+    },
     {
       completedEvidence: "zeroMarginalCost",
       completedEvidenceContract: "boundedReadV1",
@@ -232,6 +387,7 @@ const manifestInput = {
       exhaustedMode: { _tag: "EmailThread", maximumMessages: 20, responseBytes: 65_536 },
       hardBounds: {
         maximumRecords: 20,
+        maximumRequestBytes: 0n,
         maximumResponseBytes: 65_536n,
         mutations: 0,
         providerExecutions: 1,
@@ -250,32 +406,11 @@ const manifestInput = {
     {
       completedEvidence: "zeroMarginalCost",
       completedEvidenceContract: "singleMutationV1",
-      consequences: [],
-      exhaustedMode: null,
-      hardBounds: {
-        maximumRecords: 0,
-        maximumResponseBytes: 65_536n,
-        mutations: 1,
-        providerExecutions: 1,
-      },
-      idempotency: "actionIdentity",
-      inputContract: "gmailMessageV1",
-      manifestVersion: "gmail-v1",
-      operation: "GMAIL_CREATE_DRAFT",
-      operationKind: "effect",
-      outputContract: "gmailMutationV1",
-      providerTool: "GMAIL_CREATE_EMAIL_DRAFT",
-      requiredConnection: true,
-      safeErrors: effectSafeErrors,
-      toolkit: "gmail",
-    },
-    {
-      completedEvidence: "zeroMarginalCost",
-      completedEvidenceContract: "singleMutationV1",
       consequences: ["externalCommunication"],
       exhaustedMode: null,
       hardBounds: {
         maximumRecords: 0,
+        maximumRequestBytes: 0n,
         maximumResponseBytes: 65_536n,
         mutations: 1,
         providerExecutions: 1,
@@ -298,6 +433,7 @@ const manifestInput = {
       exhaustedMode: { _tag: "CalendarEvents", maximumEvents: 10, windowDays: 14 },
       hardBounds: {
         maximumRecords: 10,
+        maximumRequestBytes: 0n,
         maximumResponseBytes: 65_536n,
         mutations: 0,
         providerExecutions: 1,
@@ -315,24 +451,48 @@ const manifestInput = {
     },
     {
       completedEvidence: "zeroMarginalCost",
-      completedEvidenceContract: "singleMutationV1",
+      completedEvidenceContract: "boundedReadV1",
       consequences: [],
+      exhaustedMode: { _tag: "Availability", calendars: 1, windowDays: 14 },
+      hardBounds: {
+        maximumRecords: 10,
+        maximumRequestBytes: 0n,
+        maximumResponseBytes: 65_536n,
+        mutations: 0,
+        providerExecutions: 1,
+      },
+      idempotency: "readOnly",
+      inputContract: "calendarAvailabilityV1",
+      manifestVersion: "calendar-v1",
+      operation: "CALENDAR_FIND_AVAILABILITY",
+      operationKind: "read",
+      outputContract: "calendarAvailabilityV1",
+      providerTool: "GOOGLECALENDAR_FIND_FREE_SLOTS",
+      requiredConnection: true,
+      safeErrors: readSafeErrors,
+      toolkit: "googlecalendar",
+    },
+    {
+      completedEvidence: "zeroMarginalCost",
+      completedEvidenceContract: "singleMutationV1",
+      consequences: ["futureOrRecurringExternalEffect"],
       exhaustedMode: null,
       hardBounds: {
         maximumRecords: 0,
+        maximumRequestBytes: 0n,
         maximumResponseBytes: 65_536n,
         mutations: 1,
         providerExecutions: 1,
       },
       idempotency: "actionIdentity",
-      inputContract: "calendarCreatePrivateV1",
+      inputContract: "calendarCreateEventV1",
       manifestVersion: "calendar-v1",
-      operation: "CALENDAR_CREATE_PRIVATE",
+      operation: "CALENDAR_CREATE_EVENT",
       operationKind: "effect",
       outputContract: "calendarMutationV1",
       providerTool: "GOOGLECALENDAR_CREATE_EVENT",
       requiredConnection: true,
-      safeErrors: effectSafeErrors,
+      safeErrors: calendarEffectSafeErrors,
       toolkit: "googlecalendar",
     },
     {
@@ -342,6 +502,7 @@ const manifestInput = {
       exhaustedMode: null,
       hardBounds: {
         maximumRecords: 0,
+        maximumRequestBytes: 0n,
         maximumResponseBytes: 65_536n,
         mutations: 1,
         providerExecutions: 1,
@@ -354,8 +515,54 @@ const manifestInput = {
       outputContract: "calendarMutationV1",
       providerTool: "GOOGLECALENDAR_PATCH_EVENT",
       requiredConnection: true,
-      safeErrors: effectSafeErrors,
+      safeErrors: calendarEffectSafeErrors,
       toolkit: "googlecalendar",
+    },
+    {
+      completedEvidence: "zeroMarginalCost",
+      completedEvidenceContract: "singleMutationV1",
+      consequences: ["destructionOrOverwrite"],
+      exhaustedMode: null,
+      hardBounds: {
+        maximumRecords: 0,
+        maximumRequestBytes: 0n,
+        maximumResponseBytes: 65_536n,
+        mutations: 1,
+        providerExecutions: 1,
+      },
+      idempotency: "actionIdentity",
+      inputContract: "calendarDeleteEventV1",
+      manifestVersion: "calendar-v1",
+      operation: "CALENDAR_DELETE_EVENT",
+      operationKind: "effect",
+      outputContract: "calendarMutationV1",
+      providerTool: "GOOGLECALENDAR_DELETE_EVENT",
+      requiredConnection: true,
+      safeErrors: calendarEffectSafeErrors,
+      toolkit: "googlecalendar",
+    },
+    {
+      completedEvidence: "zeroMarginalCost",
+      completedEvidenceContract: "boundedReadV1",
+      consequences: [],
+      exhaustedMode: null,
+      hardBounds: {
+        maximumRecords: 20,
+        maximumRequestBytes: 0n,
+        maximumResponseBytes: 65_536n,
+        mutations: 0,
+        providerExecutions: 1,
+      },
+      idempotency: "readOnly",
+      inputContract: "driveSearchV1",
+      manifestVersion: "drive-v1",
+      operation: "DRIVE_SEARCH",
+      operationKind: "read",
+      outputContract: "driveFilesV1",
+      providerTool: "GOOGLEDRIVE_FIND_FILE",
+      requiredConnection: true,
+      safeErrors: readSafeErrors,
+      toolkit: "googledrive",
     },
     {
       completedEvidence: "zeroMarginalCost",
@@ -364,6 +571,7 @@ const manifestInput = {
       exhaustedMode: { _tag: "ProviderMetadata", items: 1, responseBytes: 16_384 },
       hardBounds: {
         maximumRecords: 1,
+        maximumRequestBytes: 0n,
         maximumResponseBytes: 16_384n,
         mutations: 0,
         providerExecutions: 1,
@@ -377,6 +585,52 @@ const manifestInput = {
       providerTool: "GOOGLEDRIVE_GET_FILE_METADATA",
       requiredConnection: true,
       safeErrors: readSafeErrors,
+      toolkit: "googledrive",
+    },
+    {
+      completedEvidence: "zeroMarginalCost",
+      completedEvidenceContract: "boundedReadV1",
+      consequences: [],
+      exhaustedMode: null,
+      hardBounds: {
+        maximumRecords: 1,
+        maximumRequestBytes: 0n,
+        maximumResponseBytes: 65_536n,
+        mutations: 0,
+        providerExecutions: 1,
+      },
+      idempotency: "readOnly",
+      inputContract: "driveReadFileV1",
+      manifestVersion: "drive-v1",
+      operation: "DRIVE_READ_FILE",
+      operationKind: "read",
+      outputContract: "driveContentV1",
+      providerTool: "GOOGLEDRIVE_DOWNLOAD_FILE",
+      requiredConnection: true,
+      safeErrors: readSafeErrors,
+      toolkit: "googledrive",
+    },
+    {
+      completedEvidence: "zeroMarginalCost",
+      completedEvidenceContract: "singleMutationV1",
+      consequences: ["accessOrOwnershipChange"],
+      exhaustedMode: null,
+      hardBounds: {
+        maximumRecords: 0,
+        maximumRequestBytes: 5_000_000n,
+        maximumResponseBytes: 65_536n,
+        mutations: 1,
+        providerExecutions: 2,
+      },
+      idempotency: "actionIdentity",
+      inputContract: "driveDeliverArtifactV1",
+      manifestVersion: "drive-v1",
+      operation: "DRIVE_DELIVER_ARTIFACT",
+      operationKind: "effect",
+      outputContract: "driveMutationV1",
+      providerTool: "GOOGLEDRIVE_UPLOAD_FILE",
+      requiredConnection: true,
+      safeErrors: effectSafeErrors,
       toolkit: "googledrive",
     },
   ],
@@ -417,18 +671,30 @@ const inputDecoderFor = (
   manifest: IntegrationManifestOperation,
 ): ResolvedIntegrationManifestOperation["decodeInput"] => {
   switch (manifest.inputContract) {
+    case "gmailSearchV1":
+      return inputManifestDecoder(GmailSearchInput, manifest);
     case "gmailFetchThreadV1":
       return inputManifestDecoder(GmailFetchThreadInput, manifest);
     case "gmailMessageV1":
       return inputManifestDecoder(GmailMessageInput, manifest);
     case "calendarListEventsV1":
       return inputManifestDecoder(CalendarListEventsInput, manifest);
-    case "calendarCreatePrivateV1":
-      return inputManifestDecoder(CalendarCreatePrivateInput, manifest);
+    case "calendarAvailabilityV1":
+      return inputManifestDecoder(CalendarAvailabilityInput, manifest);
+    case "calendarCreateEventV1":
+      return inputManifestDecoder(CalendarCreateEventInput, manifest);
     case "calendarUpdateEventV1":
       return inputManifestDecoder(CalendarUpdateEventInput, manifest);
+    case "calendarDeleteEventV1":
+      return inputManifestDecoder(CalendarDeleteEventInput, manifest);
+    case "driveSearchV1":
+      return inputManifestDecoder(DriveSearchInput, manifest);
     case "driveGetMetadataV1":
       return inputManifestDecoder(DriveGetMetadataInput, manifest);
+    case "driveReadFileV1":
+      return inputManifestDecoder(DriveReadFileInput, manifest);
+    case "driveDeliverArtifactV1":
+      return inputManifestDecoder(DriveDeliverArtifactInput, manifest);
     default:
       return manifest.inputContract satisfies never;
   }

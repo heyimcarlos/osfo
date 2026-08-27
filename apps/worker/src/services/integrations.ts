@@ -3,12 +3,18 @@ import { Effect, Option, Predicate, Result, Schema, Semaphore } from "effect";
 import type { ActionId } from "../domain/action-execution";
 import { ManifestVersion, type UserId } from "../domain";
 import {
-  CalendarCreatePrivateInput,
+  CalendarAvailabilityInput,
+  CalendarCreateEventInput,
+  CalendarDeleteEventInput,
   CalendarListEventsInput,
   CalendarUpdateEventInput,
+  DriveDeliverArtifactInput,
   DriveGetMetadataInput,
+  DriveReadFileInput,
+  DriveSearchInput,
   GmailFetchThreadInput,
   GmailMessageInput,
+  GmailSearchInput,
   IntegrationManifestUnavailable,
   resolveManifest,
   type IntegrationManifestValueInvalid,
@@ -18,13 +24,18 @@ import {
 /* oxlint-disable eslint/no-underscore-dangle -- Integration outcomes use the repository's _tag discriminator. */
 
 const providerTools = [
+  "GMAIL_FETCH_EMAILS",
   "GMAIL_FETCH_MESSAGE_BY_THREAD_ID",
-  "GMAIL_CREATE_EMAIL_DRAFT",
   "GMAIL_SEND_EMAIL",
   "GOOGLECALENDAR_EVENTS_LIST",
+  "GOOGLECALENDAR_FIND_FREE_SLOTS",
   "GOOGLECALENDAR_CREATE_EVENT",
   "GOOGLECALENDAR_PATCH_EVENT",
+  "GOOGLECALENDAR_DELETE_EVENT",
+  "GOOGLEDRIVE_FIND_FILE",
   "GOOGLEDRIVE_GET_FILE_METADATA",
+  "GOOGLEDRIVE_DOWNLOAD_FILE",
+  "GOOGLEDRIVE_UPLOAD_FILE",
 ] as const;
 
 /** Exact provider session confinement applied to every Osfo User mapping. */
@@ -51,6 +62,15 @@ export interface ProviderExecutionResult {
 
 export type ProviderInput =
   | {
+      readonly ids_only: false;
+      readonly include_payload: false;
+      readonly include_spam_trash: false;
+      readonly max_results: number;
+      readonly query: string;
+      readonly user_id: "me";
+      readonly verbose: false;
+    }
+  | {
       readonly body: string;
       readonly extra_recipients?: ReadonlyArray<string>;
       readonly is_html: false;
@@ -69,15 +89,27 @@ export type ProviderInput =
       readonly singleEvents: true;
       readonly timeMax: string;
       readonly timeMin: string;
+      readonly timeZone: string;
     }
   | {
-      readonly attendees: [];
+      readonly calendar_expansion_max: 1;
+      readonly group_expansion_max: 1;
+      readonly items: readonly [string];
+      readonly time_max: string;
+      readonly time_min: string;
+      readonly timezone: string;
+    }
+  | {
+      readonly attendees: readonly [];
       readonly calendar_id: string;
       readonly create_meeting_room: false;
       readonly end_datetime: string;
+      readonly exclude_organizer: true;
+      readonly recurrence?: ReadonlyArray<string>;
       readonly send_updates: "none";
       readonly start_datetime: string;
       readonly summary: string;
+      readonly timezone: string;
       readonly visibility: "private";
     }
   | ({
@@ -86,10 +118,52 @@ export type ProviderInput =
       readonly send_updates: "none";
     } & CalendarPatchInput)
   | {
+      readonly calendar_id: string;
+      readonly event_id: string;
+      readonly send_updates: "none";
+    }
+  | {
+      readonly corpora: "user";
+      readonly fields: "files(id,name,mimeType,size,modifiedTime,createdTime,parents,webViewLink,trashed)";
+      readonly includeItemsFromAllDrives: false;
+      readonly pageSize: number;
+      readonly q: string;
+      readonly spaces: "drive";
+      readonly supportsAllDrives: false;
+    }
+  | {
       readonly fields: "id,name,mimeType,size,modifiedTime,webViewLink";
       readonly fileId: string;
       readonly supportsAllDrives: true;
+    }
+  | {
+      readonly file_id: string;
+      readonly mime_type: string;
+    }
+  | {
+      readonly file_to_upload: {
+        readonly mimetype: string;
+        readonly name: string;
+        readonly s3key: string;
+      };
+      readonly folder_to_upload_to: string | null;
     };
+
+export interface IntegrationArtifact {
+  readonly bytes: Uint8Array;
+  readonly fileName: string;
+  readonly mediaType: string;
+}
+
+export interface IntegrationArtifactAccess {
+  readonly readOwned: (input: {
+    readonly artifactId: string;
+    readonly expectedBytes: number;
+    readonly fileName: string;
+    readonly mediaType: string;
+    readonly userId: UserId;
+  }) => Effect.Effect<IntegrationArtifact, IntegrationArtifactUnavailable>;
+}
 
 /** Narrow Composio boundary. Meta tools, arbitrary discovery, and sandbox APIs are absent. */
 export interface ProviderSession {
@@ -102,9 +176,18 @@ export interface ProviderSession {
     input: ProviderInput,
     connectedAccountId: string,
   ) => Effect.Effect<ProviderExecutionResult, IntegrationProviderUnavailable>;
+  readonly disconnect: (
+    connectedAccountId: string,
+  ) => Effect.Effect<void, IntegrationProviderUnavailable>;
   readonly inspectToolkits: (
     toolkits: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<ProviderToolkitEvidence>, IntegrationProviderUnavailable>;
+  readonly stageFile: (
+    artifact: IntegrationArtifact,
+  ) => Effect.Effect<
+    { readonly mimetype: string; readonly name: string; readonly s3key: string },
+    IntegrationProviderUnavailable
+  >;
 }
 
 /** Provider operations required by the deep Integrations module. */
@@ -174,6 +257,14 @@ export class IntegrationPersistenceUnavailable extends Schema.TaggedError<Integr
   },
 ) {}
 
+export class IntegrationArtifactUnavailable extends Schema.TaggedError<IntegrationArtifactUnavailable>()(
+  "IntegrationArtifactUnavailable",
+  {
+    message: Schema.String,
+    reason: Schema.Literals(["inaccessible", "identityMismatch", "mediaMismatch", "sizeMismatch"]),
+  },
+) {}
+
 export class IntegrationConnectionUnavailable extends Schema.TaggedError<IntegrationConnectionUnavailable>()(
   "IntegrationConnectionUnavailable",
   {
@@ -186,7 +277,7 @@ export class IntegrationConnectionUnavailable extends Schema.TaggedError<Integra
 export class IntegrationExecutionRejected extends Schema.TaggedError<IntegrationExecutionRejected>()(
   "IntegrationExecutionRejected",
   {
-    code: Schema.Literals(["providerUnavailable", "resultInvalid"]),
+    code: Schema.Literals(["conflict", "providerUnavailable", "resultInvalid"]),
     message: Schema.String,
     operation: Schema.String,
     providerLogId: Schema.optional(Schema.String),
@@ -284,6 +375,16 @@ export interface Interface {
     | IntegrationPersistenceUnavailable
     | IntegrationProviderUnavailable
   >;
+  readonly disconnect: (input: {
+    readonly toolkit: string;
+    readonly userId: UserId;
+  }) => Effect.Effect<
+    { readonly _tag: "IntegrationConnectionRevoked"; readonly toolkit: string },
+    | IntegrationConnectionUnavailable
+    | IntegrationManifestUnavailable
+    | IntegrationPersistenceUnavailable
+    | IntegrationProviderUnavailable
+  >;
   readonly execute: <E>(
     input: ExecuteIntegrationInput<E>,
   ) => Effect.Effect<
@@ -309,7 +410,9 @@ export interface Interface {
 }
 
 /** Construct the only Osfo path allowed to invoke direct Composio operations. */
-export const make = (ports: IntegrationProvider & IntegrationPersistence): Interface => {
+export const make = (
+  ports: IntegrationProvider & IntegrationPersistence & Partial<IntegrationArtifactAccess>,
+): Interface => {
   const sessionLock = Semaphore.makeUnsafe(1);
   const actionLock = Semaphore.makeUnsafe(1);
 
@@ -407,7 +510,7 @@ export const make = (ports: IntegrationProvider & IntegrationPersistence): Inter
       const manifest = resolved.success;
       const decoded = manifest.decodeInput(input.input);
       if (Result.isFailure(decoded)) return yield* decoded.failure;
-      const providerInput = providerInputFor(manifest, decoded.success);
+      let providerInput = providerInputFor(manifest, decoded.success);
       if (manifest.operationKind === "read") {
         yield* input.authorize;
         const connection = yield* requireConnection(manifest.toolkit, input.userId);
@@ -416,7 +519,7 @@ export const make = (ports: IntegrationProvider & IntegrationPersistence): Inter
           providerInput,
           connection.connectedAccountId,
         );
-        return yield* normalizeRead(manifest, execution);
+        return yield* normalizeRead(manifest, execution, decoded.success);
       }
       if (input.actionId === undefined) {
         return yield* new IntegrationActionConflict({
@@ -444,6 +547,45 @@ export const make = (ports: IntegrationProvider & IntegrationPersistence): Inter
             });
           }
           const connection = yield* requireConnection(manifest.toolkit, input.userId);
+          if (manifest.operation === "DRIVE_DELIVER_ARTIFACT") {
+            const request = yield* Schema.decodeUnknownEffect(DriveDeliverArtifactInput)(
+              decoded.success,
+            ).pipe(
+              Effect.mapError(
+                () =>
+                  new IntegrationExecutionRejected({
+                    code: "resultInvalid",
+                    message: "The approved artifact delivery input is invalid",
+                    operation: manifest.operation,
+                    toolkit: manifest.toolkit,
+                  }),
+              ),
+            );
+            if (ports.readOwned === undefined) {
+              return yield* new IntegrationExecutionRejected({
+                code: "providerUnavailable",
+                message: "Owned artifact delivery is unavailable",
+                operation: manifest.operation,
+                toolkit: manifest.toolkit,
+              });
+            }
+            const artifact = yield* ports.readOwned({ ...request, userId: input.userId }).pipe(
+              Effect.mapError(
+                () =>
+                  new IntegrationExecutionRejected({
+                    code: "resultInvalid",
+                    message: "The owned artifact does not match the approved delivery",
+                    operation: manifest.operation,
+                    toolkit: manifest.toolkit,
+                  }),
+              ),
+            );
+            const staged = yield* connection.session.stageFile(artifact);
+            providerInput = {
+              file_to_upload: staged,
+              folder_to_upload_to: request.targetFolderId,
+            };
+          }
           yield* ports.retainAction(actionId, { _tag: "Pending", digest });
           const attempted = yield* Effect.exit(
             connection.session.execute(
@@ -485,6 +627,11 @@ export const make = (ports: IntegrationProvider & IntegrationPersistence): Inter
       };
     }),
     connectionEvidence,
+    disconnect: Effect.fn("Integrations.disconnect")(function* (input) {
+      const connection = yield* requireConnection(input.toolkit, input.userId);
+      yield* connection.session.disconnect(connection.connectedAccountId);
+      return { _tag: "IntegrationConnectionRevoked" as const, toolkit: input.toolkit };
+    }),
     execute,
     resolveSession: Effect.fn("Integrations.resolveSession")(function* (userId) {
       const resolved = yield* resolveProviderSession(userId);
@@ -514,11 +661,22 @@ const providerInputFor = (
   input: Schema.Json,
 ): ProviderInput => {
   switch (manifest.operation) {
+    case "GMAIL_SEARCH_EMAILS": {
+      const value = Schema.decodeUnknownSync(GmailSearchInput)(input);
+      return {
+        ids_only: false,
+        include_payload: false,
+        include_spam_trash: value.includeSpamTrash,
+        max_results: value.maximumMessages,
+        query: value.query,
+        user_id: "me",
+        verbose: false,
+      };
+    }
     case "GMAIL_FETCH_THREAD": {
       const value = Schema.decodeUnknownSync(GmailFetchThreadInput)(input);
       return { thread_id: value.threadId, user_id: "me" };
     }
-    case "GMAIL_CREATE_DRAFT":
     case "GMAIL_SEND_EMAIL": {
       const value = Schema.decodeUnknownSync(GmailMessageInput)(input);
       const [recipient, ...extraRecipients] = value.recipients;
@@ -542,19 +700,55 @@ const providerInputFor = (
         singleEvents: true,
         timeMax: value.endsAt,
         timeMin: value.startsAt,
+        timeZone: value.timeZone,
       };
     }
-    case "CALENDAR_CREATE_PRIVATE": {
-      const value = Schema.decodeUnknownSync(CalendarCreatePrivateInput)(input);
+    case "CALENDAR_FIND_AVAILABILITY": {
+      const value = Schema.decodeUnknownSync(CalendarAvailabilityInput)(input);
       return {
+        calendar_expansion_max: 1,
+        group_expansion_max: 1,
+        items: [value.calendarId],
+        time_max: value.endsAt,
+        time_min: value.startsAt,
+        timezone: value.timeZone,
+      };
+    }
+    case "CALENDAR_CREATE_EVENT": {
+      const value = Schema.decodeUnknownSync(CalendarCreateEventInput)(input);
+      const common = {
         attendees: [],
         calendar_id: value.calendarId,
         create_meeting_room: false,
         end_datetime: value.endsAt,
+        exclude_organizer: true,
         send_updates: "none",
         start_datetime: value.startsAt,
         summary: value.title,
+        timezone: value.timeZone,
         visibility: "private",
+      } as const;
+      const recurrence = calendarRecurrence(value.recurrence);
+      return recurrence === undefined ? common : { ...common, recurrence };
+    }
+    case "CALENDAR_DELETE_EVENT": {
+      const value = Schema.decodeUnknownSync(CalendarDeleteEventInput)(input);
+      return {
+        calendar_id: value.calendarId,
+        event_id: value.eventId,
+        send_updates: "none",
+      };
+    }
+    case "DRIVE_SEARCH": {
+      const value = Schema.decodeUnknownSync(DriveSearchInput)(input);
+      return {
+        corpora: "user",
+        fields: "files(id,name,mimeType,size,modifiedTime,createdTime,parents,webViewLink,trashed)",
+        includeItemsFromAllDrives: false,
+        pageSize: value.maximumFiles,
+        q: `(${value.query}) and 'me' in owners and trashed = false`,
+        spaces: "drive",
+        supportsAllDrives: false,
       };
     }
     case "CALENDAR_UPDATE_EVENT": {
@@ -574,6 +768,21 @@ const providerInputFor = (
         supportsAllDrives: true,
       };
     }
+    case "DRIVE_READ_FILE": {
+      const value = Schema.decodeUnknownSync(DriveReadFileInput)(input);
+      return { file_id: value.fileId, mime_type: value.expectedMediaType };
+    }
+    case "DRIVE_DELIVER_ARTIFACT": {
+      const value = Schema.decodeUnknownSync(DriveDeliverArtifactInput)(input);
+      return {
+        file_to_upload: {
+          mimetype: value.mediaType,
+          name: value.fileName,
+          s3key: value.artifactId,
+        },
+        folder_to_upload_to: value.targetFolderId,
+      };
+    }
     default:
       throw new Error(`Unsupported retained integration operation: ${manifest.operation}`);
   }
@@ -583,8 +792,10 @@ interface CalendarPatchInput {
   description?: string;
   end_time?: string;
   location?: string;
+  recurrence?: ReadonlyArray<string>;
   start_time?: string;
   summary?: string;
+  timezone?: string;
 }
 
 const calendarPatchInput = (
@@ -594,14 +805,28 @@ const calendarPatchInput = (
   if (changes.description !== undefined) patch.description = changes.description;
   if (changes.endsAt !== undefined) patch.end_time = changes.endsAt;
   if (changes.location !== undefined) patch.location = changes.location;
+  if (changes.recurrence !== undefined) {
+    patch.recurrence = calendarRecurrence(changes.recurrence) ?? [];
+  }
   if (changes.startsAt !== undefined) patch.start_time = changes.startsAt;
+  if (changes.timeZone !== undefined) patch.timezone = changes.timeZone;
   if (changes.title !== undefined) patch.summary = changes.title;
   return patch;
+};
+
+const calendarRecurrence = (
+  recurrence: typeof CalendarCreateEventInput.Type.recurrence,
+): ReadonlyArray<string> | undefined => {
+  if (recurrence === null) return undefined;
+  return [
+    `RRULE:FREQ=${recurrence.frequency};INTERVAL=${recurrence.interval};COUNT=${recurrence.count}`,
+  ];
 };
 
 const normalizeRead = (
   manifest: ResolvedIntegrationManifestOperation,
   execution: ProviderExecutionResult,
+  input: Schema.Json,
 ) =>
   Effect.gen(function* () {
     const providerLogId = yield* validateProviderResult(manifest, execution);
@@ -610,12 +835,13 @@ const normalizeRead = (
     let truncated = candidates.length > manifest.hardBounds.maximumRecords;
     for (const candidate of candidates.slice(0, manifest.hardBounds.maximumRecords)) {
       const projected = yield* projectSafeRecord(manifest, candidate);
-      const next = [...records, projected];
+      const bounded = boundProjectedRecord(manifest.operation, projected, input);
+      const next = [...records, bounded];
       if (byteLength(next) > manifest.hardBounds.maximumResponseBytes) {
         truncated = true;
         break;
       }
-      records.push(projected);
+      records.push(bounded);
     }
     const responseBytes = byteLength(records);
     return {
@@ -629,6 +855,35 @@ const normalizeRead = (
       truncated,
     };
   });
+
+const boundProjectedRecord = (
+  operation: string,
+  record: Record<string, boolean | number | string | null>,
+  input: Schema.Json,
+) => {
+  if (operation !== "DRIVE_READ_FILE" || !Predicate.isString(record.content)) return record;
+  const maximumBytes = Schema.decodeUnknownSync(DriveReadFileInput)(input).maximumBytes;
+  const encoded = new TextEncoder().encode(record.content);
+  if (encoded.byteLength <= maximumBytes) return record;
+  return {
+    ...record,
+    content: decodeUtf8Prefix(encoded, maximumBytes),
+    truncated: true,
+  };
+};
+
+const decodeUtf8Prefix = (bytes: Uint8Array, maximumBytes: number) => {
+  for (let end = maximumBytes; end >= Math.max(0, maximumBytes - 3); end -= 1) {
+    try {
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(
+        bytes.slice(0, end),
+      );
+    } catch {
+      // Continue to the previous complete UTF-8 code point.
+    }
+  }
+  return "";
+};
 
 const normalizeEffect = (
   manifest: ResolvedIntegrationManifestOperation,
@@ -672,9 +927,13 @@ const providerRejection = (
   execution: ProviderExecutionResult,
 ) => {
   const providerLogId = execution.logId.trim();
+  const conflict =
+    manifest.toolkit === "googlecalendar" && /\bconflict\b/iu.test(execution.error ?? "");
   const common = {
-    code: "providerUnavailable",
-    message: "The integration provider rejected the operation",
+    code: conflict ? ("conflict" as const) : ("providerUnavailable" as const),
+    message: conflict
+      ? "The Calendar operation conflicts with current provider state"
+      : "The integration provider rejected the operation",
     operation: manifest.operation,
     toolkit: manifest.toolkit,
   } as const;
@@ -687,10 +946,24 @@ const readCandidates = (
   manifest: ResolvedIntegrationManifestOperation,
   data: Schema.JsonObject,
 ): Effect.Effect<ReadonlyArray<Schema.Json>, IntegrationExecutionRejected> => {
-  if (manifest.outputContract === "driveMetadataV1") return Effect.succeed([data]);
-  for (const key of manifest.outputContract === "gmailThreadV1"
-    ? ["messages", "items"]
-    : ["items", "events"]) {
+  if (manifest.outputContract === "driveMetadataV1" || manifest.outputContract === "driveContentV1")
+    return Effect.succeed([data]);
+  const candidateKeys = (() => {
+    switch (manifest.outputContract) {
+      case "gmailMessagesV1":
+      case "gmailThreadV1":
+        return ["messages", "items"];
+      case "calendarAvailabilityV1":
+        return ["freeSlots", "busy", "items"];
+      case "driveFilesV1":
+        return ["files", "items"];
+      case "calendarEventsV1":
+        return ["items", "events"];
+      default:
+        return [];
+    }
+  })();
+  for (const key of candidateKeys) {
     const candidate = Schema.decodeUnknownOption(Schema.Array(Schema.Json))(data[key]);
     if (Option.isSome(candidate)) return Effect.succeed(candidate.value);
   }
@@ -698,6 +971,7 @@ const readCandidates = (
 };
 
 const safeFields = {
+  CALENDAR_FIND_AVAILABILITY: ["calendarId", "end", "start", "timeMax", "timeMin"],
   CALENDAR_LIST_EVENTS: [
     "description",
     "end",
@@ -709,7 +983,19 @@ const safeFields = {
     "summary",
   ],
   DRIVE_GET_METADATA: ["id", "mimeType", "modifiedTime", "name", "size", "webViewLink"],
+  DRIVE_READ_FILE: ["content", "fileId", "mimeType", "name", "size", "truncated"],
+  DRIVE_SEARCH: [
+    "createdTime",
+    "id",
+    "mimeType",
+    "modifiedTime",
+    "name",
+    "size",
+    "trashed",
+    "webViewLink",
+  ],
   GMAIL_FETCH_THREAD: ["body", "date", "from", "id", "snippet", "subject", "threadId", "to"],
+  GMAIL_SEARCH_EMAILS: ["date", "from", "id", "snippet", "subject", "threadId", "to"],
 } as const;
 
 const projectSafeRecord = (
@@ -744,12 +1030,20 @@ const SafeScalar = Schema.Union([Schema.Null, Schema.Boolean, Schema.Finite, Sch
 
 const safeFieldsFor = (operation: string): ReadonlyArray<string> => {
   switch (operation) {
+    case "CALENDAR_FIND_AVAILABILITY":
+      return safeFields.CALENDAR_FIND_AVAILABILITY;
     case "CALENDAR_LIST_EVENTS":
       return safeFields.CALENDAR_LIST_EVENTS;
     case "DRIVE_GET_METADATA":
       return safeFields.DRIVE_GET_METADATA;
+    case "DRIVE_READ_FILE":
+      return safeFields.DRIVE_READ_FILE;
+    case "DRIVE_SEARCH":
+      return safeFields.DRIVE_SEARCH;
     case "GMAIL_FETCH_THREAD":
       return safeFields.GMAIL_FETCH_THREAD;
+    case "GMAIL_SEARCH_EMAILS":
+      return safeFields.GMAIL_SEARCH_EMAILS;
     default:
       return [];
   }
