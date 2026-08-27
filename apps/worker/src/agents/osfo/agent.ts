@@ -1247,7 +1247,8 @@ export class OsfoAgent extends Think<Env> {
         permissions: ["files:delete"],
       }),
       generateDocument: action({
-        description: "Generate one bounded PDF or DOCX with at most 20 pages and 5 MB.",
+        description:
+          "Generate one bounded PDF or DOCX with at most 20 pages and 5 MB. A page may reference one previously verified owned image or diagram by visualContentId.",
         execute: (input, context) => this.#generateDocument(input, context.toolCallId),
         idempotencyKey: ({ ctx }) => `document-generate:${ctx.toolCallId}`,
         inputSchema: effectToolSchema(GenerateDocumentInput),

@@ -133,9 +133,11 @@ describe("governed Authorization", () => {
     const operation = {
       actionId: "artifact-action",
       artifactKind: "pdf",
-      bytes: 5_000_000n,
+      bytes: 2_500_000n,
+      computeMilliseconds: 30_000n,
       kind: "artifact.generate",
-      pages: 20n,
+      modelSteps: 1n,
+      pages: 10n,
       pixelsPerEdge: 0n,
       slides: 0n,
     } as const;
@@ -147,6 +149,86 @@ describe("governed Authorization", () => {
     expect(authorization.admit(context("adventurer"), operation)).toMatchObject({
       _tag: "Admitted",
       executionMode: "normalPlanUsage",
+    });
+  });
+
+  it("keeps generic artifact availability with exact Plan capacities under launch policy", () => {
+    const authorization = make(retainedCatalog);
+    const operation = {
+      actionId: "artifact-launch-bridge",
+      artifactKind: "pptx" as const,
+      bytes: 10_000_000n,
+      computeMilliseconds: 30_000n,
+      kind: "artifact.generate" as const,
+      modelSteps: 1n,
+      pages: 0n,
+      pixelsPerEdge: 0n,
+      slides: 10n,
+    };
+
+    const launchContext = (plan: "adventurer" | "free") => {
+      const base = context(plan);
+      if (!Predicate.isTagged(base.allowance, "Metered")) throw new Error("fixture is unmetered");
+      return {
+        ...base,
+        allowance: {
+          ...base.allowance,
+          planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+        },
+        requestVendorUsdMicros: 50_000n,
+        subscription: { plan, planPolicyVersion: PlanPolicyVersion.make("launch-v1") },
+      } satisfies AuthorizationContext;
+    };
+    for (const plan of ["free", "adventurer"] as const) {
+      expect(authorization.admit(launchContext(plan), operation)).toMatchObject({
+        _tag: "Admitted",
+      });
+    }
+
+    const adventurerOnly = {
+      ...operation,
+      bytes: 20_000_000n,
+      computeMilliseconds: 60_000n,
+      modelSteps: 2n,
+      slides: 20n,
+    };
+    expect(authorization.admit(launchContext("free"), adventurerOnly)).toMatchObject({
+      _tag: "Denied",
+      reason: "operationLimitExceeded",
+    });
+    expect(authorization.admit(launchContext("adventurer"), adventurerOnly)).toMatchObject({
+      _tag: "Admitted",
+    });
+    expect(
+      authorization.admit({ ...launchContext("free"), requestVendorUsdMicros: 50_001n }, operation),
+    ).toMatchObject({ _tag: "Denied", reason: "operationLimitExceeded" });
+    expect(
+      authorization.admit(
+        { ...launchContext("adventurer"), requestVendorUsdMicros: 100_000n },
+        operation,
+      ),
+    ).toMatchObject({ _tag: "Admitted" });
+    expect(currentCapabilityCatalog.planResourceLimits.free.artifact).toEqual({
+      computeMilliseconds: 30_000,
+      generatedDocumentBytes: 2_500_000n,
+      generatedDocumentPages: 10,
+      generatedImageBytes: 5_000_000n,
+      generatedImagePixelsPerEdge: 1_024,
+      generatedPresentationBytes: 10_000_000n,
+      generatedPresentationSlides: 10,
+      modelSteps: 1,
+      vendorUsdMicrosPerRequest: 50_000n,
+    });
+    expect(currentCapabilityCatalog.planResourceLimits.adventurer.artifact).toEqual({
+      computeMilliseconds: 60_000,
+      generatedDocumentBytes: 5_000_000n,
+      generatedDocumentPages: 20,
+      generatedImageBytes: 10_000_000n,
+      generatedImagePixelsPerEdge: 2_048,
+      generatedPresentationBytes: 20_000_000n,
+      generatedPresentationSlides: 20,
+      modelSteps: 2,
+      vendorUsdMicrosPerRequest: 100_000n,
     });
   });
 
@@ -317,7 +399,9 @@ describe("governed Authorization", () => {
         actionId: "artifact-action",
         artifactKind: "pdf",
         bytes: 1n,
+        computeMilliseconds: 1n,
         kind: "artifact.generate",
+        modelSteps: 0n,
         pages: 1n,
         pixelsPerEdge: 0n,
         slides: 0n,
@@ -539,7 +623,9 @@ describe("governed Authorization", () => {
         actionId: "artifact-action",
         artifactKind: "pdf",
         bytes: 1n,
+        computeMilliseconds: 1n,
         kind: "artifact.generate",
+        modelSteps: 0n,
         pages: 1n,
         pixelsPerEdge: 0n,
         slides: 0n,
@@ -667,7 +753,9 @@ const operationFor = (operation: AuthorizationOperationName): AuthorizationOpera
         actionId: operation,
         artifactKind: "pdf",
         bytes: 1n,
+        computeMilliseconds: 1n,
         kind: operation,
+        modelSteps: 0n,
         pages: 1n,
         pixelsPerEdge: 0n,
         slides: 0n,

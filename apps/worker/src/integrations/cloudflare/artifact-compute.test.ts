@@ -14,6 +14,7 @@ import {
 
 const request = {
   allowancePeriodId: AllowancePeriodId.make("period-1"),
+  computeMilliseconds: 60_000,
   contentId: ContentId.make("artifact:toolCall:compute-1"),
   intent: {
     _tag: "Diagram" as const,
@@ -49,6 +50,8 @@ it.effect("moves immutable attempt evidence from no-use claim to incurred comple
       statuses.push(evidence.status);
     },
     inspect: async () => retained,
+    readCompleted: async () => bytes,
+    reclaim: async () => false,
     start: async (_contentId, evidence) => {
       retained = evidence;
       statuses.push(evidence.status);
@@ -81,12 +84,22 @@ it.effect("bounds a non-responsive image provider after durable incurred evidenc
       retained = evidence;
     },
     inspect: async () => retained,
+    readCompleted: async () => new Uint8Array([1]),
+    reclaim: async () => false,
     start: async (_contentId, evidence) => {
       retained = evidence;
       return true;
     },
   };
-  const never: ImageProvider = { generate: () => new Promise(() => undefined) };
+  let providerAborted = false;
+  const never: ImageProvider = {
+    generate: (_source, signal) => {
+      signal.addEventListener("abort", () => {
+        providerAborted = true;
+      });
+      return new Promise(() => undefined);
+    },
+  };
   const compute = makeWithPorts(
     () => successfulSandbox(new Uint8Array([1])),
     attempts,
@@ -108,9 +121,162 @@ it.effect("bounds a non-responsive image provider after durable incurred evidenc
         Effect.sync(() => {
           expect(result).toMatchObject({ _tag: "Interrupted", cost: { _tag: "Incurred" } });
           expect(retained).toMatchObject({ cost: { _tag: "Incurred" }, status: "started" });
+          expect(providerAborted).toBe(true);
         }),
       ),
     );
+});
+
+it.effect("replays a digest-verified completed output without another Sandbox execution", () => {
+  const bytes = new Uint8Array([1, 2, 3]);
+  let executions = 0;
+  const completed = {
+    cost: {
+      _tag: "Incurred" as const,
+      allowancePeriodId: request.allowancePeriodId,
+      basis: "conservative" as const,
+      providerOperationId: "artifact:completed",
+      usdMicros: 50_000n,
+    },
+    executionLeaseExpiresAt: -1,
+    intentDigest: request.intentDigest,
+    output: {
+      byteLength: bytes.byteLength,
+      inspection: { _tag: "Visual" as const, height: 400, width: 600 },
+      sha256: "a".repeat(64),
+    },
+    status: "completed" as const,
+    userId: request.userId,
+  };
+  const attempts: AttemptStore = {
+    claim: async () => ({ _tag: "Existing", evidence: completed }),
+    complete: async () => undefined,
+    inspect: async () => completed,
+    readCompleted: async () => bytes,
+    reclaim: async () => false,
+    start: async () => false,
+  };
+  const sandbox = {
+    ...successfulSandbox(bytes),
+    exec: async () => {
+      executions += 1;
+      return { exitCode: 0, stdout: "", success: true };
+    },
+  };
+  const compute = makeWithPorts(() => sandbox, attempts, { generate: async () => bytes }, 50_000n);
+
+  return compute.generate(request).pipe(
+    Effect.tap((result) =>
+      Effect.sync(() => {
+        expect(result).toMatchObject({ _tag: "Completed", cost: { _tag: "Incurred" } });
+        expect(executions).toBe(0);
+      }),
+    ),
+  );
+});
+
+it.effect("fails closed when staged completed output no longer matches its digest", () => {
+  const bytes = new Uint8Array([1, 2, 3]);
+  const completed = {
+    cost: {
+      _tag: "Incurred" as const,
+      allowancePeriodId: request.allowancePeriodId,
+      basis: "conservative" as const,
+      providerOperationId: "artifact:corrupt",
+      usdMicros: 50_000n,
+    },
+    executionLeaseExpiresAt: -1,
+    intentDigest: request.intentDigest,
+    output: {
+      byteLength: bytes.byteLength,
+      inspection: { _tag: "Visual" as const, height: 400, width: 600 },
+      sha256: "a".repeat(64),
+    },
+    status: "completed" as const,
+    userId: request.userId,
+  };
+  const attempts: AttemptStore = {
+    claim: async () => ({ _tag: "Existing", evidence: completed }),
+    complete: async () => undefined,
+    inspect: async () => completed,
+    readCompleted: async () => {
+      throw new Error("digest mismatch");
+    },
+    reclaim: async () => false,
+    start: async () => false,
+  };
+  const compute = makeWithPorts(
+    () => successfulSandbox(bytes),
+    attempts,
+    { generate: async () => bytes },
+    50_000n,
+  );
+
+  return compute.generate(request).pipe(
+    Effect.tap((result) =>
+      Effect.sync(() => {
+        expect(result).toMatchObject({ _tag: "Interrupted", cost: { _tag: "Incurred" } });
+      }),
+    ),
+  );
+});
+
+it.effect("atomically reclaims an expired started lease", () => {
+  const bytes = new Uint8Array([1, 2, 3]);
+  let retained: Parameters<AttemptStore["claim"]>[1] = {
+    cost: {
+      _tag: "Incurred",
+      allowancePeriodId: request.allowancePeriodId,
+      basis: "conservative",
+      providerOperationId: "artifact:expired",
+      usdMicros: 50_000n,
+    },
+    executionLeaseExpiresAt: -1,
+    intentDigest: request.intentDigest,
+    output: null,
+    status: "started",
+    userId: request.userId,
+  };
+  let executions = 0;
+  const attempts: AttemptStore = {
+    claim: async () => ({ _tag: "Existing", evidence: retained }),
+    complete: async (_contentId, evidence) => {
+      retained = evidence;
+    },
+    inspect: async () => retained,
+    readCompleted: async () => bytes,
+    reclaim: async (_contentId, current, proposed) => {
+      if (retained !== current) return false;
+      retained = proposed;
+      return true;
+    },
+    start: async (_contentId, evidence) => {
+      retained = evidence;
+      return true;
+    },
+  };
+  const sandbox = {
+    ...successfulSandbox(bytes),
+    exec: async () => {
+      executions += 1;
+      return {
+        exitCode: 0,
+        stdout: '{"height":400,"kind":"visual","width":600}',
+        success: true,
+      };
+    },
+  };
+  const compute = makeWithPorts(() => sandbox, attempts, { generate: async () => bytes }, 50_000n);
+
+  return compute.generate(request).pipe(
+    Effect.tap((result) =>
+      Effect.sync(() => {
+        expect(result._tag).toBe("Completed");
+        expect(executions).toBe(1);
+        expect(retained.status).toBe("completed");
+      }),
+    ),
+  );
 });
 
 const successfulSandbox = (bytes: Uint8Array): SandboxClient => ({

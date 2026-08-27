@@ -8,8 +8,8 @@ import {
   ArtifactIntentConflict,
   ArtifactIntentDigest,
   ArtifactStoreUnavailable,
+  CostEvidence,
   type ArtifactStore,
-  type CostEvidence,
   type StoredArtifact,
   type StoredArtifactMetadata,
 } from "../../services/artifact-generation";
@@ -22,15 +22,7 @@ const Metadata = Schema.fromJsonString(
   Schema.Struct({
     allowancePeriodId: AllowancePeriodId,
     artifact: DocumentArtifact.ArtifactRef,
-    cost: Schema.Union([
-      Schema.TaggedStruct("ProvenNoUse", {}),
-      Schema.TaggedStruct("Incurred", {
-        allowancePeriodId: AllowancePeriodId,
-        basis: Schema.Literals(["conservative", "observed"]),
-        providerOperationId: Schema.String.check(Schema.isMinLength(1)),
-        usdMicros: Schema.BigIntFromString,
-      }),
-    ]),
+    cost: CostEvidence,
     intentDigest: ArtifactIntentDigest,
     intentTag: Schema.Literals(["Presentation", "Image", "Diagram"]),
     owner: DocumentArtifact.DocumentOwner,

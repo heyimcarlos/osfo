@@ -74,6 +74,7 @@ it.effect("rechecks protected-effect authority before every attempt-evidence R2 
       format: "pdf",
       intentDigest,
       source: DocumentSource.make({ pages: [{ lines: ["hello"], title: "Title" }] }),
+      supportingVisuals: [],
       userId: UserId.make("user-1"),
     })
     .pipe(

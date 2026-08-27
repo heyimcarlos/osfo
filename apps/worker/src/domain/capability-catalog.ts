@@ -176,6 +176,17 @@ export const IntegrationReadLimits = Schema.Struct({
 
 /** Plan-specific live resource and concurrency ceilings. */
 export const PlanResourceLimits = Schema.Struct({
+  artifact: Schema.Struct({
+    computeMilliseconds: positiveInteger,
+    generatedDocumentBytes: positiveBytes,
+    generatedDocumentPages: positiveInteger,
+    generatedImageBytes: positiveBytes,
+    generatedImagePixelsPerEdge: positiveInteger,
+    generatedPresentationBytes: positiveBytes,
+    generatedPresentationSlides: positiveInteger,
+    modelSteps: positiveInteger,
+    vendorUsdMicrosPerRequest: positiveBytes,
+  }),
   activeGmSummonsPerSession: nonNegativeInteger,
   activeReminders: positiveInteger,
   activeWorkflows: positiveInteger,
@@ -187,6 +198,7 @@ export const PlanResourceLimits = Schema.Struct({
   managedModelOutputTokens: positiveInteger,
   retainedUserContentBytes: positiveBytes,
 });
+export type PlanResourceLimits = typeof PlanResourceLimits.Type;
 
 /** Company-funded limits for basic conversation after Plan Usage exhaustion. */
 export const ExhaustedConversationLimits = Schema.Struct({
@@ -358,6 +370,17 @@ const governedCapabilitiesV1 = {
   planExceptions: { adventurer: ["support.gmSummon"], free: [] },
   planResourceLimits: {
     adventurer: {
+      artifact: {
+        computeMilliseconds: 60_000,
+        generatedDocumentBytes: 5_000_000n,
+        generatedDocumentPages: 20,
+        generatedImageBytes: 10_000_000n,
+        generatedImagePixelsPerEdge: 2_048,
+        generatedPresentationBytes: 20_000_000n,
+        generatedPresentationSlides: 20,
+        modelSteps: 2,
+        vendorUsdMicrosPerRequest: 100_000n,
+      },
       activeGmSummonsPerSession: 1,
       activeReminders: 25,
       activeWorkflows: 25,
@@ -370,6 +393,17 @@ const governedCapabilitiesV1 = {
       retainedUserContentBytes: 2_000_000_000n,
     },
     free: {
+      artifact: {
+        computeMilliseconds: 30_000,
+        generatedDocumentBytes: 2_500_000n,
+        generatedDocumentPages: 10,
+        generatedImageBytes: 5_000_000n,
+        generatedImagePixelsPerEdge: 1_024,
+        generatedPresentationBytes: 10_000_000n,
+        generatedPresentationSlides: 10,
+        modelSteps: 1,
+        vendorUsdMicrosPerRequest: 50_000n,
+      },
       activeGmSummonsPerSession: 0,
       activeReminders: 5,
       activeWorkflows: 3,

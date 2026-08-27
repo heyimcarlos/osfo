@@ -64,6 +64,52 @@ class ArtifactRendererTest(unittest.TestCase):
             self.assertIn("[Sources]", notes)
             self.assertIn("https://example.test/source", notes)
 
+    def test_presentation_rejects_embedded_line_breaks_before_render(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.json"
+            output = root / "deck.pptx"
+            source.write_text(
+                json.dumps(
+                    {
+                        "source": {
+                            "audience": "Reviewers",
+                            "purpose": "Explain",
+                            "slides": [
+                                {
+                                    "body": ["A\nB"],
+                                    "diagramContentId": None,
+                                    "imageContentId": None,
+                                    "sourceNotes": [],
+                                    "speakerNotes": "",
+                                    "title": "Unsafe wrapping",
+                                }
+                            ],
+                            "title": "Review",
+                        },
+                        "supportingVisuals": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "--kind",
+                    "presentation",
+                    "--input",
+                    str(source),
+                    "--output",
+                    str(output),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+
     def test_diagram_and_provider_image_become_exact_pngs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

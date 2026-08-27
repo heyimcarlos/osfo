@@ -1,8 +1,9 @@
 import { getSandbox } from "@cloudflare/sandbox";
-import { DateTime, Effect } from "effect";
+import { DateTime, Effect, Predicate } from "effect";
 
 import type { Database } from "../db";
 import { BillingDb } from "../db/billing";
+import { currentCapabilityCatalog } from "../domain/capability-catalog";
 import { retainedCatalog } from "../domain/plan-policy";
 import { ArtifactCompute } from "../integrations/cloudflare/artifact-compute";
 import { ArtifactStore } from "../integrations/cloudflare/artifact-store";
@@ -53,6 +54,18 @@ export const make = (
       conservativeArtifactVendorUsdMicros,
     ),
     currentAuthorization,
+    executionLimits: (request) => {
+      const limits =
+        currentCapabilityCatalog.planResourceLimits[request.authorization.subscription.plan]
+          .artifact;
+      return {
+        computeMilliseconds: limits.computeMilliseconds,
+        maximumOutputBytes: Predicate.isTagged(request.intent, "Presentation")
+          ? limits.generatedPresentationBytes
+          : limits.generatedImageBytes,
+        modelSteps: Predicate.isTagged(request.intent, "Image") ? 1n : 0n,
+      };
+    },
     validator: ArtifactValidation,
   });
 

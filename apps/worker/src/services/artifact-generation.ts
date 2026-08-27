@@ -1,6 +1,6 @@
 import { Effect, Predicate, Schema } from "effect";
 
-import type { AllowancePeriodId, UserId } from "../domain";
+import { AllowancePeriodId, type UserId } from "../domain";
 import type { ActionId } from "../domain/action-execution";
 import { ContentId } from "../domain/client-content";
 import type {
@@ -22,14 +22,16 @@ import type { AuthorizationContext, Denied, Interface as Authorization } from ".
 const boundedText = (maximum: number) =>
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(maximum));
 const optionalText = (maximum: number) => Schema.String.check(Schema.isMaxLength(maximum));
+const singleLineText = (maximum: number) =>
+  Schema.String.check(Schema.isMaxLength(maximum), Schema.isPattern(/^[^\r\n]*$/u));
 
 export const PresentationSlide = Schema.Struct({
-  body: Schema.Array(optionalText(160)).check(Schema.isMaxLength(12)),
+  body: Schema.Array(singleLineText(160)).check(Schema.isMaxLength(12)),
   diagramContentId: Schema.NullOr(ContentId),
   imageContentId: Schema.NullOr(ContentId),
   sourceNotes: Schema.Array(boundedText(500)).check(Schema.isMaxLength(10)),
   speakerNotes: optionalText(4_000),
-  title: boundedText(100),
+  title: boundedText(100).check(Schema.isPattern(/^[^\r\n]+$/u)),
 });
 export type PresentationSlide = typeof PresentationSlide.Type;
 
@@ -99,15 +101,16 @@ export const ArtifactIntentDigest = Schema.String.check(Schema.isPattern(/^[0-9a
 );
 export type ArtifactIntentDigest = typeof ArtifactIntentDigest.Type;
 
-export type CostEvidence =
-  | { readonly _tag: "ProvenNoUse" }
-  | {
-      readonly _tag: "Incurred";
-      readonly allowancePeriodId: AllowancePeriodId;
-      readonly basis: "conservative" | "observed";
-      readonly providerOperationId: string;
-      readonly usdMicros: bigint;
-    };
+export const CostEvidence = Schema.Union([
+  Schema.TaggedStruct("ProvenNoUse", {}),
+  Schema.TaggedStruct("Incurred", {
+    allowancePeriodId: AllowancePeriodId,
+    basis: Schema.Literals(["conservative", "observed"]),
+    providerOperationId: Schema.String.check(Schema.isMinLength(1)),
+    usdMicros: Schema.BigIntFromString,
+  }),
+]);
+export type CostEvidence = typeof CostEvidence.Type;
 
 export type ArtifactInspection =
   | {
@@ -135,7 +138,7 @@ export interface ComputeRecovery {
 }
 
 export interface GenerateRequest {
-  readonly actionId: ActionId | string;
+  readonly actionId: ActionId;
   readonly authorization: AuthorizationContext;
   readonly intent: ArtifactIntent;
   readonly owner: DocumentArtifact.DocumentOwner;
@@ -147,7 +150,7 @@ export interface ReviseRequest extends GenerateRequest {
 }
 
 export interface ArtifactRequest {
-  readonly actionId: ActionId | string;
+  readonly actionId: ActionId;
   readonly authorization: AuthorizationContext;
   readonly contentId: ContentId;
 }
@@ -254,6 +257,7 @@ export interface DisposableCompute {
   readonly dispose: (contentId: ContentId) => Effect.Effect<void, ArtifactCleanupUnavailable>;
   readonly generate: (input: {
     readonly allowancePeriodId: AllowancePeriodId;
+    readonly computeMilliseconds: number;
     readonly contentId: ContentId;
     readonly intent: ArtifactIntent;
     readonly intentDigest: ArtifactIntentDigest;
@@ -293,6 +297,11 @@ export interface MakeOptions {
   readonly currentAuthorization: (
     admitted: AuthorizationContext,
   ) => Effect.Effect<AuthorizationContext, ArtifactAuthorizationUnavailable>;
+  readonly executionLimits: (request: GenerateRequest) => {
+    readonly computeMilliseconds: number;
+    readonly maximumOutputBytes: bigint;
+    readonly modelSteps: bigint;
+  };
   readonly validator: ArtifactValidator;
 }
 
@@ -337,18 +346,12 @@ export const make = (options: MakeOptions): Interface => {
     const userId = request.authorization.user.userId;
     if (!ownerMatchesRequest(request)) return yield* denied("ownershipRequired");
 
-    const source = yield* sourceContentId === null
-      ? Effect.succeed(null)
-      : readOwnedPresentation(options, request.authorization, sourceContentId);
-    const supportingVisuals = yield* readSupportingVisuals(
-      options,
-      request.authorization,
-      request.intent,
-    );
     const intentDigest = yield* digestIntent(request.intent, sourceContentId);
+    const executionLimits = options.executionLimits(request);
     const operation = operationFor(
       request,
       sourceContentId === null ? "artifact.generate" : "artifact.revise",
+      executionLimits,
     );
     const authorizeWrite = Effect.gen(function* () {
       const current = yield* options.currentAuthorization(request.authorization);
@@ -383,10 +386,22 @@ export const make = (options: MakeOptions): Interface => {
       ? admit(options.authorization, request.authorization, operation)
       : Effect.succeed(recovery.cost.allowancePeriodId);
     yield* authorizeWrite;
+    // Immutable replay above needs only the retained result. Resolve source and
+    // supporting artifacts only when this invocation will enter compute.
+    const source = yield* sourceContentId === null
+      ? Effect.succeed(null)
+      : readOwnedPresentation(options, request.authorization, sourceContentId);
+    const supportingVisuals = yield* readSupportingVisuals(
+      options,
+      request.authorization,
+      request.intent,
+    );
 
+    let cleanupRequired = true;
     return yield* Effect.gen(function* () {
       const computed = yield* options.compute.generate({
         allowancePeriodId,
+        computeMilliseconds: executionLimits.computeMilliseconds,
         contentId,
         intent: request.intent,
         intentDigest,
@@ -395,6 +410,7 @@ export const make = (options: MakeOptions): Interface => {
         userId,
       });
       if (Predicate.isTagged(computed, "AttemptPending")) {
+        cleanupRequired = false;
         return yield* new ArtifactComputeInterrupted({
           contentId,
           evidence: computed.evidence,
@@ -421,6 +437,14 @@ export const make = (options: MakeOptions): Interface => {
           contentId,
           "byteLimit",
           "The generated artifact exceeds its byte limit",
+        );
+      }
+      if (BigInt(computed.bytes.byteLength) > executionLimits.maximumOutputBytes) {
+        yield* recordCost(options.allowances, computed.cost);
+        return yield* DocumentArtifact.invalid(
+          contentId,
+          "byteLimit",
+          "The generated artifact exceeds this Plan's byte limit",
         );
       }
       if (
@@ -455,7 +479,9 @@ export const make = (options: MakeOptions): Interface => {
       yield* authorizeWrite;
       yield* options.artifacts.account(contentId);
       return artifact;
-    }).pipe(Effect.onExit(() => options.compute.dispose(contentId)));
+    }).pipe(
+      Effect.onExit(() => (cleanupRequired ? options.compute.dispose(contentId) : Effect.void)),
+    );
   });
 
   return {
@@ -476,7 +502,11 @@ export const make = (options: MakeOptions): Interface => {
   };
 };
 
-const operationFor = (request: GenerateRequest, kind: "artifact.generate" | "artifact.revise") => {
+const operationFor = (
+  request: GenerateRequest,
+  kind: "artifact.generate" | "artifact.revise",
+  executionLimits: ReturnType<MakeOptions["executionLimits"]>,
+) => {
   const artifactKind =
     request.intent._tag === "Presentation"
       ? ("pptx" as const)
@@ -486,12 +516,10 @@ const operationFor = (request: GenerateRequest, kind: "artifact.generate" | "art
   return {
     actionId: request.actionId,
     artifactKind,
-    bytes: BigInt(
-      request.intent._tag === "Presentation"
-        ? DocumentArtifact.maximumPresentationBytes
-        : DocumentArtifact.maximumImageBytes,
-    ),
+    bytes: executionLimits.maximumOutputBytes,
+    computeMilliseconds: BigInt(executionLimits.computeMilliseconds),
     kind,
+    modelSteps: executionLimits.modelSteps,
     pages: 0n,
     pixelsPerEdge:
       request.intent._tag === "Presentation"

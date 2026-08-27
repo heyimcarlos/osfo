@@ -3,7 +3,10 @@ import base64
 import io
 import json
 import math
+import os
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -119,6 +122,21 @@ def render_diagram(source: dict[str, object], output: Path) -> dict[str, object]
         start_point = ((start[0] + start[2]) / 2, (start[1] + start[3]) / 2)
         finish_point = ((finish[0] + finish[2]) / 2, (finish[1] + finish[3]) / 2)
         draw.line((start_point, finish_point), fill="#64748b", width=4)
+        edge_label = edge.get("label")
+        if not isinstance(edge_label, str):
+            raise ValueError("diagram edge label is invalid")
+        if edge_label:
+            label_center = (
+                (start_point[0] + finish_point[0]) / 2,
+                (start_point[1] + finish_point[1]) / 2,
+            )
+            bounds = draw.textbbox(label_center, edge_label, font=label_font, anchor="mm")
+            draw.rounded_rectangle(
+                (bounds[0] - 6, bounds[1] - 3, bounds[2] + 6, bounds[3] + 3),
+                radius=4,
+                fill="white",
+            )
+            draw.text(label_center, edge_label, font=label_font, fill="#334155", anchor="mm")
     for node in nodes:
         box = positions[node["id"]]
         draw.rounded_rectangle(box, radius=18, fill="#dbeafe", outline="#1d4ed8", width=3)
@@ -172,42 +190,73 @@ def add_notes(slide, notes: str, sources: list[str]) -> None:
     text_frame.text = "\n".join(lines)
 
 
-def inspect_slide_preview(item: dict[str, object], visual: bytes | None) -> list[str]:
-    """Render and inspect one full-size deterministic slide preview."""
-    preview = Image.new("RGB", (1600, 900), "#f8fafc")
-    draw = ImageDraw.Draw(preview)
-    title = str(item["title"])
-    title_font = font(48)
-    body_font = font(30)
-    title_bounds = draw.textbbox((0, 0), title, font=title_font)
+def inspect_rendered_presentation(output: Path, expected_slides: int) -> list[str]:
+    """Render the actual PPTX, then inspect every full-size rasterized slide."""
     issues: list[str] = []
-    if title_bounds[2] - title_bounds[0] > 1415:
-        issues.append("title wraps in full-size preview")
-    draw.text((90, 60), title, font=title_font, fill="#172554")
-    body = item["body"]
-    if not isinstance(body, list):
-        raise ValueError("presentation body is invalid")
-    for line_index, line in enumerate(body):
-        line_text = str(line)
-        bounds = draw.textbbox((0, 0), line_text, font=body_font)
-        available_width = 810 if visual is not None else 1415
-        if bounds[2] - bounds[0] > available_width:
-            issues.append(f"body line {line_index + 1} wraps in full-size preview")
-        y = 190 + line_index * 64
-        if y + 42 > 820:
-            issues.append("body clips in full-size preview")
-        draw.text((100, y), line_text, font=body_font, fill="#1e293b")
-    if visual is not None:
-        with Image.open(io.BytesIO(visual)) as image:
-            rendered = image.convert("RGB")
-            rendered.thumbnail((500, 620), Image.Resampling.LANCZOS)
-            preview.paste(rendered, (1000, 200))
-    encoded = io.BytesIO()
-    preview.save(encoded, format="PNG")
-    encoded.seek(0)
-    with Image.open(encoded) as inspected:
-        if inspected.size != (1600, 900) or inspected.getbbox() is None:
-            issues.append("full-size slide preview is invalid")
+    with tempfile.TemporaryDirectory(prefix="osfo-pptx-inspection-") as directory:
+        root = Path(directory)
+        environment = {**os.environ, "HOME": directory, "SAL_USE_VCLPLUGIN": "svp"}
+        converted = subprocess.run(
+            [
+                "libreoffice",
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                directory,
+                str(output),
+            ],
+            check=False,
+            capture_output=True,
+            env=environment,
+            text=True,
+            timeout=30,
+        )
+        pdf = root / f"{output.stem}.pdf"
+        if converted.returncode != 0 or not pdf.is_file():
+            raise ValueError(
+                "generated PPTX could not be rendered: "
+                f"stdout={converted.stdout!r} stderr={converted.stderr!r}"
+            )
+        rasterized = subprocess.run(
+            ["pdftoppm", "-png", "-r", "120", str(pdf), str(root / "slide")],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if rasterized.returncode != 0:
+            raise ValueError("rendered PPTX pages could not be rasterized")
+        pages = sorted(root.glob("slide-*.png"))
+        if len(pages) != expected_slides:
+            raise ValueError("actual rendered slide count does not match the presentation")
+        for index, page in enumerate(pages, start=1):
+            with Image.open(page) as image:
+                image.load()
+                rendered = image.convert("RGB")
+                if rendered.width < 1200 or rendered.height < 675:
+                    issues.append(f"slide {index}: rendered below full-size inspection resolution")
+                extrema = rendered.convert("L").getextrema()
+                if extrema is None or extrema[1] - extrema[0] < 24:
+                    issues.append(f"slide {index}: unreadable or blank rendered output")
+    return issues
+
+
+def inspect_text_fit(item: dict[str, object], has_visual: bool) -> list[str]:
+    title = item.get("title")
+    body = item.get("body")
+    if not isinstance(title, str) or not isinstance(body, list):
+        raise ValueError("presentation text is invalid")
+    title_font = font(60)
+    body_font = font(37)
+    issues: list[str] = []
+    if title_font.getlength(title) > 1416:
+        issues.append("title wraps in its fixed text box")
+    body_width = 852 if has_visual else 1416
+    if any(not isinstance(line, str) or body_font.getlength(line) > body_width for line in body):
+        issues.append("body wraps in its fixed text box")
+    if len(body) * 60 > 630:
+        issues.append("body clips in its fixed text box")
     return issues
 
 
@@ -234,6 +283,8 @@ def render_presentation(
         body = item.get("body")
         if not isinstance(title, str) or not title or not isinstance(body, list):
             raise ValueError("presentation slide title and body are required")
+        if "\n" in title or "\r" in title:
+            raise ValueError("presentation titles must be one line")
         slide = presentation.slides.add_slide(layout)
         background = slide.background.fill
         background.solid()
@@ -261,6 +312,8 @@ def render_presentation(
         for body_index, line in enumerate(body):
             if not isinstance(line, str):
                 raise ValueError("presentation body line is invalid")
+            if "\n" in line or "\r" in line:
+                raise ValueError("presentation body items must be one line")
             paragraph = body_frame.paragraphs[0] if body_index == 0 else body_frame.add_paragraph()
             paragraph.text = line
             paragraph.font.name = BODY_FONT
@@ -293,9 +346,11 @@ def render_presentation(
         if len(body) > 10 or any(len(str(line)) > 140 for line in body):
             issues.append(f"slide {index + 1}: body may overflow")
         issues.extend(
-            f"slide {index + 1}: {issue}" for issue in inspect_slide_preview(item, visual)
+            f"slide {index + 1}: {issue}"
+            for issue in inspect_text_fit(item, isinstance(visual_id, str))
         )
     presentation.save(output)
+    issues.extend(inspect_rendered_presentation(output, len(slides)))
     rendered_count = len(slides)
     return {"issues": issues, "kind": "presentation", "renderedSlideCount": rendered_count}
 

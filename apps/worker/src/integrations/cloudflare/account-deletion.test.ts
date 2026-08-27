@@ -79,6 +79,35 @@ it.effect("removes attempt evidence explicitly owned by the target user", () => 
     );
 });
 
+it.effect("removes a claimed artifact attempt with proven no provider use", () => {
+  const deleted: Array<string> = [];
+  const key = `${artifactAttemptPrefix}${encodeURIComponent("artifact:toolCall:claimed")}`;
+  const files = bucketStub({ deleted });
+  const artifacts = bucketStub({
+    deleted,
+    objectsByPrefix: {
+      [artifactAttemptPrefix]: [
+        {
+          customMetadata: {
+            osfo: JSON.stringify({ cost: { _tag: "ProvenNoUse" }, userId: "user-1" }),
+          },
+          key,
+        },
+      ],
+    },
+  });
+
+  return make(files, artifacts, () => Effect.succeed(new Set()))
+    .remove(UserId.make("user-1"), Effect.void)
+    .pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(deleted).toEqual([key]);
+        }),
+      ),
+    );
+});
+
 it.effect("fails closed when explicit ownership contradicts a target allowance", () => {
   const deleted: Array<string> = [];
   const files = bucketStub({ deleted });

@@ -10,6 +10,7 @@ import {
   UserId,
 } from "../domain";
 import { ChannelAuthorId, ChannelId } from "../domain/channel-link";
+import { ActionId } from "../domain/action-execution";
 import { DocumentArtifact } from "../domain/document-artifact";
 import { ArtifactGeneration } from "./artifact-generation";
 
@@ -43,7 +44,7 @@ describe("Artifact Generation", () => {
       );
       const revised = yield* fixture.service.revise({
         ...request({ _tag: "Presentation", source: presentation("Accepted correction") }),
-        actionId: "tool-revision",
+        actionId: ActionId.make("tool-revision"),
         owner: { _tag: "ToolCall", toolCallId: "tool-revision" },
         sourceContentId: source.content.contentId,
       });
@@ -81,7 +82,7 @@ describe("Artifact Generation", () => {
             width: 768,
           },
         }),
-        actionId: "tool-diagram",
+        actionId: ActionId.make("tool-diagram"),
         owner: { _tag: "ToolCall", toolCallId: "tool-diagram" },
       });
 
@@ -117,6 +118,29 @@ describe("Artifact Generation", () => {
     }),
   );
 
+  it.effect("replays a retained revision after its source has been deleted", () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture();
+      const source = yield* fixture.service.generate(
+        request({ _tag: "Presentation", source: presentation("Source") }),
+      );
+      const revisionRequest = {
+        ...request({ _tag: "Presentation" as const, source: presentation("Revision") }),
+        actionId: ActionId.make("tool-replay-revision"),
+        owner: { _tag: "ToolCall" as const, toolCallId: "tool-replay-revision" },
+        sourceContentId: source.content.contentId,
+      };
+      const revision = yield* fixture.service.revise(revisionRequest);
+
+      fixture.retained.splice(0, 1);
+      const replay = yield* fixture.service.revise(revisionRequest);
+
+      expect(replay).toEqual(revision);
+      expect(fixture.computations()).toBe(2);
+      expect(fixture.retained).toHaveLength(1);
+    }),
+  );
+
   it.effect("rejects revision of a presentation owned by another User", () =>
     Effect.gen(function* () {
       const fixture = makeFixture();
@@ -130,7 +154,7 @@ describe("Artifact Generation", () => {
       const exit = yield* Effect.exit(
         fixture.service.revise({
           ...request({ _tag: "Presentation", source: presentation("Stolen") }),
-          actionId: "revision-other",
+          actionId: ActionId.make("revision-other"),
           owner: { _tag: "ToolCall", toolCallId: "revision-other" },
           sourceContentId: source.content.contentId,
         }),
@@ -155,6 +179,21 @@ describe("Artifact Generation", () => {
     }),
   );
 
+  it.effect("does not dispose a live Sandbox owned by another caller", () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture({ pending: true });
+      const exit = yield* Effect.exit(
+        fixture.service.generate(
+          request({ _tag: "Presentation", source: presentation("Concurrent") }),
+        ),
+      );
+
+      expect(exit._tag).toBe("Failure");
+      expect(fixture.disposals()).toBe(0);
+      expect(fixture.retained).toHaveLength(0);
+    }),
+  );
+
   it.effect("records an over-limit provider cost and rejects retention", () =>
     Effect.gen(function* () {
       const fixture = makeFixture({ incurredUsdMicros: 50_001n });
@@ -172,6 +211,20 @@ describe("Artifact Generation", () => {
     }),
   );
 
+  it.effect("rejects output above the admitted Plan byte capacity", () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture({ maximumOutputBytes: 8n });
+      const exit = yield* Effect.exit(
+        fixture.service.generate(
+          request({ _tag: "Presentation", source: presentation("Plan byte bound") }),
+        ),
+      );
+
+      expect(exit._tag).toBe("Failure");
+      expect(fixture.retained).toHaveLength(0);
+    }),
+  );
+
   it.effect("deletes one retained identity and makes later reads fail closed", () =>
     Effect.gen(function* () {
       const fixture = makeFixture();
@@ -179,13 +232,13 @@ describe("Artifact Generation", () => {
         request({ _tag: "Diagram", source: diagram("Delete") }),
       );
       yield* fixture.service.delete({
-        actionId: "delete-1",
+        actionId: ActionId.make("delete-1"),
         authorization: request({ _tag: "Diagram", source: diagram("Delete") }).authorization,
         contentId: artifact.content.contentId,
       });
       const read = yield* Effect.exit(
         fixture.service.reference({
-          actionId: "read-after-delete",
+          actionId: ActionId.make("read-after-delete"),
           authorization: request({ _tag: "Diagram", source: diagram("Delete") }).authorization,
           contentId: artifact.content.contentId,
         }),
@@ -207,7 +260,7 @@ const channelAddress = {
 };
 
 const request = <Intent extends ArtifactGeneration.ArtifactIntent>(intent: Intent) => ({
-  actionId: "tool-artifact",
+  actionId: ActionId.make("tool-artifact"),
   authorization: {
     allowance: {
       _tag: "Metered" as const,
@@ -275,12 +328,15 @@ const makeFixture = (
   options: {
     readonly incurredUsdMicros?: bigint;
     readonly interrupted?: boolean;
+    readonly maximumOutputBytes?: bigint;
+    readonly pending?: boolean;
     readonly visualInspectionPassed?: boolean;
   } = {},
 ) => {
   const retained: Array<ArtifactGeneration.StoredArtifact> = [];
   const recordedCosts: Array<bigint> = [];
   let computations = 0;
+  let disposals = 0;
   const service = ArtifactGeneration.make({
     allowances: {
       record: (_allowancePeriodId, _source, items) =>
@@ -321,10 +377,17 @@ const makeFixture = (
       recheck: () => ({ _tag: "Permitted" as const }),
     },
     compute: {
-      dispose: () => Effect.void,
+      dispose: () => Effect.sync(() => void (disposals += 1)),
       generate: (input) =>
         Effect.sync(() => {
           computations += 1;
+          if (options.pending === true) {
+            return {
+              _tag: "AttemptPending" as const,
+              cost: { _tag: "ProvenNoUse" as const },
+              evidence: "another caller owns the lease",
+            };
+          }
           if (options.interrupted === true) {
             return {
               _tag: "Interrupted" as const,
@@ -368,6 +431,13 @@ const makeFixture = (
       inspect: () => Effect.succeed(null),
     },
     currentAuthorization: (authorization) => Effect.succeed(authorization),
+    executionLimits: (artifactRequest) => ({
+      computeMilliseconds: 30_000,
+      maximumOutputBytes:
+        options.maximumOutputBytes ??
+        (artifactRequest.intent._tag === "Presentation" ? 10_000_000n : 5_000_000n),
+      modelSteps: artifactRequest.intent._tag === "Image" ? 1n : 0n,
+    }),
     validator: {
       validate: (contentId, intent, bytes, inspection, sourceContentId) => {
         if (inspection._tag === "Presentation") {
@@ -400,6 +470,7 @@ const makeFixture = (
   });
   return {
     computations: () => computations,
+    disposals: () => disposals,
     recordedCosts: () => recordedCosts,
     retained,
     service,

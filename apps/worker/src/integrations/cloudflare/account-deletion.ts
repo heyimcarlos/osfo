@@ -19,7 +19,11 @@ import { DocumentOwnershipIndex } from "./document-ownership-index";
 const ArtifactMetadata = Schema.fromJsonString(Schema.Struct({ userId: UserId }));
 const AttemptMetadata = Schema.fromJsonString(
   Schema.Struct({
-    cost: Schema.Struct({ allowancePeriodId: AllowancePeriodId }),
+    cost: Schema.Union([
+      Schema.Struct({ allowancePeriodId: AllowancePeriodId }),
+      Schema.TaggedStruct("ProvenNoUse", {}),
+      Schema.TaggedStruct("Incurred", { allowancePeriodId: AllowancePeriodId }),
+    ]),
     userId: Schema.optionalKey(UserId),
   }),
 );
@@ -278,7 +282,10 @@ const selectDecodedAttemptEvidence = (
 ): Effect.Effect<boolean, AccountDeletion.AccountDeletionUnavailable> => {
   if (metadata.userId === userId) return Effect.succeed(true);
   const matchesTargetArtifact = pairedAttemptKeys.has(key);
-  const matchesTargetAllowance = allowancePeriodIds.has(metadata.cost.allowancePeriodId);
+  const allowancePeriodId =
+    "allowancePeriodId" in metadata.cost ? metadata.cost.allowancePeriodId : null;
+  const matchesTargetAllowance =
+    allowancePeriodId !== null && allowancePeriodIds.has(allowancePeriodId);
   if (metadata.userId !== undefined) {
     if (!matchesTargetArtifact && !matchesTargetAllowance) return Effect.succeed(false);
     return Effect.fail(ambiguousObjectOwnership(key, "contradictory attempt ownership"));

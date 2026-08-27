@@ -292,33 +292,84 @@ it.effect("loads presentation production without leaking into unrelated image wo
     expect(presentation.candidates).toContainEqual(
       expect.objectContaining({ skillId: "presentation-production" }),
     );
+    const loadedPresentation = yield* capabilities.loadSkill({
+      index: presentation,
+      personalSkills: [],
+      skillId: "presentation-production",
+      skillVersion: "system-presentation-production-v1",
+      userId: baseInput.userId,
+    });
+    expect(
+      capabilities.assembleToolBundle({
+        availableToolNames: [...availableToolNames, "exportArtifact"],
+        index: presentation,
+        loadedSkills: [loadedPresentation],
+      }).activeToolNames,
+    ).toEqual([
+      "exportArtifact",
+      "generateDiagram",
+      "generateImage",
+      "generatePresentation",
+      "loadSkill",
+      "revisePresentation",
+    ]);
+
+    const learnedPresentationSkill = {
+      ...personalSkillVersionFacts,
+      allowedOrigins: ["channelLink" as const],
+      capabilityIds: ["presentation-generation" as const],
+      description: "Concise presentation notes",
+      instructions: "Use concise source notes.",
+      keywords: ["presentation"],
+      lastUsedAtEpochMillis: null,
+      ownerUserId: baseInput.userId,
+      requirements: ["document-renderer" as const],
+      revision: 1,
+      skillId: "presentation-notes",
+      skillVersion: "presentation-notes-v1",
+      status: "active" as const,
+      taskKinds: ["document" as const],
+    };
+    const laterPresentation = yield* capabilities.eligibleIndex({
+      ...baseInput,
+      availableToolNames,
+      personalSkills: [learnedPresentationSkill],
+      plan: "free",
+      taskDescription: "Create another presentation with concise source notes",
+      taskKinds: ["document"],
+    });
+    expect(laterPresentation.candidates).toContainEqual(
+      expect.objectContaining({ skillId: "presentation-notes" }),
+    );
+    const learned = yield* capabilities.loadSkill({
+      index: laterPresentation,
+      personalSkills: [learnedPresentationSkill],
+      skillId: "presentation-notes",
+      skillVersion: "presentation-notes-v1",
+      userId: baseInput.userId,
+    });
+    expect(learned.instructions).toBe("Use concise source notes.");
 
     const unrelated = yield* capabilities.eligibleIndex({
       ...baseInput,
       availableToolNames,
-      personalSkills: [
-        {
-          ...personalSkillVersionFacts,
-          allowedOrigins: ["channelLink"],
-          capabilityIds: ["presentation-generation"],
-          description: "Concise presentation notes",
-          instructions: "Use concise source notes.",
-          keywords: ["presentation"],
-          lastUsedAtEpochMillis: null,
-          ownerUserId: baseInput.userId,
-          requirements: ["document-renderer"],
-          revision: 1,
-          skillId: "presentation-notes",
-          skillVersion: "presentation-notes-v1",
-          status: "active",
-          taskKinds: ["document"],
-        },
-      ],
+      personalSkills: [learnedPresentationSkill],
       plan: "free",
       taskDescription: "Create an image of a potato",
       taskKinds: ["image"],
     });
     expect(unrelated.candidates).not.toContainEqual(
+      expect.objectContaining({ skillId: "presentation-notes" }),
+    );
+    const unrelatedDocument = yield* capabilities.eligibleIndex({
+      ...baseInput,
+      availableToolNames,
+      personalSkills: [learnedPresentationSkill],
+      plan: "free",
+      taskDescription: "Create a PDF invoice",
+      taskKinds: ["document"],
+    });
+    expect(unrelatedDocument.candidates).not.toContainEqual(
       expect.objectContaining({ skillId: "presentation-notes" }),
     );
   }),

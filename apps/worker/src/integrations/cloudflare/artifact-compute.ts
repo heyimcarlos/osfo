@@ -1,7 +1,8 @@
 import type { Sandbox } from "@cloudflare/sandbox";
 import { Clock, Effect, Random, Schema } from "effect";
 
-import { AllowancePeriodId, UserId } from "../../domain";
+import { UserId } from "../../domain";
+import type { AllowancePeriodId } from "../../domain";
 import type { ContentId } from "../../domain/client-content";
 import { DocumentArtifact } from "../../domain/document-artifact";
 import {
@@ -9,10 +10,10 @@ import {
   ArtifactComputeInterrupted,
   ArtifactIntentConflict,
   ArtifactIntentDigest,
+  CostEvidence,
   type ArtifactIntent,
   type ArtifactInspection,
   type ComputeResult,
-  type CostEvidence,
   type DisposableCompute,
 } from "../../services/artifact-generation";
 import { artifactAttemptKeyFor, artifactAttemptPrefix } from "./document-storage-keys";
@@ -39,6 +40,7 @@ export interface SandboxClient {
 export interface ImageProvider {
   readonly generate: (
     source: Extract<ArtifactIntent, { readonly _tag: "Image" }>["source"],
+    signal: AbortSignal,
   ) => Promise<Uint8Array>;
 }
 
@@ -46,6 +48,11 @@ interface AttemptEvidence {
   readonly cost: CostEvidence;
   readonly executionLeaseExpiresAt: number;
   readonly intentDigest: ArtifactIntentDigest;
+  readonly output: null | {
+    readonly byteLength: number;
+    readonly inspection: ArtifactInspection;
+    readonly sha256: string;
+  };
   readonly status: "claimed" | "started" | "completed";
   readonly userId: UserId;
 }
@@ -58,8 +65,18 @@ export interface AttemptStore {
     | { readonly _tag: "Claimed"; readonly evidence: AttemptEvidence }
     | { readonly _tag: "Existing"; readonly evidence: AttemptEvidence }
   >;
-  readonly complete: (contentId: ContentId, evidence: AttemptEvidence) => Promise<void>;
+  readonly complete: (
+    contentId: ContentId,
+    evidence: AttemptEvidence,
+    bytes: Uint8Array,
+  ) => Promise<void>;
   readonly inspect: (contentId: ContentId) => Promise<AttemptEvidence | null>;
+  readonly readCompleted: (contentId: ContentId, evidence: AttemptEvidence) => Promise<Uint8Array>;
+  readonly reclaim: (
+    contentId: ContentId,
+    current: AttemptEvidence,
+    proposed: AttemptEvidence,
+  ) => Promise<boolean>;
   readonly start: (contentId: ContentId, evidence: AttemptEvidence) => Promise<boolean>;
 }
 
@@ -110,7 +127,7 @@ export const makeWithPorts = (
     }),
   inspect: (contentId, intentDigest) =>
     Effect.tryPromise({
-      try: () => attempts.inspect(contentId),
+      try: () => withDeadline(attempts.inspect(contentId), deadlines.rpcMs),
       catch: () =>
         new ArtifactComputeInterrupted({
           contentId,
@@ -142,6 +159,7 @@ const render = async (
   conservativeVendorUsdMicros: bigint,
   input: {
     readonly allowancePeriodId: AllowancePeriodId;
+    readonly computeMilliseconds: number;
     readonly contentId: ContentId;
     readonly intent: ArtifactIntent;
     readonly intentDigest: ArtifactIntentDigest;
@@ -161,11 +179,12 @@ const render = async (
     cost: { _tag: "ProvenNoUse" },
     executionLeaseExpiresAt: currentTimeMillis() + executionLeaseMs,
     intentDigest: input.intentDigest,
+    output: null,
     status: "claimed",
     userId: input.userId,
   };
   try {
-    const claimed = await attempts.claim(input.contentId, proposed);
+    const claimed = await withDeadline(attempts.claim(input.contentId, proposed), deadlines.rpcMs);
     if (
       claimed.evidence.intentDigest !== input.intentDigest ||
       claimed.evidence.userId !== input.userId
@@ -173,6 +192,18 @@ const render = async (
       return { _tag: "IntentConflict", cost: { _tag: "ProvenNoUse" } };
     }
     if (claimed._tag === "Existing") {
+      if (claimed.evidence.status === "completed" && claimed.evidence.output !== null) {
+        const bytes = await withDeadline(
+          attempts.readCompleted(input.contentId, claimed.evidence),
+          deadlines.rpcMs,
+        );
+        return {
+          _tag: "Completed",
+          bytes,
+          cost: claimed.evidence.cost,
+          inspection: claimed.evidence.output.inspection,
+        };
+      }
       if (
         claimed.evidence.status !== "completed" &&
         claimed.evidence.executionLeaseExpiresAt > currentTimeMillis()
@@ -183,11 +214,18 @@ const render = async (
           evidence: "Another caller owns the live artifact execution lease",
         };
       }
-      if (claimed.evidence.status !== "claimed") {
-        return interrupted(
-          claimed.evidence.cost,
-          "A prior artifact attempt has no retained verified terminal result",
+      if (claimed.evidence.status === "started") {
+        const reclaimed = await withDeadline(
+          attempts.reclaim(input.contentId, claimed.evidence, proposed),
+          deadlines.rpcMs,
         );
+        if (!reclaimed) {
+          return {
+            _tag: "AttemptPending",
+            cost: claimed.evidence.cost,
+            evidence: "Another caller reclaimed the expired artifact execution lease",
+          };
+        }
       }
     }
 
@@ -198,11 +236,14 @@ const render = async (
       return interrupted({ _tag: "ProvenNoUse" }, "Immutable artifact inputs exceed 25 MB");
     }
 
-    const started = await attempts.start(input.contentId, {
-      ...proposed,
-      cost,
-      status: "started",
-    });
+    const started = await withDeadline(
+      attempts.start(input.contentId, {
+        ...proposed,
+        cost,
+        status: "started",
+      }),
+      deadlines.rpcMs,
+    );
     if (!started) {
       return {
         _tag: "AttemptPending",
@@ -215,9 +256,13 @@ const render = async (
     const outputPath = `/workspace/artifact-${input.intentDigest}.${extension}`;
     const sourcePath = `/workspace/source-${input.intentDigest}.json`;
     const sourcePresentationPath = `/workspace/source-${input.intentDigest}.pptx`;
+    const imageSource = input.intent._tag === "Image" ? input.intent.source : null;
     const providerImage =
-      input.intent._tag === "Image"
-        ? await withDeadline(images.generate(input.intent.source), deadlines.rpcMs)
+      imageSource !== null
+        ? await withAbortableDeadline(
+            (signal) => images.generate(imageSource, signal),
+            Math.min(input.computeMilliseconds, deadlines.rpcMs),
+          )
         : null;
     const envelope = {
       providerImageBase64: providerImage === null ? undefined : encodeBase64(providerImage),
@@ -240,7 +285,11 @@ const render = async (
     const command =
       `python3 /opt/osfo/render_artifact.py --kind ${kind} --input ${sourcePath} --output ${outputPath}` +
       revisionArgument;
-    const result = await withDeadline(sandbox.exec(command, { timeout: 60_000 }), deadlines.execMs);
+    const computeDeadline = Math.min(input.computeMilliseconds, deadlines.execMs);
+    const result = await withDeadline(
+      sandbox.exec(command, { timeout: computeDeadline }),
+      computeDeadline,
+    );
     if (!result.success) {
       return interrupted(cost, `The artifact renderer exited with code ${result.exitCode}`);
     }
@@ -252,8 +301,18 @@ const render = async (
         : DocumentArtifact.maximumImageBytes;
     if (file.size > maximumBytes) return { _tag: "RejectedOversize", cost, size: file.size };
     const bytes = await withDeadline(readBounded(file.content, file.size), deadlines.rpcMs);
+    const sha256 = await digest(bytes);
     await withDeadline(
-      attempts.complete(input.contentId, { ...proposed, cost, status: "completed" }),
+      attempts.complete(
+        input.contentId,
+        {
+          ...proposed,
+          cost,
+          output: { byteLength: bytes.byteLength, inspection, sha256 },
+          status: "completed",
+        },
+        bytes,
+      ),
       deadlines.rpcMs,
     );
     return { _tag: "Completed", bytes, cost, inspection };
@@ -293,17 +352,25 @@ const decodeInspection = (output: string): ArtifactInspection => {
 
 const AttemptMetadata = Schema.fromJsonString(
   Schema.Struct({
-    cost: Schema.Union([
-      Schema.TaggedStruct("ProvenNoUse", {}),
-      Schema.TaggedStruct("Incurred", {
-        allowancePeriodId: AllowancePeriodId,
-        basis: Schema.Literals(["conservative", "observed"]),
-        providerOperationId: Schema.String,
-        usdMicros: Schema.BigIntFromString,
-      }),
-    ]),
+    cost: CostEvidence,
     executionLeaseExpiresAt: Schema.Int,
     intentDigest: ArtifactIntentDigest,
+    output: Schema.NullOr(
+      Schema.Struct({
+        byteLength: Schema.Int.check(Schema.isGreaterThan(0)),
+        inspection: Schema.Union([
+          Schema.TaggedStruct("Presentation", {
+            issues: Schema.Array(Schema.String),
+            renderedSlideCount: Schema.Int.check(Schema.isGreaterThan(0)),
+          }),
+          Schema.TaggedStruct("Visual", {
+            height: Schema.Int.check(Schema.isGreaterThan(0)),
+            width: Schema.Int.check(Schema.isGreaterThan(0)),
+          }),
+        ]),
+        sha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
+      }),
+    ),
     status: Schema.Literals(["claimed", "started", "completed"]),
     userId: UserId,
   }),
@@ -324,7 +391,7 @@ export const makeAttemptStore = (bucket: R2Bucket): AttemptStore => ({
       evidence: decodeAttempt(existing.customMetadata.osfo),
     };
   },
-  complete: async (contentId, evidence) => {
+  complete: async (contentId, evidence, bytes) => {
     const key = artifactAttemptKeyFor(contentId);
     const current = await bucket.head(key);
     if (current === null) throw new Error("attempt evidence missing");
@@ -332,9 +399,19 @@ export const makeAttemptStore = (bucket: R2Bucket): AttemptStore => ({
     if (encoded === undefined || !sameAttempt(decodeAttempt(encoded), evidence, "started")) {
       throw new Error("attempt evidence changed");
     }
-    const completed = await bucket.put(key, new Uint8Array(), {
+    if (
+      evidence.status !== "completed" ||
+      evidence.output === null ||
+      evidence.output.byteLength !== bytes.byteLength ||
+      evidence.output.sha256 !== (await digest(bytes))
+    ) {
+      throw new Error("completed output evidence is invalid");
+    }
+    const completed = await bucket.put(key, bytes, {
       customMetadata: { osfo: Schema.encodeSync(AttemptMetadata)(evidence) },
+      httpMetadata: { contentType: "application/octet-stream" },
       onlyIf: { etagMatches: current.etag },
+      sha256: evidence.output.sha256,
     });
     if (completed === null) throw new Error("attempt evidence changed");
   },
@@ -343,6 +420,49 @@ export const makeAttemptStore = (bucket: R2Bucket): AttemptStore => ({
     if (object === null) return null;
     if (object.customMetadata?.osfo === undefined) throw new Error("attempt metadata missing");
     return decodeAttempt(object.customMetadata.osfo);
+  },
+  readCompleted: async (contentId, evidence) => {
+    if (evidence.status !== "completed" || evidence.output === null) {
+      throw new Error("attempt is not completed");
+    }
+    const object = await bucket.get(artifactAttemptKeyFor(contentId));
+    if (object === null || object.customMetadata?.osfo === undefined) {
+      throw new Error("completed output is missing");
+    }
+    const retained = decodeAttempt(object.customMetadata.osfo);
+    if (
+      !sameAttempt(retained, evidence, "completed") ||
+      retained.output === null ||
+      object.size !== retained.output.byteLength
+    ) {
+      throw new Error("completed output evidence changed");
+    }
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    if (
+      bytes.byteLength !== retained.output.byteLength ||
+      (await digest(bytes)) !== retained.output.sha256
+    ) {
+      throw new Error("completed output digest mismatch");
+    }
+    return bytes;
+  },
+  reclaim: async (contentId, currentEvidence, proposed) => {
+    if (currentEvidence.status !== "started") return false;
+    const key = artifactAttemptKeyFor(contentId);
+    const current = await bucket.head(key);
+    const encoded = current?.customMetadata?.osfo;
+    if (
+      current === null ||
+      encoded === undefined ||
+      !sameAttempt(decodeAttempt(encoded), currentEvidence, "started")
+    ) {
+      return false;
+    }
+    const reclaimed = await bucket.put(key, new Uint8Array(), {
+      customMetadata: { osfo: Schema.encodeSync(AttemptMetadata)(proposed) },
+      onlyIf: { etagMatches: current.etag },
+    });
+    return reclaimed !== null;
   },
   start: async (contentId, evidence) => {
     const key = artifactAttemptKeyFor(contentId);
@@ -377,7 +497,26 @@ const sameAttempt = (
     (current.cost._tag === proposed.cost._tag &&
       current.cost._tag === "Incurred" &&
       proposed.cost._tag === "Incurred" &&
-      current.cost.providerOperationId === proposed.cost.providerOperationId));
+      current.cost.providerOperationId === proposed.cost.providerOperationId &&
+      (expectedStatus !== "completed" ||
+        (current.output !== null &&
+          proposed.output !== null &&
+          current.output.byteLength === proposed.output.byteLength &&
+          current.output.sha256 === proposed.output.sha256 &&
+          sameInspection(current.output.inspection, proposed.output.inspection)))));
+
+const sameInspection = (current: ArtifactInspection, proposed: ArtifactInspection) => {
+  if (current._tag !== proposed._tag) return false;
+  if (current._tag === "Visual" && proposed._tag === "Visual") {
+    return current.height === proposed.height && current.width === proposed.width;
+  }
+  if (current._tag !== "Presentation" || proposed._tag !== "Presentation") return false;
+  return (
+    current.renderedSlideCount === proposed.renderedSlideCount &&
+    current.issues.length === proposed.issues.length &&
+    current.issues.every((issue, index) => issue === proposed.issues[index])
+  );
+};
 
 const reconciliationCheckpointKey = "artifact-reconciliation/checkpoint";
 
@@ -428,13 +567,17 @@ export const advanceReconciliation = (bucket: R2Bucket, checkpoint: string | nul
   });
 
 export const workersAiImageProvider = (ai: Ai): ImageProvider => ({
-  generate: async (source) => {
-    const result = await ai.run("@cf/bytedance/stable-diffusion-xl-lightning", {
-      height: source.height,
-      num_steps: 4,
-      prompt: source.prompt,
-      width: source.width,
-    });
+  generate: async (source, signal) => {
+    const result = await ai.run(
+      "@cf/bytedance/stable-diffusion-xl-lightning",
+      {
+        height: source.height,
+        num_steps: 4,
+        prompt: source.prompt,
+        width: source.width,
+      },
+      { signal },
+    );
     return readBounded(result, DocumentArtifact.maximumImageBytes);
   },
 });
@@ -448,6 +591,18 @@ export const adaptSandbox = (sandbox: Sandbox): SandboxClient => ({
 
 const withDeadline = <Value>(operation: Promise<Value>, timeoutMs: number) =>
   Effect.runPromise(Effect.promise(() => operation).pipe(Effect.timeout(timeoutMs)));
+
+const withAbortableDeadline = async <Value>(
+  operation: (signal: AbortSignal) => Promise<Value>,
+  timeoutMs: number,
+) => {
+  const controller = new AbortController();
+  try {
+    return await withDeadline(operation(controller.signal), timeoutMs);
+  } finally {
+    controller.abort();
+  }
+};
 
 const streamBytes = (bytes: Uint8Array) =>
   new ReadableStream<Uint8Array>({
@@ -485,6 +640,11 @@ const encodeBase64 = (bytes: Uint8Array) => {
     binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768));
   }
   return btoa(binary);
+};
+
+const digest = async (bytes: Uint8Array) => {
+  const hashed = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
+  return Array.from(new Uint8Array(hashed), (byte) => byte.toString(16).padStart(2, "0")).join("");
 };
 
 const incurred = (
