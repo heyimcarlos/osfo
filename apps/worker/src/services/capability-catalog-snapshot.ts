@@ -215,7 +215,7 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
         toolRequirements: ["deleteDocument"],
       },
     ),
-    entry("web-search", "Search the public web within bounded results.", "integration.read", {
+    entry("web-search", "Search the public web within bounded results.", "web.search", {
       availabilityRequirements: ["web-provider"],
       resultBounds: {
         maximumBytes: null,
@@ -225,8 +225,10 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
         maximumPixelsPerEdge: null,
         maximumSlides: null,
       },
+      skillCandidates: ["web-search"],
+      toolRequirements: ["webSearch"],
     }),
-    entry("page-read", "Read one bounded public web page.", "integration.read", {
+    entry("page-read", "Read one bounded public web page.", "web.read", {
       availabilityRequirements: ["web-provider"],
       resultBounds: {
         maximumBytes: policyCatalog.operationLimits.webNormalizedPageBytes,
@@ -236,6 +238,8 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
         maximumPixelsPerEdge: null,
         maximumSlides: null,
       },
+      skillCandidates: ["web-search"],
+      toolRequirements: ["readWebPage"],
     }),
     entry("research-report", "Produce one bounded research report.", "artifact.generate", {
       availabilityRequirements: ["document-renderer", "file-storage", "web-provider"],

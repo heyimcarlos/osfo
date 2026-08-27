@@ -59,6 +59,8 @@ export const AuthorizationOperationName = Schema.Literals([
   "integration.connection.manage",
   "integration.read",
   "integration.effect",
+  "web.search",
+  "web.read",
 ]);
 
 /** Stable closed names for all launch authorization operations. */
@@ -167,6 +169,26 @@ export const AuthorizationOperation = Schema.Union([
     manifestVersion: ManifestVersion,
     providerOperation: nonEmptyString,
     toolkit: nonEmptyString,
+  }),
+  Schema.Struct({
+    actionId: Schema.String,
+    deadlineMilliseconds: positive,
+    kind: Schema.Literal("web.search"),
+    pages: nonNegative,
+    redirects: nonNegative,
+    responseBytes: positive,
+    results: positive,
+    retries: nonNegative,
+    searches: positive,
+  }),
+  Schema.Struct({
+    actionId: Schema.String,
+    deadlineMilliseconds: positive,
+    kind: Schema.Literal("web.read"),
+    pages: positive,
+    redirects: nonNegative,
+    responseBytes: positive,
+    retries: nonNegative,
   }),
 ]);
 

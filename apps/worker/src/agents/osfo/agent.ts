@@ -68,6 +68,11 @@ import { IntegrationComposition } from "../../composition/integrations";
 import { Db } from "../../db";
 import { BillingDb } from "../../db/billing";
 import { decodeOsfoStage, loadConfig } from "../../config";
+import {
+  hasRecognizedWebSearchPrice,
+  makeDiscovery,
+  makePageFetch,
+} from "../../integrations/cloudflare/web";
 import { ChannelLinkAuthorizationPostgres } from "../../integrations/postgres/channel-link-authorization";
 import { SessionRecallAuthorizationPostgres } from "../../integrations/postgres/session-recall-authorization";
 import { SupermemoryMemoryProvider } from "../../integrations/supermemory/memory-provider";
@@ -345,6 +350,9 @@ import {
   type ResolvedIntegrationManifestOperation,
 } from "../../domain/integration-manifest";
 import type { Integrations } from "../../services/integrations";
+import { Web, WebUnavailable, type AuthorizationRequest } from "../../services/web";
+import { makeWebState } from "./db/web-state";
+import { makeWebTools } from "./web-tools";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries, and Effect results use _tag. */
 /* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect -- Agent hooks and Durable Object callbacks supply the wall-clock boundary for retained metadata. */
@@ -752,6 +760,22 @@ export class OsfoAgent extends Think<Env> {
     skillLearningDraft: null,
   };
   #activeCapabilityMetadata: ManagedTurnMetadata | undefined;
+  #activeRequestText = "";
+  readonly #webState = makeWebState(this.#db);
+  readonly #web = Web.make({
+    authorize: (request) => this.#authorizeWeb(request),
+    discover: makeDiscovery(this.env.WEBSEARCH),
+    fetchPage: makePageFetch(),
+    // oxlint-disable-next-line effecttsgo/crypto-random-uuid -- Durable opaque result identities cross the Effect-free AI Tool boundary.
+    makeId: () => crypto.randomUUID(),
+    now: Effect.sync(() => new Date()),
+    state: this.#webState,
+  });
+  readonly #webTools = makeWebTools({
+    readActiveTurn: () => this.#activeCapabilityMetadata,
+    readRequestText: () => this.#activeRequestText,
+    web: this.#web,
+  });
   readonly #capabilityStateSemaphore = Semaphore.makeUnsafe(1);
   #activeModelStepNumber = ModelStepNumber.make(1);
   readonly #completedModelSteps = new Set<number>();
@@ -931,6 +955,7 @@ export class OsfoAgent extends Think<Env> {
   readonly #nativeTools = {
     ...this.#fileTools.tools,
     ...this.#sessionRecallTools,
+    ...this.#webTools,
     exportDocument: tool({
       description: "Export one retained generated PDF or DOCX owned by the current User.",
       execute: (input, context) => this.#exportDocument(input, context.toolCallId),
@@ -1257,6 +1282,7 @@ export class OsfoAgent extends Think<Env> {
         "personal-agent",
         "session-history",
         "skill-store",
+        ...(hasRecognizedWebSearchPrice ? (["web-provider"] as const) : []),
       ],
       availableToolNames: Object.keys(tools),
     } as const;
@@ -1265,6 +1291,7 @@ export class OsfoAgent extends Think<Env> {
     const capabilityContext = CapabilityContext.projectTurn(context.messages, {
       pendingFileAnalysis: capabilityTurnState.pendingFileAnalyses.length > 0,
     });
+    this.#activeRequestText = capabilityContext.taskDescription;
     const personalSkills = await Effect.runPromise(
       selectPersonalSkillsForTurn({
         authority: this.#personalSkillAuthority,
@@ -1478,6 +1505,65 @@ export class OsfoAgent extends Think<Env> {
       activeTools: [...step.activeToolNames],
       instructions: step.instructions,
     };
+  }
+
+  #authorizeWeb(request: AuthorizationRequest) {
+    if (!hasRecognizedWebSearchPrice) {
+      return Effect.fail(
+        new WebUnavailable({
+          message: "Public-web provider pricing is not yet recognized for Plan Usage.",
+          reason: "authorizationDenied",
+        }),
+      );
+    }
+    const active = this.#activeCapabilityMetadata;
+    if (
+      active === undefined ||
+      active.submissionId !== request.turnId ||
+      active.authorityIdentity.userId !== request.userId
+    ) {
+      return Effect.fail(
+        new WebUnavailable({
+          message: "The public-web operation does not belong to the active User turn.",
+          reason: "authorizationDenied",
+        }),
+      );
+    }
+    return this.#fileToolAuthorizationContext().pipe(
+      Effect.flatMap((context) => {
+        const operation =
+          request.searches > 0
+            ? {
+                actionId: request.operationId,
+                deadlineMilliseconds: 15_000n,
+                kind: "web.search" as const,
+                pages: BigInt(request.pages),
+                redirects: 3n,
+                responseBytes: request.responseBytes,
+                results: 10n,
+                retries: 1n,
+                searches: BigInt(request.searches),
+              }
+            : {
+                actionId: request.operationId,
+                deadlineMilliseconds: 15_000n,
+                kind: "web.read" as const,
+                pages: BigInt(request.pages),
+                redirects: 3n,
+                responseBytes: request.responseBytes,
+                retries: 1n,
+              };
+        const admitted = authorization.admit({ ...context, requestVendorUsdMicros: 0n }, operation);
+        return Predicate.isTagged(admitted, "Admitted")
+          ? Effect.void
+          : Effect.fail(
+              new WebUnavailable({
+                message: "Plan Usage or public-web operation bounds denied this request.",
+                reason: "authorizationDenied",
+              }),
+            );
+      }),
+    );
   }
 
   /** Record observed AI Gateway cost or one bounded share after each completed step. */

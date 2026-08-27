@@ -179,8 +179,14 @@ it.effect("routes document, integration, and recall paraphrases without collisio
         taskDescription: "Reconcile analysis analysis-call-1",
       },
       { expected: ["file-read"], taskDescription: "Read this retained file" },
-      { expected: ["web-search"], taskDescription: "Search the web for release notes" },
-      { expected: ["page-read"], taskDescription: "Read this website URL" },
+      {
+        expected: ["web-search", "page-read"],
+        taskDescription: "Search the web for release notes",
+      },
+      {
+        expected: ["web-search", "page-read"],
+        taskDescription: "Read this website URL",
+      },
       {
         expected: ["session-recall"],
         taskDescription: "What did we talk about yesterday?",
@@ -193,7 +199,10 @@ it.effect("routes document, integration, and recall paraphrases without collisio
       { expected: ["core-memory"], taskDescription: "I prefer tea" },
       { expected: ["core-memory"], taskDescription: "Note that I prefer window seats" },
       { expected: ["core-memory"], taskDescription: "Don't forget that I prefer tea" },
-      { expected: ["web-search"], taskDescription: "What is the current weather in Toronto?" },
+      {
+        expected: ["web-search", "page-read"],
+        taskDescription: "What is the current weather in Toronto?",
+      },
       { expected: ["workflows"], taskDescription: "Create an automation that runs weekly" },
     ] as const;
 
@@ -229,8 +238,10 @@ it.effect("routes document, integration, and recall paraphrases without collisio
           "gmailSendEmail",
           "loadSkill",
           "readFile",
+          "readWebPage",
           "sessionRecall",
           "set_context",
+          "webSearch",
         ],
         catalogVersion: CapabilityCatalogVersion.make("governed-capabilities-v1"),
         declaredRequirements: [],

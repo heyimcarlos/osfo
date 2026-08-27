@@ -80,6 +80,45 @@ it.effect(
     }),
 );
 
+it.effect(
+  "publishes ordinary search and selected-page reading only after its system Skill loads",
+  () =>
+    Effect.gen(function* () {
+      const capabilities = Capabilities.make();
+      const availableToolNames = [...baseInput.availableToolNames, "readWebPage", "webSearch"];
+      const index = yield* capabilities.eligibleIndex({
+        ...baseInput,
+        availableRequirements: [...baseInput.availableRequirements, "web-provider"],
+        availableToolNames,
+        plan: "free",
+        taskDescription: "Search the web for current Osfo release notes",
+        taskKinds: ["web"],
+      });
+
+      expect(index.selectedCapabilityIds).toEqual(["web-search", "page-read"]);
+      expect(index.candidates).toMatchObject([
+        { skillId: "web-search", skillVersion: "system-web-search-v1", source: "system" },
+      ]);
+      expect(
+        capabilities.assembleToolBundle({ availableToolNames, index, loadedSkills: [] })
+          .activeToolNames,
+      ).toEqual(["loadSkill"]);
+
+      const loaded = yield* capabilities.loadSkill({
+        index,
+        personalSkills: [],
+        skillId: "web-search",
+        skillVersion: "system-web-search-v1",
+        userId: baseInput.userId,
+      });
+      expect(loaded.instructions).toContain("untrusted evidence");
+      expect(
+        capabilities.assembleToolBundle({ availableToolNames, index, loadedSkills: [loaded] })
+          .activeToolNames,
+      ).toEqual(["loadSkill", "readWebPage", "webSearch"]);
+    }),
+);
+
 it("accepts an exact 16 KiB Personal Skill Version and rejects the next encoded byte", () => {
   const maximumBytes = 16_384;
   const baseSkill = {
@@ -850,7 +889,7 @@ it("projects exact governed result bounds from the pinned #252 catalog", () => {
       maximumSlides: null,
     },
   });
-  expect(available("web-search")).toMatchObject({
+  expect(available("web-search", ["webSearch"])).toMatchObject({
     resultBounds: {
       maximumBytes: null,
       maximumDurationMillis: 300_000,

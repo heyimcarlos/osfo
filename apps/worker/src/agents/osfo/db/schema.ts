@@ -16,6 +16,7 @@ import type {
   AssistantMessageId,
   ConversationRouteId,
   SessionId,
+  ThinkSubmissionId,
   ThinkRequestId,
   UserId,
 } from "../../../domain";
@@ -54,6 +55,9 @@ const assistantMessageId = customType<{ data: AssistantMessageId; driverData: st
   dataType: () => "text",
 });
 const thinkRequestId = customType<{ data: ThinkRequestId; driverData: string }>({
+  dataType: () => "text",
+});
+const thinkSubmissionId = customType<{ data: ThinkSubmissionId; driverData: string }>({
   dataType: () => "text",
 });
 const timestamp = customType<{ data: DbTimestamp; driverData: string }>({
@@ -499,6 +503,53 @@ export const goodRootOutcomeEvaluations = sqliteTable(
     index("osfo_good_root_outcome_evaluations_by_owner").on(
       table.owner_user_id,
       table.retained_at_epoch_millis,
+    ),
+  ],
+);
+
+/** Idempotent bounded public-web operations owned by one User turn. */
+export const webOperations = sqliteTable(
+  "osfo_web_operations",
+  {
+    created_at_epoch_millis: integer().notNull(),
+    fingerprint: text().notNull(),
+    kind: text({ enum: ["page", "search"] }).notNull(),
+    operation_id: text().primaryKey(),
+    owner_user_id: userId().notNull(),
+    reserved_pages: integer().notNull(),
+    result_json: text(),
+    status: text({ enum: ["pending", "completed"] }).notNull(),
+    turn_id: thinkSubmissionId().notNull(),
+  },
+  (table) => [
+    check("osfo_web_operation_kind", sql`${table.kind} IN ('page', 'search')`),
+    check("osfo_web_operation_status", sql`${table.status} IN ('pending', 'completed')`),
+    check(
+      "osfo_web_operation_completion",
+      sql`(${table.status} = 'completed' AND ${table.result_json} IS NOT NULL) OR (${table.status} = 'pending' AND ${table.result_json} IS NULL)`,
+    ),
+    check("osfo_web_operation_pages", sql`${table.reserved_pages} BETWEEN 0 AND 3`),
+    index("osfo_web_operations_by_turn").on(table.owner_user_id, table.turn_id, table.status),
+  ],
+);
+
+/** Opaque ranked search identities retained only for recent User result sets. */
+export const webResults = sqliteTable(
+  "osfo_web_results",
+  {
+    owner_user_id: userId().notNull(),
+    rank: integer().notNull(),
+    result_id: text().primaryKey(),
+    result_json: text().notNull(),
+    result_set_id: text().notNull(),
+    retained_at_epoch_millis: integer().notNull(),
+  },
+  (table) => [
+    check("osfo_web_result_rank", sql`${table.rank} BETWEEN 1 AND 10`),
+    index("osfo_web_results_by_owner_set").on(
+      table.owner_user_id,
+      table.retained_at_epoch_millis,
+      table.result_set_id,
     ),
   ],
 );
