@@ -6,11 +6,14 @@ import { AllowancePeriodId, UserId } from "../../domain";
 import { ContentId } from "../../domain/client-content";
 import { ArtifactIntentDigest } from "../../services/artifact-generation";
 import {
+  makeAttemptStore,
   makeWithPorts,
+  readReconciliationBatch,
   type AttemptStore,
   type ImageProvider,
   type SandboxClient,
 } from "./artifact-compute";
+import { artifactCostKeyFor } from "./document-storage-keys";
 
 const request = {
   allowancePeriodId: AllowancePeriodId.make("period-1"),
@@ -36,6 +39,30 @@ const request = {
   userId: UserId.make("user-1"),
 };
 
+it.effect("reconciles immutable cost sidecars independently for every provider attempt", () => {
+  const objects = new Map<string, Partial<R2Object>>();
+  const bucket = costBucketStub(objects);
+  const attempts = makeAttemptStore(bucket);
+  const first = incurredCost("artifact:first");
+  const retry = incurredCost("artifact:retry");
+
+  return Effect.gen(function* () {
+    yield* Effect.promise(() => attempts.recordCost(request.contentId, first, request.userId));
+    yield* Effect.promise(() => attempts.recordCost(request.contentId, retry, request.userId));
+    yield* Effect.promise(() => attempts.recordCost(request.contentId, first, request.userId));
+    const batch = yield* readReconciliationBatch(bucket);
+
+    expect([...objects.keys()]).toEqual([
+      artifactCostKeyFor(request.contentId, first.providerOperationId),
+      artifactCostKeyFor(request.contentId, retry.providerOperationId),
+    ]);
+    expect(batch.costs.map(({ providerOperationId }) => providerOperationId)).toEqual([
+      first.providerOperationId,
+      retry.providerOperationId,
+    ]);
+  });
+});
+
 it.effect("moves immutable attempt evidence from no-use claim to incurred completion", () => {
   let retained: Parameters<AttemptStore["claim"]>[1] | null = null;
   const statuses: Array<string> = [];
@@ -50,6 +77,7 @@ it.effect("moves immutable attempt evidence from no-use claim to incurred comple
       statuses.push(evidence.status);
     },
     inspect: async () => retained,
+    recordCost: async () => undefined,
     readCompleted: async () => bytes,
     reclaim: async () => false,
     start: async (_contentId, evidence) => {
@@ -84,6 +112,7 @@ it.effect("bounds a non-responsive image provider after durable incurred evidenc
       retained = evidence;
     },
     inspect: async () => retained,
+    recordCost: async () => undefined,
     readCompleted: async () => new Uint8Array([1]),
     reclaim: async () => false,
     start: async (_contentId, evidence) => {
@@ -152,6 +181,7 @@ it.effect("replays a digest-verified completed output without another Sandbox ex
     claim: async () => ({ _tag: "Existing", evidence: completed }),
     complete: async () => undefined,
     inspect: async () => completed,
+    recordCost: async () => undefined,
     readCompleted: async () => bytes,
     reclaim: async () => false,
     start: async () => false,
@@ -199,6 +229,7 @@ it.effect("fails closed when staged completed output no longer matches its diges
     claim: async () => ({ _tag: "Existing", evidence: completed }),
     complete: async () => undefined,
     inspect: async () => completed,
+    recordCost: async () => undefined,
     readCompleted: async () => {
       throw new Error("digest mismatch");
     },
@@ -238,12 +269,16 @@ it.effect("atomically reclaims an expired started lease", () => {
     userId: request.userId,
   };
   let executions = 0;
+  const recordedProviderOperations = ["artifact:expired"];
   const attempts: AttemptStore = {
     claim: async () => ({ _tag: "Existing", evidence: retained }),
     complete: async (_contentId, evidence) => {
       retained = evidence;
     },
     inspect: async () => retained,
+    recordCost: async (_contentId, cost) => {
+      recordedProviderOperations.push(cost.providerOperationId);
+    },
     readCompleted: async () => bytes,
     reclaim: async (_contentId, current, proposed) => {
       if (retained !== current) return false;
@@ -274,6 +309,9 @@ it.effect("atomically reclaims an expired started lease", () => {
         expect(result._tag).toBe("Completed");
         expect(executions).toBe(1);
         expect(retained.status).toBe("completed");
+        expect(recordedProviderOperations).toHaveLength(2);
+        expect(recordedProviderOperations[0]).toBe("artifact:expired");
+        expect(recordedProviderOperations[1]).not.toBe("artifact:expired");
       }),
     ),
   );
@@ -297,3 +335,54 @@ const successfulSandbox = (bytes: Uint8Array): SandboxClient => ({
   }),
   writeFile: async () => undefined,
 });
+
+const incurredCost = (providerOperationId: string) => ({
+  _tag: "Incurred" as const,
+  allowancePeriodId: request.allowancePeriodId,
+  basis: "conservative" as const,
+  providerOperationId,
+  usdMicros: 50_000n,
+});
+
+const costBucketStub = (objects: Map<string, Partial<R2Object>>) => {
+  const bucket = {
+    get: () => Promise.resolve(null),
+    head: (key: string) => Promise.resolve(objects.get(key) ?? null),
+    list: ({ prefix }: R2ListOptions) =>
+      Promise.resolve({
+        delimitedPrefixes: [],
+        objects: [...objects.values()].filter(({ key }) => key?.startsWith(prefix ?? "")),
+        truncated: false as const,
+      }),
+    put: (
+      key: string,
+      _value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null | Blob,
+      options?: R2PutOptions,
+    ) => {
+      if (
+        options?.onlyIf !== undefined &&
+        "etagDoesNotMatch" in options.onlyIf &&
+        options.onlyIf.etagDoesNotMatch === "*" &&
+        objects.has(key)
+      ) {
+        return Promise.resolve(null);
+      }
+      const customMetadata = options?.customMetadata;
+      const object: Partial<R2Object> =
+        customMetadata === undefined
+          ? { etag: `etag-${objects.size + 1}`, key, size: 0, version: "test" }
+          : {
+              customMetadata,
+              etag: `etag-${objects.size + 1}`,
+              key,
+              size: 0,
+              version: "test",
+            };
+      objects.set(key, object);
+      return Promise.resolve(object);
+    },
+  };
+  // SAFETY: This fake implements only the R2 methods exercised by immutable cost recording and reconciliation.
+  // oxlint-disable-next-line osfo/no-chained-type-assertions, typescript/no-unsafe-type-assertion -- The fake intentionally models a narrow external boundary.
+  return bucket as unknown as R2Bucket;
+};

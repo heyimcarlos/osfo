@@ -16,7 +16,11 @@ import {
   type ComputeResult,
   type DisposableCompute,
 } from "../../services/artifact-generation";
-import { artifactAttemptKeyFor, artifactAttemptPrefix } from "./document-storage-keys";
+import {
+  artifactAttemptKeyFor,
+  artifactCostKeyFor,
+  artifactCostPrefix,
+} from "./document-storage-keys";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Tagged unions and Promise adapters are owned at this external boundary. */
 
@@ -71,6 +75,11 @@ export interface AttemptStore {
     bytes: Uint8Array,
   ) => Promise<void>;
   readonly inspect: (contentId: ContentId) => Promise<AttemptEvidence | null>;
+  readonly recordCost: (
+    contentId: ContentId,
+    cost: Extract<CostEvidence, { readonly _tag: "Incurred" }>,
+    userId: UserId,
+  ) => Promise<void>;
   readonly readCompleted: (contentId: ContentId, evidence: AttemptEvidence) => Promise<Uint8Array>;
   readonly reclaim: (
     contentId: ContentId,
@@ -146,7 +155,11 @@ export const makeWithPorts = (
           );
         }
         if (evidence.cost._tag === "ProvenNoUse") return Effect.succeed(null);
-        return Effect.succeed({ cost: evidence.cost, intentDigest });
+        return Effect.succeed({
+          completed: evidence.status === "completed" && evidence.output !== null,
+          cost: evidence.cost,
+          intentDigest,
+        });
       }),
     ),
 });
@@ -251,6 +264,7 @@ const render = async (
         evidence: "Another caller changed the artifact execution claim",
       };
     }
+    await withDeadline(attempts.recordCost(input.contentId, cost, input.userId), deadlines.rpcMs);
 
     const extension = input.intent._tag === "Presentation" ? "pptx" : "png";
     const outputPath = `/workspace/artifact-${input.intentDigest}.${extension}`;
@@ -376,6 +390,10 @@ const AttemptMetadata = Schema.fromJsonString(
   }),
 );
 
+const ArtifactCostMetadata = Schema.fromJsonString(
+  Schema.Struct({ cost: CostEvidence, userId: UserId }),
+);
+
 export const makeAttemptStore = (bucket: R2Bucket): AttemptStore => ({
   claim: async (contentId, evidence) => {
     const key = artifactAttemptKeyFor(contentId);
@@ -420,6 +438,20 @@ export const makeAttemptStore = (bucket: R2Bucket): AttemptStore => ({
     if (object === null) return null;
     if (object.customMetadata?.osfo === undefined) throw new Error("attempt metadata missing");
     return decodeAttempt(object.customMetadata.osfo);
+  },
+  recordCost: async (contentId, cost, userId) => {
+    const key = artifactCostKeyFor(contentId, cost.providerOperationId);
+    const metadata = { cost, userId };
+    const created = await bucket.put(key, new Uint8Array(), {
+      customMetadata: { osfo: Schema.encodeSync(ArtifactCostMetadata)(metadata) },
+      onlyIf: { etagDoesNotMatch: "*" },
+    });
+    if (created !== null) return;
+    const existing = await bucket.head(key);
+    const encoded = existing?.customMetadata?.osfo;
+    if (encoded === undefined || !sameCostMetadata(decodeCost(encoded), metadata)) {
+      throw new Error("artifact cost evidence changed");
+    }
   },
   readCompleted: async (contentId, evidence) => {
     if (evidence.status !== "completed" || evidence.output === null) {
@@ -485,6 +517,20 @@ const decodeAttempt = (encoded: string): AttemptEvidence => {
   return decoded;
 };
 
+const decodeCost = (encoded: string) => Schema.decodeSync(ArtifactCostMetadata)(encoded);
+
+const sameCostMetadata = (
+  current: typeof ArtifactCostMetadata.Type,
+  proposed: typeof ArtifactCostMetadata.Type,
+) =>
+  current.userId === proposed.userId &&
+  current.cost._tag === "Incurred" &&
+  proposed.cost._tag === "Incurred" &&
+  current.cost.allowancePeriodId === proposed.cost.allowancePeriodId &&
+  current.cost.basis === proposed.cost.basis &&
+  current.cost.providerOperationId === proposed.cost.providerOperationId &&
+  current.cost.usdMicros === proposed.cost.usdMicros;
+
 const sameAttempt = (
   current: AttemptEvidence,
   proposed: AttemptEvidence,
@@ -528,19 +574,22 @@ export const readReconciliationBatch = (bucket: R2Bucket) =>
       const startAfter = checkpoint === null ? undefined : await checkpoint.text();
       const listed = await bucket.list(
         startAfter === undefined
-          ? { include: ["customMetadata"], limit: 100, prefix: artifactAttemptPrefix }
+          ? { include: ["customMetadata"], limit: 100, prefix: artifactCostPrefix }
           : {
               include: ["customMetadata"],
               limit: 100,
-              prefix: artifactAttemptPrefix,
+              prefix: artifactCostPrefix,
               startAfter,
             },
       );
       const costs = listed.objects.flatMap((object) => {
         const encoded = object.customMetadata?.osfo;
         if (encoded === undefined) return [];
-        const evidence = decodeAttempt(encoded);
-        return evidence.cost._tag === "Incurred" ? [evidence.cost] : [];
+        const evidence = decodeCost(encoded);
+        if (evidence.cost._tag !== "Incurred") {
+          throw new Error("artifact cost evidence is not incurred");
+        }
+        return [evidence.cost];
       });
       const last = listed.objects.at(-1)?.key;
       return { checkpoint: listed.truncated && last !== undefined ? last : null, costs };

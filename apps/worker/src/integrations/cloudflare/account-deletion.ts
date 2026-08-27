@@ -5,6 +5,7 @@ import { AccountDeletion } from "../../services/account-deletion";
 import {
   attemptKeyForContentKey,
   artifactAttemptPrefix,
+  artifactCostPrefix,
   contentKeyForAttemptKey,
   documentKeysForOwnerKey,
   documentAttemptPrefix,
@@ -27,20 +28,35 @@ const AttemptMetadata = Schema.fromJsonString(
     userId: Schema.optionalKey(UserId),
   }),
 );
+const ArtifactCostMetadata = Schema.fromJsonString(
+  Schema.Struct({
+    cost: Schema.TaggedStruct("Incurred", {
+      allowancePeriodId: AllowancePeriodId,
+      basis: Schema.Literals(["conservative", "observed"]),
+      providerOperationId: Schema.String.check(Schema.isMinLength(1)),
+      usdMicros: Schema.BigIntFromString,
+    }),
+    userId: UserId,
+  }),
+);
 
 /** Build idempotent R2 erasure for User files and generated-document evidence. */
 export const make = (
   files: R2Bucket,
   artifacts: R2Bucket,
-  readAllowancePeriodIds: (
-    userId: UserId,
-  ) => Effect.Effect<ReadonlySet<AllowancePeriodId>, AccountDeletion.AccountDeletionUnavailable>,
+  readAllowanceEvidence: (userId: UserId) => Effect.Effect<
+    {
+      readonly allowancePeriodIds: ReadonlySet<AllowancePeriodId>;
+      readonly reconciledArtifactProviderOperationIds: ReadonlySet<string>;
+    },
+    AccountDeletion.AccountDeletionUnavailable
+  >,
 ): AccountDeletion.PortInterface["objects"] => ({
   remove: (userId, authorizeDelete) =>
-    readAllowancePeriodIds(userId).pipe(
-      Effect.flatMap((allowancePeriodIds) =>
+    readAllowanceEvidence(userId).pipe(
+      Effect.flatMap((allowanceEvidence) =>
         deletePrefix(files, `users/${encodeURIComponent(userId)}/`, authorizeDelete).pipe(
-          Effect.andThen(deleteArtifacts(artifacts, userId, allowancePeriodIds, authorizeDelete)),
+          Effect.andThen(deleteArtifacts(artifacts, userId, allowanceEvidence, authorizeDelete)),
         ),
       ),
     ),
@@ -73,14 +89,20 @@ const deletePrefix: (
 const deleteArtifacts: (
   bucket: R2Bucket,
   userId: UserId,
-  allowancePeriodIds: ReadonlySet<AllowancePeriodId>,
+  allowanceEvidence: {
+    readonly allowancePeriodIds: ReadonlySet<AllowancePeriodId>;
+    readonly reconciledArtifactProviderOperationIds: ReadonlySet<string>;
+  },
   authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
 ) => Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable> = Effect.fn(
   "AccountDeletionCloudflare.deleteArtifacts",
 )(function* (
   bucket: R2Bucket,
   userId: UserId,
-  allowancePeriodIds: ReadonlySet<AllowancePeriodId>,
+  allowanceEvidence: {
+    readonly allowancePeriodIds: ReadonlySet<AllowancePeriodId>;
+    readonly reconciledArtifactProviderOperationIds: ReadonlySet<string>;
+  },
   authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
 ) {
   const ownerObjects = yield* discoverObjects(bucket, ownerPrefixFor(userId), authorizeDelete);
@@ -92,6 +114,11 @@ const deleteArtifacts: (
     ...(yield* discoverObjects(bucket, artifactAttemptPrefix, authorizeDelete)),
     ...(yield* discoverObjects(bucket, documentAttemptPrefix, authorizeDelete)),
   ];
+  const costObjects = yield* discoverObjects(bucket, artifactCostPrefix, authorizeDelete);
+  const targetCostKeys = costObjects.flatMap((object) => {
+    const decoded = Schema.decodeUnknownResult(ArtifactCostMetadata)(object.customMetadata?.osfo);
+    return decoded._tag === "Success" && decoded.success.userId === userId ? [object.key] : [];
+  });
   const legacyContentTargets = yield* Effect.forEach(contentObjects, (object) => {
     const decoded = Schema.decodeUnknownResult(ArtifactMetadata)(object.customMetadata?.osfo);
     if (decoded._tag === "Success" && decoded.success.userId === userId) {
@@ -129,7 +156,7 @@ const deleteArtifacts: (
       object.key,
       decoded.success,
       userId,
-      allowancePeriodIds,
+      allowanceEvidence.allowancePeriodIds,
       pairedAttemptKeys,
     ).pipe(
       Effect.map((owned) =>
@@ -188,7 +215,12 @@ const deleteArtifacts: (
   );
   const attemptKeys = yield* Effect.forEach([...targetAttemptKeys], (key) =>
     verifyConcreteObject(bucket, key, authorizeDelete, (object) =>
-      selectAttemptEvidence(object, userId, allowancePeriodIds, targetAttemptKeys).pipe(
+      selectAttemptEvidence(
+        object,
+        userId,
+        allowanceEvidence.allowancePeriodIds,
+        targetAttemptKeys,
+      ).pipe(
         Effect.flatMap((owned) =>
           owned
             ? Effect.void
@@ -199,7 +231,34 @@ const deleteArtifacts: (
       ),
     ),
   );
-  const keys = [...ownerKeys.flat(), ...contentKeys.flat(), ...attemptKeys.flat()];
+  const costKeys = yield* Effect.forEach(targetCostKeys, (key) =>
+    verifyConcreteObject(bucket, key, authorizeDelete, (object) =>
+      decodeArtifactCostMetadata(object).pipe(
+        Effect.flatMap((metadata) =>
+          metadata.userId !== userId
+            ? Effect.fail(
+                ambiguousObjectOwnership(key, "artifact cost ownership changed before deletion"),
+              )
+            : allowanceEvidence.reconciledArtifactProviderOperationIds.has(
+                  metadata.cost.providerOperationId,
+                )
+              ? Effect.void
+              : Effect.fail(
+                  ambiguousObjectOwnership(
+                    key,
+                    "artifact cost is not yet proven in Allowance Usage",
+                  ),
+                ),
+        ),
+      ),
+    ),
+  );
+  const keys = [
+    ...ownerKeys.flat(),
+    ...contentKeys.flat(),
+    ...attemptKeys.flat(),
+    ...costKeys.flat(),
+  ];
   yield* Effect.forEach(
     Array.chunksOf(keys, 1_000),
     (keyBatch) =>
@@ -315,6 +374,11 @@ const decodeArtifactMetadata = (object: R2Object) =>
 
 const decodeAttemptMetadata = (object: R2Object) =>
   Schema.decodeUnknownEffect(AttemptMetadata)(object.customMetadata?.osfo).pipe(
+    Effect.mapError((cause) => ambiguousObjectOwnership(object.key, cause)),
+  );
+
+const decodeArtifactCostMetadata = (object: R2Object) =>
+  Schema.decodeUnknownEffect(ArtifactCostMetadata)(object.customMetadata?.osfo).pipe(
     Effect.mapError((cause) => ambiguousObjectOwnership(object.key, cause)),
   );
 

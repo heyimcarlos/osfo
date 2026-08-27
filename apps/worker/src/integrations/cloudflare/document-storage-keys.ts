@@ -1,10 +1,12 @@
 import type { UserId } from "../../domain";
 import type { ContentId } from "../../domain/client-content";
 
-export const encodedContentId = (contentId: ContentId) =>
-  Array.from(new TextEncoder().encode(contentId), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
+const encodedKeyPart = (value: string) =>
+  Array.from(new TextEncoder().encode(value), (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+
+export const encodedContentId = (contentId: ContentId) => encodedKeyPart(contentId);
 
 /** Namespace for retained Client Content bodies and metadata. */
 export const documentContentPrefix = "client-content/";
@@ -13,6 +15,8 @@ export const documentContentPrefix = "client-content/";
 export const documentAttemptPrefix = "document-attempts/";
 /** Namespace for presentation, image, and diagram attempt evidence. */
 export const artifactAttemptPrefix = "artifact-attempts/";
+/** Namespace for immutable incurred-cost evidence from non-document artifact providers. */
+export const artifactCostPrefix = "artifact-costs/";
 
 /** User-scoped namespace that makes generated-document ownership discoverable without a global scan. */
 export const documentOwnerPrefix = "document-owners/by-user/";
@@ -36,6 +40,10 @@ export const attemptKeyFor = (contentId: ContentId) =>
 /** R2 key for non-document artifact execution and incurred-cost evidence. */
 export const artifactAttemptKeyFor = (contentId: ContentId) =>
   `${artifactAttemptPrefix}${encodedContentId(contentId)}`;
+
+/** Immutable reconciliation evidence for one provider operation under one artifact identity. */
+export const artifactCostKeyFor = (contentId: ContentId, providerOperationId: string) =>
+  `${artifactCostPrefix}${encodedContentId(contentId)}/${encodedKeyPart(providerOperationId)}`;
 
 /** Resolve the attempt sidecar for a valid retained Client Content body key. */
 export const attemptKeyForContentKey = (contentKey: string) => {

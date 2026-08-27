@@ -66,6 +66,7 @@ export const make = (
         modelSteps: Predicate.isTagged(request.intent, "Image") ? 1n : 0n,
       };
     },
+    maximumComputeInputBytes: currentCapabilityCatalog.operationLimits.computeInputBytes,
     validator: ArtifactValidation,
   });
 

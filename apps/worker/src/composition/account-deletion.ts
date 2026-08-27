@@ -1,5 +1,5 @@
-import { allowancePeriods } from "@osfo/db/schema/allowances";
-import { eq } from "drizzle-orm";
+import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
+import { and, eq } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
@@ -86,19 +86,35 @@ const makePort = (bindings: Bindings) =>
             }
           : AccountDeletionCloudflare.make(bindings.FILES, bindings.ARTIFACTS, (userId) =>
               Db.execute("inspectAccountDeletionObjects", () =>
-                database
-                  .select({ allowancePeriodId: allowancePeriods.allowance_period_id })
-                  .from(allowancePeriods)
-                  .where(eq(allowancePeriods.user_id, userId)),
-              ).pipe(
-                Effect.map(
-                  (rows) =>
-                    new Set(
-                      rows.map(({ allowancePeriodId }) =>
-                        AllowancePeriodId.make(allowancePeriodId),
+                Promise.all([
+                  database
+                    .select({ allowancePeriodId: allowancePeriods.allowance_period_id })
+                    .from(allowancePeriods)
+                    .where(eq(allowancePeriods.user_id, userId)),
+                  database
+                    .select({ providerOperationId: allowanceUsage.source_id })
+                    .from(allowanceUsage)
+                    .where(
+                      and(
+                        eq(allowanceUsage.user_id, userId),
+                        eq(allowanceUsage.source_type, "artifactProviderOperation"),
                       ),
                     ),
-                ),
+                ]).then(([periods, reconciledOperations]) => ({
+                  periods,
+                  reconciledOperations,
+                })),
+              ).pipe(
+                Effect.map(({ periods, reconciledOperations }) => ({
+                  allowancePeriodIds: new Set(
+                    periods.map(({ allowancePeriodId }) =>
+                      AllowancePeriodId.make(allowancePeriodId),
+                    ),
+                  ),
+                  reconciledArtifactProviderOperationIds: new Set(
+                    reconciledOperations.map(({ providerOperationId }) => providerOperationId),
+                  ),
+                })),
                 Effect.mapError(
                   (cause) =>
                     new AccountDeletion.AccountDeletionUnavailable({

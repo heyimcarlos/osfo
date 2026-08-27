@@ -53,13 +53,9 @@ def decode_visuals(value: object) -> dict[str, bytes]:
 
 
 def font(size: int) -> ImageFont.FreeTypeFont:
-    candidates = (
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    )
-    for candidate in candidates:
-        if Path(candidate).exists():
-            return ImageFont.truetype(candidate, size=size)
+    candidate = "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"
+    if Path(candidate).exists():
+        return ImageFont.truetype(candidate, size=size)
     raise ValueError("required artifact font is missing")
 
 
@@ -227,7 +223,10 @@ def inspect_rendered_presentation(output: Path, expected_slides: int) -> list[st
         )
         if rasterized.returncode != 0:
             raise ValueError("rendered PPTX pages could not be rasterized")
-        pages = sorted(root.glob("slide-*.png"))
+        pages = sorted(
+            root.glob("slide-*.png"),
+            key=lambda page: int(page.stem.rsplit("-", maxsplit=1)[1]),
+        )
         if len(pages) != expected_slides:
             raise ValueError("actual rendered slide count does not match the presentation")
         for index, page in enumerate(pages, start=1):

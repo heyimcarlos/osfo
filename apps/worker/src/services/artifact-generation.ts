@@ -32,7 +32,14 @@ export const PresentationSlide = Schema.Struct({
   sourceNotes: Schema.Array(boundedText(500)).check(Schema.isMaxLength(10)),
   speakerNotes: optionalText(4_000),
   title: boundedText(100).check(Schema.isPattern(/^[^\r\n]+$/u)),
-});
+}).check(
+  Schema.makeFilter(
+    (slide) =>
+      slide.diagramContentId === null ||
+      slide.imageContentId === null ||
+      "a presentation slide can reference at most one supporting visual",
+  ),
+);
 export type PresentationSlide = typeof PresentationSlide.Type;
 
 export const PresentationSource = Schema.Struct({
@@ -133,6 +140,7 @@ export type ComputeResult =
   | { readonly _tag: "RejectedOversize"; readonly cost: CostEvidence; readonly size: number };
 
 export interface ComputeRecovery {
+  readonly completed: boolean;
   readonly cost: Extract<CostEvidence, { readonly _tag: "Incurred" }>;
   readonly intentDigest: ArtifactIntentDigest;
 }
@@ -302,6 +310,7 @@ export interface MakeOptions {
     readonly maximumOutputBytes: bigint;
     readonly modelSteps: bigint;
   };
+  readonly maximumComputeInputBytes: bigint;
   readonly validator: ArtifactValidator;
 }
 
@@ -386,16 +395,17 @@ export const make = (options: MakeOptions): Interface => {
       ? admit(options.authorization, request.authorization, operation)
       : Effect.succeed(recovery.cost.allowancePeriodId);
     yield* authorizeWrite;
-    // Immutable replay above needs only the retained result. Resolve source and
-    // supporting artifacts only when this invocation will enter compute.
-    const source = yield* sourceContentId === null
-      ? Effect.succeed(null)
-      : readOwnedPresentation(options, request.authorization, sourceContentId);
-    const supportingVisuals = yield* readSupportingVisuals(
-      options,
-      request.authorization,
-      request.intent,
-    );
+    // A staged completed output is self-sufficient. Resolve immutable inputs only
+    // for fresh compute or an expired lease that may need to run again.
+    const inputs = yield* recovery?.completed === true
+      ? Effect.succeed({ sourceArtifact: null, supportingVisuals: [] })
+      : readComputeInputs(
+          options,
+          request.authorization,
+          request.intent,
+          sourceContentId,
+          contentId,
+        );
 
     let cleanupRequired = true;
     return yield* Effect.gen(function* () {
@@ -405,8 +415,8 @@ export const make = (options: MakeOptions): Interface => {
         contentId,
         intent: request.intent,
         intentDigest,
-        sourceArtifact: source?.bytes ?? null,
-        supportingVisuals,
+        sourceArtifact: inputs.sourceArtifact,
+        supportingVisuals: inputs.supportingVisuals,
         userId,
       });
       if (Predicate.isTagged(computed, "AttemptPending")) {
@@ -581,7 +591,7 @@ const IntentEncoding = Schema.fromJsonString(
   Schema.Struct({ intent: ArtifactIntent, sourceContentId: Schema.NullOr(ContentId) }),
 );
 
-const readOwnedPresentation = (
+const inspectOwnedPresentation = (
   options: MakeOptions,
   authorization: AuthorizationContext,
   contentId: ContentId,
@@ -598,10 +608,10 @@ const readOwnedPresentation = (
         message: "The owned source presentation does not exist",
       });
     }
-    return { bytes: yield* options.artifacts.readBytes(metadata), metadata };
+    return metadata;
   });
 
-const readSupportingVisuals = (
+const inspectSupportingVisuals = (
   options: MakeOptions,
   authorization: AuthorizationContext,
   intent: ArtifactIntent,
@@ -628,10 +638,44 @@ const readSupportingVisuals = (
           message: "A supporting visual is unavailable or not owned by the current User",
         });
       }
-      return { bytes: yield* options.artifacts.readBytes(metadata), contentId };
+      return { contentId, metadata };
     }),
   );
 };
+
+const readComputeInputs = (
+  options: MakeOptions,
+  authorization: AuthorizationContext,
+  intent: ArtifactIntent,
+  sourceContentId: ContentId | null,
+  outputContentId: ContentId,
+) =>
+  Effect.gen(function* () {
+    const source = yield* sourceContentId === null
+      ? Effect.succeed(null)
+      : inspectOwnedPresentation(options, authorization, sourceContentId);
+    const visuals = yield* inspectSupportingVisuals(options, authorization, intent);
+    const inputBytes =
+      BigInt(source?.artifact.content.byteLength ?? 0) +
+      visuals.reduce(
+        (total, { metadata }) => total + BigInt(metadata.artifact.content.byteLength),
+        0n,
+      );
+    if (inputBytes > options.maximumComputeInputBytes) {
+      return yield* DocumentArtifact.invalid(
+        outputContentId,
+        "byteLimit",
+        "Immutable artifact inputs exceed the compute input limit",
+      );
+    }
+    const sourceArtifact = yield* source === null
+      ? Effect.succeed(null)
+      : options.artifacts.readBytes(source);
+    const supportingVisuals = yield* Effect.forEach(visuals, ({ contentId, metadata }) =>
+      options.artifacts.readBytes(metadata).pipe(Effect.map((bytes) => ({ bytes, contentId }))),
+    );
+    return { sourceArtifact, supportingVisuals };
+  });
 
 const readAuthorized = (
   options: MakeOptions,
@@ -640,7 +684,7 @@ const readAuthorized = (
 ) =>
   Effect.gen(function* () {
     const stored = yield* options.artifacts.inspect(request.contentId);
-    if (stored === null) {
+    if (stored === null || (kind === "artifact.read" && stored.retention !== "accounted")) {
       return yield* new ArtifactNotFound({
         contentId: request.contentId,
         message: "The retained artifact does not exist",

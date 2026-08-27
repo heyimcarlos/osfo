@@ -1,6 +1,6 @@
 /* oxlint-disable eslint/no-underscore-dangle, vitest/no-standalone-expect, effecttsgo/global-date, effecttsgo/prefer-schema-over-json -- Tagged unions, fixed dates, and Effect assertions are deterministic fixtures. */
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Result, Schema } from "effect";
 
 import {
   AllowancePeriodId,
@@ -11,10 +11,27 @@ import {
 } from "../domain";
 import { ChannelAuthorId, ChannelId } from "../domain/channel-link";
 import { ActionId } from "../domain/action-execution";
+import { ContentId } from "../domain/client-content";
 import { DocumentArtifact } from "../domain/document-artifact";
 import { ArtifactGeneration } from "./artifact-generation";
 
 describe("Artifact Generation", () => {
+  it("rejects a slide that ambiguously names both supported visual kinds", () => {
+    const source = presentation("Ambiguous visuals");
+    const decoded = Schema.decodeUnknownResult(ArtifactGeneration.PresentationSource)({
+      ...source,
+      slides: [
+        {
+          ...source.slides[0],
+          diagramContentId: "artifact:toolCall:diagram",
+          imageContentId: "artifact:toolCall:image",
+        },
+      ],
+    });
+
+    expect(Result.isFailure(decoded)).toBe(true);
+  });
+
   it.effect(
     "creates an immutable verified presentation and exports only its trusted reference",
     () =>
@@ -141,6 +158,22 @@ describe("Artifact Generation", () => {
     }),
   );
 
+  it.effect("recovers a staged completed revision after its source has been deleted", () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture({ completedRecovery: true });
+      const revision = yield* fixture.service.revise({
+        ...request({ _tag: "Presentation", source: presentation("Recovered revision") }),
+        actionId: ActionId.make("tool-staged-revision"),
+        owner: { _tag: "ToolCall", toolCallId: "tool-staged-revision" },
+        sourceContentId: ContentId.make("artifact:toolCall:deleted-source"),
+      });
+
+      expect(revision.lineage.sourceContentId).toBe("artifact:toolCall:deleted-source");
+      expect(fixture.computations()).toBe(1);
+      expect(fixture.reads()).toBe(0);
+    }),
+  );
+
   it.effect("rejects revision of a presentation owned by another User", () =>
     Effect.gen(function* () {
       const fixture = makeFixture();
@@ -222,6 +255,72 @@ describe("Artifact Generation", () => {
 
       expect(exit._tag).toBe("Failure");
       expect(fixture.retained).toHaveLength(0);
+    }),
+  );
+
+  it.effect("rejects aggregate supporting visuals before loading any R2 body", () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture({ maximumComputeInputBytes: 17n });
+      const image = yield* fixture.service.generate(
+        request({
+          _tag: "Image",
+          source: { altText: "Image", height: 400, prompt: "Image", width: 600 },
+        }),
+      );
+      const diagramRequest = {
+        ...request({ _tag: "Diagram" as const, source: diagram("Diagram") }),
+        actionId: ActionId.make("tool-bound-diagram"),
+        owner: { _tag: "ToolCall" as const, toolCallId: "tool-bound-diagram" },
+      };
+      const diagramArtifact = yield* fixture.service.generate(diagramRequest);
+      const source = presentation("Bound inputs");
+      const baseSlide = source.slides[0];
+      if (baseSlide === undefined) throw new Error("presentation slide fixture missing");
+      const exit = yield* Effect.exit(
+        fixture.service.generate({
+          ...request({
+            _tag: "Presentation",
+            source: {
+              ...source,
+              slides: [
+                { ...baseSlide, imageContentId: image.content.contentId },
+                {
+                  ...baseSlide,
+                  diagramContentId: diagramArtifact.content.contentId,
+                  title: "Diagram",
+                },
+              ],
+            },
+          }),
+          actionId: ActionId.make("tool-bound-presentation"),
+          owner: { _tag: "ToolCall", toolCallId: "tool-bound-presentation" },
+        }),
+      );
+
+      expect(exit._tag).toBe("Failure");
+      expect(fixture.reads()).toBe(0);
+    }),
+  );
+
+  it.effect("does not reference an artifact until retention is accounted", () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture();
+      const artifact = yield* fixture.service.generate(
+        request({ _tag: "Diagram", source: diagram("Pending") }),
+      );
+      const stored = fixture.retained[0];
+      if (stored === undefined) throw new Error("stored artifact fixture missing");
+      fixture.retained[0] = { ...stored, retention: "pending" };
+
+      const result = yield* Effect.exit(
+        fixture.service.reference({
+          actionId: ActionId.make("reference-pending"),
+          authorization: request({ _tag: "Diagram", source: diagram("Pending") }).authorization,
+          contentId: artifact.content.contentId,
+        }),
+      );
+
+      expect(result._tag).toBe("Failure");
     }),
   );
 
@@ -326,9 +425,11 @@ const diagram = (title: string) => ({
 
 const makeFixture = (
   options: {
+    readonly completedRecovery?: boolean;
     readonly incurredUsdMicros?: bigint;
     readonly interrupted?: boolean;
     readonly maximumOutputBytes?: bigint;
+    readonly maximumComputeInputBytes?: bigint;
     readonly pending?: boolean;
     readonly visualInspectionPassed?: boolean;
   } = {},
@@ -337,6 +438,7 @@ const makeFixture = (
   const recordedCosts: Array<bigint> = [];
   let computations = 0;
   let disposals = 0;
+  let reads = 0;
   const service = ArtifactGeneration.make({
     allowances: {
       record: (_allowancePeriodId, _source, items) =>
@@ -346,7 +448,14 @@ const makeFixture = (
         }),
     },
     artifacts: {
-      account: () => Effect.void,
+      account: (contentId) =>
+        Effect.sync(() => {
+          const index = retained.findIndex(
+            ({ artifact }) => artifact.content.contentId === contentId,
+          );
+          const stored = retained[index];
+          if (stored !== undefined) retained[index] = { ...stored, retention: "accounted" };
+        }),
       delete: (metadata) =>
         Effect.sync(() => {
           const index = retained.findIndex(
@@ -360,11 +469,14 @@ const makeFixture = (
         ),
       put: (artifact) => Effect.sync(() => retained.push(artifact)),
       readBytes: (metadata) =>
-        Effect.succeed(
-          retained.find(
-            ({ artifact }) => artifact.content.contentId === metadata.artifact.content.contentId,
-          )?.bytes ?? new Uint8Array(),
-        ),
+        Effect.sync(() => {
+          reads += 1;
+          return (
+            retained.find(
+              ({ artifact }) => artifact.content.contentId === metadata.artifact.content.contentId,
+            )?.bytes ?? new Uint8Array()
+          );
+        }),
     },
     authorization: {
       admit: () => ({
@@ -428,7 +540,22 @@ const makeFixture = (
                   },
           };
         }),
-      inspect: () => Effect.succeed(null),
+      inspect: (_contentId, intentDigest) =>
+        Effect.succeed(
+          options.completedRecovery === true
+            ? {
+                completed: true,
+                cost: {
+                  _tag: "Incurred" as const,
+                  allowancePeriodId,
+                  basis: "conservative" as const,
+                  providerOperationId: "artifact-operation-recovered",
+                  usdMicros: 50_000n,
+                },
+                intentDigest,
+              }
+            : null,
+        ),
     },
     currentAuthorization: (authorization) => Effect.succeed(authorization),
     executionLimits: (artifactRequest) => ({
@@ -438,6 +565,7 @@ const makeFixture = (
         (artifactRequest.intent._tag === "Presentation" ? 10_000_000n : 5_000_000n),
       modelSteps: artifactRequest.intent._tag === "Image" ? 1n : 0n,
     }),
+    maximumComputeInputBytes: options.maximumComputeInputBytes ?? 25_000_000n,
     validator: {
       validate: (contentId, intent, bytes, inspection, sourceContentId) => {
         if (inspection._tag === "Presentation") {
@@ -472,6 +600,7 @@ const makeFixture = (
     computations: () => computations,
     disposals: () => disposals,
     recordedCosts: () => recordedCosts,
+    reads: () => reads,
     retained,
     service,
   };
