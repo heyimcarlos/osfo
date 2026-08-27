@@ -12,6 +12,7 @@ import { ChannelLinks } from "../../services/channel-links";
 import { isSafePublicUrl, publicQueryIsExplicit, SearchInput } from "../../services/web";
 import {
   ACCEPTANCE_TEARDOWN_MS,
+  boundedCompanyPublicSearch,
   boundedTranscriptWindow,
   companyMessageText,
   companyPublicSearchAvailable,
@@ -368,7 +369,9 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
       this.#admitDailySearch(limit).pipe(
         Effect.flatMap((admitted) =>
           admitted
-            ? this.#discoverPublicWeb(input.query, COMPANY_SEARCH_RESULTS).pipe(Effect.option)
+            ? boundedCompanyPublicSearch(
+                this.#discoverPublicWeb(input.query, COMPANY_SEARCH_RESULTS),
+              ).pipe(Effect.option)
             : Effect.succeed(Option.none()),
         ),
         Effect.map((discovery) =>

@@ -66,12 +66,34 @@ describe("ordinary public-web Model Quality cases", () => {
       citations: {
         citedSourceIds: ["page-primary", "page-secondary"],
         requiredSourceIds: ["page-primary", "page-secondary"],
+        sources: [
+          {
+            evidenceKind: "pageContent",
+            sourceId: "page-primary",
+            url: "https://primary.example/fact",
+          },
+          {
+            evidenceKind: "pageContent",
+            sourceId: "page-secondary",
+            url: "https://secondary.example/fact",
+          },
+        ],
       },
       observedEvidence: ["page-content", "source-disagreement-labeled"],
       requiredEvidence: ["page-content", "source-disagreement-labeled"],
     });
     const snippetOnly = traceFor(cases[0], {
-      citations: { citedSourceIds: ["search-snippet"], requiredSourceIds: ["page-primary"] },
+      citations: {
+        citedSourceIds: ["search-snippet"],
+        requiredSourceIds: ["search-snippet"],
+        sources: [
+          {
+            evidenceKind: "searchDescription",
+            sourceId: "search-snippet",
+            url: "https://search.example/lead",
+          },
+        ],
+      },
       observedEvidence: ["search-description"],
       requiredEvidence: ["page-content"],
     });

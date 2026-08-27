@@ -449,6 +449,7 @@ const memoryState = () => {
     {
       readonly fingerprint: string;
       readonly kind: "page" | "search";
+      readonly lease: number;
       result: CompletedOperation | null;
       readonly turnKey: string;
     }
@@ -456,6 +457,7 @@ const memoryState = () => {
   const results = new Map<string, { readonly result: RankedResult; readonly userId: string }>();
   const counts = new Map<string, { pages: number; searches: number }>();
   let claimCalls = 0;
+  let nextLease = 0;
   const inspect = (input: {
     readonly fingerprint: string;
     readonly kind: "page" | "search";
@@ -492,16 +494,17 @@ const memoryState = () => {
         operations.set(key, {
           fingerprint: input.fingerprint,
           kind: input.kind,
+          lease: ++nextLease,
           result: null,
           turnKey,
         });
-        return { _tag: "Claimed" as const, counts: next };
+        return { _tag: "Claimed" as const, counts: next, lease: nextLease };
       }),
-    complete: (ownerUserId, operationId, result) =>
+    complete: (ownerUserId, operationId, lease, result) =>
       Effect.sync(() => {
         const key = `${ownerUserId}:${operationId}`;
         const operation = operations.get(key);
-        if (operation === undefined) return;
+        if (operation === undefined || operation.lease !== lease) return;
         operation.result = result;
         if (operation.kind !== "search") return;
         const count = counts.get(operation.turnKey);
@@ -517,11 +520,11 @@ const memoryState = () => {
           }
         }
       }),
-    fail: (ownerUserId, operationId) =>
+    fail: (ownerUserId, operationId, lease) =>
       Effect.sync(() => {
         const key = `${ownerUserId}:${operationId}`;
         const operation = operations.get(key);
-        if (operation === undefined) return;
+        if (operation === undefined || operation.lease !== lease) return;
         operations.delete(key);
         const count = counts.get(operation.turnKey);
         if (count === undefined) return;

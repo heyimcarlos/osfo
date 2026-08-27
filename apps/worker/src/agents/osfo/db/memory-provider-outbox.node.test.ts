@@ -197,7 +197,8 @@ it.effect("persists User-scoped public-web replay and rejects conflicting ToolCa
         resultSetId: "web-set-1",
         results: [result],
       };
-      yield* state.complete(ownerUserId, "web-operation-1", completed);
+      if (claimed._tag !== "Claimed") throw new Error("Expected a fresh web operation claim");
+      yield* state.complete(ownerUserId, "web-operation-1", claimed.lease, completed);
 
       expect(
         yield* state.claim({
@@ -251,14 +252,15 @@ it.effect("bounds retained public-web operations and result identities per User"
               title: `Result ${index}`,
               url: `https://example.com/${index}`,
             };
-            yield* state.claim({
+            const claim = yield* state.claim({
               fingerprint: `search\0${index}`,
               kind: "search",
               operationId,
               turnId: ThinkSubmissionId.make(`${turnId}-${index}`),
               userId: ownerUserId,
             });
-            yield* state.complete(ownerUserId, operationId, {
+            if (claim._tag !== "Claimed") throw new Error("Expected a fresh retention claim");
+            yield* state.complete(ownerUserId, operationId, claim.lease, {
               _tag: "SearchCompleted",
               guidance: "Cite supporting pages.",
               providerEvidence: { latencyMs: 1, requestId: `request-${index}` },
@@ -309,6 +311,54 @@ it.effect("reclaims an abandoned public-web operation after its bounded lease", 
 
       expect(yield* state.replay(input)).toBeNull();
       expect(yield* state.claim(input)).toMatchObject({ _tag: "Claimed" });
+    }),
+  ),
+);
+
+it.effect("rejects stale completion and failure after a public-web lease is reclaimed", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      let nowEpochMillis = 1_000;
+      const state = makeWebState(
+        makeAgentDb(asDurableObjectStorage(storage)),
+        () => nowEpochMillis,
+      );
+      const ownerUserId = UserId.make("web-generation-owner");
+      const input = {
+        fingerprint: "search\0generation",
+        kind: "search" as const,
+        operationId: "web-generation-operation",
+        turnId: ThinkSubmissionId.make("web-generation-turn"),
+        userId: ownerUserId,
+      };
+      const first = yield* state.claim(input);
+      if (first._tag !== "Claimed") throw new Error("Expected the first lease claim");
+
+      nowEpochMillis += 30_001;
+      const second = yield* state.claim(input);
+      if (second._tag !== "Claimed") throw new Error("Expected the reclaimed lease");
+      expect(second.lease).not.toBe(first.lease);
+
+      const completed: CompletedOperation = {
+        _tag: "SearchCompleted",
+        guidance: "Cite supporting pages.",
+        providerEvidence: { latencyMs: 1, requestId: "generation-request" },
+        query: "generation",
+        resultSetId: "generation-set",
+        results: [],
+      };
+      expect(
+        Result.isFailure(
+          yield* state
+            .complete(ownerUserId, input.operationId, first.lease, completed)
+            .pipe(Effect.result),
+        ),
+      ).toBe(true);
+      yield* state.fail(ownerUserId, input.operationId, first.lease);
+      expect(Result.isFailure(yield* state.replay(input).pipe(Effect.result))).toBe(true);
+
+      yield* state.complete(ownerUserId, input.operationId, second.lease, completed);
+      expect(yield* state.replay(input)).toEqual(completed);
     }),
   ),
 );

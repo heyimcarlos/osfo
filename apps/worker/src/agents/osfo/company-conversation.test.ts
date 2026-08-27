@@ -1,6 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
+import { Effect, Fiber } from "effect";
+import { TestClock } from "effect/testing";
 
 import {
+  boundedCompanyPublicSearch,
   boundedTranscriptWindow,
   companyMessageText,
   companyPublicSearchAvailable,
@@ -9,7 +12,7 @@ import {
   transcriptMessagesToPrune,
 } from "./company-conversation";
 
-/* oxlint-disable effecttsgo/global-date, eslint/no-underscore-dangle -- Pure lifecycle policy consumes Think Date values and Effect tagged unions. */
+/* oxlint-disable effecttsgo/global-date, eslint/no-underscore-dangle, vitest/no-standalone-expect -- Pure lifecycle policy consumes Think Date values; Effect assertions run inside the test generator. */
 
 describe("Company Conversation policy", () => {
   it("removes invitation URLs and messenger snapshots before model intake", () => {
@@ -48,6 +51,23 @@ describe("Company Conversation policy", () => {
     expect(companyPublicSearchAvailable(false, 2)).toBe(false);
     expect(companyPublicSearchAvailable(true, null)).toBe(false);
   });
+
+  it.effect("bounds and retries Company public discovery", () =>
+    Effect.gen(function* () {
+      let attempts = 0;
+      const discovery = Effect.sync(() => {
+        attempts += 1;
+      }).pipe(Effect.andThen(Effect.never));
+      const fiber = yield* Effect.exit(boundedCompanyPublicSearch(discovery)).pipe(
+        Effect.forkChild,
+      );
+
+      yield* TestClock.adjust("10 seconds");
+
+      expect((yield* Fiber.join(fiber))._tag).toBe("Failure");
+      expect(attempts).toBe(2);
+    }),
+  );
 
   it("bounds model input on a user boundary", () => {
     const short = [{ role: "user" }, { role: "assistant" }];

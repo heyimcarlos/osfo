@@ -53,6 +53,7 @@ export const makeWebState = (
           .where(eq(webOperations.operation_id, input.operationId))
           .limit(1)
           .get();
+        let lease = nowEpochMillis();
         if (existing !== undefined) {
           if (
             existing.ownerUserId !== input.userId ||
@@ -68,28 +69,43 @@ export const makeWebState = (
             ) {
               return { _tag: "Pending" as const };
             }
+            lease = Math.max(lease, existing.createdAtEpochMillis + 1);
             transaction
-              .delete(webOperations)
-              .where(eq(webOperations.operation_id, input.operationId))
+              .update(webOperations)
+              .set({
+                created_at_epoch_millis: lease,
+                reserved_pages: input.kind === "search" ? 3 : 1,
+                result_json: null,
+                status: "pending",
+                turn_id: input.turnId,
+              })
+              .where(
+                and(
+                  eq(webOperations.operation_id, input.operationId),
+                  eq(webOperations.created_at_epoch_millis, existing.createdAtEpochMillis),
+                  eq(webOperations.status, "pending"),
+                ),
+              )
               .run();
           } else {
             return { _tag: "Existing" as const, resultJson: existing.resultJson };
           }
+        } else {
+          transaction
+            .insert(webOperations)
+            .values({
+              created_at_epoch_millis: lease,
+              fingerprint: input.fingerprint,
+              kind: input.kind,
+              operation_id: input.operationId,
+              owner_user_id: input.userId,
+              reserved_pages: input.kind === "search" ? 3 : 1,
+              result_json: null,
+              status: "pending",
+              turn_id: input.turnId,
+            })
+            .run();
         }
-        transaction
-          .insert(webOperations)
-          .values({
-            created_at_epoch_millis: nowEpochMillis(),
-            fingerprint: input.fingerprint,
-            kind: input.kind,
-            operation_id: input.operationId,
-            owner_user_id: input.userId,
-            reserved_pages: input.kind === "search" ? 3 : 1,
-            result_json: null,
-            status: "pending",
-            turn_id: input.turnId,
-          })
-          .run();
         const counts = transaction
           .select({
             pages: sql<number>`coalesce(sum(${webOperations.reserved_pages}), 0)`,
@@ -106,15 +122,17 @@ export const makeWebState = (
         return {
           _tag: "Claimed" as const,
           counts: { pages: counts?.pages ?? 0, searches: counts?.searches ?? 0 },
+          lease,
         };
       }),
     ).pipe(Effect.flatMap(decodeClaim)),
-  complete: (userId, operationId, result) =>
+  complete: (userId, operationId, lease, result) =>
     execute("complete", () => {
       db.transaction((transaction) => {
         const encoded = encodeOperation(result);
         const existing = transaction
           .select({
+            createdAtEpochMillis: webOperations.created_at_epoch_millis,
             ownerUserId: webOperations.owner_user_id,
             resultJson: webOperations.result_json,
             status: webOperations.status,
@@ -125,6 +143,9 @@ export const makeWebState = (
           .get();
         if (existing?.ownerUserId !== userId) {
           throw new Error("The claimed web operation is unavailable to this User");
+        }
+        if (existing.createdAtEpochMillis !== lease) {
+          throw new Error("The web operation lease is no longer current");
         }
         if (existing.status === "completed") {
           if (existing.resultJson !== encoded) {
@@ -155,13 +176,20 @@ export const makeWebState = (
             result_json: encoded,
             status: "completed",
           })
-          .where(eq(webOperations.operation_id, operationId))
+          .where(
+            and(
+              eq(webOperations.operation_id, operationId),
+              eq(webOperations.owner_user_id, userId),
+              eq(webOperations.status, "pending"),
+              eq(webOperations.created_at_epoch_millis, lease),
+            ),
+          )
           .run();
       });
       pruneResults(db, userId);
       pruneOperations(db, userId);
     }),
-  fail: (userId, operationId) =>
+  fail: (userId, operationId, lease) =>
     execute("fail", () =>
       db
         .delete(webOperations)
@@ -170,6 +198,7 @@ export const makeWebState = (
             eq(webOperations.operation_id, operationId),
             eq(webOperations.owner_user_id, userId),
             eq(webOperations.status, "pending"),
+            eq(webOperations.created_at_epoch_millis, lease),
           ),
         )
         .run(),
@@ -281,6 +310,7 @@ type StoredClaim =
   | {
       readonly _tag: "Claimed";
       readonly counts: { readonly pages: number; readonly searches: number };
+      readonly lease: number;
     }
   | { readonly _tag: "Conflict" }
   | { readonly _tag: "Existing"; readonly resultJson: string }
@@ -293,7 +323,7 @@ type StoredReplay =
   | { readonly _tag: "Pending" };
 
 type Claim =
-  | { readonly _tag: "Claimed"; readonly counts: TurnCounts }
+  | { readonly _tag: "Claimed"; readonly counts: TurnCounts; readonly lease: number }
   | { readonly _tag: "Existing"; readonly result: CompletedOperation };
 
 const decodeClaim = (

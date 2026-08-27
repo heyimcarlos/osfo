@@ -194,16 +194,17 @@ export interface WebState<E> {
     readonly turnId: ThinkSubmissionId;
     readonly userId: UserId;
   }) => Effect.Effect<
-    | { readonly _tag: "Claimed"; readonly counts: TurnCounts }
+    | { readonly _tag: "Claimed"; readonly counts: TurnCounts; readonly lease: number }
     | { readonly _tag: "Existing"; readonly result: CompletedOperation },
     E | WebUnavailable
   >;
   readonly complete: (
     userId: UserId,
     operationId: string,
+    lease: number,
     result: CompletedOperation,
   ) => Effect.Effect<void, E>;
-  readonly fail: (userId: UserId, operationId: string) => Effect.Effect<void, E>;
+  readonly fail: (userId: UserId, operationId: string, lease: number) => Effect.Effect<void, E>;
   readonly readResult: (
     ownerUserId: UserId,
     resultId: string,
@@ -381,12 +382,12 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
         return claimed.result;
       }
       if (claimed.counts.searches > maximumSearchesPerTurn) {
-        yield* options.state.fail(input.userId, input.operationId);
+        yield* options.state.fail(input.userId, input.operationId, claimed.lease);
         return yield* unavailable("searchLimit", "This turn reached its three-search limit.");
       }
       const pagesBeforeClaim = claimed.counts.pages - maximumGroundingPagesPerSearch;
       if (pagesBeforeClaim >= maximumPagesPerTurn) {
-        yield* options.state.fail(input.userId, input.operationId);
+        yield* options.state.fail(input.userId, input.operationId, claimed.lease);
         return yield* unavailable("pageLimit", "This turn reached its five-page reading limit.");
       }
 
@@ -435,7 +436,7 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
           resultSetId,
           results,
         };
-        yield* options.state.complete(input.userId, input.operationId, completed);
+        yield* options.state.complete(input.userId, input.operationId, claimed.lease, completed);
         return completed;
       }).pipe(
         Effect.timeoutOrElse({
@@ -445,7 +446,7 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
               unavailable("providerUnavailable", "The bounded public-web operation timed out."),
             ),
         }),
-        Effect.tapError(() => options.state.fail(input.userId, input.operationId)),
+        Effect.tapError(() => options.state.fail(input.userId, input.operationId, claimed.lease)),
       );
     });
 
@@ -509,7 +510,7 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
       return claimed.result;
     }
     if (claimed.counts.pages > maximumPagesPerTurn) {
-      yield* options.state.fail(input.userId, input.operationId);
+      yield* options.state.fail(input.userId, input.operationId, claimed.lease);
       return yield* unavailable("pageLimit", "This turn reached its five-page reading limit.");
     }
     return yield* Effect.gen(function* () {
@@ -519,7 +520,7 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
         resultId: selected?.resultId ?? null,
         url,
       };
-      yield* options.state.complete(input.userId, input.operationId, completed);
+      yield* options.state.complete(input.userId, input.operationId, claimed.lease, completed);
       return completed;
     }).pipe(
       Effect.timeoutOrElse({
@@ -529,7 +530,7 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
             unavailable("providerUnavailable", "The bounded public-web operation timed out."),
           ),
       }),
-      Effect.tapError(() => options.state.fail(input.userId, input.operationId)),
+      Effect.tapError(() => options.state.fail(input.userId, input.operationId, claimed.lease)),
     );
   });
 

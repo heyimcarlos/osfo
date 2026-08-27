@@ -1,5 +1,5 @@
 import { isTextUIPart, type UIMessage } from "ai";
-import { Predicate } from "effect";
+import { Duration, Effect, Predicate, Schedule } from "effect";
 
 /** Maximum delay between checks for Channel Link acceptance. */
 export const ACCEPTANCE_TEARDOWN_MS = 6 * 60 * 60 * 1_000;
@@ -43,6 +43,14 @@ export const companyPublicSearchAvailable = (
   hasRecognizedPrice: boolean,
   dailyLimit: number | null,
 ): boolean => hasRecognizedPrice && dailyLimit !== null;
+
+/** Keep a Company Conversation discovery attempt within the same bounded provider budget. */
+export const boundedCompanyPublicSearch = <A, E, R>(discovery: Effect.Effect<A, E, R>) =>
+  discovery.pipe(
+    Effect.timeout(Duration.seconds(5)),
+    Effect.retry(Schedule.recurs(1)),
+    Effect.timeout(Duration.seconds(15)),
+  );
 
 /** Bound a model turn to the most recent window that starts on a user boundary. */
 export const boundedTranscriptWindow = <T extends { readonly role: string }>(
