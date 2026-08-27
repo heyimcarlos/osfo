@@ -6,7 +6,7 @@ import { loadConfig } from "../../src/config";
 import { wakeUpSenderLayer } from "../../src/integrations/whatsapp";
 import { WhatsAppWakeUps } from "../../src/services/whatsapp-wakeups";
 
-/* oxlint-disable effecttsgo/global-fetch-in-effect, effecttsgo/strict-effect-provide -- This contract test is the application entry point for the local provider boundary. */
+/* oxlint-disable effecttsgo/global-fetch-in-effect, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- This contract test is the application entry point for the local provider boundary and asserts Effect failure tags. */
 
 const Ledger = Schema.Array(
   Schema.Struct({ body: Schema.String, method: Schema.String, path: Schema.String }),
@@ -65,5 +65,45 @@ it.effect("uses only the fixed variable-free Meta template shape for en and es",
         path: "/v25.0/123456789/messages",
       },
     ]);
+  }).pipe(Effect.provide(wakeUpSenderLayer(loadConfig(env).whatsApp))),
+);
+
+it.effect("treats server and rate-limit responses as ambiguous, not proven rejection", () =>
+  Effect.gen(function* () {
+    const config = loadConfig(env);
+    const providerOrigin = config.whatsApp.apiBaseURL ?? "";
+    const sender = yield* WhatsAppWakeUps.Sender;
+    for (const status of [503, 429]) {
+      yield* Effect.promise(() =>
+        fetch(`${providerOrigin}/_test/whatsapp/next-response?status=${status}`, {
+          method: "POST",
+        }),
+      );
+      expect(
+        yield* sender
+          .sendTemplate({
+            endpoint: WhatsAppWakeUps.EndpointIdentity.make("15551234567"),
+            locale: "en",
+          })
+          .pipe(
+            Effect.flip,
+            Effect.map((failure) => failure._tag),
+          ),
+      ).toBe("ProviderAmbiguous");
+    }
+    yield* Effect.promise(() =>
+      fetch(`${providerOrigin}/_test/whatsapp/next-response?status=400`, { method: "POST" }),
+    );
+    expect(
+      yield* sender
+        .sendTemplate({
+          endpoint: WhatsAppWakeUps.EndpointIdentity.make("15551234567"),
+          locale: "es",
+        })
+        .pipe(
+          Effect.flip,
+          Effect.map((failure) => failure._tag),
+        ),
+    ).toBe("ProviderRejected");
   }).pipe(Effect.provide(wakeUpSenderLayer(loadConfig(env).whatsApp))),
 );

@@ -156,6 +156,7 @@ export interface Interface {
     readonly leaseDuration?: Duration.Input;
     readonly limit?: number;
     readonly requestTimeout?: Duration.Input;
+    readonly sendPending?: boolean;
   }) => Effect.Effect<DrainResult, WakeUpUnavailable>;
   readonly consumeInbound: (input: {
     readonly channelLinkId: ChannelLinkId;
@@ -333,17 +334,20 @@ export const make = Effect.gen(function* () {
       readonly leaseDuration?: Duration.Input;
       readonly limit?: number;
       readonly requestTimeout?: Duration.Input;
+      readonly sendPending?: boolean;
     } = {},
   ) {
     const limit = Math.max(1, Math.min(options.limit ?? 25, 100));
     const leaseDuration = Duration.fromInputUnsafe(options.leaseDuration ?? { minutes: 2 });
     const requestTimeout = Duration.fromInputUnsafe(options.requestTimeout ?? { minutes: 2 });
+    const recovered = yield* reconcileStaleRequested(requestTimeout);
     const counts = {
       accepted: 0,
-      ambiguous: yield* reconcileStaleRequested(requestTimeout),
-      canceled: 0,
+      ambiguous: recovered.ambiguous,
+      canceled: recovered.canceled,
       rejected: 0,
     };
+    if (options.sendPending === false) return counts;
     for (let index = 0; index < limit; index += 1) {
       const claim = yield* claimPending(leaseDuration);
       if (claim === null) break;
@@ -576,8 +580,15 @@ export const make = Effect.gen(function* () {
     );
     const inspected = yield* Effect.forEach(rows, (row) =>
       decodeSource(row.sourceKind, row.sourceIdentity).pipe(
-        Effect.flatMap((source) => sourceAuthority.inspect(userId, source)),
-        Effect.map((committed) => ({ committed, requestWakeUpId: row.requestWakeUpId })),
+        Effect.flatMap((source) =>
+          sourceAuthority.inspect(userId, source).pipe(
+            Effect.map((committed) => ({
+              committed:
+                committed !== null && sameSource(committed.source, source) ? committed : null,
+              requestWakeUpId: row.requestWakeUpId,
+            })),
+          ),
+        ),
       ),
     );
     const unavailableRequestIds = inspected.flatMap(({ committed, requestWakeUpId }) =>
@@ -605,19 +616,37 @@ export const make = Effect.gen(function* () {
       database
         .update(whatsappWakeups)
         .set({
+          canceled_at: sql`case
+            when ${whatsappWakeups.consume_requested_at} is not null then null
+            when ${whatsappWakeups.cancel_requested_at} is not null then ${whatsappWakeups.cancel_requested_at}
+            else null
+          end`,
           consumed_at: sql`case when ${whatsappWakeups.consume_requested_at} is null then null else ${whatsappWakeups.consume_requested_at} end`,
           provider_outcome: "ambiguous",
-          safe_failure_class: "connectionLost",
+          safe_failure_class: sql`case
+            when ${whatsappWakeups.cancel_requested_at} is null then 'connectionLost'
+            else ${whatsappWakeups.safe_failure_class}
+          end`,
           settled_at: now,
-          state: sql`case when ${whatsappWakeups.consume_requested_at} is null then 'ambiguous' else 'consumed' end`,
+          state: sql`case
+            when ${whatsappWakeups.consume_requested_at} is not null then 'consumed'
+            when ${whatsappWakeups.cancel_requested_at} is not null then 'canceled'
+            else 'ambiguous'
+          end`,
           updated_at: now,
         })
         .where(
           and(eq(whatsappWakeups.state, "requested"), lt(whatsappWakeups.requested_at, cutoff)),
         )
-        .returning({ wakeUpId: whatsappWakeups.wakeup_id }),
+        .returning({ state: whatsappWakeups.state, wakeUpId: whatsappWakeups.wakeup_id }),
     );
-    return recovered.length;
+    return recovered.reduce(
+      (counts, row) => ({
+        ambiguous: counts.ambiguous + (row.state === "ambiguous" ? 1 : 0),
+        canceled: counts.canceled + (row.state === "canceled" ? 1 : 0),
+      }),
+      { ambiguous: 0, canceled: 0 },
+    );
   });
 
   const claimPending = Effect.fn("WhatsAppWakeUps.claimPending")(function* (

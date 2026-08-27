@@ -89,13 +89,12 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
     const telegramLedger: Array<TelegramLedgerEntry> = [];
     const twilioLedger: Array<TwilioLedgerEntry> = [];
     const whatsAppLedger: Array<WhatsAppLedgerEntry> = [];
+    let whatsAppNextResponseStatus: number | null = null;
     let whatsAppTemplateOnly = false;
     const server = createServer((request, response) => {
       const rawUrl = request.url ?? "/";
-      const pathname = new URL(
-        rawUrl.startsWith("//") ? rawUrl.slice(1) : rawUrl,
-        "http://localhost",
-      ).pathname;
+      const url = new URL(rawUrl.startsWith("//") ? rawUrl.slice(1) : rawUrl, "http://localhost");
+      const pathname = url.pathname;
       if (request.method === "POST" && pathname === "/_test/reset") {
         stripeLedger.length = 0;
         supermemoryContainers.clear();
@@ -104,6 +103,7 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         telegramLedger.length = 0;
         twilioLedger.length = 0;
         whatsAppLedger.length = 0;
+        whatsAppNextResponseStatus = null;
         whatsAppTemplateOnly = false;
         response.statusCode = 204;
         response.end();
@@ -190,6 +190,17 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         response.end();
         return;
       }
+      if (request.method === "POST" && pathname === "/_test/whatsapp/next-response") {
+        const status = Number.parseInt(url.searchParams.get("status") ?? "", 10);
+        if (![400, 429, 503].includes(status)) {
+          respondJson(response, 400, { error: "Unsupported WhatsApp test response" });
+          return;
+        }
+        whatsAppNextResponseStatus = status;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
       if (request.method === "POST" && pathname === "/events/track") {
         readTextBody(request)
           .then(() => respondJson(response, 200, {}))
@@ -234,6 +245,14 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
             ) {
               respondJson(response, 422, {
                 error: "Only the fixed variable-free template is accepted",
+              });
+              return;
+            }
+            if (whatsAppNextResponseStatus !== null) {
+              const status = whatsAppNextResponseStatus;
+              whatsAppNextResponseStatus = null;
+              respondJson(response, status, {
+                error: { code: status === 400 ? 132001 : status, message: "emulated" },
               });
               return;
             }

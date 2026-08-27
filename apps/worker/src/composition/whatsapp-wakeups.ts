@@ -17,14 +17,15 @@ export const layer = (config: CloudflareConfig) =>
     ),
   );
 
-/** Drain only when deployment attests the exact approved v1 template. */
+/** Always reconcile started requests; send only with exact v1 template attestation. */
 export const drainScheduled = (env: CloudflareEnv, config: CloudflareConfig) => {
-  if (config.whatsApp.wakeUp._tag === "Inactive") return Promise.resolve();
   const base = Layer.merge(Db.layer({ db: env.DB }), BrowserCrypto.layer);
   return Effect.runPromise(
     Effect.scoped(
       WhatsAppWakeUps.Service.pipe(
-        Effect.flatMap((wakeUps) => wakeUps.drainPending()),
+        Effect.flatMap((wakeUps) =>
+          wakeUps.drainPending({ sendPending: config.whatsApp.wakeUp._tag === "Active" }),
+        ),
         Effect.tap((result) =>
           Effect.logInfo("WhatsApp Wake-up scheduled drain completed").pipe(
             Effect.annotateLogs({

@@ -90,17 +90,28 @@ export const wakeUpSenderLayer = (config: WhatsAppConfig) =>
     }),
   );
 
-const classifyWakeUpFailure = (cause: unknown) =>
-  cause instanceof Error && cause.message.startsWith("WhatsApp API error:")
-    ? new WhatsAppWakeUps.ProviderRejected({ cause })
-    : new WhatsAppWakeUps.ProviderAmbiguous({
-        cause,
-        failureClass:
-          cause instanceof TypeError ||
-          (cause instanceof Error && /network|fetch|connection/iu.test(cause.message))
-            ? "connectionLost"
-            : "malformedSuccess",
-      });
+const classifyWakeUpFailure = (cause: unknown) => {
+  if (cause instanceof Error && isProvenProviderRejection(cause.message)) {
+    return new WhatsAppWakeUps.ProviderRejected({ cause });
+  }
+  return new WhatsAppWakeUps.ProviderAmbiguous({
+    cause,
+    failureClass:
+      cause instanceof TypeError ||
+      (cause instanceof Error &&
+        /network|fetch|connection|WhatsApp API error:/iu.test(cause.message))
+        ? "connectionLost"
+        : "malformedSuccess",
+  });
+};
+
+const isProvenProviderRejection = (message: string) => {
+  const match = /^WhatsApp API error: (\d{3})\b/u.exec(message);
+  const statusText = match?.[1];
+  if (statusText === undefined) return false;
+  const status = Number.parseInt(statusText, 10);
+  return status >= 400 && status < 500 && ![408, 409, 425, 429].includes(status);
+};
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/u, "");
 

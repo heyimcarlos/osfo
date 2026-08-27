@@ -524,7 +524,7 @@ qualify_journeys() {
 }
 
 evidence_start() {
-  local run_id feature artifact_dir feature_dir
+  local run_id feature artifact_dir feature_dir provider_origin
   run_id="$1"
   feature="$2"
   doctor_run "$run_id" >/dev/null
@@ -542,6 +542,13 @@ evidence_start() {
     "$(state_value "$run_id" worker-origin)" "$0" "$run_id" "$feature" \
     >"$feature_dir/metadata.txt"
   : >"$feature_dir/browser-actions.txt"
+  if [[ "$feature" == whatsapp-wakeup ]]; then
+    provider_origin="$(state_value "$run_id" provider-origin)"
+    curl --fail --silent --show-error --request POST \
+      "$provider_origin/_test/whatsapp/template-only" >/dev/null
+    printf 'provider_template_policy=fixed-variable-free-only\n' \
+      >>"$feature_dir/metadata.txt"
+  fi
   printf 'evidence_ready feature=%s action_screenshot=%s result_screenshot=%s\n' \
     "$feature" "$feature_dir/action.png" "$feature_dir/result.png"
 }
@@ -1119,6 +1126,18 @@ evidence_finish() {
       ! grep -F -q 'Sign in and Get started' \
         "$feature_dir/browser-actions.txt"; }; then
     printf 'Account-deletion replay evidence needs the exact retained request after refresh and signed-out result\n' >&2
+    exit 1
+  fi
+  if [[ "$feature" == whatsapp-wakeup ]] && \
+    { ! grep -F -q 'WhatsApp Channel Link accepted' \
+        "$feature_dir/browser-actions.txt" || \
+      ! grep -F -q 'committed sources exposed in commit order before normal response' \
+        "$feature_dir/browser-actions.txt" || \
+      ! grep -F -q 'Channel Link revoked and later source produced no template' \
+        "$feature_dir/browser-actions.txt" || \
+      ! grep -F -q 'permanent account deletion completed' \
+        "$feature_dir/browser-actions.txt"; }; then
+    printf 'WhatsApp Wake-up evidence needs linked authority, ordered owner exposure, revocation no-send, and permanent deletion browser records\n' >&2
     exit 1
   fi
   printf 'completed_at=%s\nresult=PASS\ncommit=%s\n' \

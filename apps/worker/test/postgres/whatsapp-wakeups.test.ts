@@ -141,6 +141,40 @@ it.effect(
     ),
 );
 
+it.effect("removes a source when its owner returns a different committed identity", () =>
+  withFixture(({ calls, inspectionOverride, link, sources, userId, wakeUps }) =>
+    Effect.gen(function* () {
+      const requested = WhatsAppWakeUps.Source.cases.Reminder.make({
+        identity: WhatsAppWakeUps.SourceIdentity.make("reminder-requested"),
+      });
+      const mismatched = WhatsAppWakeUps.Source.cases.Reminder.make({
+        identity: WhatsAppWakeUps.SourceIdentity.make("reminder-other"),
+      });
+      yield* Ref.set(sources, [
+        { committedAt: new Date("2026-08-27T12:00:00.000Z"), source: requested },
+      ]);
+      yield* wakeUps.request({
+        channelLinkId: link.channelLinkId,
+        source: requested,
+        traceId: WhatsAppWakeUps.TraceId.make("trace-source-mismatch"),
+        userId,
+        wakeUpId: WhatsAppWakeUps.WakeUpId.make("wakeup-source-mismatch"),
+      });
+      yield* Ref.set(inspectionOverride, {
+        committedAt: new Date("2026-08-27T12:00:00.000Z"),
+        source: mismatched,
+      });
+      expect(yield* wakeUps.drainPending()).toEqual({
+        accepted: 0,
+        ambiguous: 0,
+        canceled: 1,
+        rejected: 0,
+      });
+      expect(yield* Ref.get(calls)).toEqual([]);
+    }),
+  ),
+);
+
 it.effect("retries owner exposure when it fails before consumption commits", () =>
   withFixture(({ failExposure, link, sources, userId, wakeUps }) =>
     Effect.gen(function* () {
@@ -314,6 +348,72 @@ it.effect(
         expect(stored).toEqual({ failureClass: "connectionLost", state: "ambiguous" });
       }),
     ),
+);
+
+it.effect("reconciles a revoked in-flight request as canceled while sending is inactive", () =>
+  withFixture(
+    ({
+      blockSender,
+      calls,
+      channelLinks,
+      database,
+      link,
+      senderStarted,
+      sources,
+      userId,
+      wakeUps,
+    }) =>
+      Effect.gen(function* () {
+        const source = WhatsAppWakeUps.Source.cases.ResearchReport.make({
+          identity: WhatsAppWakeUps.SourceIdentity.make("interrupted-revoked-report"),
+        });
+        yield* Ref.set(sources, [{ committedAt: new Date("2026-08-27T12:00:00.000Z"), source }]);
+        yield* Ref.set(blockSender, true);
+        yield* wakeUps.request({
+          channelLinkId: link.channelLinkId,
+          source,
+          traceId: WhatsAppWakeUps.TraceId.make("trace-interrupted-revoked"),
+          userId,
+          wakeUpId: WhatsAppWakeUps.WakeUpId.make("wakeup-interrupted-revoked"),
+        });
+        const drain = yield* wakeUps.drainPending().pipe(Effect.forkChild);
+        yield* Deferred.await(senderStarted);
+        yield* channelLinks.revoke({
+          actorId: ChannelLinks.ChannelLinkActorId.make(`user:${userId}`),
+          channelLinkId: link.channelLinkId,
+          reason: ChannelLinks.ChannelLinkRevocationReason.make("User disconnected WhatsApp"),
+        });
+        yield* Fiber.interrupt(drain);
+        yield* Effect.promise(() =>
+          database
+            .update(whatsappWakeups)
+            .set({ requested_at: new Date(-1) })
+            .where(eq(whatsappWakeups.wakeup_id, "wakeup-interrupted-revoked")),
+        );
+        expect(yield* wakeUps.drainPending({ requestTimeout: 0, sendPending: false })).toEqual({
+          accepted: 0,
+          ambiguous: 0,
+          canceled: 1,
+          rejected: 0,
+        });
+        expect((yield* Ref.get(calls)).length).toBe(1);
+        const [stored] = yield* Effect.promise(() =>
+          database
+            .select({
+              failureClass: whatsappWakeups.safe_failure_class,
+              outcome: whatsappWakeups.provider_outcome,
+              state: whatsappWakeups.state,
+            })
+            .from(whatsappWakeups)
+            .where(eq(whatsappWakeups.wakeup_id, "wakeup-interrupted-revoked")),
+        );
+        expect(stored).toEqual({
+          failureClass: "authorityLost",
+          outcome: "ambiguous",
+          state: "canceled",
+        });
+      }),
+  ),
 );
 
 it.effect("cancels a pending latch atomically with Channel Link revocation", () =>
@@ -521,6 +621,7 @@ const withFixture = <A, E>(
         .join("")
         .slice(0, 10)}`;
       const sources = yield* Ref.make<ReadonlyArray<WhatsAppWakeUps.CommittedSource>>([]);
+      const inspectionOverride = yield* Ref.make<WhatsAppWakeUps.CommittedSource | null>(null);
       const exposedSources = yield* Ref.make<ReadonlyArray<WhatsAppWakeUps.CommittedSource>>([]);
       const failExposure = yield* Ref.make(false);
       const calls = yield* Ref.make<
@@ -547,15 +648,21 @@ const withFixture = <A, E>(
               return undefined;
             }),
           inspect: (owner, source) =>
-            Ref.get(sources).pipe(
-              Effect.map(
-                (current) =>
-                  current.find(
-                    (candidate) =>
-                      owner === userId &&
-                      candidate.source._tag === source._tag &&
-                      candidate.source.identity === source.identity,
-                  ) ?? null,
+            Ref.get(inspectionOverride).pipe(
+              Effect.flatMap((override) =>
+                override === null
+                  ? Ref.get(sources).pipe(
+                      Effect.map(
+                        (current) =>
+                          current.find(
+                            (candidate) =>
+                              owner === userId &&
+                              candidate.source._tag === source._tag &&
+                              candidate.source.identity === source.identity,
+                          ) ?? null,
+                      ),
+                    )
+                  : Effect.succeed(override),
               ),
             ),
           pendingForUser: (owner) => (owner === userId ? Ref.get(sources) : Effect.succeed([])),
@@ -606,6 +713,7 @@ const withFixture = <A, E>(
           endpoint,
           exposedSources,
           failExposure,
+          inspectionOverride,
           link,
           nextFailure,
           senderStarted,
@@ -628,6 +736,7 @@ interface Fixture {
   readonly endpoint: string;
   readonly exposedSources: Ref.Ref<ReadonlyArray<WhatsAppWakeUps.CommittedSource>>;
   readonly failExposure: Ref.Ref<boolean>;
+  readonly inspectionOverride: Ref.Ref<WhatsAppWakeUps.CommittedSource | null>;
   readonly link: typeof ChannelLinks.ChannelLink.Type;
   readonly nextFailure: Ref.Ref<
     WhatsAppWakeUps.ProviderAmbiguous | WhatsAppWakeUps.ProviderRejected | null
