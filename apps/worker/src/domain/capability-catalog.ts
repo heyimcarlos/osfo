@@ -70,6 +70,8 @@ const governedOperationNames = [
   "integration.connection.manage",
   "integration.read",
   "integration.effect",
+  "web.search",
+  "web.read",
   "reminder.manage",
   "reminder.deliver",
   "workflow.manage",

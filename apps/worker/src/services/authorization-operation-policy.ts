@@ -158,6 +158,7 @@ export const requiresOwnership = (operation: AuthorizationOperation) =>
   operation.kind.startsWith("gmail.") ||
   operation.kind.startsWith("skill.") ||
   operation.kind.startsWith("integration.") ||
+  operation.kind.startsWith("web.") ||
   operation.kind.startsWith("artifact.") ||
   operation.kind === "support.gmSummon" ||
   operation.kind === "account.delete";

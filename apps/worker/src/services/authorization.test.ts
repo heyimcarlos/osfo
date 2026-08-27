@@ -181,6 +181,33 @@ describe("governed Authorization", () => {
     }
   });
 
+  it("keeps ordinary public-web ToolCalls interactive instead of durable Workflow work", () => {
+    const authorization = make(retainedCatalog);
+    const interactive = context("free");
+    const durable = {
+      ...interactive,
+      authority: {
+        _tag: "DurableTrigger" as const,
+        triggerId: "research-workflow-1",
+        triggerType: "workflow" as const,
+        userId,
+      },
+      originatingAuthority: {
+        _tag: "DurableTrigger" as const,
+        triggerId: "research-workflow-1",
+        triggerType: "workflow" as const,
+      },
+    };
+
+    expect(authorization.admit(interactive, operationFor("web.search"))).toMatchObject({
+      _tag: "Admitted",
+    });
+    expect(authorization.admit(durable, operationFor("web.search"))).toMatchObject({
+      _tag: "Denied",
+      reason: "authorityMismatch",
+    });
+  });
+
   it("requires exact Approval for every closed consequence class", () => {
     const baseManifest = currentManifestCatalog.manifests.find(
       ({ operation }) => operation === "GMAIL_SEND_EMAIL",
@@ -691,6 +718,28 @@ const operationFor = (operation: AuthorizationOperationName): AuthorizationOpera
         manifestVersion: ManifestVersion.make("gmail-v1"),
         providerOperation: "GMAIL_SEND_EMAIL",
         toolkit: "gmail",
+      };
+    case "web.search":
+      return {
+        actionId: operation,
+        deadlineMilliseconds: 15_000n,
+        kind: operation,
+        pages: 3n,
+        redirects: 3n,
+        responseBytes: 768_000n,
+        results: 10n,
+        retries: 1n,
+        searches: 1n,
+      };
+    case "web.read":
+      return {
+        actionId: operation,
+        deadlineMilliseconds: 15_000n,
+        kind: operation,
+        pages: 1n,
+        redirects: 3n,
+        responseBytes: 256_000n,
+        retries: 1n,
       };
     default:
       return { actionId: operation, kind: operation };

@@ -422,7 +422,7 @@ const authorize = (
     }
   }
   if (exceedsLiveLimit(operation, context, rules)) return denied("liveResourceLimitReached");
-  if (mode === "admission" && exceedsOperationLimit(operation, context, rules)) {
+  if (mode === "admission" && exceedsOperationLimit(operation, context, rules, capabilityCatalog)) {
     return denied("operationLimitExceeded");
   }
   if (requiresApproval(operation) && !hasExactApproval(context, operation)) {
@@ -562,6 +562,7 @@ const exceedsOperationLimit = (
   operation: AuthorizationOperation,
   context: AuthorizationContext,
   rules: PlanRules,
+  capabilityCatalog: CapabilityCatalog,
 ) => {
   if (context.requestVendorUsdMicros > rules.operationLimits.vendorUsdMicrosPerRequest) return true;
   switch (operation.kind) {
@@ -576,6 +577,29 @@ const exceedsOperationLimit = (
         (operation.artifactKind === "researchReport" &&
           operation.researchSearches > rules.operationLimits.researchSearches)
       );
+    case "web.search": {
+      const limits = capabilityCatalog.operationLimits;
+      return (
+        operation.searches > BigInt(limits.webSearches) ||
+        operation.results > BigInt(limits.webResultsPerSearch) ||
+        operation.pages > BigInt(limits.webRetrievedPages) ||
+        operation.responseBytes >
+          limits.webNormalizedPageBytes * BigInt(limits.webRetrievedPages) ||
+        operation.deadlineMilliseconds > BigInt(limits.interactiveOperationMilliseconds) ||
+        operation.redirects > 3n ||
+        operation.retries > 1n
+      );
+    }
+    case "web.read": {
+      const limits = capabilityCatalog.operationLimits;
+      return (
+        operation.pages > BigInt(limits.webRetrievedPages) ||
+        operation.responseBytes > limits.webNormalizedPageBytes ||
+        operation.deadlineMilliseconds > BigInt(limits.interactiveOperationMilliseconds) ||
+        operation.redirects > 3n ||
+        operation.retries > 1n
+      );
+    }
     default:
       return false;
   }

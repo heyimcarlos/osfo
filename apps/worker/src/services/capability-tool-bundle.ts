@@ -36,8 +36,10 @@ export const registeredToolNameValues = [
   "skillInspect",
   "skillManage",
   "readFile",
+  "readWebPage",
   "sessionRecall",
   "set_context",
+  "webSearch",
 ] as const;
 
 const coreToolNames = ["loadSkill"] as const satisfies ReadonlyArray<RegisteredToolName>;

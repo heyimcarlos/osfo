@@ -1324,5 +1324,5 @@ const readJson = async (request: IncomingMessage): Promise<Schema.Json | undefin
   const body = Buffer.concat(chunks).toString("utf8");
   return body.length === 0
     ? undefined
-    : Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Json))(body);
+    : Schema.decodeSync(Schema.fromJsonString(Schema.Json))(body);
 };

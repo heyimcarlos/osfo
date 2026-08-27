@@ -24,6 +24,7 @@ import {
   ConversationRouteId,
   ResourcePriceVersion,
   SessionId,
+  ThinkSubmissionId,
   ThinkRequestId,
   UserId,
 } from "../../../domain";
@@ -39,6 +40,8 @@ import {
   MemoryProviderOutboxId,
 } from "./memory-provider-outbox";
 import { makeAgentStore } from "./store";
+import { makeWebState } from "./web-state";
+import type { CompletedOperation, RankedResult } from "../../../services/web";
 import { ConversationSnapshotProjection } from "../memory-provider-projection";
 import { MemoryProvider } from "../../../services/memory-provider";
 import {
@@ -122,8 +125,8 @@ it.effect("activates an Agent that slept before the conversation processing migr
       const result = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
       expect(result).toEqual({
-        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16],
-        currentVersion: 16,
+        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17],
+        currentVersion: 17,
       });
       expect(
         database
@@ -158,6 +161,126 @@ it.effect("activates an Agent that slept before the conversation processing migr
         .claimNext(now, liveLease, "legacy-authless-claim")
         .pipe(Effect.result);
       expect(Result.isFailure(legacyClaim)).toBe(true);
+    }),
+  ),
+);
+
+it.effect("persists User-scoped public-web replay and rejects conflicting ToolCall reuse", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const state = makeWebState(makeAgentDb(asDurableObjectStorage(storage)), () => 1_000);
+      const ownerUserId = UserId.make("web-owner");
+      const turnId = ThinkSubmissionId.make("web-turn-1");
+      const claimed = yield* state.claim({
+        fingerprint: "search\0osfo",
+        kind: "search",
+        operationId: "web-operation-1",
+        turnId,
+        userId: ownerUserId,
+      });
+      expect(claimed).toMatchObject({ _tag: "Claimed", counts: { pages: 3, searches: 1 } });
+      const result: RankedResult = {
+        description: "Discovery metadata",
+        descriptionKind: "searchDescription",
+        lastModifiedDate: null,
+        page: { _tag: "NotRead", message: "This is discovery metadata, not page content." },
+        rank: 1,
+        resultId: "web-result-1",
+        title: "Osfo",
+        url: "https://example.com/osfo",
+      };
+      yield* state.saveResults(ownerUserId, "web-set-1", [result]);
+      const completed: CompletedOperation = {
+        _tag: "SearchCompleted",
+        guidance: "Cite supporting pages.",
+        providerEvidence: { latencyMs: 1, requestId: "provider-request-1" },
+        query: "osfo",
+        resultSetId: "web-set-1",
+        results: [result],
+      };
+      yield* state.complete(ownerUserId, "web-operation-1", completed);
+
+      expect(
+        yield* state.claim({
+          fingerprint: "search\0osfo",
+          kind: "search",
+          operationId: "web-operation-1",
+          turnId,
+          userId: ownerUserId,
+        }),
+      ).toEqual({ _tag: "Existing", result: completed });
+      expect(yield* state.readResult(ownerUserId, "web-result-1")).toEqual(result);
+      expect(yield* state.readResult(UserId.make("different-user"), "web-result-1")).toBeNull();
+      const conflict = yield* state
+        .claim({
+          fingerprint: "search\0different",
+          kind: "search",
+          operationId: "web-operation-1",
+          turnId,
+          userId: ownerUserId,
+        })
+        .pipe(Effect.result);
+      expect(Result.isFailure(conflict)).toBe(true);
+      if (Result.isFailure(conflict)) expect(conflict.failure._tag).toBe("WebUnavailable");
+    }),
+  ),
+);
+
+it.effect("bounds retained public-web operations and result identities per User", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      let nowEpochMillis = 1_000;
+      const state = makeWebState(
+        makeAgentDb(asDurableObjectStorage(storage)),
+        () => nowEpochMillis++,
+      );
+      const ownerUserId = UserId.make("web-retention-owner");
+      const turnId = ThinkSubmissionId.make("web-retention-turn");
+
+      yield* Effect.forEach(
+        Array.from({ length: 31 }, (_, index) => index),
+        (index) =>
+          Effect.gen(function* () {
+            const operationId = `web-retention-operation-${index}`;
+            const result: RankedResult = {
+              description: null,
+              descriptionKind: "searchDescription",
+              lastModifiedDate: null,
+              page: { _tag: "NotRead", message: "This is discovery metadata, not page content." },
+              rank: 1,
+              resultId: `web-retention-result-${index}`,
+              title: `Result ${index}`,
+              url: `https://example.com/${index}`,
+            };
+            yield* state.claim({
+              fingerprint: `page\0${index}`,
+              kind: "page",
+              operationId,
+              turnId: ThinkSubmissionId.make(`${turnId}-${index}`),
+              userId: ownerUserId,
+            });
+            yield* state.saveResults(ownerUserId, `web-retention-set-${index}`, [result]);
+            yield* state.complete(ownerUserId, operationId, {
+              _tag: "PageReadCompleted",
+              page: result.page,
+              resultId: result.resultId,
+              url: result.url,
+            });
+          }),
+      );
+
+      expect(
+        database
+          .prepare("SELECT count(*) AS count FROM osfo_web_operations WHERE owner_user_id = ?")
+          .get(ownerUserId),
+      ).toEqual({ count: 30 });
+      expect(
+        database
+          .prepare("SELECT count(*) AS count FROM osfo_web_results WHERE owner_user_id = ?")
+          .get(ownerUserId),
+      ).toEqual({ count: 30 });
+      expect(yield* state.readResult(ownerUserId, "web-retention-result-0")).toBeNull();
+      expect(yield* state.readResult(ownerUserId, "web-retention-result-30")).not.toBeNull();
     }),
   ),
 );

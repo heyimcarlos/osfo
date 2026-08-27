@@ -4,8 +4,9 @@
   "main": "src/worker.ts",
   "rules": [{ "type": "Text", "globs": ["**/*.sql", "**/*.txt"], "fallthrough": true }],
   "compatibility_date": "2026-08-12",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "ai": { "binding": "AI" },
+  "websearch": { "binding": "WEBSEARCH" },
   "vars": {
     "OSFO_STAGE": "test",
     "WHATSAPP_BOT_USERNAME": "osfo_test_whatsapp",

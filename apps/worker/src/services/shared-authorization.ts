@@ -231,6 +231,25 @@ const exceedsGovernedOperationLimit = (
           ) ||
         operation.responseBytes > catalog.integrationReadLimits.totalResponseBytes
       );
+    case "web.search":
+      return (
+        operation.searches > BigInt(limits.webSearches) ||
+        operation.results > BigInt(limits.webResultsPerSearch) ||
+        operation.pages > BigInt(limits.webRetrievedPages) ||
+        operation.responseBytes >
+          limits.webNormalizedPageBytes * BigInt(limits.webRetrievedPages) ||
+        operation.deadlineMilliseconds > BigInt(limits.interactiveOperationMilliseconds) ||
+        operation.redirects > 3n ||
+        operation.retries > 1n
+      );
+    case "web.read":
+      return (
+        operation.pages > BigInt(limits.webRetrievedPages) ||
+        operation.responseBytes > limits.webNormalizedPageBytes ||
+        operation.deadlineMilliseconds > BigInt(limits.interactiveOperationMilliseconds) ||
+        operation.redirects > 3n ||
+        operation.retries > 1n
+      );
     default:
       return false;
   }
