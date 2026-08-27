@@ -64,6 +64,7 @@ export interface SourceAuthorityInterface {
   readonly pendingForUser: (
     userId: UserId,
   ) => Effect.Effect<ReadonlyArray<CommittedSource>, WakeUpUnavailable>;
+  /** Commit the exact owner exposure; success makes those facts unavailable to `inspect`. */
   readonly exposePending: (
     userId: UserId,
     committed: ReadonlyArray<CommittedSource>,
@@ -212,6 +213,15 @@ export const make = Effect.gen(function* () {
         await transaction.execute(
           sql`select pg_advisory_xact_lock(hashtextextended(${input.userId}, 0))`,
         );
+        // The source owner must be rechecked after the User fence because a concurrent inbound
+        // exposure may have consumed the fact after the optimistic check above.
+        // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- Drizzle owns this Promise transaction; the captured source service has no remaining environment.
+        const currentCommitted = await Effect.runPromise(
+          sourceAuthority.inspect(input.userId, input.source),
+        );
+        if (currentCommitted === null || !sameSource(currentCommitted.source, input.source)) {
+          return { _tag: "Unavailable" as const };
+        }
         const [user] = await transaction
           .select({ locale: users.locale, registrationCompletedAt: users.registrationCompletedAt })
           .from(users)
@@ -275,6 +285,8 @@ export const make = Effect.gen(function* () {
             and(
               eq(whatsappWakeups.user_id, input.userId),
               inArray(whatsappWakeups.state, activeStates),
+              isNull(whatsappWakeups.consume_requested_at),
+              isNull(whatsappWakeups.cancel_requested_at),
             ),
           )
           .limit(1);
@@ -418,50 +430,65 @@ export const make = Effect.gen(function* () {
     const now = DateTime.toDateUtc(yield* DateTime.now);
     const consumed = yield* attempt("consumeInbound", () =>
       database.transaction(async (transaction) => {
-        const [row] = await transaction
-          .select({ state: whatsappWakeups.state, wakeUpId: whatsappWakeups.wakeup_id })
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${input.userId}, 0))`,
+        );
+        const rows = await transaction
+          .select({ wakeUpId: whatsappWakeups.wakeup_id })
           .from(whatsappWakeups)
           .where(
             and(
               eq(whatsappWakeups.user_id, input.userId),
               eq(whatsappWakeups.channel_link_id, input.channelLinkId),
               inArray(whatsappWakeups.state, activeStates),
+              isNull(whatsappWakeups.cancel_requested_at),
+              isNull(whatsappWakeups.exposure_completed_at),
             ),
           )
-          .for("update")
-          .limit(1);
-        if (row === undefined) return null;
+          .orderBy(asc(whatsappWakeups.created_at), asc(whatsappWakeups.wakeup_id))
+          .for("update");
+        const first = rows[0];
+        if (first === undefined) return null;
+        const wakeUpIds = rows.map(({ wakeUpId }) => wakeUpId);
         await transaction
           .update(whatsappWakeups)
           .set({ consume_requested_at: now, updated_at: now })
-          .where(eq(whatsappWakeups.wakeup_id, row.wakeUpId));
-        return WakeUpId.make(row.wakeUpId);
+          .where(inArray(whatsappWakeups.wakeup_id, wakeUpIds));
+        // Keep the PostgreSQL User fence until the source owner commits the exact exposure
+        // snapshot. Requests and a second inbound cannot cross this boundary.
+        // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- Drizzle owns this Promise transaction; the captured source service has no remaining environment.
+        const pending = await Effect.runPromise(
+          Effect.gen(function* () {
+            // oxlint-disable-next-line unicorn/no-array-sort -- The Worker target lacks ES2023 toSorted; this array is a fresh copy.
+            const committed = [...(yield* sourceAuthority.pendingForUser(input.userId))].sort(
+              compareSources,
+            );
+            yield* sourceAuthority.exposePending(input.userId, committed);
+            return committed;
+          }),
+        );
+        await transaction
+          .update(whatsappWakeups)
+          .set({
+            consumed_at: sql`case when ${whatsappWakeups.state} = 'requested' then null else ${now.toISOString()}::timestamptz end`,
+            exposure_completed_at: now,
+            lease_expires_at: null,
+            lease_id: null,
+            safe_failure_class: sql`case when ${whatsappWakeups.state} = 'pending' then 'inboundBeforeSend' else ${whatsappWakeups.safe_failure_class} end`,
+            state: sql`case when ${whatsappWakeups.state} = 'requested' then 'requested' else 'consumed' end`,
+            updated_at: now,
+          })
+          .where(
+            and(
+              inArray(whatsappWakeups.wakeup_id, wakeUpIds),
+              inArray(whatsappWakeups.state, ["pending", "requested", "accepted", "ambiguous"]),
+            ),
+          );
+        return { pending, primary: WakeUpId.make(first.wakeUpId) };
       }),
     );
     if (consumed === null) return null;
-    // oxlint-disable-next-line unicorn/no-array-sort -- The Worker target lacks ES2023 toSorted; this array is a fresh copy.
-    const pending = [...(yield* sourceAuthority.pendingForUser(input.userId))].sort(compareSources);
-    yield* sourceAuthority.exposePending(input.userId, pending);
-    yield* attempt("consumeInbound.commit", () =>
-      database
-        .update(whatsappWakeups)
-        .set({
-          consumed_at: sql`case when ${whatsappWakeups.state} = 'requested' then null else ${now.toISOString()}::timestamptz end`,
-          exposure_completed_at: now,
-          lease_expires_at: null,
-          lease_id: null,
-          safe_failure_class: sql`case when ${whatsappWakeups.state} = 'pending' then 'inboundBeforeSend' else ${whatsappWakeups.safe_failure_class} end`,
-          state: sql`case when ${whatsappWakeups.state} = 'requested' then 'requested' else 'consumed' end`,
-          updated_at: now,
-        })
-        .where(
-          and(
-            eq(whatsappWakeups.wakeup_id, consumed),
-            inArray(whatsappWakeups.state, ["pending", "requested", "accepted", "ambiguous"]),
-          ),
-        ),
-    );
-    return { pending, wakeUpId: consumed };
+    return { pending: consumed.pending, wakeUpId: consumed.primary };
   });
 
   const cancelSource = Effect.fn("WhatsAppWakeUps.cancelSource")(function* (input: {

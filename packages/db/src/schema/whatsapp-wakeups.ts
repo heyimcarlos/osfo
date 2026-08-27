@@ -100,7 +100,11 @@ export const whatsappWakeups = pgTable(
     ),
     uniqueIndex("whatsapp_wakeups_active_user_unique")
       .on(table.user_id)
-      .where(sql`${table.state} in ('pending', 'requested', 'accepted', 'ambiguous')`),
+      .where(
+        sql`${table.state} in ('pending', 'requested', 'accepted', 'ambiguous')
+          and ${table.consume_requested_at} is null
+          and ${table.cancel_requested_at} is null`,
+      ),
     index("whatsapp_wakeups_pending_lease_index").on(
       table.state,
       table.lease_expires_at,
