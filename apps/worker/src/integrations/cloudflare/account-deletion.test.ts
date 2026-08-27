@@ -104,8 +104,12 @@ it.effect("retains artifact cost evidence until Allowance Usage proves reconcili
 
 it.effect("fails account deletion closed when artifact cost metadata is corrupt", () => {
   const deleted: Array<string> = [];
+  const fileKey = "users/user-1/trusted-evidence/file";
   const key = `${artifactCostPrefix}corrupt/sidecar`;
-  const files = bucketStub({ deleted });
+  const files = bucketStub({
+    deleted,
+    objectsByPrefix: { "users/user-1/": [{ key: fileKey }] },
+  });
   const artifacts = bucketStub({
     deleted,
     objectsByPrefix: { [artifactCostPrefix]: [{ key }] },
@@ -117,7 +121,7 @@ it.effect("fails account deletion closed when artifact cost metadata is corrupt"
       .pipe(Effect.result);
 
     expect(Result.isFailure(result)).toBe(true);
-    expect(deleted).not.toContain(key);
+    expect(deleted).toEqual([]);
   });
 });
 
@@ -468,7 +472,7 @@ it.effect("rechecks authority before every paginated R2 delete", () => {
       Effect.tap((result) =>
         Effect.sync(() => {
           expect(Result.isFailure(result)).toBe(true);
-          expect(checks).toBe(3);
+          expect(checks).toBe(8);
           expect(listed).toEqual([undefined]);
           expect(deleted).toEqual([`users/${userId}/page-1`]);
         }),

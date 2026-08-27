@@ -53,13 +53,17 @@ export const make = (
   >,
 ): AccountDeletion.PortInterface["objects"] => ({
   remove: (userId, authorizeDelete) =>
-    readAllowanceEvidence(userId).pipe(
-      Effect.flatMap((allowanceEvidence) =>
-        deletePrefix(files, `users/${encodeURIComponent(userId)}/`, authorizeDelete).pipe(
-          Effect.andThen(deleteArtifacts(artifacts, userId, allowanceEvidence, authorizeDelete)),
-        ),
-      ),
-    ),
+    Effect.gen(function* () {
+      const allowanceEvidence = yield* readAllowanceEvidence(userId);
+      const artifactKeys = yield* planArtifactDeletion(
+        artifacts,
+        userId,
+        allowanceEvidence,
+        authorizeDelete,
+      );
+      yield* deletePrefix(files, `users/${encodeURIComponent(userId)}/`, authorizeDelete);
+      yield* deleteObjectKeys(artifacts, artifactKeys, authorizeDelete);
+    }),
 });
 
 const deletePrefix: (
@@ -86,7 +90,7 @@ const deletePrefix: (
   if (page.truncated) yield* deletePrefix(bucket, prefix, authorizeDelete, page.cursor);
 });
 
-const deleteArtifacts: (
+const planArtifactDeletion: (
   bucket: R2Bucket,
   userId: UserId,
   allowanceEvidence: {
@@ -94,8 +98,8 @@ const deleteArtifacts: (
     readonly reconciledArtifactProviderOperationIds: ReadonlySet<string>;
   },
   authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
-) => Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable> = Effect.fn(
-  "AccountDeletionCloudflare.deleteArtifacts",
+) => Effect.Effect<ReadonlyArray<string>, AccountDeletion.AccountDeletionUnavailable> = Effect.fn(
+  "AccountDeletionCloudflare.planArtifactDeletion",
 )(function* (
   bucket: R2Bucket,
   userId: UserId,
@@ -255,19 +259,20 @@ const deleteArtifacts: (
       ),
     ),
   );
-  const keys = [
-    ...ownerKeys.flat(),
-    ...contentKeys.flat(),
-    ...attemptKeys.flat(),
-    ...costKeys.flat(),
-  ];
+  return [...ownerKeys.flat(), ...contentKeys.flat(), ...attemptKeys.flat(), ...costKeys.flat()];
+});
+
+const deleteObjectKeys = Effect.fn("AccountDeletionCloudflare.deleteObjectKeys")(function* (
+  bucket: R2Bucket,
+  keys: ReadonlyArray<string>,
+  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
+) {
   yield* Effect.forEach(
     Array.chunksOf(keys, 1_000),
     (keyBatch) =>
       authorizeDelete.pipe(Effect.andThen(attempt("removeObjects", () => bucket.delete(keyBatch)))),
     { discard: true },
   );
-  return undefined;
 });
 
 const discoverObjects: (
