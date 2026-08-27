@@ -77,6 +77,12 @@ export interface Persistence {
     },
     AllowancePeriodNotFound | BillingTransactionRetryExhausted | DatabaseUnavailable | UsageConflict
   >;
+  readonly recordUsageForUser: (
+    userId: UserId,
+    allowancePeriodId: AllowancePeriodId,
+    source: AllowanceSource,
+    items: ReadonlyArray<AllowanceItem>,
+  ) => ReturnType<Persistence["recordUsage"]>;
 }
 
 /** Allowance Consumption and user-visible inspection operations. */
@@ -102,6 +108,12 @@ export interface Interface {
     | PlanPolicyNotFound
     | UsageConflict
   >;
+  readonly recordForUser: (
+    userId: UserId,
+    allowancePeriodId: AllowancePeriodId,
+    source: AllowanceSource,
+    items: ReadonlyArray<AllowanceItem>,
+  ) => ReturnType<Interface["record"]>;
 }
 
 /** Construct Allowances from its narrow PostgreSQL transaction port. */
@@ -135,46 +147,58 @@ export const make = (options: MakeOptions): Interface => ({
       } satisfies AllowanceInspection;
     }),
   record: (allowancePeriodId, source, items) =>
-    Effect.gen(function* () {
-      const recorded = yield* options.billing.recordUsage(allowancePeriodId, source, items);
-      if (recorded.period !== null) {
-        const policy = yield* policyForVersion(options.catalog, recorded.period.planPolicyVersion);
-        if (isLaunchPolicy(policy)) {
-          const limits = policyFor(policy, recorded.period.plan).allowanceLimits;
-          yield* Effect.forEach(
-            recorded.usage,
-            (usage) => {
-              if (usage.allowanceKind === "planUsageMicros") return Effect.void;
-              return usage.quantity > limits[usage.allowanceKind]
-                ? logSoftCap(
-                    allowancePeriodId,
-                    usage.allowanceKind,
-                    limits[usage.allowanceKind],
-                    usage.quantity,
-                    recorded.period?.userId,
-                  )
-                : Effect.void;
-            },
-            { discard: true },
-          );
-        } else {
-          const limit = policyFor(policy, recorded.period.plan).includedPlanUsageMicros;
-          const usage = recorded.usage.find(
-            (candidate) => candidate.allowanceKind === "planUsageMicros",
-          );
-          if (usage !== undefined && usage.quantity > limit) {
-            yield* logSoftCap(
-              allowancePeriodId,
-              usage.allowanceKind,
-              limit,
-              usage.quantity,
-              recorded.period.userId,
-            );
-          }
-        }
+    recordAllowanceUse(options, allowancePeriodId, source, items),
+  recordForUser: (userId, allowancePeriodId, source, items) =>
+    recordAllowanceUse(options, allowancePeriodId, source, items, userId),
+});
+
+const recordAllowanceUse = Effect.fn("Allowances.recordAllowanceUse")(function* (
+  options: MakeOptions,
+  allowancePeriodId: AllowancePeriodId,
+  source: AllowanceSource,
+  items: ReadonlyArray<AllowanceItem>,
+  expectedUserId?: UserId,
+) {
+  const recorded = yield* expectedUserId === undefined
+    ? options.billing.recordUsage(allowancePeriodId, source, items)
+    : options.billing.recordUsageForUser(expectedUserId, allowancePeriodId, source, items);
+  if (recorded.period !== null) {
+    const policy = yield* policyForVersion(options.catalog, recorded.period.planPolicyVersion);
+    if (isLaunchPolicy(policy)) {
+      const limits = policyFor(policy, recorded.period.plan).allowanceLimits;
+      yield* Effect.forEach(
+        recorded.usage,
+        (usage) => {
+          if (usage.allowanceKind === "planUsageMicros") return Effect.void;
+          return usage.quantity > limits[usage.allowanceKind]
+            ? logSoftCap(
+                allowancePeriodId,
+                usage.allowanceKind,
+                limits[usage.allowanceKind],
+                usage.quantity,
+                recorded.period?.userId,
+              )
+            : Effect.void;
+        },
+        { discard: true },
+      );
+    } else {
+      const limit = policyFor(policy, recorded.period.plan).includedPlanUsageMicros;
+      const usage = recorded.usage.find(
+        (candidate) => candidate.allowanceKind === "planUsageMicros",
+      );
+      if (usage !== undefined && usage.quantity > limit) {
+        yield* logSoftCap(
+          allowancePeriodId,
+          usage.allowanceKind,
+          limit,
+          usage.quantity,
+          recorded.period.userId,
+        );
       }
-      return recorded.outcome;
-    }),
+    }
+  }
+  return recorded.outcome;
 });
 
 const planUsageInspection = (

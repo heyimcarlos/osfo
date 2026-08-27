@@ -1,7 +1,7 @@
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import { Clock, Effect, Random, Schema } from "effect";
 
-import type { ContentId } from "../../domain/client-content";
+import { ContentId } from "../../domain/client-content";
 import { AllowancePeriodId, UserId } from "../../domain";
 import { DocumentArtifact } from "../../domain/document-artifact";
 import type { Denied } from "../../services/authorization";
@@ -195,6 +195,10 @@ const render = async (
     readonly format: DocumentArtifact.DocumentFormat;
     readonly intentDigest: DocumentIntentDigest;
     readonly source: DocumentSource;
+    readonly supportingVisuals: ReadonlyArray<{
+      readonly bytes: Uint8Array;
+      readonly contentId: ContentId;
+    }>;
     readonly userId: UserId;
   },
   authorizeWrite: () => Promise<Denied | DocumentAuthorizationUnavailable | null>,
@@ -291,7 +295,13 @@ const render = async (
       await withDeadline(
         sandbox.writeFile(
           sourcePath,
-          Schema.encodeSync(Schema.fromJsonString(DocumentSource))(input.source),
+          Schema.encodeSync(DocumentRendererInput)({
+            pages: input.source.pages,
+            supportingVisuals: input.supportingVisuals.map(({ bytes, contentId }) => ({
+              base64: encodeBase64(bytes),
+              contentId,
+            })),
+          }),
         ),
         deadlines.rpcMs,
       );
@@ -379,6 +389,15 @@ const AttemptEvidenceMetadata = Schema.fromJsonString(
   }),
 );
 
+const DocumentRendererInput = Schema.fromJsonString(
+  Schema.Struct({
+    pages: DocumentSource.fields.pages,
+    supportingVisuals: Schema.Array(
+      Schema.Struct({ base64: Schema.String, contentId: ContentId }),
+    ).check(Schema.isMaxLength(20)),
+  }),
+);
+
 const RendererOutput = Schema.fromJsonString(
   Schema.Struct({
     renderedPageCount: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(20)),
@@ -405,6 +424,14 @@ const readBounded = async (stream: ReadableStream<Uint8Array>, size: number) => 
   }
   if (offset !== size) throw new Error("Sandbox file did not match its size");
   return bytes;
+};
+
+const encodeBase64 = (bytes: Uint8Array) => {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 32_768) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768));
+  }
+  return btoa(binary);
 };
 
 const incurred = (

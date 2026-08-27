@@ -19,6 +19,7 @@ import { ManagedModelRoute } from "./model-access-policy";
 import {
   CapabilityId,
   governedCapabilitiesV1Version,
+  maximumCapabilityIds,
   retainedCapabilityCatalogs,
   resolveCapabilityCatalog,
 } from "./capability-catalog";
@@ -58,7 +59,9 @@ export type ManagedEligiblePersonalSkill = typeof ManagedEligiblePersonalSkill.T
 
 /** Durable direct-User learning intent retained until the accepted root outcome commits. */
 export const ManagedSkillLearningDraft = Schema.Struct({
-  availableCapabilityIds: Schema.Array(CapabilityId).check(Schema.isMaxLength(22)),
+  availableCapabilityIds: Schema.Array(CapabilityId).check(
+    Schema.isMaxLength(maximumCapabilityIds),
+  ),
   availableRequirements: Schema.Array(
     Schema.Literals([
       "composio",
@@ -81,7 +84,10 @@ export type ManagedSkillLearningDraft = typeof ManagedSkillLearningDraft.Type;
 
 /** Immutable server receipt for one Skill body loaded during an exact managed Submission. */
 export const ManagedLoadedSkillReceipt = Schema.Struct({
-  capabilityIds: Schema.Array(CapabilityId).check(Schema.isMinLength(1), Schema.isMaxLength(22)),
+  capabilityIds: Schema.Array(CapabilityId).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(maximumCapabilityIds),
+  ),
   catalogVersion: CapabilityCatalogVersion,
   description: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
   instructions: ManagedSkillBody,

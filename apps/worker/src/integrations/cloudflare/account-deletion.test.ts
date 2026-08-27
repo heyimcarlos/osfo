@@ -7,6 +7,9 @@ import { ContentId } from "../../domain/client-content";
 import { AccountDeletion } from "../../services/account-deletion";
 import { make } from "./account-deletion";
 import {
+  artifactCostKeyFor,
+  artifactCostPrefix,
+  artifactAttemptPrefix,
   attemptKeyFor,
   contentKeyFor,
   documentAttemptPrefix,
@@ -14,6 +17,113 @@ import {
   ownerKeyFor,
   ownerPrefixFor,
 } from "./document-storage-keys";
+
+const deletionEvidence = (
+  allowancePeriodIds: ReadonlySet<AllowancePeriodId> = new Set(),
+  reconciledArtifactProviderOperationIds: ReadonlySet<string> = new Set(),
+) => Effect.succeed({ allowancePeriodIds, reconciledArtifactProviderOperationIds });
+
+it.effect("removes immutable artifact cost evidence owned by the target user", () => {
+  const deleted: Array<string> = [];
+  const contentId = ContentId.make("artifact:toolCall:cost-evidence");
+  const key = artifactCostKeyFor(contentId, "artifact:provider-operation");
+  const files = bucketStub({ deleted });
+  const artifacts = bucketStub({
+    deleted,
+    objectsByPrefix: {
+      [artifactCostPrefix]: [
+        {
+          customMetadata: {
+            osfo: JSON.stringify({
+              cost: {
+                _tag: "Incurred",
+                allowancePeriodId: "period-1",
+                basis: "conservative",
+                providerOperationId: "artifact:provider-operation",
+                usdMicros: "50000",
+              },
+              userId: "user-1",
+            }),
+          },
+          key,
+        },
+      ],
+    },
+  });
+
+  return make(files, artifacts, () =>
+    deletionEvidence(new Set(), new Set(["artifact:provider-operation"])),
+  )
+    .remove(UserId.make("user-1"), Effect.void)
+    .pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(deleted).toEqual([key]);
+        }),
+      ),
+    );
+});
+
+it.effect("retains artifact cost evidence until Allowance Usage proves reconciliation", () => {
+  const deleted: Array<string> = [];
+  const contentId = ContentId.make("artifact:toolCall:unreconciled-cost");
+  const key = artifactCostKeyFor(contentId, "artifact:unreconciled-operation");
+  const files = bucketStub({ deleted });
+  const artifacts = bucketStub({
+    deleted,
+    objectsByPrefix: {
+      [artifactCostPrefix]: [
+        {
+          customMetadata: {
+            osfo: JSON.stringify({
+              cost: {
+                _tag: "Incurred",
+                allowancePeriodId: "period-1",
+                basis: "conservative",
+                providerOperationId: "artifact:unreconciled-operation",
+                usdMicros: "50000",
+              },
+              userId: "user-1",
+            }),
+          },
+          key,
+        },
+      ],
+    },
+  });
+
+  return Effect.gen(function* () {
+    const result = yield* make(files, artifacts, () => deletionEvidence())
+      .remove(UserId.make("user-1"), Effect.void)
+      .pipe(Effect.result);
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(deleted).not.toContain(key);
+  });
+});
+
+it.effect("fails account deletion closed when artifact cost metadata is corrupt", () => {
+  const deleted: Array<string> = [];
+  const fileKey = "users/user-1/trusted-evidence/file";
+  const key = `${artifactCostPrefix}corrupt/sidecar`;
+  const files = bucketStub({
+    deleted,
+    objectsByPrefix: { "users/user-1/": [{ key: fileKey }] },
+  });
+  const artifacts = bucketStub({
+    deleted,
+    objectsByPrefix: { [artifactCostPrefix]: [{ key }] },
+  });
+
+  return Effect.gen(function* () {
+    const result = yield* make(files, artifacts, () => deletionEvidence())
+      .remove(UserId.make("user-1"), Effect.void)
+      .pipe(Effect.result);
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(deleted).toEqual([]);
+  });
+});
 
 it.effect("uses an allowance period to remove legacy attempt evidence without a user id", () => {
   const deleted: Array<string> = [];
@@ -35,7 +145,9 @@ it.effect("uses an allowance period to remove legacy attempt evidence without a 
     },
   });
 
-  return make(files, artifacts, () => Effect.succeed(new Set([AllowancePeriodId.make("period-1")])))
+  return make(files, artifacts, () =>
+    deletionEvidence(new Set([AllowancePeriodId.make("period-1")])),
+  )
     .remove(userId, Effect.void)
     .pipe(
       Effect.andThen(
@@ -67,7 +179,36 @@ it.effect("removes attempt evidence explicitly owned by the target user", () => 
     },
   });
 
-  return make(files, artifacts, () => Effect.succeed(new Set()))
+  return make(files, artifacts, () => deletionEvidence())
+    .remove(UserId.make("user-1"), Effect.void)
+    .pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(deleted).toEqual([key]);
+        }),
+      ),
+    );
+});
+
+it.effect("removes a claimed artifact attempt with proven no provider use", () => {
+  const deleted: Array<string> = [];
+  const key = `${artifactAttemptPrefix}${encodeURIComponent("artifact:toolCall:claimed")}`;
+  const files = bucketStub({ deleted });
+  const artifacts = bucketStub({
+    deleted,
+    objectsByPrefix: {
+      [artifactAttemptPrefix]: [
+        {
+          customMetadata: {
+            osfo: JSON.stringify({ cost: { _tag: "ProvenNoUse" }, userId: "user-1" }),
+          },
+          key,
+        },
+      ],
+    },
+  });
+
+  return make(files, artifacts, () => deletionEvidence())
     .remove(UserId.make("user-1"), Effect.void)
     .pipe(
       Effect.andThen(
@@ -98,7 +239,9 @@ it.effect("fails closed when explicit ownership contradicts a target allowance",
     },
   });
 
-  return make(files, artifacts, () => Effect.succeed(new Set([AllowancePeriodId.make("period-1")])))
+  return make(files, artifacts, () =>
+    deletionEvidence(new Set([AllowancePeriodId.make("period-1")])),
+  )
     .remove(UserId.make("user-1"), Effect.void)
     .pipe(
       Effect.result,
@@ -141,7 +284,9 @@ it.effect("removes a canonical target-owned document body and attempt sidecar", 
     },
   });
 
-  return make(files, artifacts, () => Effect.succeed(new Set([AllowancePeriodId.make("period-1")])))
+  return make(files, artifacts, () =>
+    deletionEvidence(new Set([AllowancePeriodId.make("period-1")])),
+  )
     .remove(userId, Effect.void)
     .pipe(
       Effect.andThen(
@@ -205,7 +350,7 @@ it.effect("preserves canonically owned unrelated document evidence", () => {
     },
   });
 
-  return make(files, artifacts, () => Effect.succeed(new Set()))
+  return make(files, artifacts, () => deletionEvidence())
     .remove(UserId.make("user-1"), Effect.void)
     .pipe(
       Effect.andThen(
@@ -282,7 +427,7 @@ it.effect(
       },
     });
 
-    return make(files, artifacts, () => Effect.succeed(new Set()))
+    return make(files, artifacts, () => deletionEvidence())
       .remove(userId, Effect.void)
       .pipe(
         Effect.andThen(
@@ -305,7 +450,7 @@ it.effect("rechecks authority before every paginated R2 delete", () => {
   });
   const artifacts = bucketStub({ deleted });
 
-  return make(files, artifacts, () => Effect.succeed(new Set()))
+  return make(files, artifacts, () => deletionEvidence())
     .remove(
       userId,
       Effect.suspend(() => {
@@ -327,7 +472,7 @@ it.effect("rechecks authority before every paginated R2 delete", () => {
       Effect.tap((result) =>
         Effect.sync(() => {
           expect(Result.isFailure(result)).toBe(true);
-          expect(checks).toBe(3);
+          expect(checks).toBe(8);
           expect(listed).toEqual([undefined]);
           expect(deleted).toEqual([`users/${userId}/page-1`]);
         }),
@@ -345,7 +490,7 @@ it.effect("rechecks authority before each concrete R2 head verification", () => 
     authorized = false;
   });
 
-  return make(files, artifacts, () => Effect.succeed(new Set()))
+  return make(files, artifacts, () => deletionEvidence())
     .remove(
       userId,
       revocableAuthority(userId, () => authorized),
@@ -358,6 +503,7 @@ it.effect("rechecks authority before each concrete R2 head verification", () => 
           expect(calls).toEqual([
             `list:${ownerPrefixFor(userId)}`,
             `list:${documentContentPrefix}`,
+            `list:${artifactAttemptPrefix}`,
             `list:${documentAttemptPrefix}`,
           ]);
         }),
@@ -374,7 +520,7 @@ it.effect("rechecks authority after R2 discovery and before delete", () => {
   });
   const artifacts = bucketStub({ deleted: [] });
 
-  return make(files, artifacts, () => Effect.succeed(new Set()))
+  return make(files, artifacts, () => deletionEvidence())
     .remove(
       userId,
       revocableAuthority(userId, () => authorized),
@@ -433,7 +579,7 @@ const expectOwnershipFailure = (input: {
       [input.prefix]: [input.object],
     },
   });
-  return make(files, artifacts, () => Effect.succeed(new Set()))
+  return make(files, artifacts, () => deletionEvidence())
     .remove(UserId.make("user-1"), Effect.void)
     .pipe(
       Effect.result,
@@ -469,7 +615,7 @@ const expectPairedOwnershipFailure = (input: {
       [documentAttemptPrefix]: [input.attempt],
     },
   });
-  return make(files, artifacts, () => Effect.succeed(new Set()))
+  return make(files, artifacts, () => deletionEvidence())
     .remove(UserId.make("user-1"), Effect.void)
     .pipe(
       Effect.result,

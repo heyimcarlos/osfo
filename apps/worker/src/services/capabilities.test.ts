@@ -19,7 +19,9 @@ const baseInput = {
   availableIntegrationToolkits: [] as const,
   availableToolNames: [
     "analyzeFile",
+    "deleteArtifact",
     "deleteDocument",
+    "exportArtifact",
     "exportDocument",
     "generateDocument",
     "loadSkill",
@@ -264,6 +266,115 @@ it.effect("requires both task kind and task language before selecting a capabili
   }),
 );
 
+it.effect("loads presentation production without leaking into unrelated image work", () =>
+  Effect.gen(function* () {
+    const capabilities = Capabilities.make();
+    const availableToolNames = [
+      ...baseInput.availableToolNames,
+      "generateDiagram",
+      "generateImage",
+      "generatePresentation",
+      "revisePresentation",
+    ] as const;
+    const presentation = yield* capabilities.eligibleIndex({
+      ...baseInput,
+      availableToolNames,
+      plan: "free",
+      taskDescription: "Create a presentation for the review",
+      taskKinds: ["document"],
+    });
+    expect(presentation.selectedCapabilityIds).toEqual([
+      "artifact-read",
+      "presentation-generation",
+      "image-generation",
+      "diagram-generation",
+    ]);
+    expect(presentation.candidates).toContainEqual(
+      expect.objectContaining({ skillId: "presentation-production" }),
+    );
+    const loadedPresentation = yield* capabilities.loadSkill({
+      index: presentation,
+      personalSkills: [],
+      skillId: "presentation-production",
+      skillVersion: "system-presentation-production-v1",
+      userId: baseInput.userId,
+    });
+    expect(
+      capabilities.assembleToolBundle({
+        availableToolNames: [...availableToolNames, "exportArtifact"],
+        index: presentation,
+        loadedSkills: [loadedPresentation],
+      }).activeToolNames,
+    ).toEqual([
+      "exportArtifact",
+      "generateDiagram",
+      "generateImage",
+      "generatePresentation",
+      "loadSkill",
+      "revisePresentation",
+    ]);
+
+    const learnedPresentationSkill = {
+      ...personalSkillVersionFacts,
+      allowedOrigins: ["channelLink" as const],
+      capabilityIds: ["presentation-generation" as const],
+      description: "Concise presentation notes",
+      instructions: "Use concise source notes.",
+      keywords: ["presentation"],
+      lastUsedAtEpochMillis: null,
+      ownerUserId: baseInput.userId,
+      requirements: ["document-renderer" as const],
+      revision: 1,
+      skillId: "presentation-notes",
+      skillVersion: "presentation-notes-v1",
+      status: "active" as const,
+      taskKinds: ["document" as const],
+    };
+    const laterPresentation = yield* capabilities.eligibleIndex({
+      ...baseInput,
+      availableToolNames,
+      personalSkills: [learnedPresentationSkill],
+      plan: "free",
+      taskDescription: "Create another presentation with concise source notes",
+      taskKinds: ["document"],
+    });
+    expect(laterPresentation.candidates).toContainEqual(
+      expect.objectContaining({ skillId: "presentation-notes" }),
+    );
+    const learned = yield* capabilities.loadSkill({
+      index: laterPresentation,
+      personalSkills: [learnedPresentationSkill],
+      skillId: "presentation-notes",
+      skillVersion: "presentation-notes-v1",
+      userId: baseInput.userId,
+    });
+    expect(learned.instructions).toBe("Use concise source notes.");
+
+    const unrelated = yield* capabilities.eligibleIndex({
+      ...baseInput,
+      availableToolNames,
+      personalSkills: [learnedPresentationSkill],
+      plan: "free",
+      taskDescription: "Create an image of a potato",
+      taskKinds: ["image"],
+    });
+    expect(unrelated.candidates).not.toContainEqual(
+      expect.objectContaining({ skillId: "presentation-notes" }),
+    );
+    const unrelatedDocument = yield* capabilities.eligibleIndex({
+      ...baseInput,
+      availableToolNames,
+      personalSkills: [learnedPresentationSkill],
+      plan: "free",
+      taskDescription: "Create a PDF invoice",
+      taskKinds: ["document"],
+    });
+    expect(unrelatedDocument.candidates).not.toContainEqual(
+      expect.objectContaining({ skillId: "presentation-notes" }),
+    );
+  }),
+);
+
 it.effect("selects Session Recall for a natural historical-conversation paraphrase", () =>
   Effect.gen(function* () {
     const capabilities = Capabilities.make();
@@ -343,6 +454,19 @@ it.effect("keeps supported direct Tools and narrows a Skill bundle to channel av
       loadedSkills: [],
     });
     expect(deleteBundle.activeToolNames).toEqual(["deleteDocument"]);
+
+    const artifactDeleteIndex = yield* capabilities.eligibleIndex({
+      ...baseInput,
+      plan: "free",
+      taskDescription: "Delete presentation",
+      taskKinds: ["document"],
+    });
+    const artifactDeleteBundle = capabilities.assembleToolBundle({
+      availableToolNames: baseInput.availableToolNames,
+      index: artifactDeleteIndex,
+      loadedSkills: [],
+    });
+    expect(artifactDeleteBundle.activeToolNames).toEqual(["deleteArtifact"]);
   }),
 );
 
@@ -817,10 +941,10 @@ it("explains missing requirements and denies unknown catalog entries", () => {
     message: "The capability is not present in the pinned Osfo catalog",
   });
 
-  for (const [capabilityId, toolName] of [
-    ["presentation-generation", "generatePresentation"],
-    ["image-generation", "generateImage"],
-    ["diagram-generation", "generateDiagram"],
+  for (const [capabilityId, toolNames] of [
+    ["presentation-generation", ["generatePresentation", "revisePresentation"]],
+    ["image-generation", ["generateImage"]],
+    ["diagram-generation", ["generateDiagram"]],
   ] as const) {
     expect(
       capabilities.explainUnavailable({
@@ -833,7 +957,7 @@ it("explains missing requirements and denies unknown catalog entries", () => {
     ).toEqual({
       _tag: "Unavailable",
       capabilityId,
-      missing: [{ _tag: "Tool", toolName }],
+      missing: toolNames.map((toolName) => ({ _tag: "Tool", toolName })),
     });
   }
 });
@@ -859,7 +983,9 @@ it("projects exact governed result bounds from the pinned #252 catalog", () => {
       maximumSlides: null,
     },
   });
-  expect(available("presentation-generation", ["generatePresentation"])).toMatchObject({
+  expect(
+    available("presentation-generation", ["generatePresentation", "revisePresentation"]),
+  ).toMatchObject({
     resultBounds: {
       maximumBytes: 20_000_000n,
       maximumDurationMillis: 3_600_000,

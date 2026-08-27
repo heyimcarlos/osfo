@@ -1,11 +1,13 @@
-import { DateTime, Effect } from "effect";
+import { DateTime, Effect, Predicate } from "effect";
 
 import type { Database } from "../db";
 import { BillingDb } from "../db/billing";
+import { currentCapabilityCatalog } from "../domain/capability-catalog";
 import { retainedCatalog } from "../domain/plan-policy";
 import { DocumentArtifacts } from "../integrations/cloudflare/document-artifacts";
 import { DocumentArtifactValidation } from "../integrations/cloudflare/document-artifact-validation";
 import { DocumentCompute } from "../integrations/cloudflare/document-compute";
+import { ArtifactStore } from "../integrations/cloudflare/artifact-store";
 import { Allowances } from "../services/allowances";
 import { Authorization } from "../services/authorization";
 import { DocumentGeneration } from "../services/document-generation";
@@ -27,8 +29,9 @@ export const make = (
   currentAuthorization: (
     admitted: AuthorizationContext,
   ) => Effect.Effect<AuthorizationContext, DocumentGeneration.DocumentAuthorizationUnavailable>,
-): DocumentGeneration.Interface =>
-  DocumentGeneration.make({
+): DocumentGeneration.Interface => {
+  const visualArtifacts = ArtifactStore.make(bindings.ARTIFACTS);
+  return DocumentGeneration.make({
     allowances: Allowances.make({
       billing: BillingDb.make(database),
       catalog: retainedCatalog,
@@ -43,7 +46,36 @@ export const make = (
       conservativeDocumentSandboxUsdMicros,
     ),
     currentAuthorization,
+    maximumComputeInputBytes: Number(currentCapabilityCatalog.operationLimits.computeInputBytes),
+    visuals: {
+      read: (contentId, userId) =>
+        Effect.gen(function* () {
+          const metadata = yield* visualArtifacts.inspect(contentId);
+          if (
+            metadata === null ||
+            metadata.userId !== userId ||
+            metadata.retention !== "accounted" ||
+            (!Predicate.isTagged(metadata.artifact.artifactRole, "GeneratedImageV1") &&
+              !Predicate.isTagged(metadata.artifact.artifactRole, "GeneratedDiagramV1"))
+          ) {
+            return yield* new DocumentGeneration.DocumentSupportingVisualUnavailable({
+              contentId,
+              message: "The referenced owned verified visual is unavailable",
+            });
+          }
+          return yield* visualArtifacts.readBytes(metadata);
+        }).pipe(
+          Effect.mapError(
+            () =>
+              new DocumentGeneration.DocumentSupportingVisualUnavailable({
+                contentId,
+                message: "The referenced owned verified visual could not be read",
+              }),
+          ),
+        ),
+    },
   });
+};
 
 /** Reconcile one bounded batch of durable incurred-cost evidence into Allowances. */
 export const reconcileCosts = (bindings: Pick<Bindings, "ARTIFACTS">, database: Database) => {

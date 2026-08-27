@@ -28,6 +28,12 @@ export interface Interface {
     source: AllowanceSource,
     items: ReadonlyArray<AllowanceItem>,
   ) => Effect.Effect<RecordUsageResult, RecordUsageError>;
+  readonly recordUsageForUser: (
+    userId: UserId,
+    allowancePeriodId: AllowancePeriodId,
+    source: AllowanceSource,
+    items: ReadonlyArray<AllowanceItem>,
+  ) => Effect.Effect<RecordUsageResult, RecordUsageError>;
   readonly recordUsageEvent: (
     event: UsageEvent,
   ) => Effect.Effect<RecordUsageEventResult, RecordUsageEventError>;
@@ -46,6 +52,8 @@ export const make = (database: BillingDatabase): Interface => ({
   load: (userId) => loadSubscription(database, userId),
   recordUsage: (allowancePeriodId, source, items) =>
     recordUsage(database, allowancePeriodId, source, items),
+  recordUsageForUser: (userId, allowancePeriodId, source, items) =>
+    recordUsage(database, allowancePeriodId, source, items, userId),
   recordUsageEvent: (event) => recordUsageEvent(database, event),
 });
 

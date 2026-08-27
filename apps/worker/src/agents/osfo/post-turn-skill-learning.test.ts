@@ -94,6 +94,38 @@ describe("post-turn Skill Learning", () => {
     );
   });
 
+  it("keeps an accepted presentation as owned identity evidence and scopes the Skill", () => {
+    const presentationDraft = {
+      ...draft,
+      availableCapabilityIds: ["presentation-generation" as const],
+      taskDescription: "Going forward, use concise source notes in every presentation.",
+    };
+    const candidate = finalizeSkillLearningCandidate(
+      presentationDraft,
+      {
+        ...goodRootOutcome,
+        ownedArtifactContentIds: ["artifact:toolCall:presentation-2"],
+      },
+      1_788_000_000_000,
+    );
+    expect(Result.isSuccess(candidate)).toBe(true);
+    if (Result.isFailure(candidate)) return;
+    expect(candidate.success.evidence).toContainEqual({
+      _tag: "OwnedArtifact",
+      referenceId: "artifact:toolCall:presentation-2",
+    });
+    expect(candidate.success).not.toHaveProperty("slides");
+
+    const proposal = proposeConfirmedSkillChange({
+      candidate: candidate.success,
+      priorVersion: null,
+    });
+    expect(proposal._tag).toBe("Change");
+    if (proposal._tag !== "Change") return;
+    expect(proposal.version.capabilityIds).toEqual(["presentation-generation"]);
+    expect(proposal.version.capabilityIds).not.toContain("document-generation");
+  });
+
   it("rejects expired or mismatched Good Root Outcome receipts", () => {
     expect(
       Result.isFailure(

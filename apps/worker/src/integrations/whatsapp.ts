@@ -62,6 +62,7 @@ export const makeWhatsAppChannel = (options: WhatsAppChannelOptions): ChannelDef
   tools: (all) => {
     const selected = { ...all };
     delete selected.exportDocument;
+    delete selected.exportArtifact;
     return selected;
   },
 });

@@ -1,9 +1,9 @@
-import { Result, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 
 /* oxlint-disable osfo/no-unknown-parameters -- These exported decoders are the owning trust boundary for persistence and Capability inputs. */
 
 import { AssistantMessageId, ThinkSubmissionId, UserId } from "../domain";
-import { CapabilityId, currentCapabilityCatalog } from "./capability-catalog";
+import { CapabilityId, currentCapabilityCatalog, maximumCapabilityIds } from "./capability-catalog";
 
 const maximumVersionBytes = Number(currentCapabilityCatalog.skillLearning.skillVersionBytes);
 const maximumInstructionBytes = Number(currentCapabilityCatalog.skillLearning.skillBodyBytes);
@@ -138,6 +138,9 @@ export const GoodRootOutcomeReceipt = Schema.Struct({
   assistantMessageId: AssistantMessageId,
   evaluatedAtEpochMillis: nonNegativeInteger,
   evaluationDeadlineEpochMillis: nonNegativeInteger,
+  ownedArtifactContentIds: Schema.Array(boundedText(200))
+    .check(Schema.isMaxLength(4))
+    .pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   referenceTraceVersion: Schema.Literal(retainedGoodRootTraceVersion),
   submissionId: ThinkSubmissionId,
   userId: UserId,
@@ -211,7 +214,10 @@ export const TrustedSkillLearningText = Schema.String.check(
 /** One immutable, evidence-backed personal Skill revision. */
 export const PersonalSkillVersion = Schema.Struct({
   allowedOrigins: Schema.Array(SkillTurnOrigin).check(Schema.isMinLength(1), Schema.isMaxLength(4)),
-  capabilityIds: Schema.Array(CapabilityId).check(Schema.isMinLength(1), Schema.isMaxLength(22)),
+  capabilityIds: Schema.Array(CapabilityId).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(maximumCapabilityIds),
+  ),
   createdAtEpochMillis: nonNegativeInteger,
   createdBy: Schema.Literals(["learning", "rollback", "user"]),
   creationEvidence: Schema.Array(SkillEvidenceReference).check(
@@ -274,7 +280,9 @@ export const personalSkillVersionValues = (version: PersonalSkillVersion) => ({
 
 /** Bounded trusted input admitted only after a completed root outcome commits. */
 export const SkillLearningCandidate = Schema.Struct({
-  availableCapabilityIds: Schema.Array(CapabilityId).check(Schema.isMaxLength(22)),
+  availableCapabilityIds: Schema.Array(CapabilityId).check(
+    Schema.isMaxLength(maximumCapabilityIds),
+  ),
   availableRequirements: Schema.Array(SkillAvailabilityRequirement).check(Schema.isMaxLength(10)),
   candidateBytes: Schema.BigIntFromString.check(Schema.isGreaterThanBigInt(0n)),
   candidateId: SkillLearningCandidateId,

@@ -31,7 +31,15 @@ export type DocumentIntentDigest = typeof DocumentIntentDigest.Type;
 export const DocumentPage = Schema.Struct({
   lines: Schema.Array(Schema.String.check(Schema.isMaxLength(80))).check(Schema.isMaxLength(30)),
   title: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
-});
+  visualContentId: Schema.optionalKey(ContentId),
+}).check(
+  Schema.makeFilter(
+    (page) =>
+      page.visualContentId === undefined ||
+      page.lines.length <= 16 ||
+      "A document page with a visual may contain at most 16 lines",
+  ),
+);
 
 /** One bounded page supplied to disposable document compute. */
 export type DocumentPage = typeof DocumentPage.Type;
@@ -197,6 +205,12 @@ export class DocumentAuthorizationUnavailable extends Schema.TaggedError<Documen
   { cause: Schema.Defect(), message: Schema.String },
 ) {}
 
+/** Expected failure when a referenced visual is absent, unowned, pending, or not an image. */
+export class DocumentSupportingVisualUnavailable extends Schema.TaggedError<DocumentSupportingVisualUnavailable>()(
+  "DocumentSupportingVisualUnavailable",
+  { contentId: ContentId, message: Schema.String },
+) {}
+
 /** Narrow immutable artifact persistence port implemented by R2. */
 export interface ArtifactStore {
   /** Mark immutable retained bytes readable after both allowance records are durable. */
@@ -243,6 +257,10 @@ export interface DisposableCompute {
     readonly intentDigest: DocumentIntentDigest;
     readonly authorizeWrite: Effect.Effect<void, Denied | DocumentAuthorizationUnavailable>;
     readonly source: DocumentSource;
+    readonly supportingVisuals: ReadonlyArray<{
+      readonly bytes: Uint8Array;
+      readonly contentId: ContentId;
+    }>;
     readonly userId: UserId;
   }) => Effect.Effect<ComputeResult>;
   readonly inspect: (
@@ -277,6 +295,13 @@ export interface MakeOptions {
   readonly currentAuthorization: (
     admitted: AuthorizationContext,
   ) => Effect.Effect<AuthorizationContext, DocumentAuthorizationUnavailable>;
+  readonly maximumComputeInputBytes: number;
+  readonly visuals: {
+    readonly read: (
+      contentId: ContentId,
+      userId: UserId,
+    ) => Effect.Effect<Uint8Array, DocumentSupportingVisualUnavailable>;
+  };
 }
 
 /** Bounded document generation and retained artifact lifecycle. */
@@ -327,6 +352,7 @@ export interface Interface {
     | DocumentCleanupUnavailable
     | DocumentCostLimitExceeded
     | DocumentIntentConflict
+    | DocumentSupportingVisualUnavailable
   >;
 }
 
@@ -421,6 +447,7 @@ export const make = (options: MakeOptions): Interface => ({
       }
 
       yield* authorizeWrite;
+      const supportingVisuals = yield* readSupportingVisuals(options, request.source, userId);
       let cleanupRequired = true;
       return yield* Effect.gen(function* () {
         const computed = yield* options.compute.generate({
@@ -430,6 +457,7 @@ export const make = (options: MakeOptions): Interface => ({
           format: request.format,
           intentDigest,
           source: request.source,
+          supportingVisuals,
           userId,
         });
         const recordComputedCost = recordCost(options.allowances, computed.cost);
@@ -526,6 +554,32 @@ export const make = (options: MakeOptions): Interface => ({
       );
     }),
 });
+
+const readSupportingVisuals = (options: MakeOptions, source: DocumentSource, userId: UserId) =>
+  Effect.gen(function* () {
+    const contentIds = [
+      ...new Set(
+        source.pages.flatMap(({ visualContentId }) =>
+          visualContentId === undefined ? [] : [visualContentId],
+        ),
+      ),
+    ];
+    const visuals = yield* Effect.forEach(
+      contentIds,
+      (contentId) =>
+        options.visuals.read(contentId, userId).pipe(Effect.map((bytes) => ({ bytes, contentId }))),
+      { concurrency: 4 },
+    );
+    const totalBytes = visuals.reduce((total, { bytes }) => total + bytes.byteLength, 0);
+    const firstContentId = contentIds[0];
+    if (totalBytes > options.maximumComputeInputBytes && firstContentId !== undefined) {
+      return yield* new DocumentSupportingVisualUnavailable({
+        contentId: firstContentId,
+        message: "Supporting visuals exceed the immutable compute-input limit",
+      });
+    }
+    return visuals;
+  });
 
 const contentIdFor = (owner: DocumentArtifact.DocumentOwner): ContentId =>
   ContentId.make(

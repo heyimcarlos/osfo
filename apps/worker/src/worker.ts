@@ -1,5 +1,6 @@
 import { Redacted, Schema } from "effect";
 import { getAgentByName } from "agents";
+import { ContainerProxy, Sandbox } from "@cloudflare/sandbox";
 
 import { App } from "./app";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/directory";
@@ -14,7 +15,13 @@ export { CompanyAgent } from "./agents/osfo/company-agent";
 export { OsfoDirectory } from "./agents/osfo/directory";
 export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 export { ExecutionUnitWorkflow } from "./workflows/runtime";
-export { Sandbox } from "@cloudflare/sandbox";
+/** Disposable artifact compute has no direct public-network path or injected credentials. */
+class ArtifactSandbox extends Sandbox {
+  override enableInternet = false;
+  override envVars: Record<string, string> = {};
+}
+
+export { ArtifactSandbox as Sandbox, ContainerProxy };
 
 /** Osfo Cloudflare Worker host. */
 const worker = {

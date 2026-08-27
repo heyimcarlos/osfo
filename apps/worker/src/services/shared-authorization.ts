@@ -2,7 +2,11 @@ import { Predicate, Result } from "effect";
 
 import type { ManifestVersion } from "../domain";
 import type { AuthorizationOperation } from "../domain/authorization-operation";
-import { type CapabilityCatalog, hasProtectedConsequence } from "../domain/capability-catalog";
+import {
+  type CapabilityCatalog,
+  hasProtectedConsequence,
+  type PlanResourceLimits,
+} from "../domain/capability-catalog";
 import {
   type IntegrationManifestCatalog,
   type IntegrationManifestOperation,
@@ -72,12 +76,18 @@ export const authorizeShared = (
     if (!connected) return support.denied("integrationConnectionRequired");
   }
   const resourceLimits = capabilityCatalog.planResourceLimits[context.subscription.plan];
+  if (
+    operation.kind.startsWith("artifact.") &&
+    context.requestVendorUsdMicros > resourceLimits.artifact.vendorUsdMicrosPerRequest
+  ) {
+    return support.denied("operationLimitExceeded");
+  }
   if (exceedsGovernedLiveLimit(operation, context, resourceLimits)) {
     return support.denied("liveResourceLimitReached");
   }
   if (
     mode === "admission" &&
-    exceedsGovernedOperationLimit(operation, capabilityCatalog, "normalPlanUsage")
+    exceedsGovernedOperationLimit(operation, capabilityCatalog, resourceLimits, "normalPlanUsage")
   ) {
     return support.denied("operationLimitExceeded");
   }
@@ -191,6 +201,7 @@ const exceedsGovernedLiveLimit = (
 const exceedsGovernedOperationLimit = (
   operation: AuthorizationOperation,
   catalog: CapabilityCatalog,
+  resourceLimits: PlanResourceLimits,
   mode: "normalPlanUsage" | "exhaustedConversation",
 ) => {
   if (mode === "exhaustedConversation") {
@@ -204,21 +215,27 @@ const exceedsGovernedOperationLimit = (
       return operation.bytes > limits.uploadBytes;
     case "artifact.generate":
     case "artifact.revise":
+      if (
+        operation.computeMilliseconds > BigInt(resourceLimits.artifact.computeMilliseconds) ||
+        operation.modelSteps > BigInt(resourceLimits.artifact.modelSteps)
+      ) {
+        return true;
+      }
       if (operation.artifactKind === "pdf" || operation.artifactKind === "docx") {
         return (
-          operation.bytes > limits.generatedDocumentBytes ||
-          operation.pages > BigInt(limits.generatedDocumentPages)
+          operation.bytes > resourceLimits.artifact.generatedDocumentBytes ||
+          operation.pages > BigInt(resourceLimits.artifact.generatedDocumentPages)
         );
       }
       if (operation.artifactKind === "pptx") {
         return (
-          operation.bytes > limits.generatedPresentationBytes ||
-          operation.slides > BigInt(limits.generatedPresentationSlides)
+          operation.bytes > resourceLimits.artifact.generatedPresentationBytes ||
+          operation.slides > BigInt(resourceLimits.artifact.generatedPresentationSlides)
         );
       }
       return (
-        operation.bytes > limits.generatedImageBytes ||
-        operation.pixelsPerEdge > BigInt(limits.generatedImagePixelsPerEdge)
+        operation.bytes > resourceLimits.artifact.generatedImageBytes ||
+        operation.pixelsPerEdge > BigInt(resourceLimits.artifact.generatedImagePixelsPerEdge)
       );
     case "integration.read":
       return (

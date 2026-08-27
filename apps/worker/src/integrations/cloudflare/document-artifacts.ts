@@ -169,6 +169,12 @@ const readBytes = (bucket: R2Bucket, metadata: StoredArtifactMetadata) =>
         "Retained Client Content allowance evidence is not complete",
       );
     }
+    if (metadata.artifact.artifactRole._tag !== "GeneratedDocumentV1") {
+      return yield* integrityFailure(
+        metadata.artifact.content.contentId,
+        "The retained Client Content is not a generated document",
+      );
+    }
     const content = metadata.artifact.content;
     const object = yield* attempt("readBytes", () => bucket.get(contentKeyFor(content.contentId)));
     if (object === null) {
@@ -199,6 +205,7 @@ const readBytes = (bucket: R2Bucket, metadata: StoredArtifactMetadata) =>
       parsed.content.sha256 !== content.sha256 ||
       parsed.content.byteLength !== content.byteLength ||
       parsed.content.mediaType !== content.mediaType ||
+      parsed.artifactRole._tag !== "GeneratedDocumentV1" ||
       parsed.artifactRole.pageCount !== metadata.artifact.artifactRole.pageCount
     ) {
       return yield* integrityFailure(

@@ -3,7 +3,11 @@ import { Option, Schema } from "effect";
 
 import { ActionId } from "../../domain/action-execution";
 import type { Denied } from "../../services/authorization";
-import { documentDeleteActionName, RetainedDocumentInput } from "./action-presentation";
+import {
+  artifactDeleteActionName,
+  documentDeleteActionName,
+  RetainedDocumentInput,
+} from "./action-presentation";
 import {
   ClearCoreMemoryInput,
   type CoreMemoryCleared,
@@ -50,6 +54,7 @@ type SanitizedPendingApprovalInput =
   | Partial<SessionDeleteInput>;
 
 export {
+  artifactDeleteActionName,
   documentDeleteActionName,
   presentOsfoAction,
   RetainedDocumentInput,
@@ -157,6 +162,14 @@ export const sanitizePendingApproval = (approval: PendingApproval): PendingAppro
     );
   }
   if (approval.descriptor.action === documentDeleteActionName) {
+    return withInput(
+      approval,
+      Schema.decodeUnknownOption(RetainedDocumentInput)(approval.descriptor.input).pipe(
+        Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
+      ),
+    );
+  }
+  if (approval.descriptor.action === artifactDeleteActionName) {
     return withInput(
       approval,
       Schema.decodeUnknownOption(RetainedDocumentInput)(approval.descriptor.input).pipe(

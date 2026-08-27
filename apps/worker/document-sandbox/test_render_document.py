@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import subprocess
@@ -6,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from pypdf import PdfReader
+from PIL import Image
 
 
 class RenderDocumentTest(unittest.TestCase):
@@ -56,6 +58,53 @@ class RenderDocumentTest(unittest.TestCase):
                     hashlib.sha256(second.read_bytes()).digest(),
                 )
                 self.assertEqual(self._rendered_pages(first, root), 20)
+
+    def test_verified_visual_renders_in_pdf_and_docx(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            visual = root / "visual.png"
+            Image.new("RGB", (100, 80), "navy").save(visual)
+            source = root / "source.json"
+            source.write_text(
+                json.dumps(
+                    {
+                        "pages": [
+                            {
+                                "lines": ["One line"],
+                                "title": "Visual page",
+                                "visualContentId": "artifact:toolCall:visual-1",
+                            }
+                        ],
+                        "supportingVisuals": [
+                            {
+                                "base64": base64.b64encode(visual.read_bytes()).decode(),
+                                "contentId": "artifact:toolCall:visual-1",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            for document_format in ("pdf", "docx"):
+                output = root / f"visual.{document_format}"
+                completed = subprocess.run(
+                    [
+                        "python3",
+                        "/opt/osfo/render_document.py",
+                        "--format",
+                        document_format,
+                        "--input",
+                        str(source),
+                        "--output",
+                        str(output),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                self.assertEqual(json.loads(completed.stdout), {"renderedPageCount": 1})
+                self.assertGreater(output.stat().st_size, 0)
 
     def _rendered_pages(self, document: Path, root: Path) -> int:
         if document.suffix == ".pdf":

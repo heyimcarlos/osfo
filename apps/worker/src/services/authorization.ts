@@ -564,7 +564,13 @@ const exceedsOperationLimit = (
   rules: PlanRules,
   capabilityCatalog: CapabilityCatalog,
 ) => {
-  if (context.requestVendorUsdMicros > rules.operationLimits.vendorUsdMicrosPerRequest) return true;
+  const artifactLimits = capabilityCatalog.planResourceLimits[context.subscription.plan].artifact;
+  const artifactWrite =
+    operation.kind === "artifact.generate" || operation.kind === "artifact.revise";
+  const vendorLimit = artifactWrite
+    ? artifactLimits.vendorUsdMicrosPerRequest
+    : rules.operationLimits.vendorUsdMicrosPerRequest;
+  if (context.requestVendorUsdMicros > vendorLimit) return true;
   switch (operation.kind) {
     case "conversation.run":
       return operation.modelSteps > rules.operationLimits.modelStepsPerRequest;
@@ -577,6 +583,31 @@ const exceedsOperationLimit = (
         (operation.artifactKind === "researchReport" &&
           operation.researchSearches > rules.operationLimits.researchSearches)
       );
+    case "artifact.generate":
+    case "artifact.revise": {
+      if (
+        operation.computeMilliseconds > BigInt(artifactLimits.computeMilliseconds) ||
+        operation.modelSteps > BigInt(artifactLimits.modelSteps)
+      ) {
+        return true;
+      }
+      if (operation.artifactKind === "pdf" || operation.artifactKind === "docx") {
+        return (
+          operation.bytes > artifactLimits.generatedDocumentBytes ||
+          operation.pages > BigInt(artifactLimits.generatedDocumentPages)
+        );
+      }
+      if (operation.artifactKind === "pptx") {
+        return (
+          operation.bytes > artifactLimits.generatedPresentationBytes ||
+          operation.slides > BigInt(artifactLimits.generatedPresentationSlides)
+        );
+      }
+      return (
+        operation.bytes > artifactLimits.generatedImageBytes ||
+        operation.pixelsPerEdge > BigInt(artifactLimits.generatedImagePixelsPerEdge)
+      );
+    }
     case "web.search": {
       const limits = capabilityCatalog.operationLimits;
       return (

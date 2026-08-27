@@ -53,6 +53,37 @@ it.effect("projects the exact retained-document deletion presented for Approval"
   }),
 );
 
+it.effect("projects and fences exact immutable artifact deletion", () =>
+  Effect.gen(function* () {
+    const presentation = yield* presentOsfoAction({
+      descriptor: {
+        action: "deleteArtifact",
+        input: { contentId: "artifact:toolCall:presentation-2" },
+        kind: "durable-pause",
+        permissions: ["files:delete"],
+        requestId: "request-artifact-delete",
+        risk: "high",
+        summary: "Delete the retained generated artifact",
+        toolCallId: "tool-call-artifact-delete",
+      },
+      executionId: ActionPresentationId.make("execution-artifact-delete"),
+      source: "action",
+    });
+
+    expect(presentation).toMatchObject({
+      actionDefinitionVersion: "osfo-delete-generated-artifact-v1",
+      operation: "artifact.delete",
+      title: "Delete generated artifact",
+    });
+    expect(
+      hasExactActionInput(presentation, "artifact.delete", "artifact:toolCall:presentation-2"),
+    ).toBe(true);
+    expect(
+      hasExactActionInput(presentation, "artifact.delete", "artifact:toolCall:presentation-other"),
+    ).toBe(false);
+  }),
+);
+
 it.effect("projects the exact Knowledge deletion and Core Memory correction", () =>
   Effect.gen(function* () {
     const pending: PendingThinkAction = {

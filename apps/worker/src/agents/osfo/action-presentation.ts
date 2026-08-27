@@ -36,6 +36,8 @@ import {
 
 /** Name registered with Think for retained-document deletion. */
 export const documentDeleteActionName = "deleteDocument";
+/** Name registered with Think for retained visual-artifact deletion. */
+export const artifactDeleteActionName = "deleteArtifact";
 
 /** Exact retained-document identity shown before deletion Approval. */
 export const RetainedDocumentInput = Schema.Struct({ contentId: ContentId });
@@ -53,6 +55,9 @@ export const presentOsfoAction = Effect.fn("ActionPresentation.present")(functio
   }
   if (pending.descriptor.action === documentDeleteActionName) {
     return yield* presentDocumentDeleteAction(pending);
+  }
+  if (pending.descriptor.action === artifactDeleteActionName) {
+    return yield* presentArtifactDeleteAction(pending);
   }
   if (pending.descriptor.action === forgetKnowledgeActionName) {
     return yield* presentForgetKnowledgeAction(pending, inspectCurrentCoreMemory);
@@ -121,13 +126,15 @@ export const approvalPresentationFor = (presentation: ActionPresentation): Appro
 /** Verify that the protected effect still targets the exact value shown for Approval. */
 export const hasExactActionInput = (
   presentation: ActionPresentation,
-  operation: "file.delete" | "memory.clear",
+  operation: "artifact.delete" | "file.delete" | "memory.clear",
   value: string,
 ): boolean => {
   const expected =
-    operation === "file.delete"
-      ? { actionDefinitionVersion: "osfo-delete-generated-document-v1", field: "contentId" }
-      : { actionDefinitionVersion: "osfo-core-memory-clear-v1", field: "block" };
+    operation === "artifact.delete"
+      ? { actionDefinitionVersion: "osfo-delete-generated-artifact-v1", field: "contentId" }
+      : operation === "file.delete"
+        ? { actionDefinitionVersion: "osfo-delete-generated-document-v1", field: "contentId" }
+        : { actionDefinitionVersion: "osfo-core-memory-clear-v1", field: "block" };
   const [field] = presentation.fields;
   return (
     presentation.operation === operation &&
@@ -436,6 +443,32 @@ const presentDocumentDeleteAction = Effect.fn("ActionPresentation.presentDocumen
       operation: "file.delete",
       presentationId: ActionPresentationId.make(pending.executionId),
       title: "Delete generated document",
+    });
+  },
+);
+
+const presentArtifactDeleteAction = Effect.fn("ActionPresentation.presentArtifactDelete")(
+  function* (pending: PendingThinkAction) {
+    const input = yield* Schema.decodeUnknownEffect(RetainedDocumentInput)(
+      pending.descriptor.input,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "The retained-artifact deletion input cannot be projected safely",
+          }),
+      ),
+    );
+    return ActionPresentation.make({
+      actionDefinitionVersion: "osfo-delete-generated-artifact-v1",
+      actionId: ActionId.make(pending.descriptor.toolCallId),
+      consequences: ["Permanently delete the retained generated artifact."],
+      description: "Delete the exact retained artifact shown here.",
+      fields: [{ label: "Content", name: "contentId", value: input.contentId }],
+      operation: "artifact.delete",
+      presentationId: ActionPresentationId.make(pending.executionId),
+      title: "Delete generated artifact",
     });
   },
 );

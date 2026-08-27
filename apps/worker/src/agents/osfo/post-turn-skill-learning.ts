@@ -88,6 +88,10 @@ export const finalizeSkillLearningCandidate = (
     evidence: [
       { _tag: "UserDecision" as const, referenceId: draft.submissionId },
       { _tag: "ConfirmedRootOutcome" as const, referenceId: rootOutcomeReferenceId },
+      ...goodRootOutcome.ownedArtifactContentIds.map((referenceId) => ({
+        _tag: "OwnedArtifact" as const,
+        referenceId,
+      })),
     ],
     ownerUserId: draft.ownerUserId,
     priorSkillId: draft.priorSkillId,
@@ -118,7 +122,9 @@ export const proposeConfirmedSkillChange = ({
   const revision = priorVersion === null ? 1 : priorVersion.revision + 1;
   const version = PersonalSkillVersion.make({
     allowedOrigins: priorVersion?.allowedOrigins ?? ["authSession", "channelLink"],
-    capabilityIds: priorVersion?.capabilityIds ?? [capabilityFor(taskKind)],
+    capabilityIds: priorVersion?.capabilityIds ?? [
+      capabilityFor(taskKind, candidate.taskDescription),
+    ],
     createdAtEpochMillis: priorVersion?.createdAtEpochMillis ?? candidate.createdAtEpochMillis,
     createdBy: "learning",
     creationEvidence: priorVersion?.creationEvidence ?? evidence,
@@ -185,7 +191,10 @@ const inferTaskKind = (description: string): SkillTaskKind => {
   return "conversation";
 };
 
-const capabilityFor = (taskKind: SkillTaskKind): CapabilityId => {
+const capabilityFor = (taskKind: SkillTaskKind, description: string): CapabilityId => {
+  if (taskKind === "document" && /\b(?:slides?|presentation|deck|pptx)\b/iu.test(description)) {
+    return CapabilityId.make("presentation-generation");
+  }
   if (taskKind === "document") return CapabilityId.make("document-generation");
   if (taskKind === "research") return CapabilityId.make("research-report");
   if (taskKind === "file") return CapabilityId.make("file-read");
