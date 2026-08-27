@@ -474,6 +474,7 @@ export class OsfoAgent extends Think<Env> {
   override classifyChatError = defaultContextOverflowClassifier;
 
   #promptUtilizationObserver: PromptUtilization.Observer | undefined;
+  #promptUtilizationSubmissionId: ThinkSubmissionId | undefined;
 
   /** Preserve Agents SDK diagnostics and export only numeric compaction evidence to Osfo logs. */
   override observability = PromptUtilization.makeThinkObservability({
@@ -481,15 +482,11 @@ export class OsfoAgent extends Think<Env> {
     onCompacted: (event) => {
       const observer = this.#promptUtilizationObserver;
       if (observer === undefined) return;
-      const evidence = [observer.compacted(event)];
-      if (event.reason === "reactive" && event.attempt !== undefined) {
-        evidence.push(
-          observer.overflowRetry({
-            attempt: event.attempt,
-            retryLimit: this.contextOverflow?.maxRetries ?? 0,
-          }),
-        );
-      }
+      const evidence = PromptUtilization.compactionEvidence(
+        observer,
+        event,
+        this.contextOverflow?.maxRetries ?? 0,
+      );
       this.ctx.waitUntil(
         Effect.runPromise(
           Effect.forEach(evidence, PromptUtilization.emit, { concurrency: 1, discard: true }),
@@ -1007,7 +1004,6 @@ export class OsfoAgent extends Think<Env> {
 
   /** Apply only the route and limits pinned to the current durable Think Submission. */
   override async beforeTurn(context: TurnContext): Promise<TurnConfig> {
-    this.#promptUtilizationObserver = undefined;
     const system = await this.session.refreshSystemPrompt();
     const metadata = await Effect.runPromise(
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
@@ -1077,10 +1073,13 @@ export class OsfoAgent extends Think<Env> {
       this.ctx.waitUntil(this.#recordProviderRecallCompanyCost(metadata, prompt.usage));
     }
     this.#completedModelSteps.clear();
-    const promptUtilizationObserver = PromptUtilization.makeObserver({
-      contextWindowTokens: metadata.maxInputTokens,
-    });
+    const promptUtilizationObserver =
+      this.#promptUtilizationSubmissionId === metadata.submissionId &&
+      this.#promptUtilizationObserver !== undefined
+        ? this.#promptUtilizationObserver
+        : PromptUtilization.makeObserver({ contextWindowTokens: metadata.maxInputTokens });
     this.#promptUtilizationObserver = promptUtilizationObserver;
+    this.#promptUtilizationSubmissionId = metadata.submissionId;
     this.contextOverflow = PromptUtilization.compactionPolicy({
       contextWindowTokens: metadata.maxInputTokens,
       proactiveCompactionLimit: 1,

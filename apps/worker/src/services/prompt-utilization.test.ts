@@ -60,6 +60,75 @@ it("forwards Think events while exposing only safe compaction facts to Osfo", ()
   expect(JSON.stringify(compacted)).not.toContain("private-");
 });
 
+it("tracks proactive compaction and one bounded reactive retry through the Think event adapter", () => {
+  const observer = PromptUtilization.makeObserver({ contextWindowTokens: 1_000 });
+  const evidence: Array<PromptUtilization.Evidence> = [];
+  const observability = PromptUtilization.makeThinkObservability({
+    delegate: { emit: () => undefined },
+    onCompacted: (event) => {
+      evidence.push(...PromptUtilization.compactionEvidence(observer, event, 1));
+    },
+  });
+  observer.stepCompleted({
+    inputTokens: 600,
+    outputTokens: 20,
+    stepNumber: 1,
+    toolCallCount: 1,
+    toolResultCount: 1,
+  });
+
+  observability.emit(compactionEvent({ reason: "proactive", shortened: true }));
+  const preStep = observer.stepStarted({ estimatedInputTokens: 650, stepNumber: 2 });
+  const completed = observer.stepCompleted({
+    inputTokens: 300,
+    outputTokens: 30,
+    stepNumber: 2,
+    toolCallCount: 0,
+    toolResultCount: 0,
+  });
+  observability.emit(compactionEvent({ attempt: 1, reason: "reactive", shortened: true }));
+  const terminal = observer.overflowTerminal({ retryLimit: 1 });
+
+  expect(evidence).toEqual([
+    expect.objectContaining({
+      _tag: "Compacted",
+      inputTokensBeforeCompaction: 600,
+      inputTokensBeforeCompactionBasis: "reported",
+      reason: "proactive",
+    }),
+    expect.objectContaining({
+      _tag: "Compacted",
+      inputTokensBeforeCompaction: 650,
+      inputTokensBeforeCompactionBasis: "estimated",
+      reason: "reactive",
+    }),
+    {
+      _tag: "OverflowRetry",
+      attempt: 1,
+      overflowCount: 1,
+      retryLimit: 1,
+    },
+  ]);
+  expect(preStep).toMatchObject({ estimateScope: "preCompaction" });
+  expect(completed).toMatchObject({
+    inputTokensAfterCompaction: 300,
+    inputUtilizationAfterCompaction: 0.3,
+  });
+  expect(terminal).toEqual({
+    _tag: "OverflowTerminal",
+    overflowCount: 2,
+    retryLimit: 1,
+  });
+  expect(
+    PromptUtilization.compactionPolicy({
+      contextWindowTokens: 1_000,
+      proactiveCompactionLimit: 1,
+      reactiveRetryLimit: 1,
+      targetInputTokens: 550,
+    }),
+  ).toMatchObject({ maxRetries: 1, proactive: { headroom: 0.55, maxCompactions: 1 } });
+});
+
 it("counts provider prompt categories without retaining their content", () => {
   const categories = PromptUtilization.categoryTokensForTurn({
     conversationMessages: [{ content: "current private request", role: "user" }],
@@ -107,6 +176,54 @@ it("attributes next-step input growth to the preceding tool-heavy step", () => {
       toolResultCount: 0,
     }),
   ).toMatchObject({ toolHeavyGrowthTokens: 100 });
+});
+
+it("does not claim a retry when reactive compaction is a no-op", () => {
+  const observer = PromptUtilization.makeObserver({ contextWindowTokens: 1_000 });
+  observer.stepStarted({ estimatedInputTokens: 777, stepNumber: 1 });
+
+  expect(
+    PromptUtilization.compactionEvidence(
+      observer,
+      { attempt: 1, reason: "reactive", shortened: false },
+      1,
+    ),
+  ).toEqual([
+    {
+      _tag: "Compacted",
+      compactionCount: 1,
+      inputTokensBeforeCompaction: 777,
+      inputTokensBeforeCompactionBasis: "estimated",
+      inputUtilizationBeforeCompaction: 0.777,
+      reason: "reactive",
+      shortened: false,
+    },
+  ]);
+  expect(observer.overflowTerminal({ retryLimit: 1 })).toMatchObject({ overflowCount: 1 });
+});
+
+it("reports one bounded reactive retry only after Think shortens the prompt", () => {
+  const observer = PromptUtilization.makeObserver({ contextWindowTokens: 1_000 });
+  observer.stepStarted({ estimatedInputTokens: 800, stepNumber: 1 });
+
+  expect(
+    PromptUtilization.compactionEvidence(
+      observer,
+      { attempt: 1, reason: "reactive", shortened: true },
+      1,
+    ),
+  ).toEqual([
+    expect.objectContaining({
+      _tag: "Compacted",
+      inputTokensBeforeCompactionBasis: "estimated",
+    }),
+    {
+      _tag: "OverflowRetry",
+      attempt: 1,
+      overflowCount: 1,
+      retryLimit: 1,
+    },
+  ]);
 });
 
 it.effect("emits privacy-safe prompt, step, compaction, retry, and tool-growth evidence", () => {
@@ -163,10 +280,10 @@ it.effect("emits privacy-safe prompt, step, compaction, retry, and tool-growth e
 
     expect(logs.map(({ message }) => message)).toEqual([
       ["Prompt utilization assembled"],
-      ["Prompt model step started"],
+      ["Prompt pre-step input estimated"],
       ["Prompt model step completed"],
       ["Prompt context compacted"],
-      ["Prompt model step started"],
+      ["Prompt pre-step input estimated"],
       ["Prompt model step completed"],
       ["Prompt overflow retrying"],
       ["Prompt overflow exhausted"],
@@ -183,10 +300,12 @@ it.effect("emits privacy-safe prompt, step, compaction, retry, and tool-growth e
     expect(logs[3]?.annotations).toMatchObject({
       compactionCount: 1,
       inputTokensBeforeCompaction: 400,
+      inputTokensBeforeCompactionBasis: "reported",
       inputUtilizationBeforeCompaction: 0.4,
       reason: "proactive",
       shortened: true,
     });
+    expect(logs[4]?.annotations).toMatchObject({ estimateScope: "preCompaction" });
     expect(logs[5]?.annotations).toMatchObject({
       inputTokens: 250,
       inputTokensAfterCompaction: 250,
@@ -201,4 +320,14 @@ it.effect("emits privacy-safe prompt, step, compaction, retry, and tool-growth e
       logs.every(({ annotations }) => !Object.values(annotations).includes("private-user-id")),
     ).toBe(true);
   }).pipe(Effect.provide(Logger.layer([logger])));
+});
+
+const compactionEvent = (
+  payload: Extract<ObservabilityEvent, { readonly type: "chat:context:compacted" }>["payload"],
+): ObservabilityEvent => ({
+  agent: "OsfoAgent",
+  name: "private-agent-identity",
+  payload,
+  timestamp: 1,
+  type: "chat:context:compacted",
 });

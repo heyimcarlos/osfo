@@ -53,6 +53,7 @@ export type Evidence =
   | {
       readonly _tag: "StepStarted";
       readonly contextWindowTokens: number;
+      readonly estimateScope: "modelInput" | "preCompaction";
       readonly estimatedInputTokens: number;
       readonly estimatedInputUtilization: number;
       readonly peakInputUtilization: number;
@@ -76,6 +77,7 @@ export type Evidence =
       readonly _tag: "Compacted";
       readonly compactionCount: number;
       readonly inputTokensBeforeCompaction: number;
+      readonly inputTokensBeforeCompactionBasis: "estimated" | "reported";
       readonly inputUtilizationBeforeCompaction: number;
       readonly reason: CompactionInput["reason"];
       readonly shortened: boolean;
@@ -178,19 +180,32 @@ export const makeThinkObservability = (options: ThinkObservabilityOptions): Obse
   },
 });
 
+/** Project one Think compaction into truthful compaction and retry evidence. */
+export const compactionEvidence = (
+  observer: Observer,
+  event: CompactionInput,
+  retryLimit: number,
+): ReadonlyArray<Evidence> => {
+  const compacted = observer.compacted(event);
+  if (event.reason !== "reactive" || !event.shortened || event.attempt === undefined) {
+    return [compacted];
+  }
+  return [compacted, observer.overflowRetry({ attempt: event.attempt, retryLimit })];
+};
+
 /** Track one turn's utilization without retaining prompt text or identities. */
 export const makeObserver = (input: { readonly contextWindowTokens: number }): Observer => {
   let compactionCount = 0;
-  let currentInputTokens = 0;
+  let currentEstimatedInputTokens = 0;
   let lastCompletedInputTokens = 0;
   let lastCompletedHadTools = false;
   let peakInputUtilization = 0;
   let pendingCompaction = false;
+  let pendingCompactionReason: CompactionInput["reason"] | undefined;
   let overflowCount = 0;
 
   const utilization = (tokens: number) => tokens / input.contextWindowTokens;
-  const observeInput = (tokens: number) => {
-    currentInputTokens = tokens;
+  const observeReportedInput = (tokens: number) => {
     peakInputUtilization = Math.max(peakInputUtilization, utilization(tokens));
   };
 
@@ -198,11 +213,15 @@ export const makeObserver = (input: { readonly contextWindowTokens: number }): O
     compacted: (event) => {
       compactionCount += 1;
       pendingCompaction = event.shortened;
+      pendingCompactionReason = event.shortened ? event.reason : undefined;
+      const inputTokensBeforeCompaction =
+        event.reason === "proactive" ? lastCompletedInputTokens : currentEstimatedInputTokens;
       return {
         _tag: "Compacted",
         compactionCount,
-        inputTokensBeforeCompaction: currentInputTokens,
-        inputUtilizationBeforeCompaction: utilization(currentInputTokens),
+        inputTokensBeforeCompaction,
+        inputTokensBeforeCompactionBasis: event.reason === "proactive" ? "reported" : "estimated",
+        inputUtilizationBeforeCompaction: utilization(inputTokensBeforeCompaction),
         reason: event.reason,
         shortened: event.shortened,
       };
@@ -217,7 +236,7 @@ export const makeObserver = (input: { readonly contextWindowTokens: number }): O
     },
     promptAssembled: (event) => ({ _tag: "PromptAssembled", ...event }),
     stepCompleted: (event) => {
-      observeInput(event.inputTokens);
+      observeReportedInput(event.inputTokens);
       const afterCompaction = pendingCompaction
         ? {
             inputTokensAfterCompaction: event.inputTokens,
@@ -242,13 +261,15 @@ export const makeObserver = (input: { readonly contextWindowTokens: number }): O
       lastCompletedHadTools = event.toolCallCount > 0 || event.toolResultCount > 0;
       lastCompletedInputTokens = event.inputTokens;
       pendingCompaction = false;
+      pendingCompactionReason = undefined;
       return evidence;
     },
     stepStarted: (event) => {
-      observeInput(event.estimatedInputTokens);
+      currentEstimatedInputTokens = event.estimatedInputTokens;
       return {
         _tag: "StepStarted",
         contextWindowTokens: input.contextWindowTokens,
+        estimateScope: pendingCompactionReason === "proactive" ? "preCompaction" : "modelInput",
         estimatedInputTokens: event.estimatedInputTokens,
         estimatedInputUtilization: utilization(event.estimatedInputTokens),
         peakInputUtilization,
@@ -277,7 +298,7 @@ const messageFor = (evidence: Evidence): string => {
     case "StepCompleted":
       return "Prompt model step completed";
     case "StepStarted":
-      return "Prompt model step started";
+      return "Prompt pre-step input estimated";
   }
   return evidence satisfies never;
 };

@@ -239,6 +239,9 @@ export const MemoryProviderOperation = Schema.Literals([
   "getConversationStatus",
   "checkConversationSearchability",
   "forgetKnowledge",
+  "findSessionConversation",
+  "verifySessionConversation",
+  "verifyUserKnowledge",
   "deleteSessionConversation",
   "deleteUserKnowledge",
 ]);
