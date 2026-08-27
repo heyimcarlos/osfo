@@ -33,9 +33,10 @@ if (parseErrors.length > 0) {
 delete config.$schema;
 config.name = `osfo-verification-${runId}`;
 config.main = new URL("src/worker.ts", workerRoot).pathname;
-// The verified account journeys do not invoke Workers AI. Keeping this binding would make
-// Wrangler open a remote proxy session and require Cloudflare credentials in local and CI runs.
+// Verified account journeys use local provider boundaries. Remote provider bindings make
+// Wrangler open proxy sessions and require Cloudflare credentials in local and CI runs.
 delete config.ai;
+delete config.websearch;
 delete config.secrets;
 config.vars = {
   ...config.vars,

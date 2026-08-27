@@ -165,6 +165,8 @@ it.effect("activates an Agent that slept before the conversation processing migr
   ),
 );
 
+// WebState treats fingerprints as opaque. NUL-free fixtures keep this Node SQLite adapter portable;
+// the Web service owns production fingerprint construction.
 it.effect("persists User-scoped public-web replay and rejects conflicting ToolCall reuse", () =>
   withDatabase(({ storage }) =>
     Effect.gen(function* () {
@@ -172,7 +174,7 @@ it.effect("persists User-scoped public-web replay and rejects conflicting ToolCa
       const ownerUserId = UserId.make("web-owner");
       const turnId = ThinkSubmissionId.make("web-turn-1");
       const claimed = yield* state.claim({
-        fingerprint: "search\0osfo",
+        fingerprint: "search:osfo",
         kind: "search",
         operationId: "web-operation-1",
         turnId,
@@ -202,7 +204,7 @@ it.effect("persists User-scoped public-web replay and rejects conflicting ToolCa
 
       expect(
         yield* state.claim({
-          fingerprint: "search\0osfo",
+          fingerprint: "search:osfo",
           kind: "search",
           operationId: "web-operation-1",
           turnId,
@@ -213,7 +215,7 @@ it.effect("persists User-scoped public-web replay and rejects conflicting ToolCa
       expect(yield* state.readResult(UserId.make("different-user"), "web-result-1")).toBeNull();
       const conflict = yield* state
         .claim({
-          fingerprint: "search\0different",
+          fingerprint: "search:different",
           kind: "search",
           operationId: "web-operation-1",
           turnId,
@@ -253,7 +255,7 @@ it.effect("bounds retained public-web operations and result identities per User"
               url: `https://example.com/${index}`,
             };
             const claim = yield* state.claim({
-              fingerprint: `search\0${index}`,
+              fingerprint: `search:${index}`,
               kind: "search",
               operationId,
               turnId: ThinkSubmissionId.make(`${turnId}-${index}`),
@@ -297,7 +299,7 @@ it.effect("reclaims an abandoned public-web operation after its bounded lease", 
       );
       const ownerUserId = UserId.make("web-lease-owner");
       const input = {
-        fingerprint: "search\0lease",
+        fingerprint: "search:lease",
         kind: "search" as const,
         operationId: "web-lease-operation",
         turnId: ThinkSubmissionId.make("web-lease-turn"),
@@ -325,7 +327,7 @@ it.effect("rejects stale completion and failure after a public-web lease is recl
       );
       const ownerUserId = UserId.make("web-generation-owner");
       const input = {
-        fingerprint: "search\0generation",
+        fingerprint: "search:generation",
         kind: "search" as const,
         operationId: "web-generation-operation",
         turnId: ThinkSubmissionId.make("web-generation-turn"),
