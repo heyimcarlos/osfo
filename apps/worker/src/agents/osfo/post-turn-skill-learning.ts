@@ -9,8 +9,11 @@ import {
   PersonalSkillId,
   PersonalSkillVersion,
   PersonalSkillVersionId,
+  SkillDescriptionText,
+  SkillKeywordText,
   SkillLearningCandidate,
   SkillLearningCandidateId,
+  SkillTaskDescriptionText,
   TrustedSkillLearningText,
   GoodRootOutcomeReceipt,
   goodRootOutcomeReferenceId,
@@ -33,11 +36,9 @@ export interface SkillLearningDraft {
 /** Narrow semantic decision returned by the isolated learning model. Identity stays deterministic. */
 export const SkillLearningModelDecision = Schema.TaggedUnion({
   Change: {
-    description: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
+    description: SkillDescriptionText,
     instructions: TrustedSkillLearningText,
-    keywords: Schema.Array(
-      Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100)),
-    ).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
+    keywords: Schema.Array(SkillKeywordText).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
     materiality: Schema.Literals(["material", "minor"]),
   },
   NoChange: {},
@@ -54,7 +55,7 @@ export const projectSkillLearningDraft = (
   input: SkillLearningDraft,
 ): Option.Option<SkillLearningDraft> =>
   lastingInstruction.test(input.taskDescription) &&
-  Result.isSuccess(Schema.decodeResult(TrustedSkillLearningText)(input.taskDescription))
+  Result.isSuccess(Schema.decodeResult(SkillTaskDescriptionText)(input.taskDescription))
     ? Option.some(input)
     : Option.none();
 

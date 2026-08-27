@@ -9,6 +9,8 @@ import { Effect, Result, Schema } from "effect";
 import { UserId } from "../../domain";
 import { CapabilityId, currentCapabilityCatalog } from "../../domain/capability-catalog";
 import {
+  type GoodRootOutcomeEvaluationId,
+  GoodRootOutcomeReceipt,
   type PersonalSkillId,
   PersonalSkillVersion,
   PersonalSkillVersionId,
@@ -132,6 +134,17 @@ export interface MarkSkillLearningNotificationDeliveredInput {
   readonly userId: UserId;
 }
 
+export interface RetainGoodRootEvaluationInput {
+  readonly evaluationId: GoodRootOutcomeEvaluationId;
+  readonly receipt: typeof GoodRootOutcomeReceipt.Encoded;
+  readonly retainedAtEpochMillis: number;
+}
+
+export interface ResolveGoodRootEvaluationInput {
+  readonly evaluationId: GoodRootOutcomeEvaluationId;
+  readonly userId: UserId;
+}
+
 export type SkillLearningClaim =
   | {
       readonly _tag: "Busy";
@@ -225,6 +238,8 @@ export class PersonalSkillStoreUnavailable extends Schema.TaggedError<PersonalSk
       "pin",
       "recordUse",
       "recordLearningCost",
+      "resolveGoodRootEvaluation",
+      "retainGoodRootEvaluation",
       "recoverableLearning",
       "restore",
       "revise",
@@ -304,6 +319,13 @@ export interface Interface {
     input: PinPersonalSkillInput,
   ) => Effect.Effect<PersonalSkillVersion, AuthorityError>;
   readonly recordUse: (input: RecordPersonalSkillUseInput) => Effect.Effect<void, AuthorityError>;
+  /** Evaluator-only minting surface; never published through the User Agent RPC. */
+  readonly retainGoodRootEvaluation: (
+    input: RetainGoodRootEvaluationInput,
+  ) => Effect.Effect<void, LearningAuthorityError>;
+  readonly resolveGoodRootEvaluation: (
+    input: ResolveGoodRootEvaluationInput,
+  ) => Effect.Effect<GoodRootOutcomeReceipt, LearningAuthorityError>;
   readonly recordLearningCost: (
     input: RecordSkillLearningCostInput,
   ) => Effect.Effect<void, LearningAuthorityError>;
@@ -375,6 +397,7 @@ const PendingLearningNotificationRow = Schema.Struct({
   undoTargetSkillVersion: Schema.NullOr(PersonalSkillVersionId),
   versionJson: Schema.String,
 });
+const GoodRootEvaluationRow = Schema.Struct({ receiptJson: Schema.String });
 
 /** Construct the sole Agent SQLite authority for personal Skill versions. */
 export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorage): Interface => {
@@ -784,6 +807,10 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
       attempt("deleteUserData", () =>
         storage.transactionSync(() => {
           storage.sql.exec(
+            "DELETE FROM osfo_good_root_outcome_evaluations WHERE owner_user_id = ?",
+            userId,
+          );
+          storage.sql.exec(
             `DELETE FROM osfo_personal_skill_learning_model_attempts
              WHERE candidate_id IN (
                SELECT candidate_id FROM osfo_personal_skill_learning_candidates
@@ -1140,6 +1167,108 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
       }
       return undefined;
     }),
+    resolveGoodRootEvaluation: Effect.fn("PersonalSkillAuthority.resolveGoodRootEvaluation")(
+      function* (input) {
+        const rows = yield* attempt("resolveGoodRootEvaluation", () =>
+          storage.sql
+            .exec(
+              `SELECT receipt_json AS receiptJson
+             FROM osfo_good_root_outcome_evaluations
+             WHERE evaluation_id = ? AND owner_user_id = ? LIMIT 1`,
+              input.evaluationId,
+              input.userId,
+            )
+            .toArray(),
+        );
+        const row = yield* Schema.decodeUnknownEffect(Schema.Array(GoodRootEvaluationRow))(
+          rows,
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new PersonalSkillInvalid({
+                cause,
+                message: "Agent SQLite returned invalid Good Root evaluator authority",
+                reason: "envelope",
+              }),
+          ),
+        );
+        const retained = row[0];
+        if (retained === undefined) {
+          return yield* new PersonalSkillInvalid({
+            cause: input.evaluationId,
+            message: "No retained Good Root evaluator PASS matches this User",
+            reason: "envelope",
+          });
+        }
+        return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(GoodRootOutcomeReceipt))(
+          retained.receiptJson,
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new PersonalSkillInvalid({
+                cause,
+                message: "The retained Good Root evaluator PASS is invalid",
+                reason: "envelope",
+              }),
+          ),
+        );
+      },
+    ),
+    retainGoodRootEvaluation: Effect.fn("PersonalSkillAuthority.retainGoodRootEvaluation")(
+      function* (input) {
+        const receipt = yield* Schema.decodeEffect(GoodRootOutcomeReceipt)(input.receipt).pipe(
+          Effect.mapError(
+            (cause) =>
+              new PersonalSkillInvalid({
+                cause,
+                message: "The evaluator tried to retain an unknown Good Root trace PASS",
+                reason: "envelope",
+              }),
+          ),
+        );
+        const receiptJson = Schema.encodeSync(Schema.fromJsonString(GoodRootOutcomeReceipt))(
+          receipt,
+        );
+        const outcome = yield* attempt("retainGoodRootEvaluation", () =>
+          storage.transactionSync(() => {
+            const existing = storage.sql
+              .exec(
+                `SELECT receipt_json AS receiptJson
+                 FROM osfo_good_root_outcome_evaluations
+                 WHERE evaluation_id = ? LIMIT 1`,
+                input.evaluationId,
+              )
+              .toArray();
+            const retained = Schema.decodeUnknownSync(Schema.Array(GoodRootEvaluationRow))(
+              existing,
+            )[0];
+            if (retained !== undefined) {
+              return retained.receiptJson === receiptJson
+                ? ("Retained" as const)
+                : ("Conflict" as const);
+            }
+            storage.sql.exec(
+              `INSERT INTO osfo_good_root_outcome_evaluations
+                 (evaluation_id, owner_user_id, receipt_json, retained_at_epoch_millis)
+               VALUES (?, ?, ?, ?)`,
+              input.evaluationId,
+              receipt.userId,
+              receiptJson,
+              input.retainedAtEpochMillis,
+            );
+            return "Retained" as const;
+          }),
+        );
+        if (outcome === "Conflict") {
+          return yield* new PersonalSkillInvalid({
+            cause: input.evaluationId,
+            message: "The evaluator PASS identity already names different evidence",
+            reason: "transition",
+          });
+        }
+        return undefined;
+      },
+    ),
     recoverableLearning: Effect.fn("PersonalSkillAuthority.recoverableLearning")(function* (
       nowEpochMillis: number,
     ) {
@@ -1589,6 +1718,8 @@ const attempt = <A>(
     | "recordLearningCost"
     | "recordUse"
     | "recoverableLearning"
+    | "resolveGoodRootEvaluation"
+    | "retainGoodRootEvaluation"
     | "releaseLearning"
     | "restore"
     | "revise"

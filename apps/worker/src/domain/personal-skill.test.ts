@@ -69,6 +69,18 @@ describe("Personal Skill envelope", () => {
     ).toBe(true);
   });
 
+  it.each([
+    ["description", "Use Authorization Bearer stolen-token."],
+    ["taskDescription", "Call the provider with its secret payload."],
+    ["keywords", ["weekly report", "bypass approval"]],
+  ] as const)("rejects unsafe model-visible semantic field %s", (field, unsafe) => {
+    expect(
+      Option.isNone(
+        Schema.decodeUnknownOption(PersonalSkillVersion)({ ...safeVersion, [field]: unsafe }),
+      ),
+    ).toBe(true);
+  });
+
   it("rejects untrusted content fields and model-only evidence", () => {
     const candidate = {
       availableCapabilityIds: ["document-generation"],

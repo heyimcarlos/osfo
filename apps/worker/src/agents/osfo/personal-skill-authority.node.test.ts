@@ -7,32 +7,40 @@
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from "node:sqlite";
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Exit, Option, Result } from "effect";
+import type { UIMessage } from "ai";
+import { Effect, Exit, Schema } from "effect";
 
 import {
   AssistantMessageId,
   CapabilityCatalogVersion,
+  ThinkRequestId,
   ThinkSubmissionId,
   UserId,
 } from "../../domain";
+import { ManagedTurnMetadata } from "../../domain/managed-conversation";
 import {
+  GoodRootOutcomeEvaluationId,
   PersonalSkillId,
   PersonalSkillVersionId,
   SkillLearningCandidateId,
   SkillLearningModelAttemptId,
 } from "../../domain/personal-skill";
+import { CommittedTurnReceipt } from "./db/store";
+import { makeGoodRootOutcomeEvaluator } from "./good-root-outcome-evaluator";
+import { CommittedTurnTerminal, withCommittedTurnTerminal } from "./committed-turn-terminal";
 import {
   makePersonalSkillAuthority,
   type PersonalSkillAuthorityStorage,
 } from "./personal-skill-authority";
-import {
-  finalizeSkillLearningCandidate,
-  projectSkillLearningDraft,
-  proposeConfirmedSkillChange,
-} from "./post-turn-skill-learning";
+import { proposeConfirmedSkillChange } from "./post-turn-skill-learning";
 import { makeSkillLearningCoordinator } from "./skill-learning-coordinator";
 import { Capabilities } from "../../services/capabilities";
 import { makePersonalSkillTools } from "./personal-skill-tools";
+import {
+  ingestGoodRootEvaluation,
+  recoverPersonalSkillLearning,
+  selectPersonalSkillsForTurn,
+} from "./personal-skill-runtime";
 
 const userId = UserId.make("user-1");
 const availability = {
@@ -456,39 +464,47 @@ describe("PersonalSkillAuthority", () => {
     ),
   );
 
-  it.effect("improves the matching later session without changing an unrelated task", () =>
+  it.effect("runs the Agent learning journey and changes only the matching later session", () =>
     withDatabase((storage) =>
       Effect.gen(function* () {
         const authority = makePersonalSkillAuthority(storage);
-        const draft = projectSkillLearningDraft({
-          availableCapabilityIds: ["document-generation"],
-          availableRequirements: ["personal-agent"],
-          origin: "channelLink",
-          ownerUserId: userId,
-          priorSkillId: null,
-          priorSkillVersion: null,
-          submissionId: "submission-journey",
-          taskDescription: "Going forward, put the summary first in every weekly report.",
+        const submissionId = ThinkSubmissionId.make("submission-journey");
+        const assistantMessageId = AssistantMessageId.make("assistant-journey");
+        const requestId = ThinkRequestId.make("request-journey");
+        const evaluator = makeGoodRootOutcomeEvaluator({
+          authority,
+          nextEvaluationId: () => GoodRootOutcomeEvaluationId.make("evaluation-journey"),
         });
-        expect(Option.isSome(draft)).toBe(true);
-        if (Option.isNone(draft)) return;
-        const candidate = finalizeSkillLearningCandidate(
-          draft.value,
-          {
-            assertionReceiptIds: ["journey-assertion"],
-            assistantMessageId: AssistantMessageId.make("assistant-journey"),
-            evaluatedAtEpochMillis: 1_788_000_000_100,
-            evaluationDeadlineEpochMillis: 1_788_000_001_100,
-            referenceTraceVersion: "skill-learning-v1",
-            submissionId: ThinkSubmissionId.make("submission-journey"),
-            userId,
-          },
-          1_788_000_000_100,
-        );
-        const acceptedCandidate = yield* Result.match(candidate, {
-          onFailure: Effect.die,
-          onSuccess: Effect.succeed,
+        const evaluation = yield* evaluator.retainPass({
+          assistantMessageId,
+          evaluatedAtEpochMillis: 1_788_000_000_100,
+          evaluationDeadlineEpochMillis: 1_788_000_001_100,
+          submissionId,
+          userId,
         });
+        const messages = journeyMessages({ assistantMessageId, requestId, submissionId });
+        const committed = yield* Schema.decodeEffect(CommittedTurnReceipt)({
+          assistantMessageId,
+          observationSequence: 1,
+          observedAt: "2026-08-27 00:00:00",
+          sessionId: "session-journey",
+          source: "hook",
+          thinkRequestId: requestId,
+        });
+        const ingested = yield* ingestGoodRootEvaluation({
+          authority,
+          committedTurns: [committed],
+          messages,
+          nowEpochMillis: 1_788_000_000_100,
+          reference: evaluation,
+        });
+        expect(ingested._tag).toBe("SkillLearningQueued");
+        if (ingested._tag !== "SkillLearningQueued") return;
+
+        const recovered = yield* recoverPersonalSkillLearning(authority, 1_788_000_000_101);
+        expect(recovered.map(({ candidateId }) => candidateId)).toEqual([
+          ingested.candidate.candidateId,
+        ]);
         const coordinator = makeSkillLearningCoordinator({
           authority,
           propose: (input) =>
@@ -508,13 +524,18 @@ describe("PersonalSkillAuthority", () => {
             capabilityIds: ["document-generation"],
             requirements: ["personal-agent"],
           },
-          candidate: acceptedCandidate,
+          candidate: recovered[0] ?? ingested.candidate,
           load: yield* authority.learningLoad(userId, 1_788_000_000_100),
           nowEpochMillis: 1_788_000_000_100,
         });
         expect(outcome._tag).toBe("Learned");
 
-        const personalSkills = yield* authority.active(userId);
+        const personalSkills = yield* selectPersonalSkillsForTurn({
+          authority,
+          eligible: [],
+          firstInitialization: true,
+          userId,
+        });
         const capabilities = Capabilities.make();
         const base = {
           availableIntegrationToolkits: [] as const,
@@ -549,6 +570,16 @@ describe("PersonalSkillAuthority", () => {
         });
         expect(loaded.instructions).toContain("put the summary first");
 
+        const recoveredTurnSkills = yield* selectPersonalSkillsForTurn({
+          authority,
+          eligible: [{ skillId: learned.skillId, skillVersion: learned.skillVersion }],
+          firstInitialization: false,
+          userId,
+        });
+        expect(recoveredTurnSkills.map(({ skillVersion }) => skillVersion)).toEqual([
+          learned.skillVersion,
+        ]);
+
         const unrelated = yield* capabilities.eligibleIndex({
           ...base,
           taskDescription: "Create a birthday invitation document.",
@@ -556,6 +587,63 @@ describe("PersonalSkillAuthority", () => {
         });
         expect(unrelated.candidates.some(({ source }) => source === "personal")).toBe(false);
         expect((yield* authority.active(userId))[0]?.skillVersion).toBe(learned.skillVersion);
+      }),
+    ),
+  );
+
+  it.effect("rejects cross-turn, unsuccessful, and uncommitted evaluator PASS pairings", () =>
+    withDatabase((storage) =>
+      Effect.gen(function* () {
+        const authority = makePersonalSkillAuthority(storage);
+        const submissionId = ThinkSubmissionId.make("submission-bound");
+        const assistantMessageId = AssistantMessageId.make("assistant-bound");
+        const requestId = ThinkRequestId.make("request-bound");
+        const evaluation = yield* makeGoodRootOutcomeEvaluator({
+          authority,
+          nextEvaluationId: () => GoodRootOutcomeEvaluationId.make("evaluation-bound"),
+        }).retainPass({
+          assistantMessageId,
+          evaluatedAtEpochMillis: 1_788_000_000_100,
+          evaluationDeadlineEpochMillis: 1_788_000_001_100,
+          submissionId,
+          userId,
+        });
+        const committed = yield* Schema.decodeEffect(CommittedTurnReceipt)({
+          assistantMessageId,
+          observationSequence: 1,
+          observedAt: "2026-08-27 00:00:00",
+          sessionId: "session-journey",
+          source: "hook",
+          thinkRequestId: requestId,
+        });
+        const ingest = (messages: ReadonlyArray<UIMessage>, receipts = [committed]) =>
+          ingestGoodRootEvaluation({
+            authority,
+            committedTurns: receipts,
+            messages,
+            nowEpochMillis: 1_788_000_000_100,
+            reference: evaluation,
+          });
+
+        expect(
+          (yield* ingest(
+            journeyMessages({
+              assistantMessageId,
+              requestId,
+              submissionId,
+              terminalSubmissionId: ThinkSubmissionId.make("submission-other"),
+            }),
+          ))._tag,
+        ).toBe("GoodRootOutcomeRejected");
+        expect(
+          (yield* ingest(
+            journeyMessages({ assistantMessageId, requestId, status: "error", submissionId }),
+          ))._tag,
+        ).toBe("GoodRootOutcomeRejected");
+        expect(
+          (yield* ingest(journeyMessages({ assistantMessageId, requestId, submissionId }), []))
+            ._tag,
+        ).toBe("GoodRootOutcomeRejected");
       }),
     ),
   );
@@ -635,6 +723,16 @@ describe("PersonalSkillAuthority", () => {
         } as const;
         yield* authority.recordLearningCost(costEvidence);
         yield* authority.recordLearningCost(costEvidence);
+        yield* makeGoodRootOutcomeEvaluator({
+          authority,
+          nextEvaluationId: () => GoodRootOutcomeEvaluationId.make("evaluation-account-delete"),
+        }).retainPass({
+          assistantMessageId: AssistantMessageId.make("assistant-account-delete"),
+          evaluatedAtEpochMillis: 1_788_000_000_250,
+          evaluationDeadlineEpochMillis: 1_788_000_001_250,
+          submissionId: ThinkSubmissionId.make("submission-account-delete"),
+          userId,
+        });
         expect(
           Exit.isFailure(
             yield* Effect.exit(
@@ -673,10 +771,110 @@ describe("PersonalSkillAuthority", () => {
             )
             .one().count,
         ).toBe(0);
+        expect(
+          storage.sql
+            .exec<{ count: number }>(
+              "SELECT COUNT(*) AS count FROM osfo_good_root_outcome_evaluations",
+            )
+            .one().count,
+        ).toBe(0);
       }),
     ),
   );
 });
+
+const journeyMessages = ({
+  assistantMessageId,
+  requestId,
+  status = "completed",
+  submissionId,
+  terminalSubmissionId = submissionId,
+}: {
+  readonly assistantMessageId: AssistantMessageId;
+  readonly requestId: ThinkRequestId;
+  readonly status?: "aborted" | "completed" | "error";
+  readonly submissionId: ThinkSubmissionId;
+  readonly terminalSubmissionId?: ThinkSubmissionId;
+}): ReadonlyArray<UIMessage> => {
+  const turnMetadata = Schema.decodeUnknownSync(ManagedTurnMetadata)({
+    _tag: "OsfoManagedTurn",
+    allowancePeriodId: "allowance-journey",
+    authorityIdentity: {
+      _tag: "AuthSession",
+      authSessionId: "auth-session-journey",
+      userId,
+    },
+    capabilityCatalogVersion: "governed-capabilities-v1",
+    capabilityTurnState: {
+      eligiblePersonalSkills: [],
+      initialized: true,
+      loadedSkillReceipts: [],
+      pendingFileAnalyses: [],
+      skillLearningDraft: {
+        availableCapabilityIds: ["document-generation"],
+        availableRequirements: ["personal-agent"],
+        origin: "authSession",
+        ownerUserId: userId,
+        priorSkillId: null,
+        priorSkillVersion: null,
+        submissionId,
+        taskDescription: "Always put the summary first in every weekly report.",
+      },
+    },
+    conservativeVendorUsdMicros: 100,
+    coreMemoryAuthorization: {
+      authority: {
+        _tag: "AuthSession",
+        authSessionId: "auth-session-journey",
+        expiresAt: "2026-08-27T13:00:00.000Z",
+        userId,
+      },
+      deletionAccess: { _tag: "DeletionAccessAvailable" },
+      now: "2026-08-27T12:00:00.000Z",
+      originatingAuthority: { _tag: "AuthSession", authSessionId: "auth-session-journey" },
+      resourceOwnerUserId: userId,
+      subscription: { plan: "free", planPolicyVersion: "launch-v1" },
+      user: { _tag: "ActiveUser", userId },
+    },
+    maxInputTokens: 32_000,
+    maxOutputTokens: 4_096,
+    maxRetries: 0,
+    maxSteps: 5,
+    originatingAuthority: { _tag: "AuthSession", authSessionId: "auth-session-journey" },
+    plan: "free",
+    planPolicyVersion: "launch-v1",
+    route: "@cf/test/model",
+    routeId: "route-journey",
+    sessionId: "session-journey",
+    submissionId,
+    targetInputTokens: 18_000,
+  });
+  const terminal = CommittedTurnTerminal.make({
+    attribution: {
+      allowancePeriodId: turnMetadata.allowancePeriodId,
+      executionMode: "normalPlanUsage",
+      sessionId: turnMetadata.sessionId,
+      userId,
+    },
+    requestId,
+    status,
+    submissionId: terminalSubmissionId,
+  });
+  return [
+    {
+      id: `user-${submissionId}`,
+      metadata: { turnMetadata },
+      parts: [{ text: "Always put the summary first in every weekly report.", type: "text" }],
+      role: "user",
+    },
+    {
+      id: assistantMessageId,
+      metadata: withCommittedTurnTerminal({}, terminal),
+      parts: [{ text: "The report is ready.", type: "text" }],
+      role: "assistant",
+    },
+  ];
+};
 
 const withDatabase = <A, E>(
   use: (storage: PersonalSkillAuthorityStorage) => Effect.Effect<A, E>,
@@ -725,6 +923,12 @@ const withDatabase = <A, E>(
         outcome TEXT NOT NULL CHECK (outcome IN ('failure', 'success')),
         recorded_at_epoch_millis INTEGER NOT NULL,
         vendor_usd_micros INTEGER NOT NULL CHECK (vendor_usd_micros >= 0)
+      ) STRICT`);
+      database.exec(`CREATE TABLE osfo_good_root_outcome_evaluations (
+        evaluation_id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        receipt_json TEXT NOT NULL,
+        retained_at_epoch_millis INTEGER NOT NULL
       ) STRICT`);
       return { database, storage: nodeStorage(database) };
     }),

@@ -1,6 +1,12 @@
 import { Effect, Option, Schema } from "effect";
 
-import { AllowancePeriodId, SessionId, ThinkRequestId, UserId } from "../../domain";
+import {
+  AllowancePeriodId,
+  SessionId,
+  ThinkRequestId,
+  ThinkSubmissionId,
+  UserId,
+} from "../../domain";
 
 /** Minimal trusted authority retained for post-commit conversation projection. */
 export const CommittedTurnAttribution = Schema.Struct({
@@ -20,6 +26,7 @@ export const CommittedTurnTerminal = Schema.Struct({
   attribution: Schema.optionalKey(CommittedTurnAttribution),
   requestId: ThinkRequestId,
   status: Schema.Literals(["completed", "error", "aborted"]),
+  submissionId: Schema.optionalKey(ThinkSubmissionId),
 });
 
 /** Durable Think terminal evidence used to recover capture after a Worker restart. */

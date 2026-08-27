@@ -86,6 +86,14 @@ export const SkillLearningModelAttemptId = boundedText(200).pipe(
 /** Stable identity of one company-funded Skill Learning model attempt. */
 export type SkillLearningModelAttemptId = typeof SkillLearningModelAttemptId.Type;
 
+/** Unguessable identity of one PASS retained by the evaluator authority. */
+export const GoodRootOutcomeEvaluationId = boundedText(200).pipe(
+  Schema.brand("GoodRootOutcomeEvaluationId"),
+);
+
+/** Unguessable identity of one PASS retained by the evaluator authority. */
+export type GoodRootOutcomeEvaluationId = typeof GoodRootOutcomeEvaluationId.Type;
+
 /** Closed trusted evidence references. Content stays in its owning store. */
 export const SkillEvidenceReference = Schema.TaggedUnion({
   ConfirmedEffect: { referenceId: boundedText(200) },
@@ -108,16 +116,29 @@ export const SkillOutcomeFacts = Schema.Struct({
 /** Confirmed outcome facts retained without provider payloads or Session content. */
 export type SkillOutcomeFacts = typeof SkillOutcomeFacts.Type;
 
-/** Trusted PASS emitted only by a versioned Reference Workload Trace evaluator. */
+/** Active retained Reference Workload Trace for personal Skill Learning. */
+export const retainedGoodRootTraceVersion = "personal-skill-learning-v1";
+export const retainedGoodRootAssertionReceiptIds = [
+  "root-assistant-committed",
+  "root-terminal-completed",
+  "reusable-correction-accepted",
+] as const;
+
+const GoodRootAssertionReceiptId = Schema.Literals(retainedGoodRootAssertionReceiptIds);
+
+/** Trusted PASS emitted only by the retained Reference Workload Trace evaluator. */
 export const GoodRootOutcomeReceipt = Schema.Struct({
-  assertionReceiptIds: Schema.Array(boundedText(200)).check(
-    Schema.isMinLength(1),
-    Schema.isMaxLength(20),
+  assertionReceiptIds: Schema.Array(GoodRootAssertionReceiptId).check(
+    Schema.makeFilter(
+      (ids) =>
+        retainedGoodRootAssertionReceiptIds.every((id) => ids.includes(id)) &&
+        ids.length === retainedGoodRootAssertionReceiptIds.length,
+    ),
   ),
   assistantMessageId: AssistantMessageId,
   evaluatedAtEpochMillis: nonNegativeInteger,
   evaluationDeadlineEpochMillis: nonNegativeInteger,
-  referenceTraceVersion: boundedText(100),
+  referenceTraceVersion: Schema.Literal(retainedGoodRootTraceVersion),
   submissionId: ThinkSubmissionId,
   userId: UserId,
 }).check(
@@ -131,11 +152,20 @@ export const GoodRootOutcomeReceipt = Schema.Struct({
 /** Trusted PASS emitted only by a versioned Reference Workload Trace evaluator. */
 export type GoodRootOutcomeReceipt = typeof GoodRootOutcomeReceipt.Type;
 
+/** Public Agent input references retained evaluator authority rather than carrying a PASS. */
+export const GoodRootOutcomeEvaluationReference = Schema.Struct({
+  evaluationId: GoodRootOutcomeEvaluationId,
+  userId: UserId,
+});
+
+/** Public Agent input references retained evaluator authority rather than carrying a PASS. */
+export type GoodRootOutcomeEvaluationReference = typeof GoodRootOutcomeEvaluationReference.Type;
+
 /** Stable evidence identity for one accepted Good Root Outcome. */
 export const goodRootOutcomeReferenceId = (receipt: GoodRootOutcomeReceipt): string =>
   `good-root:${receipt.referenceTraceVersion}:${receipt.submissionId}:${receipt.assistantMessageId}`;
 
-const SkillInstructionText = Schema.String.check(
+export const SkillInstructionText = Schema.String.check(
   Schema.isMinLength(1),
   Schema.makeFilter(
     (instructions) =>
@@ -148,6 +178,24 @@ const SkillInstructionText = Schema.String.check(
       "Personal Skill instructions must contain only bounded natural-language guidance",
   ),
 );
+
+const safeSemanticText = (maximum: number) =>
+  Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(maximum),
+    Schema.makeFilter(
+      (text) =>
+        (!text.includes("\n") && instructionIsSafe(text)) ||
+        "Personal Skill semantic metadata must contain only safe single-line natural language",
+    ),
+  );
+
+/** Safe model-visible summary of a personal Skill. */
+export const SkillDescriptionText = safeSemanticText(500);
+/** Safe task-matching phrase retained by a personal Skill. */
+export const SkillTaskDescriptionText = safeSemanticText(500);
+/** Safe bounded keyword retained by a personal Skill. */
+export const SkillKeywordText = safeSemanticText(100);
 
 /** Bounded direct User guidance admitted to the isolated learning pass. */
 export const TrustedSkillLearningText = Schema.String.check(
@@ -170,9 +218,9 @@ export const PersonalSkillVersion = Schema.Struct({
     Schema.isMinLength(1),
     Schema.isMaxLength(20),
   ),
-  description: boundedText(500),
+  description: SkillDescriptionText,
   instructions: SkillInstructionText,
-  keywords: Schema.Array(boundedText(100)).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+  keywords: Schema.Array(SkillKeywordText).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
   lastUsedAtEpochMillis: Schema.NullOr(nonNegativeInteger),
   origin: Schema.Literals(["learned", "userAuthored"]),
   outcomeFacts: SkillOutcomeFacts,
@@ -183,7 +231,7 @@ export const PersonalSkillVersion = Schema.Struct({
   skillId: PersonalSkillId,
   skillVersion: PersonalSkillVersionId,
   status: Schema.Literals(["active", "archived"]),
-  taskDescription: boundedText(500),
+  taskDescription: SkillTaskDescriptionText,
   taskKinds: Schema.Array(SkillTaskKind).check(Schema.isMinLength(1), Schema.isMaxLength(12)),
   updatedAtEpochMillis: nonNegativeInteger,
   updateEvidence: Schema.Array(SkillEvidenceReference).check(Schema.isMaxLength(20)),
@@ -242,7 +290,7 @@ export const SkillLearningCandidate = Schema.Struct({
   priorSkillVersion: Schema.NullOr(PersonalSkillVersionId),
   rootAssistantMessageId: AssistantMessageId,
   rootOutcomeReferenceId: boundedText(200),
-  taskDescription: boundedText(500),
+  taskDescription: SkillTaskDescriptionText,
 }).check(
   Schema.makeFilter(
     (candidate) =>

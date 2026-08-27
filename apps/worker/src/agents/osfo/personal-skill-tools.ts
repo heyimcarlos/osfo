@@ -10,7 +10,11 @@ import {
   PersonalSkillVersion,
   PersonalSkillVersionId,
   SkillAvailabilityRequirement,
+  SkillDescriptionText,
+  SkillInstructionText,
+  SkillKeywordText,
   SkillTaskKind,
+  SkillTaskDescriptionText,
   SkillTurnOrigin,
   personalSkillVersionValues,
 } from "../../domain/personal-skill";
@@ -18,9 +22,6 @@ import type {
   Interface as PersonalSkillAuthority,
   PersonalSkillAvailability,
 } from "./personal-skill-authority";
-
-const boundedText = (maximum: number) =>
-  Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(maximum));
 
 /** Small read surface for listing active Skills or inspecting one immutable lineage. */
 export const SkillInspectInput = Schema.TaggedUnion({
@@ -31,11 +32,11 @@ export const SkillInspectInput = Schema.TaggedUnion({
 const EditableSkill = {
   allowedOrigins: Schema.Array(SkillTurnOrigin).check(Schema.isMinLength(1), Schema.isMaxLength(4)),
   capabilityIds: Schema.Array(CapabilityId).check(Schema.isMinLength(1), Schema.isMaxLength(22)),
-  description: boundedText(500),
-  instructions: boundedText(8_000),
-  keywords: Schema.Array(boundedText(100)).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+  description: SkillDescriptionText,
+  instructions: SkillInstructionText,
+  keywords: Schema.Array(SkillKeywordText).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
   requirements: Schema.Array(SkillAvailabilityRequirement).check(Schema.isMaxLength(10)),
-  taskDescription: boundedText(500),
+  taskDescription: SkillTaskDescriptionText,
   taskKinds: Schema.Array(SkillTaskKind).check(Schema.isMinLength(1), Schema.isMaxLength(12)),
 };
 

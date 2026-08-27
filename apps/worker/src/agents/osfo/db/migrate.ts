@@ -15,6 +15,7 @@ import providerSubmissionAmbiguityMigrationSql from "./migrations/0011_misty_que
 import personalSkillAuthorityMigrationSql from "./migrations/0012_chilly_scalphunter.sql";
 import personalSkillEconomicsMigrationSql from "./migrations/0013_flawless_pixie.sql";
 import personalSkillNotificationMigrationSql from "./migrations/0014_spooky_snowbird.sql";
+import goodRootOutcomeEvaluationMigrationSql from "./migrations/0015_nebulous_domino.sql";
 import {
   AgentMigrationDefinitionMismatch,
   AgentMigrationDigestMismatch,
@@ -106,6 +107,11 @@ export const agentMigrations: ReadonlyArray<AgentMigration> = [
     digest: "sha256:edd484f06b8c0bbcd5d72d5f8cd7fb45ad99202b1f10ab809fe12474a7fc9163",
     sql: personalSkillNotificationMigrationSql,
     version: 15,
+  },
+  {
+    digest: "sha256:dc9d44bd4d8c0118496d82e4cc0204e21d88c4a3bd6a830d0d36d7210e0b6767",
+    sql: goodRootOutcomeEvaluationMigrationSql,
+    version: 16,
   },
 ];
 

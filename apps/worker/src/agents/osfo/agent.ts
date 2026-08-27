@@ -49,7 +49,7 @@ import {
 import { ActionId } from "../../domain/action-execution";
 import { CapabilityId, currentCapabilityCatalog } from "../../domain/capability-catalog";
 import {
-  GoodRootOutcomeReceipt,
+  type GoodRootOutcomeEvaluationReference,
   PersonalSkillId,
   PersonalSkillVersion,
   PersonalSkillVersionId,
@@ -99,6 +99,11 @@ import {
   persistThinkTerminalBeforeCapture,
   withCommittedTurnTerminal,
 } from "./committed-turn-terminal";
+import {
+  ingestGoodRootEvaluation,
+  recoverPersonalSkillLearning,
+  selectPersonalSkillsForTurn,
+} from "./personal-skill-runtime";
 import {
   FileAnalysisId,
   type FileAnalysisRecord,
@@ -283,7 +288,6 @@ import {
 import type { SkillDeleteInput } from "./personal-skill-tools";
 import {
   bindSkillLearningModelDecision,
-  finalizeSkillLearningCandidate,
   projectSkillLearningDraft,
   SkillLearningModelDecision,
 } from "./post-turn-skill-learning";
@@ -1144,23 +1148,12 @@ export class OsfoAgent extends Think<Env> {
       pendingFileAnalysis: capabilityTurnState.pendingFileAnalyses.length > 0,
     });
     const personalSkills = await Effect.runPromise(
-      (firstInitialization
-        ? this.#personalSkillAuthority.active(metadata.authorityIdentity.userId)
-        : Effect.forEach(capabilityTurnState.eligiblePersonalSkills, ({ skillId, skillVersion }) =>
-            this.#personalSkillAuthority.pin({
-              skillId,
-              skillVersion,
-              userId: metadata.authorityIdentity.userId,
-            }),
-          )
-      ).pipe(
-        Effect.catch((failure) =>
-          Effect.logWarning("Personal Skill selection is unavailable for this turn").pipe(
-            Effect.annotateLogs({ failure: failure._tag }),
-            Effect.as([]),
-          ),
-        ),
-      ),
+      selectPersonalSkillsForTurn({
+        authority: this.#personalSkillAuthority,
+        eligible: capabilityTurnState.eligiblePersonalSkills,
+        firstInitialization,
+        userId: metadata.authorityIdentity.userId,
+      }),
     );
     const baseIndex = await Effect.runPromise(
       this.#capabilities.eligibleIndex({
@@ -2571,7 +2564,7 @@ export class OsfoAgent extends Think<Env> {
   }
 
   /** Accept one evaluator-owned Good Root Outcome and durably enqueue its bounded learning. */
-  async recordGoodRootOutcome(input: typeof GoodRootOutcomeReceipt.Encoded) {
+  async recordGoodRootOutcome(input: typeof GoodRootOutcomeEvaluationReference.Encoded) {
     await this.#migrationsReady;
     return runRpc(
       this.#accountDeletionFencedSessionExecution.run(
@@ -2581,69 +2574,25 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
-  async #recordGoodRootOutcome(input: typeof GoodRootOutcomeReceipt.Encoded) {
-    const receipt = await Effect.runPromise(Schema.decodeEffect(GoodRootOutcomeReceipt)(input));
-    const turn = this.messages
-      .map(ManagedCapabilityState.readManagedTurn)
-      .find(
-        (metadata) =>
-          metadata?.submissionId === receipt.submissionId &&
-          metadata.authorityIdentity.userId === receipt.userId,
-      );
-    if (turn === undefined) {
-      return { _tag: "GoodRootOutcomeRejected", reason: "turnIdentity" } as const;
-    }
+  async #recordGoodRootOutcome(input: typeof GoodRootOutcomeEvaluationReference.Encoded) {
     const committed = await Effect.runPromise(this.#store.readCommittedTurns);
-    if (
-      !committed.some(({ assistantMessageId }) => assistantMessageId === receipt.assistantMessageId)
-    ) {
-      return { _tag: "GoodRootOutcomeRejected", reason: "rootNotCommitted" } as const;
-    }
-    const retainedDraft = turn.capabilityTurnState.skillLearningDraft;
-    if (retainedDraft === null) {
-      return { _tag: "NoReusableLearning", submissionId: receipt.submissionId } as const;
-    }
-    const prior = turn.capabilityTurnState.loadedSkillReceipts.find(
-      ({ source }) => source === "personal",
+    const outcome = await Effect.runPromise(
+      ingestGoodRootEvaluation({
+        authority: this.#personalSkillAuthority,
+        committedTurns: committed,
+        messages: this.messages,
+        nowEpochMillis: Date.now(),
+        reference: input,
+      }),
     );
-    const candidate = finalizeSkillLearningCandidate(
-      {
-        ...retainedDraft,
-        origin: capabilityTurnOrigin(turn.authorityIdentity),
-        ownerUserId: receipt.userId,
-        priorSkillId: prior === undefined ? null : PersonalSkillId.make(prior.skillId),
-        priorSkillVersion:
-          prior === undefined ? null : PersonalSkillVersionId.make(prior.skillVersion),
-        submissionId: receipt.submissionId,
-      },
-      receipt,
-      Date.now(),
-    );
-    if (Result.isFailure(candidate)) {
-      return { _tag: "GoodRootOutcomeRejected", reason: "candidate" } as const;
-    }
-    const queued = await Effect.runPromise(
-      this.#personalSkillAuthority.enqueueLearning(candidate.success),
-    );
-    if (queued._tag === "Backpressured") {
-      return { _tag: "SkillLearningDeferred", reason: "backpressure" } as const;
-    }
-    this.ctx.waitUntil(this.#runSkillLearning(candidate.success));
-    return { _tag: "SkillLearningQueued", candidateId: queued.candidateId } as const;
+    if (outcome._tag !== "SkillLearningQueued") return outcome;
+    this.ctx.waitUntil(this.#runSkillLearning(outcome.candidate));
+    return { _tag: outcome._tag, candidateId: outcome.candidateId } as const;
   }
 
   async #recoverSkillLearning(): Promise<void> {
     const recoverable = await Effect.runPromise(
-      this.#personalSkillAuthority
-        .recoverableLearning(Date.now())
-        .pipe(
-          Effect.catch((failure) =>
-            Effect.logWarning("Recoverable personal Skill Learning could not be read").pipe(
-              Effect.annotateLogs({ failure: failure._tag }),
-              Effect.as([]),
-            ),
-          ),
-        ),
+      recoverPersonalSkillLearning(this.#personalSkillAuthority, Date.now()),
     );
     await Promise.all(recoverable.map((candidate) => this.#runSkillLearning(candidate)));
     await this.#deliverPendingSkillLearningNotifications();
@@ -3624,6 +3573,7 @@ export class OsfoAgent extends Think<Env> {
           },
           requestId: thinkRequestId,
           status: result.status,
+          submissionId: activeTurn.value.submissionId,
         });
     await Effect.runPromise(
       persistThinkTerminalBeforeCapture(

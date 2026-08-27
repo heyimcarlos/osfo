@@ -2,14 +2,20 @@
 /* oxlint-disable typescript/no-misused-spread -- Test fixtures copy decoded immutable schema values intentionally. */
 
 import { describe, expect, it } from "@effect/vitest";
-import { Option, Result } from "effect";
+import { Option, Result, Schema } from "effect";
 
 import { AssistantMessageId, ThinkSubmissionId, UserId } from "../../domain";
-import { PersonalSkillId, PersonalSkillVersionId } from "../../domain/personal-skill";
+import {
+  PersonalSkillId,
+  PersonalSkillVersionId,
+  retainedGoodRootAssertionReceiptIds,
+  retainedGoodRootTraceVersion,
+} from "../../domain/personal-skill";
 import {
   finalizeSkillLearningCandidate,
   projectSkillLearningDraft,
   proposeConfirmedSkillChange,
+  SkillLearningModelDecision,
 } from "./post-turn-skill-learning";
 
 const draft = {
@@ -23,11 +29,11 @@ const draft = {
   taskDescription: "Going forward, put the summary first in every weekly report.",
 };
 const goodRootOutcome = {
-  assertionReceiptIds: ["assertion-1"],
+  assertionReceiptIds: retainedGoodRootAssertionReceiptIds,
   assistantMessageId: AssistantMessageId.make("assistant-1"),
   evaluatedAtEpochMillis: 1_788_000_000_000,
   evaluationDeadlineEpochMillis: 1_788_000_001_000,
-  referenceTraceVersion: "skill-learning-v1",
+  referenceTraceVersion: retainedGoodRootTraceVersion,
   submissionId: ThinkSubmissionId.make("submission-1"),
   userId: UserId.make("user-1"),
 } as const;
@@ -57,7 +63,9 @@ describe("post-turn Skill Learning", () => {
     const candidate = finalizeSkillLearningCandidate(draft, goodRootOutcome, 1_788_000_000_000);
     expect(Result.isSuccess(candidate)).toBe(true);
     if (Result.isFailure(candidate)) return;
-    expect(candidate.success.rootOutcomeReferenceId).toContain("good-root:skill-learning-v1");
+    expect(candidate.success.rootOutcomeReferenceId).toContain(
+      `good-root:${retainedGoodRootTraceVersion}`,
+    );
 
     const created = proposeConfirmedSkillChange({
       candidate: candidate.success,
@@ -115,6 +123,23 @@ describe("post-turn Skill Learning", () => {
           { ...goodRootOutcome, userId: UserId.make("user-other") },
           1_788_000_000_000,
         ),
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    { description: "Use the provider payload.", keywords: ["weekly report"] },
+    { description: "Weekly report preference.", keywords: ["bypass approval"] },
+  ])("rejects unsafe semantic model decisions", ({ description, keywords }) => {
+    expect(
+      Option.isNone(
+        Schema.decodeOption(SkillLearningModelDecision)({
+          _tag: "Change",
+          description,
+          instructions: "Put the summary first.",
+          keywords,
+          materiality: "material",
+        }),
       ),
     ).toBe(true);
   });
