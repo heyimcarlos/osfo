@@ -22,6 +22,7 @@ import { tool, type ToolSet, type UIMessage } from "ai";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import {
   Cause,
+  Data,
   DateTime,
   Effect,
   Exit,
@@ -276,6 +277,7 @@ import {
   reconcileMemoryProviderOutbox,
   type ReconciliationOptions,
 } from "./memory-provider-reconciliation";
+import { makeMemoryProviderReconciliationQueue } from "./memory-provider-reconciliation-queue";
 import { makeProviderConversationSaveGate } from "./provider-conversation-save-gate";
 import {
   type ApprovedCoreMemoryReplacement,
@@ -292,6 +294,12 @@ const memoryProviderRetryDelaySeconds = 30;
 const accountDeletionProviderPollMilliseconds = 250;
 const accountDeletionProviderQuiescenceTimeoutMilliseconds = 10_000;
 const gatewayCostMaximumLookups = 3;
+
+class MemoryProviderWorkUnavailable extends Data.TaggedError("MemoryProviderWorkUnavailable")<{
+  readonly cause: unknown;
+  readonly message: string;
+}> {}
+
 const authorization = Authorization.make(retainedCatalog);
 const capabilityActionNames = [
   "analyzeFile",
@@ -602,7 +610,7 @@ export class OsfoAgent extends Think<Env> {
   });
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
   readonly #memoryProviderOutbox = makeMemoryProviderOutboxStore(this.#db);
-  #memoryProviderReconciliation = Promise.resolve();
+  readonly #memoryProviderReconciliationQueue = makeMemoryProviderReconciliationQueue();
   readonly #modelCallUsage = makeDurableModelCallUsage({
     dispatch: { record: (usage) => this.#dispatchModelCallUsage(usage) },
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
@@ -3362,12 +3370,18 @@ export class OsfoAgent extends Think<Env> {
   }
 
   #serializeMemoryProviderWork<A>(work: () => Promise<A>): Promise<A> {
-    const result = this.#memoryProviderReconciliation.then(work, work);
-    this.#memoryProviderReconciliation = result.then(
-      () => undefined,
-      () => undefined,
+    return Effect.runPromise(
+      this.#memoryProviderReconciliationQueue.run(
+        Effect.tryPromise({
+          try: work,
+          catch: (cause) =>
+            new MemoryProviderWorkUnavailable({
+              cause,
+              message: "Serialized Memory Provider work rejected at the Think Promise boundary",
+            }),
+        }),
+      ),
     );
-    return result;
   }
 
   async #runMemoryProviderReconciliationOrSchedule(

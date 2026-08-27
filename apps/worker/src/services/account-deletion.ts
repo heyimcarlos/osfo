@@ -337,22 +337,21 @@ export const make = Effect.gen(function* () {
     return undefined;
   });
 
-  const reconcilePending = dependencies.persistence.pending.pipe(
-    Effect.flatMap((pending) =>
-      Effect.forEach(
-        pending,
-        (candidate) =>
-          reconcileOne(candidate).pipe(
-            Effect.catch((cause) =>
-              Effect.logWarning("Account deletion remains pending").pipe(
-                Effect.annotateLogs({ cause, userId: candidate.userId }),
-              ),
+  const reconcilePending = Effect.gen(function* () {
+    const pending = yield* dependencies.persistence.pending;
+    yield* Effect.forEach(
+      pending,
+      (candidate) =>
+        reconcileOne(candidate).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Account deletion remains pending").pipe(
+              Effect.annotateLogs({ cause, userId: candidate.userId }),
             ),
           ),
-        { concurrency: 1, discard: true },
-      ),
-    ),
-  );
+        ),
+      { concurrency: 1, discard: true },
+    );
+  }).pipe(Effect.withSpan("AccountDeletion.reconcilePending"));
 
   const reconcileUser = Effect.fn("AccountDeletion.reconcileUser")(function* (userId: UserId) {
     const pending = yield* dependencies.persistence.pending;

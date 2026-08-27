@@ -182,31 +182,31 @@ export const make = Effect.gen(function* () {
         } as const)
       : ({ _tag: "DeletionRequested", deletionCaseId } as const);
   });
+  const request = Effect.fn("DeletionCase.request")(function* (command: RequestCommand) {
+    const deletionCaseId = DeletionCaseId.make(yield* secureId);
+    const result = yield* persistence.request(command, deletionCaseId);
+    if (result._tag === "AuthorityChanged") {
+      return { _tag: "DeletionAuthorityChanged" } as const;
+    }
+    if (result._tag === "MissingUser") return { _tag: "UserMissing" } as const;
+    const retainedDeletionCaseId =
+      result._tag === "Existing" ? result.deletionCaseId : deletionCaseId;
+    const fence = yield* persistence.markAccessFenced(command, retainedDeletionCaseId);
+    if (fence._tag === "AuthorityChanged") {
+      return { _tag: "DeletionAuthorityChanged" } as const;
+    }
+    return result._tag === "Existing"
+      ? ({
+          _tag: "DeletionAlreadyRequested",
+          deletionCaseId: result.deletionCaseId,
+        } as const)
+      : ({ _tag: "DeletionRequested", deletionCaseId } as const);
+  });
   return Service.of({
     authenticateSelfReplay: persistence.authenticateSelfReplay,
     inspect: persistence.inspect,
     presentSelf: persistence.presentSelf,
-    request: (command) =>
-      Effect.gen(function* () {
-        const deletionCaseId = DeletionCaseId.make(yield* secureId);
-        const result = yield* persistence.request(command, deletionCaseId);
-        if (result._tag === "AuthorityChanged") {
-          return { _tag: "DeletionAuthorityChanged" } as const;
-        }
-        if (result._tag === "MissingUser") return { _tag: "UserMissing" } as const;
-        const retainedDeletionCaseId =
-          result._tag === "Existing" ? result.deletionCaseId : deletionCaseId;
-        const fence = yield* persistence.markAccessFenced(command, retainedDeletionCaseId);
-        if (fence._tag === "AuthorityChanged") {
-          return { _tag: "DeletionAuthorityChanged" } as const;
-        }
-        return result._tag === "Existing"
-          ? ({
-              _tag: "DeletionAlreadyRequested",
-              deletionCaseId: result.deletionCaseId,
-            } as const)
-          : ({ _tag: "DeletionRequested", deletionCaseId } as const);
-      }),
+    request,
     requestSelf,
   });
 });
