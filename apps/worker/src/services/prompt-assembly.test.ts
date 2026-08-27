@@ -221,35 +221,77 @@ it.effect("fails open and reports latency when provider recall exceeds its stric
 });
 
 it.effect(
-  "skips provider recall and provider usage when managed deletion help is exhausted",
+  "uses bounded company-funded profile recall when managed conversation is exhausted",
   () => {
     const recalledModes: Array<MemoryProvider.RecallMode> = [];
     return PromptAssembly.forModelTurn({
       agentInstructions: "Agent instructions",
       continuation: false,
+      limits: {
+        providerBridgeMaxTokens: 5_000,
+        providerProfileMaxTokens: 5_000,
+        providerRecallMaxTokens: 5_000,
+        providerSourceMaxTokens: 5_000,
+        recallDeadlineMillis: 5_000,
+      },
       messages: [{ content: "Please forget what you know about me", role: "user" }],
       mode: "exhausted",
+      recentTurns: [
+        {
+          messages: [{ content: "Fresh bridge evidence", role: "user" }],
+          recordedAt: "2026-08-24T10:00:00.000Z",
+          sourceId: "conversation-2",
+        },
+      ],
       userId,
     }).pipe(
       Effect.map((result) => {
-        expect(recalledModes).toEqual([]);
-        expect(result).toMatchObject({
-          _tag: "ProviderRecallSkipped",
-          providerContext: null,
-          usage: null,
-        });
+        expect(recalledModes).toEqual(["exhausted"]);
+        expect(result._tag).toBe("ProviderRecallAvailable");
+        if (result._tag !== "ProviderRecallAvailable") return;
+        const profile = between(
+          result.providerContext,
+          "## Provider profile evidence\n\n",
+          "\n\n## Derived provider memory evidence",
+        );
+        const recall = result.providerContext.slice(
+          result.providerContext.indexOf("## Derived provider memory evidence") +
+            "## Derived provider memory evidence\n\n".length,
+        );
+        expect(estimateStringTokens(profile)).toBeLessThanOrEqual(200);
+        expect(estimateStringTokens(recall)).toBeLessThanOrEqual(300);
+        expect(result.providerContext).not.toContain("Indexed conversation source evidence");
+        expect(result.providerContext).not.toContain(
+          "Recent unindexed conversation source evidence",
+        );
+        expect(result.providerContext).not.toContain("Fresh bridge evidence");
+        expect(result.usage).toEqual(testUsage);
         expect(PromptAssembly.policyForManagedExecution("exhaustedConversation")).toEqual({
           recallMode: "exhausted",
-          recordProviderRecallUsage: false,
         });
       }),
       Effect.provide(
         memoryLayerWithRecall((input) => {
           recalledModes.push(input.mode);
           return Effect.succeed({
-            profile: { dynamic: [], static: ["Profile fact"] },
-            relevantMemories: [],
-            sourceChunks: [],
+            profile: {
+              dynamic: Array.from({ length: 80 }, (_, index) => `Dynamic profile fact ${index}`),
+              static: Array.from({ length: 80 }, (_, index) => `Static profile fact ${index}`),
+            },
+            relevantMemories: Array.from({ length: 80 }, (_, index) => ({
+              content: `Relevant memory ${index}`,
+              id: MemoryProvider.KnowledgeMemoryId.make(`memory-${index}`),
+              similarity: 1,
+              updatedAt: evidenceTimestamp(24),
+            })),
+            sourceChunks: [
+              {
+                content: "Indexed source must be excluded",
+                id: MemoryProvider.SourceChunkId.make("chunk-exhausted"),
+                similarity: 1,
+                updatedAt: evidenceTimestamp(24),
+              },
+            ],
             usage: testUsage,
           });
         }),
@@ -258,14 +300,51 @@ it.effect(
   },
 );
 
+it.effect("fails open after the exhausted recall deadline", () => {
+  const logs: Array<{ readonly annotations: object; readonly message: unknown }> = [];
+  const logger = Logger.make<unknown, void>((options) => {
+    logs.push({
+      annotations: { ...options.fiber.getRef(References.CurrentLogAnnotations) },
+      message: options.message,
+    });
+  });
+  return Effect.gen(function* () {
+    const fiber = yield* PromptAssembly.assemble({
+      agentInstructions: "Native Memory remains available",
+      limits: {
+        providerProfileMaxTokens: 5_000,
+        providerRecallMaxTokens: 5_000,
+        recallDeadlineMillis: 5_000,
+      },
+      mode: "exhausted",
+      query: "What did I say before?",
+      userId,
+    }).pipe(Effect.forkChild);
+
+    yield* TestClock.adjust(Duration.millis(750));
+    const result = yield* Fiber.join(fiber);
+
+    expect(result._tag).toBe("ProviderRecallUnavailable");
+    expect(logs).toContainEqual({
+      annotations: { failureTag: "TimedOut", latencyMillis: 750, operation: "recall" },
+      message: ["MemoryProvider recall unavailable for prompt assembly"],
+    });
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        memoryLayerWithRecall(() => Effect.never),
+        Logger.layer([logger]),
+      ),
+    ),
+  );
+});
+
 it("keeps ordinary managed turns on recall with provider usage accounting", () => {
   expect(PromptAssembly.policyForManagedExecution("normalPlanUsage")).toEqual({
     recallMode: "normal",
-    recordProviderRecallUsage: true,
   });
   expect(PromptAssembly.policyForManagedExecution(undefined)).toEqual({
     recallMode: "normal",
-    recordProviderRecallUsage: true,
   });
 });
 

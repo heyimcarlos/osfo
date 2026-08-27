@@ -528,11 +528,17 @@ retry in Session order with stable snapshot identities. Provider deletion
 obligations also retry, and deletion remains pending until the provider confirms
 it. Successful provider operations return generic completed non-model resource
 cost, priced from a pinned resource-price version. They do not report synthetic
-capability counters. Until shared usage policy is activated, Osfo preserves
-company-cost continuity evidence without turning memory calls into User-facing
-allowance debits. Observability records provider latency, recall failures, retry
-count, resource-price evidence, and the oldest pending save age. Osfo tells the
-User about degraded memory only when it affects the requested task.
+capability counters. The MemoryProvider adapter and its ordered outbox stop at
+durable generic cost evidence tied to the original conversation period. The
+complete-system Usage owner combines that evidence with the other completed
+conversation components under one final Usage Event. Until shared usage policy
+is activated, Osfo preserves company-cost continuity evidence without turning
+memory calls into User-facing allowance debits. Activation belongs to the
+complete-system qualification that proves current provider prices, bounded
+operation costs, concurrency, routing, and economics across the whole Capability
+Catalog. Observability records provider latency, recall failures, retry count,
+resource-price evidence, and the oldest pending save age. Osfo tells the User
+about degraded memory only when it affects the requested task.
 
 Compaction thresholds and safety headroom are configurable per model. The 50 to
 60 percent context target is a measurement hypothesis, not a product rule.

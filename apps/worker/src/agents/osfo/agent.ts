@@ -1448,7 +1448,7 @@ export class OsfoAgent extends Think<Env> {
     this.#activeCapabilityTurn = activeCapabilityTurn;
     const capabilityStep = activeCapabilityTurn.step();
     this.#recordCapabilityAccounting(capabilityStep.bundle, index);
-    if (promptPolicy.recordProviderRecallUsage && prompt.usage !== null) {
+    if (prompt.usage !== null) {
       this.ctx.waitUntil(this.#recordProviderRecallCompanyCost(metadata, prompt.usage));
     }
     this.#completedModelSteps.clear();

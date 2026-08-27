@@ -567,6 +567,44 @@ it.effect("keeps the first durable snapshot when reconciliation sees later histo
   ),
 );
 
+it.effect("rejects reconciliation that would move a durable snapshot to a later period", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      seedSession(database);
+      const store = makeAgentStore(makeAgentDb(asDurableObjectStorage(storage)));
+      const reference = committedTurn("assistant-1", "request-1");
+      const original = conversationProjection("assistant-1");
+      yield* store.recordCommittedTurn(reference, original);
+
+      const changedPeriod = ConversationSnapshotProjection.make({
+        ...original,
+        allowancePeriodId: AllowancePeriodId.make("allowance-2"),
+      });
+      const reconciled = yield* store
+        .recordCommittedTurn({ ...reference, source: "reconciliation" }, changedPeriod)
+        .pipe(Effect.result);
+
+      expect(Result.isFailure(reconciled)).toBe(true);
+      if (Result.isFailure(reconciled)) {
+        expect(reconciled.failure._tag).toBe("AgentStoreRecordInvalid");
+      }
+      expect(
+        database
+          .prepare(
+            `SELECT allowance_period_id, payload_json
+              FROM osfo_memory_provider_outbox
+              WHERE outbox_id = ?`,
+          )
+          .get("conversation:9:session-1:assistant-1"),
+      ).toEqual({
+        allowance_period_id: "allowance-1",
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This proves a later period cannot rewrite the first durable provider payload.
+        payload_json: JSON.stringify({ _tag: "SaveConversation", projection: original }),
+      });
+    }),
+  ),
+);
+
 it.effect("rolls back the committed receipt when durable enqueue fails", () =>
   withDatabase(({ database, storage }) =>
     Effect.gen(function* () {
@@ -3555,6 +3593,35 @@ it.effect("rejects usage evidence without a matching provider-applied marker", (
 
       const claimed = yield* makeMemoryProviderOutboxStore(db)
         .claimNext(now, liveLease, "claim-invalid")
+        .pipe(Effect.result);
+
+      expect(Result.isFailure(claimed)).toBe(true);
+      if (Result.isFailure(claimed)) {
+        expect(claimed.failure._tag).toBe("AgentStoreRecordInvalid");
+      }
+    }),
+  ),
+);
+
+it.effect("rejects a save whose indexed period disagrees with its immutable projection", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      seedSession(database);
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      yield* makeAgentStore(db).recordCommittedTurn(
+        committedTurn("assistant-1", "request-1"),
+        conversationProjection("assistant-1"),
+      );
+      database
+        .prepare(
+          `UPDATE osfo_memory_provider_outbox
+            SET allowance_period_id = ?
+            WHERE outbox_id = ?`,
+        )
+        .run("allowance-2", "conversation:9:session-1:assistant-1");
+
+      const claimed = yield* makeMemoryProviderOutboxStore(db)
+        .claimNext(now, liveLease, "claim-wrong-period")
         .pipe(Effect.result);
 
       expect(Result.isFailure(claimed)).toBe(true);
