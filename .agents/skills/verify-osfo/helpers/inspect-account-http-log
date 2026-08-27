@@ -11,7 +11,11 @@ fi
 count_matches() {
   local pattern count
   pattern="$1"
-  count="$(rg --count-matches "$pattern" "$worker_log" || true)"
+  if command -v rg >/dev/null 2>&1; then
+    count="$(rg --count-matches "$pattern" "$worker_log" || true)"
+  else
+    count="$(grep -E -c -- "$pattern" "$worker_log" || true)"
+  fi
   printf '%s\n' "${count:-0}"
 }
 
