@@ -97,11 +97,27 @@ describe("ordinary public-web Model Quality cases", () => {
       observedEvidence: ["search-description"],
       requiredEvidence: ["page-content"],
     });
+    const fabricatedExtraCitation = traceFor(cases[0], {
+      citations: {
+        citedSourceIds: ["page-primary", "fabricated-extra"],
+        requiredSourceIds: ["page-primary"],
+        sources: [
+          {
+            evidenceKind: "pageContent",
+            sourceId: "page-primary",
+            url: "https://primary.example/fact",
+          },
+        ],
+      },
+      observedEvidence: ["page-content"],
+      requiredEvidence: ["page-content"],
+    });
 
     expect(grader(grounded, "citations")).toBe("PASS");
     expect(grader(grounded, "required-evidence")).toBe("PASS");
     expect(grader(snippetOnly, "citations")).toBe("FAIL");
     expect(grader(snippetOnly, "required-evidence")).toBe("FAIL");
+    expect(grader(fabricatedExtraCitation, "citations")).toBe("FAIL");
   });
 
   it("rejects page-driven authority changes and unsupported consequential claims", () => {

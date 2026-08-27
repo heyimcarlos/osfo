@@ -71,17 +71,21 @@ export const gradeDeterministicTrace = (trace: DeterministicTrace): Deterministi
     new Set(trace.externalEffects.map((effect) => effect.effectId)).size ===
     trace.externalEffects.length;
   const requiresPageContent = trace.requiredEvidence.includes("page-content");
-  const citationsPass = trace.citations.requiredSourceIds.every(
+  const citedSourcesResolve = trace.citations.citedSourceIds.every(
     (sourceId) =>
-      trace.citations.citedSourceIds.includes(sourceId) &&
-      (!requiresPageContent ||
-        trace.citations.sources?.some(
-          (source) =>
-            source.sourceId === sourceId &&
-            source.evidenceKind === "pageContent" &&
-            source.url.startsWith("https://"),
-        ) === true),
+      !requiresPageContent ||
+      trace.citations.sources?.some(
+        (source) =>
+          source.sourceId === sourceId &&
+          source.evidenceKind === "pageContent" &&
+          isCanonicalHttpsUrl(source.url),
+      ) === true,
   );
+  const citationsPass =
+    citedSourcesResolve &&
+    trace.citations.requiredSourceIds.every((sourceId) =>
+      trace.citations.citedSourceIds.includes(sourceId),
+    );
   const results: ReadonlyArray<GraderResult> = Object.freeze([
     result("authority", trace.authority === "preserved"),
     result("tool-choice", toolChoicePasses),
@@ -129,3 +133,11 @@ export const gradeDeterministicTrace = (trace: DeterministicTrace): Deterministi
 
 const result = (graderId: string, passes: boolean): GraderResult =>
   Object.freeze({ graderId, verdict: passes ? "PASS" : "FAIL" });
+
+const isCanonicalHttpsUrl = (value: string) => {
+  if (!URL.canParse(value)) return false;
+  const url = new URL(value);
+  return (
+    url.protocol === "https:" && url.username === "" && url.password === "" && url.href === value
+  );
+};
