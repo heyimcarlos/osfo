@@ -136,7 +136,11 @@ const retainedDeletionReplay = Effect.gen(function* () {
       ),
     );
   if (authenticated._tag === "Denied") return yield* new Unauthorized({});
-  return AccountDeletionCaller.of({ _tag: "RetainedReplay", userId: authenticated.userId });
+  return AccountDeletionCaller.of({
+    _tag: "RetainedReplay",
+    deletionCaseId: authenticated.deletionCaseId,
+    userId: authenticated.userId,
+  });
 });
 
 /** Expected denial when no current session can authorize a document download. */

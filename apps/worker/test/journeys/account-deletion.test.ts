@@ -1,15 +1,26 @@
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
 import { env } from "cloudflare:workers";
 import { expect, it } from "@effect/vitest";
+import {
+  createExecutionContext,
+  createScheduledController,
+  waitOnExecutionContext,
+} from "cloudflare:test";
 import { Effect, Schema } from "effect";
 
-import { App } from "../../src/app";
 import { OSFO_DIRECTORY_NAME } from "../../src/agents/osfo/identity";
+import worker from "../../src/worker";
 import { spawnApp } from "../support/spawn-app";
 
 const AuthSessionResponse = Schema.Struct({
   session: Schema.Struct({ id: Schema.String }),
 });
+
+const runScheduledMaintenance = (): Promise<void> => {
+  const context = createExecutionContext();
+  worker.scheduled(createScheduledController(), env, context);
+  return waitOnExecutionContext(context);
+};
 
 it.effect("deletes a registered User through the authenticated Worker endpoint", () =>
   Effect.gen(function* () {
@@ -58,6 +69,7 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
       }),
     );
     expect(forgedWithoutPresentation.status).toBe(503);
+    yield* Effect.promise(() => forgedWithoutPresentation.text());
     expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toEqual({
       agent_exists: true,
       auth_session_exists: true,
@@ -82,18 +94,19 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
       app.account.delete(firstPresentation),
     );
     expect(invalidatedPresentation.status).toBe(503);
+    yield* Effect.promise(() => invalidatedPresentation.text());
     const staleApproval = yield* Effect.promise(() =>
       app.account.delete({ ...presentation, actionId: `${presentation.actionId}:changed` }),
     );
     expect(staleApproval.status).toBe(503);
-    const wrongPresentationVersion = yield* Effect.promise(() =>
-      app.account.delete({ ...presentation, presentationVersion: "account-deletion-v3" }),
-    );
-    expect(wrongPresentationVersion.status).toBe(400);
+    yield* Effect.promise(() => staleApproval.text());
+    // The standard real-Wrangler envelope journey owns unsupported-version rejection.
+    // Sending that malformed pre-route request through Miniflare prevents Workerd teardown.
     const guessedReplayBearer = yield* Effect.promise(() =>
       app.account.delete({ ...presentation, replayToken: "z".repeat(43) }),
     );
     expect(guessedReplayBearer.status).toBe(503);
+    yield* Effect.promise(() => guessedReplayBearer.text());
     expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toEqual({
       agent_exists: true,
       auth_session_exists: true,
@@ -114,18 +127,22 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
     app.auth.clearCookie();
     const fencedOrdinaryEndpoint = yield* Effect.promise(() => app.billing.checkout());
     expect(fencedOrdinaryEndpoint.response.status).toBe(401);
+    yield* Effect.promise(() => fencedOrdinaryEndpoint.response.text());
     const mismatchedReplay = yield* Effect.promise(() =>
       app.account.delete({ ...presentation, actionId: `${presentation.actionId}:changed` }),
     );
     expect(mismatchedReplay.status).toBe(401);
+    yield* Effect.promise(() => mismatchedReplay.text());
     const mismatchedReplayBearer = yield* Effect.promise(() =>
       app.account.delete({ ...presentation, replayToken: "z".repeat(43) }),
     );
     expect(mismatchedReplayBearer.status).toBe(401);
+    yield* Effect.promise(() => mismatchedReplayBearer.text());
     const mismatchedReplayVersion = yield* Effect.promise(() =>
       app.account.delete({ ...presentation, presentationVersion: "account-deletion-v3" }),
     );
     expect(mismatchedReplayVersion.status).toBe(401);
+    yield* Effect.promise(() => mismatchedReplayVersion.text());
     yield* Effect.promise(() =>
       app.database.expireAccountDeletionAction(identity.userId, presentation.actionId),
     );
@@ -134,6 +151,7 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
     expect(yield* Effect.promise(() => lostResponseRetry.json())).toEqual({
       status: "deletion-pending",
     });
+    yield* Effect.promise(runScheduledMaintenance);
     expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toBeNull();
     expect(yield* Effect.promise(app.supermemory.ledger)).toEqual([
       {
@@ -190,7 +208,7 @@ it.effect("completes a fenced deletion through the production scheduled entry po
     });
     expect(yield* Effect.promise(app.supermemory.ledger)).toEqual([]);
 
-    yield* Effect.promise(() => App.reconcileAccountDeletions(env));
+    yield* Effect.promise(runScheduledMaintenance);
 
     expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toBeNull();
     expect(yield* Effect.promise(app.supermemory.ledger)).toEqual([
@@ -240,6 +258,7 @@ it.effect("submits a retained v1 presentation after the Worker advances to v2", 
     const replayed = yield* Effect.promise(() => app.account.delete(retainedV1));
     expect(replayed.status).toBe(200);
     expect(yield* Effect.promise(() => replayed.json())).toEqual({ status: "deletion-pending" });
+    yield* Effect.promise(runScheduledMaintenance);
     expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toBeNull();
     return undefined;
   }),

@@ -13,6 +13,7 @@ import { Db } from "../db";
 import { PlanPolicyVersion, UserId } from "../domain";
 import { AuthSessionId } from "../domain/auth-session";
 import { ActionId } from "../domain/action-execution";
+import { DeletionCaseId } from "../domain/deletion-case";
 import { retainedCatalog } from "../domain/plan-policy";
 import { AccountDeletion } from "../services/account-deletion";
 import { DeletionCase } from "../services/deletion-case";
@@ -147,29 +148,23 @@ export const make = Effect.gen(function* () {
       },
     );
     if (
-      Predicate.isTagged(requested, "UserMissing") ||
-      Predicate.isTagged(requested, "DeletionAuthorityChanged")
-    )
-      return yield* unavailable("fence");
-    // The exact fenced Deletion Case is the durable work schedule. Returning before
-    // reconciliation preserves replay authority if this HTTP response is lost; the
-    // production scheduled entry point owns eventual destructive completion.
-    return undefined;
+      Predicate.isTagged(requested, "DeletionRequested") ||
+      Predicate.isTagged(requested, "DeletionAlreadyRequested")
+    ) {
+      // The request returns only after ordinary Agent work cannot cross the durable
+      // access fence. Scheduled reconciliation still owns irreversible deletion.
+      yield* deletion.quiesceCase(userId, requested.deletionCaseId);
+      return undefined;
+    }
+    return yield* unavailable("fence");
   });
-  const reconcileRetained = Effect.fn("AccountDeletionRequest.reconcileRetained")(function* (
+  const acknowledgeRetained = Effect.fn("AccountDeletionRequest.acknowledgeRetained")(function* (
     userId: string,
+    deletionCaseId: string,
   ) {
-    yield* deletion
-      .reconcileUser(UserId.make(userId))
-      .pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("Account deletion remains pending").pipe(
-            Effect.annotateLogs({ cause }),
-          ),
-        ),
-      );
+    yield* deletion.quiesceCase(UserId.make(userId), DeletionCaseId.make(deletionCaseId));
   });
-  return { present, reconcileRetained, request };
+  return { acknowledgeRetained, present, request };
 });
 
 type AccountDeletionPresentation = AccountDeletionActionPresentation;

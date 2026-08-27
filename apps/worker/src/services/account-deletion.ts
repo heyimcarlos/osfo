@@ -147,6 +147,11 @@ export class Port extends Context.Service<Port, PortInterface>()("@osfo/AccountD
 
 /** Caller-oriented account-deletion capability. */
 export interface Interface {
+  /** Fence and acknowledge the exact retained Deletion Case before an HTTP success response. */
+  readonly quiesceCase: (
+    userId: UserId,
+    deletionCaseId: DeletionCaseId,
+  ) => Effect.Effect<void, AccountDeletionUnavailable>;
   readonly reconcileOne: (
     candidate: PendingAccountDeletion,
   ) => Effect.Effect<void, AccountDeletionUnavailable>;
@@ -210,28 +215,56 @@ export const make = Effect.gen(function* () {
     return Predicate.isTagged(result, "Permitted");
   });
 
+  const requireCurrentAuthority = (candidate: PendingAccountDeletion, changedDuring: string) =>
+    recheck(candidate).pipe(
+      Effect.filterOrFail(
+        (authorized) => authorized,
+        () =>
+          new AccountDeletionUnavailable({
+            cause: candidate.userId,
+            message: `The durable account-deletion authority changed ${changedDuring}`,
+            operation: "recheckDeletionAuthority",
+          }),
+      ),
+      Effect.asVoid,
+    );
+
+  const quiesceOne = Effect.fn("AccountDeletion.quiesceOne")(function* (
+    candidate: PendingAccountDeletion,
+  ) {
+    yield* dependencies.persistence.ensureAccessFence(candidate);
+    yield* requireCurrentAuthority(candidate, "before Agent quiescence acknowledgement");
+    if (candidate.agentId !== null) {
+      yield* dependencies.agents.quiesce(candidate.agentId, candidate.userId);
+    }
+  });
+
+  const quiesceCase = Effect.fn("AccountDeletion.quiesceCase")(function* (
+    userId: UserId,
+    deletionCaseId: DeletionCaseId,
+  ) {
+    const pending = yield* dependencies.persistence.pending;
+    const candidate = pending.find(
+      (item) => item.userId === userId && item.deletionCaseId === deletionCaseId,
+    );
+    if (candidate === undefined) {
+      return yield* new AccountDeletionUnavailable({
+        cause: { deletionCaseId, userId },
+        message: "The exact account-deletion case is not pending",
+        operation: "quiesceAgentAccountDeletion",
+      });
+    }
+    yield* quiesceOne(candidate);
+    return undefined;
+  });
+
   const reconcileOne = Effect.fn("AccountDeletion.reconcileOne")(function* (
     candidate: PendingAccountDeletion,
   ) {
-    const requireCurrentAuthority = (changedDuring: string) =>
-      recheck(candidate).pipe(
-        Effect.filterOrFail(
-          (authorized) => authorized,
-          () =>
-            new AccountDeletionUnavailable({
-              cause: candidate.userId,
-              message: `The durable account-deletion authority changed ${changedDuring}`,
-              operation: "recheckDeletionAuthority",
-            }),
-        ),
-        Effect.asVoid,
-      );
-    yield* dependencies.persistence.ensureAccessFence(candidate);
-    if (candidate.agentId !== null) {
-      yield* requireCurrentAuthority("before provider quiescence");
-      yield* dependencies.agents.quiesce(candidate.agentId, candidate.userId);
-    }
-    yield* requireCurrentAuthority("before provider knowledge deletion");
+    const requireAuthority = (changedDuring: string) =>
+      requireCurrentAuthority(candidate, changedDuring);
+    yield* quiesceOne(candidate);
+    yield* requireAuthority("before provider knowledge deletion");
     yield* provider.deleteUserKnowledge({ userId: candidate.userId }).pipe(
       Effect.mapError(
         (cause) =>
@@ -242,7 +275,7 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
-    yield* requireCurrentAuthority("before provider knowledge absence verification");
+    yield* requireAuthority("before provider knowledge absence verification");
     const providerKnowledge = yield* provider
       .verifyUserKnowledge({ userId: candidate.userId })
       .pipe(
@@ -262,7 +295,7 @@ export const make = Effect.gen(function* () {
         operation: "deleteProviderKnowledge",
       });
     }
-    yield* requireCurrentAuthority("before integration authority discovery");
+    yield* requireAuthority("before integration authority discovery");
     const discoveredIntegrationTargets = yield* dependencies.integrations.pending(candidate.userId);
     for (const target of discoveredIntegrationTargets) {
       if (target.userId !== candidate.userId) {
@@ -273,7 +306,7 @@ export const make = Effect.gen(function* () {
         });
       }
     }
-    yield* requireCurrentAuthority("before retaining integration authority targets");
+    yield* requireAuthority("before retaining integration authority targets");
     const integrationTargets = yield* dependencies.persistence.stageIntegrationTargets(
       candidate,
       discoveredIntegrationTargets,
@@ -286,20 +319,20 @@ export const make = Effect.gen(function* () {
           operation: "deleteIntegrationAuthority",
         });
       }
-      yield* requireCurrentAuthority("before an integration authority deletion");
+      yield* requireAuthority("before an integration authority deletion");
       yield* dependencies.integrations.revoke(target);
-      yield* requireCurrentAuthority("before confirming an integration authority deletion");
+      yield* requireAuthority("before confirming an integration authority deletion");
       yield* dependencies.persistence.confirmIntegrationTarget(candidate, target);
     }
     yield* dependencies.objects.remove(
       candidate.userId,
-      requireCurrentAuthority("before an R2 object deletion"),
+      requireAuthority("before an R2 object deletion"),
     );
     if (candidate.agentId !== null) {
-      yield* requireCurrentAuthority("before Agent deletion");
+      yield* requireAuthority("before Agent deletion");
       yield* dependencies.agents.remove(candidate.agentId);
     }
-    yield* requireCurrentAuthority("before PostgreSQL deletion");
+    yield* requireAuthority("before PostgreSQL deletion");
     yield* dependencies.persistence.removeUser(candidate);
     return undefined;
   });
@@ -328,7 +361,7 @@ export const make = Effect.gen(function* () {
     return undefined;
   });
 
-  return Service.of({ reconcileOne, reconcilePending, reconcileUser });
+  return Service.of({ quiesceCase, reconcileOne, reconcilePending, reconcileUser });
 });
 
 /** Account-deletion Layer that preserves provider and runtime-port requirements. */

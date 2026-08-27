@@ -11,7 +11,11 @@ import {
 /** Caller admitted either by a current session or one exact retained deletion replay. */
 export type AccountDeletionCallerValue =
   | ({ readonly _tag: "CurrentUser" } & CurrentUserValue)
-  | { readonly _tag: "RetainedReplay"; readonly userId: string };
+  | {
+      readonly _tag: "RetainedReplay";
+      readonly deletionCaseId: string;
+      readonly userId: string;
+    };
 
 /** Caller admitted either by a current session or one exact retained deletion replay. */
 export class AccountDeletionCaller extends Context.Service<
@@ -173,7 +177,7 @@ export const AccountGroup = HttpApiGroup.make("account")
       .annotateMerge(
         OpenApi.annotations({
           description:
-            "Fence and schedule permanent deletion from a current session, or resume one exact retained lost-response request after that session is revoked.",
+            "Fence access, acknowledge Agent quiescence, and schedule permanent deletion from a current session, or resume one exact retained lost-response request after that session is revoked.",
           identifier: "account.delete",
           summary: "Delete Account",
         }),

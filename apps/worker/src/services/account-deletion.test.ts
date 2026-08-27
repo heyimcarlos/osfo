@@ -1,7 +1,7 @@
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
 /* oxlint-disable effecttsgo/strict-effect-provide -- Each it.effect is the entry point for its isolated service Layer. */
 import { expect, it } from "@effect/vitest";
-import { Effect, Layer, Result } from "effect";
+import { Deferred, Effect, Fiber, Layer, Result } from "effect";
 
 import { AgentId, PlanPolicyVersion, UserId } from "../domain";
 import { AdminActorId, AdminReason } from "../domain/account-administration";
@@ -10,6 +10,231 @@ import { DeletionCaseId } from "../domain/deletion-case";
 import { AccountDeletion } from "./account-deletion";
 import { ApprovalPresentation } from "./authorization";
 import { MemoryProvider } from "./memory-provider";
+import { makeAccountDeletionFence } from "../agents/osfo/account-deletion-fence";
+
+it.effect("acknowledges an exact fenced case only after admitted Agent work drains", () => {
+  const candidate = {
+    _tag: "SelfService" as const,
+    agentId: AgentId.make("agent-1"),
+    approvalActionId: ActionId.make("account-delete-1"),
+    approvalPresentation: ApprovalPresentation.make("Delete Account"),
+    deletionCaseId: DeletionCaseId.make("deletion-case-1"),
+    userId: UserId.make("user-1"),
+  };
+  const calls = new Array<string>();
+  const fence = makeAccountDeletionFence();
+  const port = AccountDeletion.Port.of({
+    inspectAuthorization: () =>
+      Effect.sync(() => calls.push("recheck")).pipe(Effect.as(activeFacts(candidate.userId))),
+    agents: {
+      quiesce: () => Effect.sync(() => calls.push("quiesce")).pipe(Effect.andThen(fence.close)),
+      remove: () => Effect.die(new Error("Unexpected Agent removal")),
+    },
+    integrations: {
+      pending: () => Effect.die(new Error("Unexpected discovery")),
+      revoke: () => Effect.void,
+    },
+    objects: { remove: () => Effect.die(new Error("Unexpected R2 deletion")) },
+    persistence: {
+      ...passthroughIntegrationProgress,
+      pending: Effect.succeed([candidate]),
+      removeUser: () => Effect.die(new Error("Unexpected PostgreSQL deletion")),
+    },
+  });
+
+  return Effect.gen(function* () {
+    const providerStarted = yield* Deferred.make<void>();
+    const releaseProvider = yield* Deferred.make<void>();
+    const mutations = new Array<string>();
+    const providerContinuation = yield* fence
+      .runTracked(
+        (signal) =>
+          Deferred.succeed(providerStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseProvider)),
+            Effect.andThen(
+              Effect.sync(() => {
+                if (!signal.aborted) mutations.push("provider", "sqlite", "outbox");
+              }),
+            ),
+          ),
+        () => "account deletion fenced" as const,
+      )
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(providerStarted);
+    const deletion = yield* AccountDeletion.Service;
+    const acknowledgment = yield* deletion
+      .quiesceCase(candidate.userId, candidate.deletionCaseId)
+      .pipe(Effect.forkChild);
+
+    yield* Effect.yieldNow;
+    expect(acknowledgment.pollUnsafe()).toBeUndefined();
+    expect(calls).toEqual(["recheck", "quiesce"]);
+    yield* Deferred.succeed(releaseProvider, undefined);
+    yield* Fiber.join(providerContinuation);
+    yield* Fiber.join(acknowledgment);
+    expect(mutations).toEqual([]);
+
+    const lateMutation = yield* fence
+      .runTracked(
+        () => Effect.sync(() => mutations.push("late")),
+        () => "account deletion fenced" as const,
+      )
+      .pipe(Effect.flip);
+    expect(lateMutation).toBe("account deletion fenced");
+    expect(mutations).toEqual([]);
+  }).pipe(Effect.provide(accountDeletionLayer(port, calls, () => "deleted")));
+});
+
+it.effect(
+  "scheduled reconciliation retries a retained case after synchronous quiescence fails",
+  () => {
+    const calls = new Array<string>();
+    const candidate = {
+      _tag: "SelfService" as const,
+      agentId: AgentId.make("agent-1"),
+      approvalActionId: ActionId.make("account-delete-1"),
+      approvalPresentation: ApprovalPresentation.make("Delete Account"),
+      deletionCaseId: DeletionCaseId.make("deletion-case-1"),
+      userId: UserId.make("user-1"),
+    };
+    let quiescenceAttempts = 0;
+    const port = AccountDeletion.Port.of({
+      inspectAuthorization: () =>
+        Effect.sync(() => calls.push("recheck")).pipe(Effect.as(activeFacts(candidate.userId))),
+      agents: {
+        quiesce: () =>
+          Effect.suspend(() => {
+            calls.push("quiesce");
+            quiescenceAttempts += 1;
+            return quiescenceAttempts === 1
+              ? Effect.fail(
+                  new AccountDeletion.AccountDeletionUnavailable({
+                    cause: "Agent unavailable",
+                    message: "Agent quiescence remains pending",
+                    operation: "quiesceAgentAccountDeletion",
+                  }),
+                )
+              : Effect.void;
+          }),
+        remove: () => Effect.sync(() => calls.push("agent")),
+      },
+      integrations: { pending: () => Effect.succeed([]), revoke: () => Effect.void },
+      objects: {
+        remove: (_, authorizeDelete) =>
+          authorizeDelete.pipe(Effect.andThen(Effect.sync(() => calls.push("objects")))),
+      },
+      persistence: {
+        ...passthroughIntegrationProgress,
+        pending: Effect.succeed([candidate]),
+        removeUser: () => Effect.sync(() => calls.push("postgres")),
+      },
+    });
+
+    return Effect.gen(function* () {
+      const deletion = yield* AccountDeletion.Service;
+      expect(
+        Result.isFailure(
+          yield* deletion
+            .quiesceCase(candidate.userId, candidate.deletionCaseId)
+            .pipe(Effect.result),
+        ),
+      ).toBe(true);
+      expect(calls).toEqual(["recheck", "quiesce"]);
+
+      yield* deletion.reconcilePending;
+      expect(calls).toEqual([
+        "recheck",
+        "quiesce",
+        "recheck",
+        "quiesce",
+        "recheck",
+        "provider",
+        "recheck",
+        "recheck",
+        "recheck",
+        "recheck",
+        "objects",
+        "recheck",
+        "agent",
+        "recheck",
+        "postgres",
+      ]);
+    }).pipe(Effect.provide(accountDeletionLayer(port, calls, () => "deleted")));
+  },
+);
+
+it.effect("acknowledges an exact fenced case with no Agent as terminally quiesced", () => {
+  const calls = new Array<string>();
+  const candidate = {
+    _tag: "SelfService" as const,
+    agentId: null,
+    approvalActionId: ActionId.make("account-delete-1"),
+    approvalPresentation: ApprovalPresentation.make("Delete Account"),
+    deletionCaseId: DeletionCaseId.make("deletion-case-1"),
+    userId: UserId.make("user-1"),
+  };
+  const port = AccountDeletion.Port.of({
+    inspectAuthorization: () =>
+      Effect.sync(() => calls.push("recheck")).pipe(Effect.as(activeFacts(candidate.userId))),
+    agents: {
+      quiesce: () => Effect.die(new Error("Absent Agent must not be called")),
+      remove: () => Effect.die(new Error("Absent Agent must not be removed")),
+    },
+    integrations: {
+      pending: () => Effect.die(new Error("Unexpected discovery")),
+      revoke: () => Effect.void,
+    },
+    objects: { remove: () => Effect.die(new Error("Unexpected R2 deletion")) },
+    persistence: {
+      ...passthroughIntegrationProgress,
+      pending: Effect.succeed([candidate]),
+      removeUser: () => Effect.die(new Error("Unexpected PostgreSQL deletion")),
+    },
+  });
+  return AccountDeletion.Service.pipe(
+    Effect.flatMap((deletion) => deletion.quiesceCase(candidate.userId, candidate.deletionCaseId)),
+    Effect.andThen(Effect.sync(() => expect(calls).toEqual(["recheck"]))),
+    Effect.provide(accountDeletionLayer(port, calls, () => "deleted")),
+  );
+});
+
+it.effect("rejects quiescence for a nonexact retained Deletion Case", () => {
+  const candidate = {
+    _tag: "SelfService" as const,
+    agentId: AgentId.make("agent-1"),
+    approvalActionId: ActionId.make("account-delete-1"),
+    approvalPresentation: ApprovalPresentation.make("Delete Account"),
+    deletionCaseId: DeletionCaseId.make("deletion-case-1"),
+    userId: UserId.make("user-1"),
+  };
+  const calls = new Array<string>();
+  const port = AccountDeletion.Port.of({
+    inspectAuthorization: () => Effect.die(new Error("Nonexact case must not be authorized")),
+    agents: {
+      quiesce: () => Effect.die(new Error("Nonexact case must not reach the Agent")),
+      remove: () => Effect.die(new Error("Unexpected Agent removal")),
+    },
+    integrations: {
+      pending: () => Effect.die(new Error("Unexpected discovery")),
+      revoke: () => Effect.void,
+    },
+    objects: { remove: () => Effect.die(new Error("Unexpected R2 deletion")) },
+    persistence: {
+      ...passthroughIntegrationProgress,
+      pending: Effect.succeed([candidate]),
+      removeUser: () => Effect.die(new Error("Unexpected PostgreSQL deletion")),
+    },
+  });
+
+  return Effect.gen(function* () {
+    const deletion = yield* AccountDeletion.Service;
+    const failure = yield* deletion
+      .quiesceCase(candidate.userId, DeletionCaseId.make("deletion-case-other"))
+      .pipe(Effect.flip);
+    expect(failure.operation).toBe("quiesceAgentAccountDeletion");
+    expect(calls).toEqual([]);
+  }).pipe(Effect.provide(accountDeletionLayer(port, calls, () => "deleted")));
+});
 
 it.effect("keeps local data pending until provider deletion confirms permanent absence", () => {
   const calls: Array<string> = [];

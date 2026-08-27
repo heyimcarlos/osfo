@@ -32,7 +32,7 @@ export const layer = Layer.unwrap(
           Effect.gen(function* () {
             const caller = yield* AccountDeletionCaller;
             if (caller._tag === "RetainedReplay") {
-              yield* deletion.reconcileRetained(caller.userId);
+              yield* deletion.acknowledgeRetained(caller.userId, caller.deletionCaseId);
               return { status: "deletion-pending" as const };
             }
             yield* deletion.request({

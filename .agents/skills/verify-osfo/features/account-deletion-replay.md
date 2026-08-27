@@ -14,6 +14,7 @@ After the first confirmed deletion request loses its browser response, refresh o
 4. Choose `Confirm account deletion` once, then navigate the tab immediately to `/account-deletion/recovery` before the first response can update browser state. This deliberately loses only the browser response; it does not change the request.
 5. Refresh the recovery route. Require the exact retained title and consequence, no editable approval fields, and one enabled `Retry Account Deletion` button. Capture this state as `action.png` and record `exact retained request after refresh`.
 6. Choose `Retry Account Deletion` once. Require navigation to `/` with the signed-out `Sign in` and `Get started` links. Capture `result.png` and record that `Sign in and Get started` are visible.
-7. Run `observe account-deletion-replay` and finish the evidence.
+7. Run `control-osfo reconcile-account-deletion <run-id>`. This invokes the same production scheduled entry point that owns irreversible deletion after both the initial request and its retained retry.
+8. Run `observe account-deletion-replay` and finish the evidence.
 
 PASS requires one successful presentation request, two successful account DELETE requests, exactly one target provider-container deletion, the same complete target-absence and unrelated-survival assertions as the happy path, the exact retained presentation after refresh, and the signed-out result. A 503 retry or an edited/stale browser record is not this proof.

@@ -159,7 +159,9 @@ it.effect("rejects an edited envelope and terminally removes the disposable iden
       yield* accepted.text;
       const reconcile = Effect.gen(function* () {
         if (isTerminallyDeleted(yield* readTerminalDeletionState(userId))) return true;
-        const scheduled = yield* request("GET", "/cdn-cgi/handler/scheduled");
+        const scheduled = yield* httpClient.execute(
+          HttpClientRequest.get(`${workerOrigin}/cdn-cgi/handler/scheduled`),
+        );
         if (scheduled.status !== 200) {
           return yield* Effect.die(
             new Error(`Production account-deletion reconciliation failed: ${scheduled.status}`),
