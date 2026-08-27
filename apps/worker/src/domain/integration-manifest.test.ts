@@ -54,13 +54,18 @@ describe("Integration Capability Manifests", () => {
 
   it("pins every Osfo operation to one direct provider tool and never exposes provider meta tools", () => {
     const expected = new Map([
+      ["GMAIL_SEARCH_EMAILS", "GMAIL_FETCH_EMAILS"],
       ["GMAIL_FETCH_THREAD", "GMAIL_FETCH_MESSAGE_BY_THREAD_ID"],
-      ["GMAIL_CREATE_DRAFT", "GMAIL_CREATE_EMAIL_DRAFT"],
       ["GMAIL_SEND_EMAIL", "GMAIL_SEND_EMAIL"],
       ["CALENDAR_LIST_EVENTS", "GOOGLECALENDAR_EVENTS_LIST"],
-      ["CALENDAR_CREATE_PRIVATE", "GOOGLECALENDAR_CREATE_EVENT"],
+      ["CALENDAR_FIND_AVAILABILITY", "GOOGLECALENDAR_FIND_FREE_SLOTS"],
+      ["CALENDAR_CREATE_EVENT", "GOOGLECALENDAR_CREATE_EVENT"],
       ["CALENDAR_UPDATE_EVENT", "GOOGLECALENDAR_PATCH_EVENT"],
+      ["CALENDAR_DELETE_EVENT", "GOOGLECALENDAR_DELETE_EVENT"],
+      ["DRIVE_SEARCH", "GOOGLEDRIVE_FIND_FILE"],
       ["DRIVE_GET_METADATA", "GOOGLEDRIVE_GET_FILE_METADATA"],
+      ["DRIVE_READ_FILE", "GOOGLEDRIVE_DOWNLOAD_FILE"],
+      ["DRIVE_DELIVER_ARTIFACT", "GOOGLEDRIVE_UPLOAD_FILE"],
     ]);
 
     for (const [operation, providerTool] of expected) {
@@ -94,15 +99,6 @@ describe("Integration Capability Manifests", () => {
       Result.getOrThrow(
         resolveManifest({
           manifestVersion: ManifestVersion.make("gmail-v1"),
-          operation: "GMAIL_CREATE_DRAFT",
-          toolkit: "gmail",
-        }),
-      ).consequences,
-    ).toEqual([]);
-    expect(
-      Result.getOrThrow(
-        resolveManifest({
-          manifestVersion: ManifestVersion.make("gmail-v1"),
           operation: "GMAIL_SEND_EMAIL",
           toolkit: "gmail",
         }),
@@ -112,11 +108,11 @@ describe("Integration Capability Manifests", () => {
       Result.getOrThrow(
         resolveManifest({
           manifestVersion: ManifestVersion.make("calendar-v1"),
-          operation: "CALENDAR_CREATE_PRIVATE",
+          operation: "CALENDAR_CREATE_EVENT",
           toolkit: "googlecalendar",
         }),
       ).consequences,
-    ).toEqual([]);
+    ).toEqual(["futureOrRecurringExternalEffect"]);
     expect(
       Result.getOrThrow(
         resolveManifest({
@@ -164,7 +160,7 @@ describe("Integration Capability Manifests", () => {
       Result.isSuccess(
         manifest.decodeCompletedEvidence({
           _tag: "CompletedIntegrationRead",
-          providerExecutionId: "execution-1",
+          providerLogIds: ["execution-1"],
           records: 20,
           responseBytes: 65_536n,
         }),
@@ -174,7 +170,7 @@ describe("Integration Capability Manifests", () => {
       Result.isFailure(
         manifest.decodeCompletedEvidence({
           _tag: "CompletedIntegrationRead",
-          providerExecutionId: "execution-1",
+          providerLogIds: ["execution-1"],
           providerPayload: { secret: "must not persist" },
           records: 20,
           responseBytes: 65_536n,
@@ -188,7 +184,7 @@ describe("Integration Capability Manifests", () => {
       {
         evidence: {
           _tag: "CompletedIntegrationRead",
-          providerExecutionId: "gmail-read",
+          providerLogIds: ["gmail-read"],
           records: 20,
           responseBytes: 65_536n,
         },
@@ -199,11 +195,12 @@ describe("Integration Capability Manifests", () => {
         },
         input: { includeAttachments: false, maximumMessages: 20, threadId: "thread-1" },
       },
-      ...["GMAIL_CREATE_DRAFT", "GMAIL_SEND_EMAIL"].map((operation) => ({
+      ...["GMAIL_SEND_EMAIL"].map((operation) => ({
         evidence: {
           _tag: "CompletedIntegrationEffect",
           mutations: 1,
-          providerExecutionId: `gmail-effect:${operation}`,
+          providerLogId: `gmail-effect:${operation}`,
+          providerResourceId: "message-1",
         },
         identity: { manifestVersion: "gmail-v1", operation, toolkit: "gmail" },
         input: { body: "Message body", recipients: ["person@example.test"], subject: "Subject" },
@@ -211,7 +208,7 @@ describe("Integration Capability Manifests", () => {
       {
         evidence: {
           _tag: "CompletedIntegrationRead",
-          providerExecutionId: "calendar-read",
+          providerLogIds: ["calendar-read"],
           records: 10,
           responseBytes: 65_536n,
         },
@@ -225,25 +222,29 @@ describe("Integration Capability Manifests", () => {
           endsAt: "2026-09-14T00:00:00Z",
           maximumEvents: 10,
           startsAt: "2026-09-01T00:00:00Z",
+          timeZone: "America/Toronto",
         },
       },
       {
         evidence: {
           _tag: "CompletedIntegrationEffect",
           mutations: 1,
-          providerExecutionId: "calendar-create",
+          providerLogId: "calendar-create",
+          providerResourceId: "event-created",
         },
         identity: {
           manifestVersion: "calendar-v1",
-          operation: "CALENDAR_CREATE_PRIVATE",
+          operation: "CALENDAR_CREATE_EVENT",
           toolkit: "googlecalendar",
         },
         input: {
           attendeeCount: 0,
           calendarId: "primary",
           endsAt: "2026-09-01T13:00:00Z",
+          recurrence: null,
           sendNotifications: false,
           startsAt: "2026-09-01T12:00:00Z",
+          timeZone: "America/Toronto",
           title: "Private event",
         },
       },
@@ -251,7 +252,8 @@ describe("Integration Capability Manifests", () => {
         evidence: {
           _tag: "CompletedIntegrationEffect",
           mutations: 1,
-          providerExecutionId: "calendar-update",
+          providerLogId: "calendar-update",
+          providerResourceId: "event-1",
         },
         identity: {
           manifestVersion: "calendar-v1",
@@ -263,6 +265,7 @@ describe("Integration Capability Manifests", () => {
           changes: {
             endsAt: "2026-09-01T14:00:00Z",
             startsAt: "2026-09-01T13:00:00Z",
+            timeZone: "America/Toronto",
           },
           eventId: "event-1",
           sendNotifications: false,
@@ -271,7 +274,7 @@ describe("Integration Capability Manifests", () => {
       {
         evidence: {
           _tag: "CompletedIntegrationRead",
-          providerExecutionId: "drive-read",
+          providerLogIds: ["drive-read"],
           records: 1,
           responseBytes: 16_384n,
         },

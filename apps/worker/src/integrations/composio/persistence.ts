@@ -5,25 +5,34 @@ import type { ActionId } from "../../domain/action-execution";
 import {
   IntegrationPersistenceUnavailable,
   type IntegrationPersistence,
+  type PersistedIntegrationAction,
 } from "../../services/integrations";
 
-/* oxlint-disable effecttsgo/async-function -- Durable Object transaction callbacks are Promise-based host boundaries. */
+/* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Durable Object transaction callbacks are Promise-based host boundaries; persisted outcomes use the canonical _tag discriminator. */
 
 const persistenceVersion = "composio-direct-v1";
 const boundedProviderIdentity = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500));
 const actionDigest = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 
 const PersistedEffectResult = Schema.TaggedStruct("IntegrationEffectCompleted", {
-  evidence: Schema.Struct({ providerLogId: boundedProviderIdentity }),
+  evidence: Schema.Struct({
+    providerLogId: boundedProviderIdentity,
+    // Legacy pre-pack effects retain only the execution identity.
+    providerResourceId: Schema.optionalKey(boundedProviderIdentity),
+  }),
   manifestVersion: ManifestVersion,
   mutations: Schema.Literal(1),
   operation: Schema.Literals([
+    // Retain the two pre-pack operation names so an old Action remains readable.
     "GMAIL_CREATE_DRAFT",
-    "GMAIL_SEND_EMAIL",
     "CALENDAR_CREATE_PRIVATE",
+    "GMAIL_SEND_EMAIL",
+    "CALENDAR_CREATE_EVENT",
     "CALENDAR_UPDATE_EVENT",
+    "CALENDAR_DELETE_EVENT",
+    "DRIVE_DELIVER_ARTIFACT",
   ]),
-  toolkit: Schema.Literals(["gmail", "googlecalendar"]),
+  toolkit: Schema.Literals(["gmail", "googlecalendar", "googledrive"]),
 });
 
 const PersistedAction = Schema.Union([
@@ -51,7 +60,10 @@ export const make = (storage: DurableObjectStorage): IntegrationPersistence => (
           ? Effect.succeed(null)
           : Schema.decodeUnknownEffect(PersistedAction)(value, {
               onExcessProperty: "error",
-            }).pipe(Effect.mapError(() => persistenceFailure("readAction"))),
+            }).pipe(
+              Effect.map(normalizePersistedAction),
+              Effect.mapError(() => persistenceFailure("readAction")),
+            ),
       ),
     ),
   readSession: (userId) =>
@@ -99,6 +111,7 @@ export const make = (storage: DurableObjectStorage): IntegrationPersistence => (
     }),
   retainAction: (actionId, value) =>
     Schema.decodeUnknownEffect(PersistedAction)(value, { onExcessProperty: "error" }).pipe(
+      Effect.map(normalizePersistedAction),
       Effect.flatMap((validated) =>
         Effect.tryPromise({
           try: () => storage.put(actionKey(actionId), validated),
@@ -129,6 +142,23 @@ export const make = (storage: DurableObjectStorage): IntegrationPersistence => (
       catch: () => persistenceFailure("retainSession"),
     }),
 });
+
+const normalizePersistedAction = (
+  value: typeof PersistedAction.Type,
+): PersistedIntegrationAction => {
+  if (value._tag !== "Applied") return value;
+  return {
+    ...value,
+    result: {
+      ...value.result,
+      evidence: {
+        providerLogId: value.result.evidence.providerLogId,
+        providerResourceId:
+          value.result.evidence.providerResourceId ?? value.result.evidence.providerLogId,
+      },
+    },
+  };
+};
 
 const sessionKey = (userId: UserId): string => `integration:session:${userId}`;
 const actionKey = (actionId: ActionId): string => `integration:action:${actionId}`;

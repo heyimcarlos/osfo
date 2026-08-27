@@ -26,7 +26,13 @@ import {
 } from "./think-action-approvals";
 import { personalSkillDeleteActionName, SkillDeleteInput } from "./personal-skill-tools";
 import type { IntegrationToolInput } from "./integration-tools";
-import { CalendarUpdateEventInput, GmailMessageInput } from "../../domain/integration-manifest";
+import {
+  CalendarCreateEventInput,
+  CalendarDeleteEventInput,
+  CalendarUpdateEventInput,
+  DriveDeliverArtifactInput,
+  GmailMessageInput,
+} from "../../domain/integration-manifest";
 
 /** Name registered with Think for retained-document deletion. */
 export const documentDeleteActionName = "deleteDocument";
@@ -59,6 +65,15 @@ export const presentOsfoAction = Effect.fn("ActionPresentation.present")(functio
   }
   if (pending.descriptor.action === "calendarUpdateEvent") {
     return yield* presentCalendarUpdateAction(pending);
+  }
+  if (pending.descriptor.action === "calendarCreateEvent") {
+    return yield* presentCalendarCreateAction(pending);
+  }
+  if (pending.descriptor.action === "calendarDeleteEvent") {
+    return yield* presentCalendarDeleteAction(pending);
+  }
+  if (pending.descriptor.action === "driveDeliverArtifact") {
+    return yield* presentDriveDeliveryAction(pending);
   }
   if (pending.descriptor.action === "gmailSendEmail") {
     return yield* presentGmailSendAction(pending);
@@ -211,6 +226,39 @@ export const hasExactIntegrationActionInput = (
         )
       : false;
   }
+  if (operation === "CALENDAR_CREATE_EVENT") {
+    const decoded = Schema.decodeUnknownOption(CalendarCreateEventInput)(input);
+    return Option.isSome(decoded)
+      ? hasExactFields(
+          presentation,
+          "integration.effect",
+          "osfo-calendar-create-v1",
+          calendarCreatePresentationFields(decoded.value),
+        )
+      : false;
+  }
+  if (operation === "CALENDAR_DELETE_EVENT") {
+    const decoded = Schema.decodeUnknownOption(CalendarDeleteEventInput)(input);
+    return Option.isSome(decoded)
+      ? hasExactFields(
+          presentation,
+          "integration.effect",
+          "osfo-calendar-delete-v1",
+          calendarDeletePresentationFields(decoded.value),
+        )
+      : false;
+  }
+  if (operation === "DRIVE_DELIVER_ARTIFACT") {
+    const decoded = Schema.decodeUnknownOption(DriveDeliverArtifactInput)(input);
+    return Option.isSome(decoded)
+      ? hasExactFields(
+          presentation,
+          "integration.effect",
+          "osfo-drive-delivery-v1",
+          driveDeliveryPresentationFields(decoded.value),
+        )
+      : false;
+  }
   return false;
 };
 
@@ -281,8 +329,10 @@ const presentCalendarUpdateAction = Effect.fn("ActionPresentation.presentCalenda
     return ActionPresentation.make({
       actionDefinitionVersion: "osfo-calendar-update-v1",
       actionId: ActionId.make(pending.descriptor.toolCallId),
-      consequences: ["Overwrite the selected fields on this exact external calendar event."],
-      description: "Update the exact Google Calendar event shown here.",
+      consequences: [
+        "Overwrite the selected fields on this exact external calendar event ID; a recurring master ID updates its series.",
+      ],
+      description: "Update the exact Google Calendar event ID shown here.",
       fields: calendarUpdatePresentationFields(input),
       operation: "integration.effect",
       presentationId: ActionPresentationId.make(pending.executionId),
@@ -290,6 +340,79 @@ const presentCalendarUpdateAction = Effect.fn("ActionPresentation.presentCalenda
     });
   },
 );
+
+const presentCalendarCreateAction = Effect.fn("ActionPresentation.presentCalendarCreate")(
+  function* (pending: PendingThinkAction) {
+    const input = yield* decodeIntegrationPresentation(
+      CalendarCreateEventInput,
+      pending,
+      "The Calendar create input cannot be projected safely",
+    );
+    return ActionPresentation.make({
+      actionDefinitionVersion: "osfo-calendar-create-v1",
+      actionId: ActionId.make(pending.descriptor.toolCallId),
+      consequences: ["Create this exact external calendar event or recurring series."],
+      description: "Create the exact private Google Calendar event shown here.",
+      fields: calendarCreatePresentationFields(input),
+      operation: "integration.effect",
+      presentationId: ActionPresentationId.make(pending.executionId),
+      title: "Create calendar event",
+    });
+  },
+);
+
+const presentCalendarDeleteAction = Effect.fn("ActionPresentation.presentCalendarDelete")(
+  function* (pending: PendingThinkAction) {
+    const input = yield* decodeIntegrationPresentation(
+      CalendarDeleteEventInput,
+      pending,
+      "The Calendar delete input cannot be projected safely",
+    );
+    return ActionPresentation.make({
+      actionDefinitionVersion: "osfo-calendar-delete-v1",
+      actionId: ActionId.make(pending.descriptor.toolCallId),
+      consequences: [
+        "Delete this exact external calendar event ID; a recurring master ID deletes its series.",
+      ],
+      description: "Delete the exact Google Calendar event ID shown here.",
+      fields: calendarDeletePresentationFields(input),
+      operation: "integration.effect",
+      presentationId: ActionPresentationId.make(pending.executionId),
+      title: "Delete calendar event",
+    });
+  },
+);
+
+const presentDriveDeliveryAction = Effect.fn("ActionPresentation.presentDriveDelivery")(function* (
+  pending: PendingThinkAction,
+) {
+  const input = yield* decodeIntegrationPresentation(
+    DriveDeliverArtifactInput,
+    pending,
+    "The Drive delivery input cannot be projected safely",
+  );
+  return ActionPresentation.make({
+    actionDefinitionVersion: "osfo-drive-delivery-v1",
+    actionId: ActionId.make(pending.descriptor.toolCallId),
+    consequences: ["Upload this exact owned artifact as a new private Google Drive file."],
+    description: "Deliver the exact Osfo-owned document shown here.",
+    fields: driveDeliveryPresentationFields(input),
+    operation: "integration.effect",
+    presentationId: ActionPresentationId.make(pending.executionId),
+    title: "Deliver document to Drive",
+  });
+});
+
+const decodeIntegrationPresentation = <T, E>(
+  schema: Schema.Codec<T, E>,
+  pending: PendingThinkAction,
+  message: string,
+) =>
+  Schema.decodeUnknownEffect(schema)(pending.descriptor.input).pipe(
+    Effect.mapError(
+      () => new ActionPresentationUnavailable({ action: pending.descriptor.action, message }),
+    ),
+  );
 
 const presentDocumentDeleteAction = Effect.fn("ActionPresentation.presentDocumentDelete")(
   function* (pending: PendingThinkAction) {
@@ -464,6 +587,9 @@ const encodeGmailRecipients = Schema.encodeSync(Schema.fromJsonString(Schema.Arr
 const encodeCalendarChanges = Schema.encodeSync(
   Schema.fromJsonString(CalendarUpdateEventInput.fields.changes),
 );
+const encodeCalendarRecurrence = Schema.encodeSync(
+  Schema.fromJsonString(CalendarCreateEventInput.fields.recurrence),
+);
 
 const gmailPresentationFields = (input: typeof GmailMessageInput.Type) => [
   { label: "Recipients", name: "recipients", value: encodeGmailRecipients(input.recipients) },
@@ -480,6 +606,39 @@ const calendarUpdatePresentationFields = (input: typeof CalendarUpdateEventInput
     value: String(input.sendNotifications),
   },
   { label: "Changes", name: "changes", value: encodeCalendarChanges(input.changes) },
+];
+
+const calendarCreatePresentationFields = (input: typeof CalendarCreateEventInput.Type) => [
+  { label: "Calendar", name: "calendarId", value: input.calendarId },
+  { label: "Title", name: "title", value: input.title },
+  { label: "Starts", name: "startsAt", value: input.startsAt },
+  { label: "Ends", name: "endsAt", value: input.endsAt },
+  { label: "Time zone", name: "timeZone", value: input.timeZone },
+  { label: "Recurrence", name: "recurrence", value: encodeCalendarRecurrence(input.recurrence) },
+  { label: "Attendees", name: "attendeeCount", value: String(input.attendeeCount) },
+  {
+    label: "Send notifications",
+    name: "sendNotifications",
+    value: String(input.sendNotifications),
+  },
+];
+
+const calendarDeletePresentationFields = (input: typeof CalendarDeleteEventInput.Type) => [
+  { label: "Calendar", name: "calendarId", value: input.calendarId },
+  { label: "Event", name: "eventId", value: input.eventId },
+  {
+    label: "Send notifications",
+    name: "sendNotifications",
+    value: String(input.sendNotifications),
+  },
+];
+
+const driveDeliveryPresentationFields = (input: typeof DriveDeliverArtifactInput.Type) => [
+  { label: "Artifact", name: "artifactId", value: input.artifactId },
+  { label: "File name", name: "fileName", value: input.fileName },
+  { label: "Media type", name: "mediaType", value: input.mediaType },
+  { label: "Bytes", name: "expectedBytes", value: String(input.expectedBytes) },
+  { label: "Folder", name: "targetFolderId", value: input.targetFolderId ?? "My Drive" },
 ];
 
 const presentationFieldValueLimit = 2_000;

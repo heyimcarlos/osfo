@@ -14,7 +14,7 @@ import { effectToolSchema } from "./effect-tool-schema";
 import { IntegrationTools, type IntegrationToolExecutor } from "./integration-tools";
 
 describe("Integration Tools", () => {
-  it("publishes exactly three reads and four Actions with consequence-based Approval", () => {
+  it("publishes the curated reads and exact-approved Actions", () => {
     const definitions = IntegrationTools.make({
       executeEffect: vi.fn<IntegrationToolExecutor["executeEffect"]>(() =>
         Promise.reject(new Error("not executed")),
@@ -25,26 +25,24 @@ describe("Integration Tools", () => {
     });
 
     expect(Object.keys(definitions.tools)).toEqual([
+      "calendarFindAvailability",
       "calendarListEvents",
       "driveGetMetadata",
+      "driveReadFile",
+      "driveSearch",
       "gmailFetchThread",
+      "gmailSearchEmails",
     ]);
     expect(Object.keys(definitions.actions)).toEqual([
-      "calendarCreatePrivate",
+      "calendarCreateEvent",
+      "calendarDeleteEvent",
       "calendarUpdateEvent",
-      "gmailCreateDraft",
+      "driveDeliverArtifact",
       "gmailSendEmail",
     ]);
-    expect(definitions.actions.gmailCreateDraft.config.approval).toBeUndefined();
-    expect(definitions.actions.calendarCreatePrivate.config.approval).toBeUndefined();
-    expect(definitions.actions.gmailSendEmail.config).toMatchObject({
-      approval: true,
-      kind: "durable-pause",
-    });
-    expect(definitions.actions.calendarUpdateEvent.config).toMatchObject({
-      approval: true,
-      kind: "durable-pause",
-    });
+    for (const definition of Object.values(definitions.actions)) {
+      expect(definition.config).toMatchObject({ approval: true, kind: "durable-pause" });
+    }
   });
 });
 
@@ -58,6 +56,7 @@ const fakeIntegrations: Integrations.Interface = {
         ? { _tag: "IntegrationConnectionConnected" as const, toolkit, userId }
         : { _tag: "IntegrationConnectionMissing" as const, toolkit, userId },
     ),
+  disconnect: ({ toolkit }) => Effect.succeed({ _tag: "IntegrationConnectionRevoked", toolkit }),
   execute: (input) =>
     input.authorize.pipe(
       Effect.tap(() =>
@@ -67,7 +66,7 @@ const fakeIntegrations: Integrations.Interface = {
       ),
       Effect.as({
         _tag: "IntegrationReadCompleted" as const,
-        evidence: { providerLogId: "composio-runtime-log" },
+        evidence: { providerLogIds: ["composio-runtime-log"] },
         manifestVersion: input.identity.manifestVersion,
         operation: input.identity.operation,
         records: [{ id: "message-1" }],
@@ -127,7 +126,7 @@ it("publishes and executes only the selected connected pack through OsfoAgent", 
       tools: compiledIntegrationTools(agent),
     });
 
-    expect(config.activeTools).toEqual(["gmailCreateDraft", "gmailFetchThread", "gmailSendEmail"]);
+    expect(config.activeTools).toEqual(["gmailFetchThread", "gmailSearchEmails", "gmailSendEmail"]);
     expect(config.activeTools).not.toContain("calendarListEvents");
     const gmailRead = config.tools?.gmailFetchThread;
     if (gmailRead?.execute === undefined) throw new Error("Gmail read was not published");
@@ -136,7 +135,7 @@ it("publishes and executes only the selected connected pack through OsfoAgent", 
         { includeAttachments: false, maximumMessages: 20, threadId: "thread-1" },
         { context: {}, messages: [], toolCallId: "integration-runtime-read" },
       ),
-    ).toMatchObject({ evidence: { providerLogId: "composio-runtime-log" } });
+    ).toMatchObject({ evidence: { providerLogIds: ["composio-runtime-log"] } });
     expect(executedReads).toEqual([{ operation: "GMAIL_FETCH_THREAD", userId: runtimeUserId }]);
   });
 });
@@ -144,17 +143,21 @@ it("publishes and executes only the selected connected pack through OsfoAgent", 
 const compiledIntegrationTools = (agent: OsfoAgent): ToolSet => ({
   ...agent.getTools(),
   ...Object.fromEntries(
-    ["calendarCreatePrivate", "calendarUpdateEvent", "gmailCreateDraft", "gmailSendEmail"].map(
-      (name) => [
-        name,
-        tool({
-          description: "Compiled test Action",
-          execute: async () => ({}),
-          inputSchema: effectToolSchema(Schema.Struct({})),
-          metadata: { cfThinkAction: true },
-        }),
-      ],
-    ),
+    [
+      "calendarCreateEvent",
+      "calendarDeleteEvent",
+      "calendarUpdateEvent",
+      "driveDeliverArtifact",
+      "gmailSendEmail",
+    ].map((name) => [
+      name,
+      tool({
+        description: "Compiled test Action",
+        execute: async () => ({}),
+        inputSchema: effectToolSchema(Schema.Struct({})),
+        metadata: { cfThinkAction: true },
+      }),
+    ]),
   ),
 });
 

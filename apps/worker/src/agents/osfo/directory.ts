@@ -20,6 +20,7 @@ import { makeOsfoMessengerRouter, type MessengerAddressResolution } from "./mess
 import type { AgentInitializationEncoded } from "./db/store";
 import { GroupRefusalCopy } from "./persona";
 import { UserId } from "../../domain";
+import { AuthSessionId } from "../../domain/auth-session";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- Think RPC methods use Promise contracts, this class is the messenger Layer composition root, and Effect results use _tag. */
 
@@ -132,6 +133,58 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
     const agent = await this.subAgent(OsfoAgent, agentId);
     return agent.inspectPersonalSkills({ ...actor, userId: UserId.make(actor.userId) });
+  }
+
+  /** Inspect safe Integration Connection state through one registered User Agent. */
+  async inspectIntegrationConnections(
+    agentId: string,
+    actor: { readonly authSessionId: string; readonly userId: string },
+  ) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.inspectIntegrationConnections({
+      authSessionId: AuthSessionId.make(actor.authSessionId),
+      userId: UserId.make(actor.userId),
+    });
+  }
+
+  /** Acquire one provider-hosted Integration Connect Link. */
+  async connectIntegrationFromSettings(
+    agentId: string,
+    input: {
+      readonly actor: { readonly authSessionId: string; readonly userId: string };
+      readonly callbackUrl: string;
+      readonly toolkit: "gmail" | "googlecalendar" | "googledrive";
+    },
+  ) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.connectIntegrationFromSettings({
+      ...input,
+      actor: {
+        authSessionId: AuthSessionId.make(input.actor.authSessionId),
+        userId: UserId.make(input.actor.userId),
+      },
+    });
+  }
+
+  /** Revoke one current Integration Connection. */
+  async disconnectIntegrationFromSettings(
+    agentId: string,
+    input: {
+      readonly actor: { readonly authSessionId: string; readonly userId: string };
+      readonly toolkit: "gmail" | "googlecalendar" | "googledrive";
+    },
+  ) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.disconnectIntegrationFromSettings({
+      ...input,
+      actor: {
+        authSessionId: AuthSessionId.make(input.actor.authSessionId),
+        userId: UserId.make(input.actor.userId),
+      },
+    });
   }
 
   /** Commit one non-destructive personal Skill lifecycle change. */

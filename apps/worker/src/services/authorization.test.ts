@@ -435,6 +435,7 @@ describe("governed Authorization", () => {
           exhaustedMode: { _tag: "Availability", calendars: 1, windowDays: 14 },
           hardBounds: {
             maximumRecords: 1,
+            maximumRequestBytes: 0n,
             maximumResponseBytes: 65_536n,
             mutations: 0,
             providerExecutions: 1,
@@ -688,7 +689,7 @@ const operationFor = (operation: AuthorizationOperationName): AuthorizationOpera
         actionId: operation,
         kind: operation,
         manifestVersion: ManifestVersion.make("gmail-v1"),
-        providerOperation: "GMAIL_CREATE_DRAFT",
+        providerOperation: "GMAIL_SEND_EMAIL",
         toolkit: "gmail",
       };
     default:

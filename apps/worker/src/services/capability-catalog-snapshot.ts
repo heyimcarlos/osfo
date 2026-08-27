@@ -342,10 +342,16 @@ const catalogIntegrationEntry = (policyCatalog: CapabilityCatalog) => {
       integrationToolkit: toolkit,
       toolRequirements:
         id === "gmail"
-          ? ["gmailCreateDraft", "gmailFetchThread", "gmailSendEmail"]
+          ? ["gmailFetchThread", "gmailSearchEmails", "gmailSendEmail"]
           : id === "google-calendar"
-            ? ["calendarCreatePrivate", "calendarListEvents", "calendarUpdateEvent"]
-            : ["driveGetMetadata"],
+            ? [
+                "calendarCreateEvent",
+                "calendarDeleteEvent",
+                "calendarFindAvailability",
+                "calendarListEvents",
+                "calendarUpdateEvent",
+              ]
+            : ["driveDeliverArtifact", "driveGetMetadata", "driveReadFile", "driveSearch"],
       resultBounds: {
         maximumBytes: policyCatalog.integrationReadLimits.totalResponseBytes,
         maximumDurationMillis: policyCatalog.operationLimits.interactiveOperationMilliseconds,

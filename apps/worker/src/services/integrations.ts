@@ -3,28 +3,40 @@ import { Effect, Option, Predicate, Result, Schema, Semaphore } from "effect";
 import type { ActionId } from "../domain/action-execution";
 import { ManifestVersion, type UserId } from "../domain";
 import {
-  CalendarCreatePrivateInput,
-  CalendarListEventsInput,
+  CalendarDeleteEventInput,
   CalendarUpdateEventInput,
+  DriveDeliverArtifactInput,
   DriveGetMetadataInput,
-  GmailFetchThreadInput,
-  GmailMessageInput,
+  DriveReadFileInput,
   IntegrationManifestUnavailable,
   resolveManifest,
   type IntegrationManifestValueInvalid,
   type ResolvedIntegrationManifestOperation,
 } from "../domain/integration-manifest";
+import {
+  providerConstraintsFor,
+  providerInputFor,
+  type ProviderExecutionConstraints,
+  type ProviderInput,
+} from "./integration-provider-input";
+
+export type { ProviderInput } from "./integration-provider-input";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Integration outcomes use the repository's _tag discriminator. */
 
 const providerTools = [
+  "GMAIL_FETCH_EMAILS",
   "GMAIL_FETCH_MESSAGE_BY_THREAD_ID",
-  "GMAIL_CREATE_EMAIL_DRAFT",
   "GMAIL_SEND_EMAIL",
   "GOOGLECALENDAR_EVENTS_LIST",
+  "GOOGLECALENDAR_FIND_FREE_SLOTS",
   "GOOGLECALENDAR_CREATE_EVENT",
   "GOOGLECALENDAR_PATCH_EVENT",
+  "GOOGLECALENDAR_DELETE_EVENT",
+  "GOOGLEDRIVE_FIND_FILE",
   "GOOGLEDRIVE_GET_FILE_METADATA",
+  "GOOGLEDRIVE_DOWNLOAD_FILE",
+  "GOOGLEDRIVE_UPLOAD_FILE",
 ] as const;
 
 /** Exact provider session confinement applied to every Osfo User mapping. */
@@ -47,49 +59,24 @@ export interface ProviderExecutionResult {
   readonly data: Schema.JsonObject;
   readonly error: string | null;
   readonly logId: string;
+  readonly supportingLogIds?: ReadonlyArray<string>;
 }
 
-export type ProviderInput =
-  | {
-      readonly body: string;
-      readonly extra_recipients?: ReadonlyArray<string>;
-      readonly is_html: false;
-      readonly recipient_email: string;
-      readonly subject: string;
-      readonly user_id: "me";
-    }
-  | {
-      readonly thread_id: string;
-      readonly user_id: "me";
-    }
-  | {
-      readonly calendarId: string;
-      readonly maxResults: number;
-      readonly showDeleted: false;
-      readonly singleEvents: true;
-      readonly timeMax: string;
-      readonly timeMin: string;
-    }
-  | {
-      readonly attendees: [];
-      readonly calendar_id: string;
-      readonly create_meeting_room: false;
-      readonly end_datetime: string;
-      readonly send_updates: "none";
-      readonly start_datetime: string;
-      readonly summary: string;
-      readonly visibility: "private";
-    }
-  | ({
-      readonly calendar_id: string;
-      readonly event_id: string;
-      readonly send_updates: "none";
-    } & CalendarPatchInput)
-  | {
-      readonly fields: "id,name,mimeType,size,modifiedTime,webViewLink";
-      readonly fileId: string;
-      readonly supportsAllDrives: true;
-    };
+export interface IntegrationArtifact {
+  readonly bytes: Uint8Array;
+  readonly fileName: string;
+  readonly mediaType: string;
+}
+
+export interface IntegrationArtifactAccess {
+  readonly readOwned: (input: {
+    readonly artifactId: string;
+    readonly expectedBytes: number;
+    readonly fileName: string;
+    readonly mediaType: string;
+    readonly userId: UserId;
+  }) => Effect.Effect<IntegrationArtifact, IntegrationArtifactUnavailable>;
+}
 
 /** Narrow Composio boundary. Meta tools, arbitrary discovery, and sandbox APIs are absent. */
 export interface ProviderSession {
@@ -101,10 +88,20 @@ export interface ProviderSession {
     providerTool: string,
     input: ProviderInput,
     connectedAccountId: string,
+    constraints?: ProviderExecutionConstraints,
   ) => Effect.Effect<ProviderExecutionResult, IntegrationProviderUnavailable>;
+  readonly disconnect: (
+    connectedAccountId: string,
+  ) => Effect.Effect<void, IntegrationProviderUnavailable>;
   readonly inspectToolkits: (
     toolkits: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<ProviderToolkitEvidence>, IntegrationProviderUnavailable>;
+  readonly stageFile: (
+    artifact: IntegrationArtifact,
+  ) => Effect.Effect<
+    { readonly mimetype: string; readonly name: string; readonly s3key: string },
+    IntegrationProviderUnavailable
+  >;
 }
 
 /** Provider operations required by the deep Integrations module. */
@@ -174,6 +171,14 @@ export class IntegrationPersistenceUnavailable extends Schema.TaggedError<Integr
   },
 ) {}
 
+export class IntegrationArtifactUnavailable extends Schema.TaggedError<IntegrationArtifactUnavailable>()(
+  "IntegrationArtifactUnavailable",
+  {
+    message: Schema.String,
+    reason: Schema.Literals(["inaccessible", "identityMismatch", "mediaMismatch", "sizeMismatch"]),
+  },
+) {}
+
 export class IntegrationConnectionUnavailable extends Schema.TaggedError<IntegrationConnectionUnavailable>()(
   "IntegrationConnectionUnavailable",
   {
@@ -186,7 +191,7 @@ export class IntegrationConnectionUnavailable extends Schema.TaggedError<Integra
 export class IntegrationExecutionRejected extends Schema.TaggedError<IntegrationExecutionRejected>()(
   "IntegrationExecutionRejected",
   {
-    code: Schema.Literals(["providerUnavailable", "resultInvalid"]),
+    code: Schema.Literals(["conflict", "providerUnavailable", "resultInvalid"]),
     message: Schema.String,
     operation: Schema.String,
     providerLogId: Schema.optional(Schema.String),
@@ -228,7 +233,7 @@ export type IntegrationConnectionEvidence =
 
 export interface IntegrationReadCompleted {
   readonly _tag: "IntegrationReadCompleted";
-  readonly evidence: { readonly providerLogId: string };
+  readonly evidence: { readonly providerLogIds: ReadonlyArray<string> };
   readonly manifestVersion: ManifestVersion;
   readonly operation: string;
   readonly records: ReadonlyArray<Record<string, boolean | number | string | null>>;
@@ -239,7 +244,7 @@ export interface IntegrationReadCompleted {
 
 export interface IntegrationEffectCompleted {
   readonly _tag: "IntegrationEffectCompleted";
-  readonly evidence: { readonly providerLogId: string };
+  readonly evidence: { readonly providerLogId: string; readonly providerResourceId: string };
   readonly manifestVersion: ManifestVersion;
   readonly mutations: 1;
   readonly operation: string;
@@ -284,6 +289,16 @@ export interface Interface {
     | IntegrationPersistenceUnavailable
     | IntegrationProviderUnavailable
   >;
+  readonly disconnect: (input: {
+    readonly toolkit: string;
+    readonly userId: UserId;
+  }) => Effect.Effect<
+    { readonly _tag: "IntegrationConnectionRevoked"; readonly toolkit: string },
+    | IntegrationConnectionUnavailable
+    | IntegrationManifestUnavailable
+    | IntegrationPersistenceUnavailable
+    | IntegrationProviderUnavailable
+  >;
   readonly execute: <E>(
     input: ExecuteIntegrationInput<E>,
   ) => Effect.Effect<
@@ -309,7 +324,9 @@ export interface Interface {
 }
 
 /** Construct the only Osfo path allowed to invoke direct Composio operations. */
-export const make = (ports: IntegrationProvider & IntegrationPersistence): Interface => {
+export const make = (
+  ports: IntegrationProvider & IntegrationPersistence & Partial<IntegrationArtifactAccess>,
+): Interface => {
   const sessionLock = Semaphore.makeUnsafe(1);
   const actionLock = Semaphore.makeUnsafe(1);
 
@@ -354,25 +371,28 @@ export const make = (ports: IntegrationProvider & IntegrationPersistence): Inter
     const candidates = (yield* session.inspectToolkits([input.toolkit])).filter(
       ({ slug }) => slug === input.toolkit,
     );
-    if (candidates.length > 1) {
+    const active = candidates.filter(
+      (candidate) => candidate.isActive && candidate.connectedAccount?.status === "ACTIVE",
+    );
+    if (active.length > 1) {
       return connectionInspection(input, "IntegrationConnectionAmbiguous", session);
     }
-    const candidate = candidates[0];
-    if (candidate?.connectedAccount === null || candidate === undefined) {
+    const candidate = active[0];
+    if (candidate !== undefined && candidate.connectedAccount !== null) {
+      return {
+        connectedAccountId: candidate.connectedAccount.id,
+        evidence: {
+          _tag: "IntegrationConnectionConnected" as const,
+          toolkit: input.toolkit,
+          userId: input.userId,
+        },
+        session,
+      };
+    }
+    if (candidates.every(({ connectedAccount }) => connectedAccount === null)) {
       return connectionInspection(input, "IntegrationConnectionMissing", session);
     }
-    if (!candidate.isActive || candidate.connectedAccount.status !== "ACTIVE") {
-      return connectionInspection(input, "IntegrationConnectionStale", session);
-    }
-    return {
-      connectedAccountId: candidate.connectedAccount.id,
-      evidence: {
-        _tag: "IntegrationConnectionConnected" as const,
-        toolkit: input.toolkit,
-        userId: input.userId,
-      },
-      session,
-    };
+    return connectionInspection(input, "IntegrationConnectionStale", session);
   });
 
   const connectionEvidence = Effect.fn("Integrations.connectionEvidence")(function* (input: {
@@ -407,7 +427,7 @@ export const make = (ports: IntegrationProvider & IntegrationPersistence): Inter
       const manifest = resolved.success;
       const decoded = manifest.decodeInput(input.input);
       if (Result.isFailure(decoded)) return yield* decoded.failure;
-      const providerInput = providerInputFor(manifest, decoded.success);
+      let providerInput = providerInputFor(manifest, decoded.success);
       if (manifest.operationKind === "read") {
         yield* input.authorize;
         const connection = yield* requireConnection(manifest.toolkit, input.userId);
@@ -415,8 +435,9 @@ export const make = (ports: IntegrationProvider & IntegrationPersistence): Inter
           manifest.providerTool,
           providerInput,
           connection.connectedAccountId,
+          providerConstraintsFor(manifest, decoded.success),
         );
-        return yield* normalizeRead(manifest, execution);
+        return yield* normalizeRead(manifest, execution, decoded.success);
       }
       if (input.actionId === undefined) {
         return yield* new IntegrationActionConflict({
@@ -445,6 +466,54 @@ export const make = (ports: IntegrationProvider & IntegrationPersistence): Inter
           }
           const connection = yield* requireConnection(manifest.toolkit, input.userId);
           yield* ports.retainAction(actionId, { _tag: "Pending", digest });
+          if (manifest.operation === "DRIVE_DELIVER_ARTIFACT") {
+            const request = yield* Schema.decodeUnknownEffect(DriveDeliverArtifactInput)(
+              decoded.success,
+            ).pipe(
+              Effect.mapError(
+                () =>
+                  new IntegrationExecutionRejected({
+                    code: "resultInvalid",
+                    message: "The approved artifact delivery input is invalid",
+                    operation: manifest.operation,
+                    toolkit: manifest.toolkit,
+                  }),
+              ),
+            );
+            if (ports.readOwned === undefined) {
+              yield* ports.retainAction(actionId, { _tag: "NotApplied", digest });
+              return yield* new IntegrationExecutionRejected({
+                code: "providerUnavailable",
+                message: "Owned artifact delivery is unavailable",
+                operation: manifest.operation,
+                toolkit: manifest.toolkit,
+              });
+            }
+            const artifact = yield* ports.readOwned({ ...request, userId: input.userId }).pipe(
+              Effect.mapError(
+                () =>
+                  new IntegrationExecutionRejected({
+                    code: "resultInvalid",
+                    message: "The owned artifact does not match the approved delivery",
+                    operation: manifest.operation,
+                    toolkit: manifest.toolkit,
+                  }),
+              ),
+              Effect.tapError(() => ports.retainAction(actionId, { _tag: "NotApplied", digest })),
+            );
+            const stageAttempt = yield* Effect.exit(connection.session.stageFile(artifact));
+            if (Predicate.isTagged(stageAttempt, "Failure")) {
+              yield* ports.retainAction(actionId, { _tag: "Ambiguous", digest });
+              return yield* new IntegrationActionAmbiguous({
+                actionId,
+                message: "The integration file staging outcome is unknown",
+              });
+            }
+            providerInput = {
+              file_to_upload: stageAttempt.value,
+              folder_to_upload_to: request.targetFolderId,
+            };
+          }
           const attempted = yield* Effect.exit(
             connection.session.execute(
               manifest.providerTool,
@@ -463,7 +532,7 @@ export const make = (ports: IntegrationProvider & IntegrationPersistence): Inter
             yield* ports.retainAction(actionId, { _tag: "NotApplied", digest });
             return yield* providerRejection(manifest, attempted.value);
           }
-          const result = yield* normalizeEffect(manifest, attempted.value).pipe(
+          const result = yield* normalizeEffect(manifest, attempted.value, decoded.success).pipe(
             Effect.tapError(() => ports.retainAction(actionId, { _tag: "Ambiguous", digest })),
           );
           yield* ports.retainAction(actionId, { _tag: "Applied", digest, result });
@@ -485,6 +554,29 @@ export const make = (ports: IntegrationProvider & IntegrationPersistence): Inter
       };
     }),
     connectionEvidence,
+    disconnect: Effect.fn("Integrations.disconnect")(function* (input) {
+      if (!isSupportedToolkit(input.toolkit)) {
+        return yield* unsupportedToolkit(input.toolkit, "DISCONNECT");
+      }
+      const { session } = yield* resolveProviderSession(input.userId);
+      const accounts = (yield* session.inspectToolkits([input.toolkit])).filter(
+        ({ connectedAccount, slug }) => slug === input.toolkit && connectedAccount !== null,
+      );
+      if (accounts.length === 0) {
+        return yield* new IntegrationConnectionUnavailable({
+          message: "The required Integration Connection is not current and unambiguous",
+          toolkit: input.toolkit,
+          userId: input.userId,
+        });
+      }
+      yield* Effect.forEach(
+        accounts,
+        ({ connectedAccount }) =>
+          connectedAccount === null ? Effect.void : session.disconnect(connectedAccount.id),
+        { concurrency: 1, discard: true },
+      );
+      return { _tag: "IntegrationConnectionRevoked" as const, toolkit: input.toolkit };
+    }),
     execute,
     resolveSession: Effect.fn("Integrations.resolveSession")(function* (userId) {
       const resolved = yield* resolveProviderSession(userId);
@@ -509,118 +601,38 @@ const connectionInspection = (
   session,
 });
 
-const providerInputFor = (
-  manifest: ResolvedIntegrationManifestOperation,
-  input: Schema.Json,
-): ProviderInput => {
-  switch (manifest.operation) {
-    case "GMAIL_FETCH_THREAD": {
-      const value = Schema.decodeUnknownSync(GmailFetchThreadInput)(input);
-      return { thread_id: value.threadId, user_id: "me" };
-    }
-    case "GMAIL_CREATE_DRAFT":
-    case "GMAIL_SEND_EMAIL": {
-      const value = Schema.decodeUnknownSync(GmailMessageInput)(input);
-      const [recipient, ...extraRecipients] = value.recipients;
-      const common = {
-        body: value.body,
-        is_html: false,
-        recipient_email: recipient,
-        subject: value.subject,
-        user_id: "me",
-      } as const;
-      return extraRecipients.length === 0
-        ? common
-        : { ...common, extra_recipients: extraRecipients };
-    }
-    case "CALENDAR_LIST_EVENTS": {
-      const value = Schema.decodeUnknownSync(CalendarListEventsInput)(input);
-      return {
-        calendarId: value.calendarId,
-        maxResults: value.maximumEvents,
-        showDeleted: false,
-        singleEvents: true,
-        timeMax: value.endsAt,
-        timeMin: value.startsAt,
-      };
-    }
-    case "CALENDAR_CREATE_PRIVATE": {
-      const value = Schema.decodeUnknownSync(CalendarCreatePrivateInput)(input);
-      return {
-        attendees: [],
-        calendar_id: value.calendarId,
-        create_meeting_room: false,
-        end_datetime: value.endsAt,
-        send_updates: "none",
-        start_datetime: value.startsAt,
-        summary: value.title,
-        visibility: "private",
-      };
-    }
-    case "CALENDAR_UPDATE_EVENT": {
-      const value = Schema.decodeUnknownSync(CalendarUpdateEventInput)(input);
-      return {
-        calendar_id: value.calendarId,
-        event_id: value.eventId,
-        send_updates: "none",
-        ...calendarPatchInput(value.changes),
-      };
-    }
-    case "DRIVE_GET_METADATA": {
-      const value = Schema.decodeUnknownSync(DriveGetMetadataInput)(input);
-      return {
-        fields: "id,name,mimeType,size,modifiedTime,webViewLink",
-        fileId: value.fileId,
-        supportsAllDrives: true,
-      };
-    }
-    default:
-      throw new Error(`Unsupported retained integration operation: ${manifest.operation}`);
-  }
-};
-
-interface CalendarPatchInput {
-  description?: string;
-  end_time?: string;
-  location?: string;
-  start_time?: string;
-  summary?: string;
-}
-
-const calendarPatchInput = (
-  changes: typeof CalendarUpdateEventInput.Type.changes,
-): CalendarPatchInput => {
-  const patch: CalendarPatchInput = {};
-  if (changes.description !== undefined) patch.description = changes.description;
-  if (changes.endsAt !== undefined) patch.end_time = changes.endsAt;
-  if (changes.location !== undefined) patch.location = changes.location;
-  if (changes.startsAt !== undefined) patch.start_time = changes.startsAt;
-  if (changes.title !== undefined) patch.summary = changes.title;
-  return patch;
-};
-
 const normalizeRead = (
   manifest: ResolvedIntegrationManifestOperation,
   execution: ProviderExecutionResult,
+  input: Schema.Json,
 ) =>
   Effect.gen(function* () {
     const providerLogId = yield* validateProviderResult(manifest, execution);
+    const providerLogIds = [...(execution.supportingLogIds ?? []), providerLogId];
+    if (
+      providerLogIds.length !== manifest.hardBounds.providerExecutions ||
+      providerLogIds.some((logId) => logId.trim().length === 0 || logId.length > 500)
+    ) {
+      return yield* invalidProviderResult(manifest);
+    }
     const candidates = yield* readCandidates(manifest, execution.data);
     const records: Array<Record<string, boolean | number | string | null>> = [];
     let truncated = candidates.length > manifest.hardBounds.maximumRecords;
     for (const candidate of candidates.slice(0, manifest.hardBounds.maximumRecords)) {
       const projected = yield* projectSafeRecord(manifest, candidate);
-      const next = [...records, projected];
+      yield* validateRequestedDriveFile(manifest, projected, input);
+      const bounded = boundProjectedRecord(manifest.operation, projected, input);
+      const next = [...records, bounded];
       if (byteLength(next) > manifest.hardBounds.maximumResponseBytes) {
         truncated = true;
         break;
       }
-      records.push(projected);
+      records.push(bounded);
     }
     const responseBytes = byteLength(records);
     return {
       _tag: "IntegrationReadCompleted" as const,
-      evidence: { providerLogId },
+      evidence: { providerLogIds },
       manifestVersion: manifest.manifestVersion,
       operation: manifest.operation,
       records,
@@ -630,21 +642,89 @@ const normalizeRead = (
     };
   });
 
+const validateRequestedDriveFile = (
+  manifest: ResolvedIntegrationManifestOperation,
+  record: Record<string, boolean | number | string | null>,
+  input: Schema.Json,
+) => {
+  if (manifest.operation === "DRIVE_GET_METADATA") {
+    const expected = Schema.decodeUnknownSync(DriveGetMetadataInput)(input).fileId;
+    return record.id === expected ? Effect.void : Effect.fail(invalidProviderResult(manifest));
+  }
+  if (manifest.operation === "DRIVE_READ_FILE") {
+    const expected = Schema.decodeUnknownSync(DriveReadFileInput)(input).fileId;
+    return record.fileId === expected ? Effect.void : Effect.fail(invalidProviderResult(manifest));
+  }
+  return Effect.void;
+};
+
+const boundProjectedRecord = (
+  operation: string,
+  record: Record<string, boolean | number | string | null>,
+  input: Schema.Json,
+) => {
+  if (operation !== "DRIVE_READ_FILE" || !Predicate.isString(record.content)) return record;
+  const maximumBytes = Schema.decodeUnknownSync(DriveReadFileInput)(input).maximumBytes;
+  const encoded = new TextEncoder().encode(record.content);
+  if (encoded.byteLength <= maximumBytes) return record;
+  return {
+    ...record,
+    content: decodeUtf8Prefix(encoded, maximumBytes),
+    truncated: true,
+  };
+};
+
+const decodeUtf8Prefix = (bytes: Uint8Array, maximumBytes: number) => {
+  for (let end = maximumBytes; end >= Math.max(0, maximumBytes - 3); end -= 1) {
+    try {
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(
+        bytes.slice(0, end),
+      );
+    } catch {
+      // Continue to the previous complete UTF-8 code point.
+    }
+  }
+  return "";
+};
+
 const normalizeEffect = (
   manifest: ResolvedIntegrationManifestOperation,
   execution: ProviderExecutionResult,
+  input: Schema.Json,
 ) =>
   Effect.gen(function* () {
     const providerLogId = yield* validateProviderResult(manifest, execution);
+    const providerResourceId = yield* effectResourceId(manifest, execution.data, input);
     return {
       _tag: "IntegrationEffectCompleted" as const,
-      evidence: { providerLogId },
+      evidence: { providerLogId, providerResourceId },
       manifestVersion: manifest.manifestVersion,
       mutations: 1 as const,
       operation: manifest.operation,
       toolkit: manifest.toolkit,
     };
   });
+
+const ProviderResource = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
+});
+
+const effectResourceId = (
+  manifest: ResolvedIntegrationManifestOperation,
+  data: Schema.JsonObject,
+  input: Schema.Json,
+) => {
+  if (manifest.operation === "CALENDAR_DELETE_EVENT") {
+    return Effect.succeed(Schema.decodeUnknownSync(CalendarDeleteEventInput)(input).eventId);
+  }
+  const decoded = Schema.decodeUnknownOption(ProviderResource)(data);
+  if (Option.isNone(decoded)) return Effect.fail(invalidProviderResult(manifest));
+  if (manifest.operation === "CALENDAR_UPDATE_EVENT") {
+    const expected = Schema.decodeUnknownSync(CalendarUpdateEventInput)(input).eventId;
+    if (decoded.value.id !== expected) return Effect.fail(invalidProviderResult(manifest));
+  }
+  return Effect.succeed(decoded.value.id);
+};
 
 const validateProviderResult = (
   manifest: ResolvedIntegrationManifestOperation,
@@ -672,9 +752,13 @@ const providerRejection = (
   execution: ProviderExecutionResult,
 ) => {
   const providerLogId = execution.logId.trim();
+  const conflict =
+    manifest.toolkit === "googlecalendar" && /\bconflict\b/iu.test(execution.error ?? "");
   const common = {
-    code: "providerUnavailable",
-    message: "The integration provider rejected the operation",
+    code: conflict ? ("conflict" as const) : ("providerUnavailable" as const),
+    message: conflict
+      ? "The Calendar operation conflicts with current provider state"
+      : "The integration provider rejected the operation",
     operation: manifest.operation,
     toolkit: manifest.toolkit,
   } as const;
@@ -687,10 +771,24 @@ const readCandidates = (
   manifest: ResolvedIntegrationManifestOperation,
   data: Schema.JsonObject,
 ): Effect.Effect<ReadonlyArray<Schema.Json>, IntegrationExecutionRejected> => {
-  if (manifest.outputContract === "driveMetadataV1") return Effect.succeed([data]);
-  for (const key of manifest.outputContract === "gmailThreadV1"
-    ? ["messages", "items"]
-    : ["items", "events"]) {
+  if (manifest.outputContract === "driveMetadataV1" || manifest.outputContract === "driveContentV1")
+    return Effect.succeed([data]);
+  const candidateKeys = (() => {
+    switch (manifest.outputContract) {
+      case "gmailMessagesV1":
+      case "gmailThreadV1":
+        return ["messages", "items"];
+      case "calendarAvailabilityV1":
+        return ["freeSlots", "busy", "items"];
+      case "driveFilesV1":
+        return ["files", "items"];
+      case "calendarEventsV1":
+        return ["items", "events"];
+      default:
+        return [];
+    }
+  })();
+  for (const key of candidateKeys) {
     const candidate = Schema.decodeUnknownOption(Schema.Array(Schema.Json))(data[key]);
     if (Option.isSome(candidate)) return Effect.succeed(candidate.value);
   }
@@ -698,6 +796,7 @@ const readCandidates = (
 };
 
 const safeFields = {
+  CALENDAR_FIND_AVAILABILITY: ["calendarId", "end", "start", "timeMax", "timeMin"],
   CALENDAR_LIST_EVENTS: [
     "description",
     "end",
@@ -709,7 +808,19 @@ const safeFields = {
     "summary",
   ],
   DRIVE_GET_METADATA: ["id", "mimeType", "modifiedTime", "name", "size", "webViewLink"],
+  DRIVE_READ_FILE: ["content", "fileId", "mimeType", "name", "size", "truncated"],
+  DRIVE_SEARCH: [
+    "createdTime",
+    "id",
+    "mimeType",
+    "modifiedTime",
+    "name",
+    "size",
+    "trashed",
+    "webViewLink",
+  ],
   GMAIL_FETCH_THREAD: ["body", "date", "from", "id", "snippet", "subject", "threadId", "to"],
+  GMAIL_SEARCH_EMAILS: ["date", "from", "id", "snippet", "subject", "threadId", "to"],
 } as const;
 
 const projectSafeRecord = (
@@ -744,12 +855,20 @@ const SafeScalar = Schema.Union([Schema.Null, Schema.Boolean, Schema.Finite, Sch
 
 const safeFieldsFor = (operation: string): ReadonlyArray<string> => {
   switch (operation) {
+    case "CALENDAR_FIND_AVAILABILITY":
+      return safeFields.CALENDAR_FIND_AVAILABILITY;
     case "CALENDAR_LIST_EVENTS":
       return safeFields.CALENDAR_LIST_EVENTS;
     case "DRIVE_GET_METADATA":
       return safeFields.DRIVE_GET_METADATA;
+    case "DRIVE_READ_FILE":
+      return safeFields.DRIVE_READ_FILE;
+    case "DRIVE_SEARCH":
+      return safeFields.DRIVE_SEARCH;
     case "GMAIL_FETCH_THREAD":
       return safeFields.GMAIL_FETCH_THREAD;
+    case "GMAIL_SEARCH_EMAILS":
+      return safeFields.GMAIL_SEARCH_EMAILS;
     default:
       return [];
   }

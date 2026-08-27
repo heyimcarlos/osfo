@@ -18,11 +18,13 @@ import { UserId } from "./domain";
 import { ChannelLinks } from "./services/channel-links";
 import type { AccountDeletionComposition } from "./composition/account-deletion";
 import type { SkillsHandlers } from "./handlers/skills";
+import type { IntegrationHandlers } from "./handlers/integrations";
 
 /** Cloudflare bindings used by the Worker route tree. */
 export type Bindings = AccountDeletionComposition.Bindings &
   RegistrationCloudflare.Bindings &
   SkillsHandlers.Bindings &
+  IntegrationHandlers.Bindings &
   WebhookHandlers.Bindings & {
     readonly ARTIFACTS?: R2Bucket;
     readonly routeOsfoAgentRequest: (
