@@ -35,7 +35,8 @@ import {
 import { proposeConfirmedSkillChange } from "./post-turn-skill-learning";
 import { makeSkillLearningCoordinator } from "./skill-learning-coordinator";
 import { Capabilities } from "../../services/capabilities";
-import { makePersonalSkillTools } from "./personal-skill-tools";
+import { makePersonalSkillTools, SkillManageInput } from "./personal-skill-tools";
+import { makePersonalSkillControl } from "./personal-skill-control";
 import {
   ingestGoodRootEvaluation,
   recoverPersonalSkillLearning,
@@ -225,6 +226,8 @@ describe("PersonalSkillAuthority", () => {
           userId,
         });
         expect(archived.version.status).toBe("archived");
+        expect((yield* authority.all(userId)).map(({ status }) => status)).toEqual(["archived"]);
+        expect(yield* authority.active(userId)).toEqual([]);
         expect(yield* authority.active(userId)).toEqual([]);
 
         const restored = yield* authority.restore({
@@ -697,9 +700,94 @@ describe("PersonalSkillAuthority", () => {
         expect(inspected._tag).toBe("SkillInspection");
         if (inspected._tag === "SkillInspection") {
           expect(inspected.current.instructions).toContain("decisions");
+          expect("versions" in inspected).toBe(false);
         }
+        const undone = yield* tools.manage({
+          _tag: "UndoLatest",
+          expectedSkillVersion: revised.version.skillVersion,
+          skillId: revised.version.skillId,
+        });
+        expect(undone._tag).toBe("RolledBack");
       }),
     ),
+  );
+
+  it("rejects an ambiguous conversational Skill change before lifecycle execution", () => {
+    expect(
+      Schema.is(SkillManageInput)({
+        _tag: "Revise",
+        instructions: "Make the reports shorter.",
+      }),
+    ).toBe(false);
+  });
+
+  it.effect(
+    "projects safe settings, undoes lifecycle changes, and requires exact deletion Approval",
+    () =>
+      withDatabase((storage) =>
+        Effect.gen(function* () {
+          const authority = makePersonalSkillAuthority(storage);
+          yield* authority.create({ availability, version: version(1) });
+          const control = makePersonalSkillControl({
+            authority,
+            availability: () => availability,
+            decisionReference: () => "settings-decision-1",
+            nowEpochMillis: () => 1_788_000_000_300,
+          });
+
+          const listed = yield* control.inspect(userId);
+          expect(listed.skills).toMatchObject([
+            {
+              availability: { state: "available" },
+              behavior: "Create the weekly status report as a PDF.",
+              capabilities: ["Generate one bounded PDF or DOCX."],
+              purpose: "Prepare the User's weekly status report.",
+              status: "active",
+            },
+          ]);
+          const skill = listed.skills[0];
+          if (skill === undefined) return;
+          const archived = yield* control.change(userId, {
+            change: "archive",
+            expectedRevision: skill.revisionReference,
+            reference: skill.reference,
+          });
+          expect(archived).toMatchObject({
+            notice: "Skill archived.",
+            skill: { status: "archived" },
+          });
+          const restored = yield* control.change(userId, {
+            change: "undo",
+            expectedRevision: archived.skill.revisionReference,
+            reference: archived.skill.reference,
+          });
+          expect(restored).toMatchObject({
+            notice: "Latest Skill change undone.",
+            skill: { status: "active" },
+          });
+
+          const presentation = yield* control.presentDeletion(userId, skill.reference);
+          const edited = {
+            approval: {
+              decision: "approved" as const,
+              presentation: { ...presentation, expectedRevision: "edited-revision" },
+            },
+            confirmation: "delete-this-skill" as const,
+          };
+          expect(yield* Effect.exit(control.delete(userId, skill.reference, edited))).toMatchObject(
+            { _tag: "Failure" },
+          );
+          yield* control.delete(userId, skill.reference, {
+            approval: {
+              decision: "approved",
+              presentation: yield* control.presentDeletion(userId, skill.reference),
+            },
+            confirmation: "delete-this-skill",
+          });
+          expect((yield* control.inspect(userId)).skills).toEqual([]);
+          expect((yield* control.inspect(UserId.make("another-user"))).skills).toEqual([]);
+        }),
+      ),
   );
 
   it.effect("removes Skill versions and pending learning through User deletion lineage", () =>

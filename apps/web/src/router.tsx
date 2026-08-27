@@ -153,6 +153,11 @@ const settingsMarketplaceRoute = createRoute({
     "SettingsMarketplacePage",
   ),
 });
+const settingsSkillsRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "settings/skills",
+  component: lazyRouteComponent(() => import("./pages/settings-skills-page"), "SettingsSkillsPage"),
+});
 const legacyBillingRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "billing",
@@ -188,6 +193,7 @@ const routeTree = rootRoute.addChildren([
       settingsProfileRoute,
       settingsBillingRoute,
       settingsMarketplaceRoute,
+      settingsSkillsRoute,
     ]),
     legacyBillingRoute,
     legacyBillingReturnRoute,

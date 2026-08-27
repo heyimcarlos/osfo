@@ -230,6 +230,7 @@ export class PersonalSkillStoreUnavailable extends Schema.TaggedError<PersonalSk
     message: Schema.String,
     operation: Schema.Literals([
       "active",
+      "all",
       "activateLearning",
       "archive",
       "create",
@@ -270,6 +271,9 @@ type LearningAuthorityError =
 /** Deep User-scoped interface over immutable personal Skill state. */
 export interface Interface {
   readonly active: (
+    userId: UserId,
+  ) => Effect.Effect<ReadonlyArray<PersonalSkillVersion>, AuthorityError>;
+  readonly all: (
     userId: UserId,
   ) => Effect.Effect<ReadonlyArray<PersonalSkillVersion>, AuthorityError>;
   readonly activateLearning: (
@@ -483,6 +487,42 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
       );
       return yield* Effect.forEach(activeRows, ({ lastUsedAtEpochMillis, versionJson }) =>
         decodeVersionJson(versionJson, "active").pipe(
+          Effect.map((version) => ({
+            ...personalSkillVersionValues(version),
+            lastUsedAtEpochMillis,
+          })),
+        ),
+      );
+    }),
+    all: Effect.fn("PersonalSkillAuthority.all")(function* (userId: UserId) {
+      const rows = yield* attempt("all", () =>
+        storage.sql
+          .exec(
+            `SELECT v.version_json AS versionJson,
+                    s.last_used_at_epoch_millis AS lastUsedAtEpochMillis
+             FROM osfo_personal_skills s
+             JOIN osfo_personal_skill_versions v
+               ON v.skill_id = s.skill_id AND v.revision = s.current_revision
+             WHERE s.owner_user_id = ?
+             ORDER BY s.skill_id`,
+            userId,
+          )
+          .toArray(),
+      );
+      const currentRows = yield* Schema.decodeUnknownEffect(Schema.Array(ActiveVersionRow))(
+        rows,
+      ).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PersonalSkillInvalid({
+              cause,
+              message: "Agent SQLite returned invalid personal Skill control metadata",
+              reason: "envelope",
+            }),
+        ),
+      );
+      return yield* Effect.forEach(currentRows, ({ lastUsedAtEpochMillis, versionJson }) =>
+        decodeVersionJson(versionJson, "all").pipe(
           Effect.map((version) => ({
             ...personalSkillVersionValues(version),
             lastUsedAtEpochMillis,
@@ -1651,7 +1691,7 @@ const decodeVersionRows = (
 
 const decodeVersionJson = (
   versionJson: string,
-  operation: "active" | "inspect" | "pendingLearningNotifications" | "pin",
+  operation: "active" | "all" | "inspect" | "pendingLearningNotifications" | "pin",
 ): Effect.Effect<PersonalSkillVersion, PersonalSkillInvalid> =>
   Schema.decodeUnknownEffect(Schema.fromJsonString(PersonalSkillVersion))(versionJson).pipe(
     Effect.mapError(
@@ -1705,6 +1745,7 @@ const nextSkillVersionId = (revision: number): PersonalSkillVersionId =>
 const attempt = <A>(
   operation:
     | "active"
+    | "all"
     | "activateLearning"
     | "archive"
     | "claimLearning"

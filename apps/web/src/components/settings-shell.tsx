@@ -8,6 +8,7 @@ import {
   MoreHorizontal,
   Settings,
   ShieldCheck,
+  Sparkles,
   Store,
   UserRound,
   type LucideIcon,
@@ -21,7 +22,8 @@ type SettingsDestination =
   | "/settings/profile"
   | "/settings/privacy"
   | "/settings/billing"
-  | "/settings/marketplace";
+  | "/settings/marketplace"
+  | "/settings/skills";
 
 type SettingsNavigationItem = {
   readonly icon: LucideIcon;
@@ -36,6 +38,7 @@ const settingsItems: ReadonlyArray<SettingsNavigationItem> = [
   { icon: ShieldCheck, label: "Privacy", to: "/settings/privacy" },
   { icon: CreditCard, label: "Billing", to: "/settings/billing" },
   { icon: Store, label: "Marketplace", to: "/settings/marketplace" },
+  { icon: Sparkles, label: "Skills", to: "/settings/skills" },
 ];
 
 const pageDetails = {
@@ -51,6 +54,7 @@ const pageDetails = {
   },
   "/settings/privacy": { subtitle: "Control your data and privacy settings", title: "Privacy" },
   "/settings/profile": { subtitle: "Manage your account information", title: "Profile" },
+  "/settings/skills": { subtitle: "Review what Osfo has learned", title: "Skills" },
 } as const;
 
 const getPageDetails = (pathname: string) => {
@@ -61,6 +65,7 @@ const getPageDetails = (pathname: string) => {
     case "/settings/marketplace":
     case "/settings/privacy":
     case "/settings/profile":
+    case "/settings/skills":
       return pageDetails[pathname];
     default:
       return pageDetails["/settings/general"];

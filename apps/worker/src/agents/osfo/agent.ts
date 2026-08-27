@@ -17,6 +17,7 @@ import {
   type TurnConfig,
   type TurnContext,
 } from "@cloudflare/think";
+import { SkillChangeRequest, SkillDeletionRequest } from "@osfo/api";
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import { generateText, Output, tool, type ToolSet, type UIMessage } from "ai";
 import { genericObservability } from "agents/observability";
@@ -47,7 +48,11 @@ import {
   UserId,
 } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
-import { CapabilityId, currentCapabilityCatalog } from "../../domain/capability-catalog";
+import {
+  CapabilityId,
+  closedCapabilityIds,
+  currentCapabilityCatalog,
+} from "../../domain/capability-catalog";
 import {
   type GoodRootOutcomeEvaluationReference,
   PersonalSkillId,
@@ -104,6 +109,7 @@ import {
   recoverPersonalSkillLearning,
   selectPersonalSkillsForTurn,
 } from "./personal-skill-runtime";
+import { makePersonalSkillControl, PersonalSkillApprovalInvalid } from "./personal-skill-control";
 import {
   FileAnalysisId,
   type FileAnalysisRecord,
@@ -365,6 +371,28 @@ const initialPersonalSkillAvailability = {
     "skill-store",
   ],
 } as const;
+const settingsPersonalSkillAvailability: PersonalSkillAvailability = {
+  capabilityIds: closedCapabilityIds,
+  requirements: initialPersonalSkillAvailability.requirements,
+};
+const PersonalSkillControlActor = Schema.Struct({
+  decisionReference: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+  userId: UserId,
+});
+type PersonalSkillControlActor = typeof PersonalSkillControlActor.Type;
+const PersonalSkillControlChange = Schema.Struct({
+  actor: PersonalSkillControlActor,
+  change: SkillChangeRequest,
+});
+const PersonalSkillControlDelete = Schema.Struct({
+  actor: PersonalSkillControlActor,
+  reference: Schema.String,
+  request: SkillDeletionRequest,
+});
+const PersonalSkillControlRead = Schema.Struct({
+  actor: PersonalSkillControlActor,
+  reference: Schema.String,
+});
 const SkillLearningPrompt = Schema.Struct({
   corrections: Schema.Array(Schema.String),
   decisions: Schema.Array(Schema.String),
@@ -3324,12 +3352,79 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  /** List the authenticated User's active and archived personal Skills. */
+  async inspectPersonalSkills(input: PersonalSkillControlActor) {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeEffect(PersonalSkillControlActor)(input).pipe(
+        Effect.flatMap((actor) => this.#personalSkillControl(actor).inspect(actor.userId)),
+      ),
+    );
+  }
+
+  /** Commit one authenticated non-destructive personal Skill lifecycle change. */
+  async changePersonalSkill(input: typeof PersonalSkillControlChange.Type) {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeEffect(PersonalSkillControlChange)(input).pipe(
+        Effect.flatMap(({ actor, change }) =>
+          this.#accountDeletionFence.run(
+            this.#personalSkillControl(actor).change(actor.userId, change),
+            () =>
+              new PersonalSkillApprovalInvalid({
+                message: "Account deletion fenced personal Skill management.",
+              }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /** Present the exact current personal Skill lineage before destructive Approval. */
+  async presentPersonalSkillDeletion(input: typeof PersonalSkillControlRead.Type) {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeEffect(PersonalSkillControlRead)(input).pipe(
+        Effect.flatMap(({ actor, reference }) =>
+          this.#personalSkillControl(actor).presentDeletion(actor.userId, reference),
+        ),
+      ),
+    );
+  }
+
+  /** Consume one exact destructive Approval and delete its personal Skill lineage. */
+  async deletePersonalSkillFromSettings(input: typeof PersonalSkillControlDelete.Type) {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeEffect(PersonalSkillControlDelete)(input).pipe(
+        Effect.flatMap(({ actor, reference, request }) =>
+          this.#accountDeletionFence.run(
+            this.#personalSkillControl(actor).delete(actor.userId, reference, request),
+            () =>
+              new PersonalSkillApprovalInvalid({
+                message: "Account deletion fenced personal Skill deletion.",
+              }),
+          ),
+        ),
+      ),
+    );
+  }
+
   /** Look up the stable initialization fact and current primary Session. */
   async inspect(): Promise<
     AgentFound | AgentStateNotFound | AgentStoreRecordInvalid | AgentStoreUnavailable
   > {
     await this.#migrationsReady;
     return runRpc(this.#store.inspect());
+  }
+
+  #personalSkillControl(actor: PersonalSkillControlActor) {
+    return makePersonalSkillControl({
+      authority: this.#personalSkillAuthority,
+      availability: () => settingsPersonalSkillAvailability,
+      decisionReference: () => actor.decisionReference,
+      nowEpochMillis: Date.now,
+    });
   }
 
   /** Read the current and historical Session identities for one route. */
