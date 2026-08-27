@@ -3,23 +3,23 @@ import { Effect, Option, Predicate, Result, Schema, Semaphore } from "effect";
 import type { ActionId } from "../domain/action-execution";
 import { ManifestVersion, type UserId } from "../domain";
 import {
-  CalendarAvailabilityInput,
-  CalendarCreateEventInput,
   CalendarDeleteEventInput,
-  CalendarListEventsInput,
   CalendarUpdateEventInput,
   DriveDeliverArtifactInput,
-  DriveGetMetadataInput,
   DriveReadFileInput,
-  DriveSearchInput,
-  GmailFetchThreadInput,
-  GmailMessageInput,
-  GmailSearchInput,
   IntegrationManifestUnavailable,
   resolveManifest,
   type IntegrationManifestValueInvalid,
   type ResolvedIntegrationManifestOperation,
 } from "../domain/integration-manifest";
+import {
+  providerConstraintsFor,
+  providerInputFor,
+  type ProviderExecutionConstraints,
+  type ProviderInput,
+} from "./integration-provider-input";
+
+export type { ProviderInput } from "./integration-provider-input";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Integration outcomes use the repository's _tag discriminator. */
 
@@ -60,95 +60,6 @@ export interface ProviderExecutionResult {
   readonly logId: string;
 }
 
-export type ProviderInput =
-  | {
-      readonly ids_only: false;
-      readonly include_payload: false;
-      readonly include_spam_trash: false;
-      readonly max_results: number;
-      readonly query: string;
-      readonly user_id: "me";
-      readonly verbose: false;
-    }
-  | {
-      readonly body: string;
-      readonly extra_recipients?: ReadonlyArray<string>;
-      readonly is_html: false;
-      readonly recipient_email: string;
-      readonly subject: string;
-      readonly user_id: "me";
-    }
-  | {
-      readonly thread_id: string;
-      readonly user_id: "me";
-    }
-  | {
-      readonly calendarId: string;
-      readonly maxResults: number;
-      readonly showDeleted: false;
-      readonly singleEvents: true;
-      readonly timeMax: string;
-      readonly timeMin: string;
-      readonly timeZone: string;
-    }
-  | {
-      readonly calendar_expansion_max: 1;
-      readonly group_expansion_max: 1;
-      readonly items: readonly [string];
-      readonly time_max: string;
-      readonly time_min: string;
-      readonly timezone: string;
-    }
-  | {
-      readonly attendees: readonly [];
-      readonly calendar_id: string;
-      readonly create_meeting_room: false;
-      readonly end_datetime: string;
-      readonly exclude_organizer: true;
-      readonly recurrence?: ReadonlyArray<string>;
-      readonly send_updates: "none";
-      readonly start_datetime: string;
-      readonly summary: string;
-      readonly timezone: string;
-      readonly visibility: "private";
-    }
-  | ({
-      readonly calendar_id: string;
-      readonly event_id: string;
-      readonly send_updates: "none";
-    } & CalendarPatchInput)
-  | {
-      readonly calendar_id: string;
-      readonly event_id: string;
-      readonly send_updates: "none";
-    }
-  | {
-      readonly corpora: "user";
-      readonly fields: "files(id,name,mimeType,size,modifiedTime,createdTime,parents,webViewLink,trashed)";
-      readonly includeItemsFromAllDrives: false;
-      readonly pageSize: number;
-      readonly q: string;
-      readonly spaces: "drive";
-      readonly supportsAllDrives: false;
-    }
-  | {
-      readonly fields: "id,name,mimeType,size,modifiedTime,webViewLink";
-      readonly fileId: string;
-      readonly supportsAllDrives: true;
-    }
-  | {
-      readonly file_id: string;
-      readonly mime_type: string;
-    }
-  | {
-      readonly file_to_upload: {
-        readonly mimetype: string;
-        readonly name: string;
-        readonly s3key: string;
-      };
-      readonly folder_to_upload_to: string | null;
-    };
-
 export interface IntegrationArtifact {
   readonly bytes: Uint8Array;
   readonly fileName: string;
@@ -175,6 +86,7 @@ export interface ProviderSession {
     providerTool: string,
     input: ProviderInput,
     connectedAccountId: string,
+    constraints?: ProviderExecutionConstraints,
   ) => Effect.Effect<ProviderExecutionResult, IntegrationProviderUnavailable>;
   readonly disconnect: (
     connectedAccountId: string,
@@ -330,7 +242,7 @@ export interface IntegrationReadCompleted {
 
 export interface IntegrationEffectCompleted {
   readonly _tag: "IntegrationEffectCompleted";
-  readonly evidence: { readonly providerLogId: string };
+  readonly evidence: { readonly providerLogId: string; readonly providerResourceId: string };
   readonly manifestVersion: ManifestVersion;
   readonly mutations: 1;
   readonly operation: string;
@@ -457,25 +369,28 @@ export const make = (
     const candidates = (yield* session.inspectToolkits([input.toolkit])).filter(
       ({ slug }) => slug === input.toolkit,
     );
-    if (candidates.length > 1) {
+    const active = candidates.filter(
+      (candidate) => candidate.isActive && candidate.connectedAccount?.status === "ACTIVE",
+    );
+    if (active.length > 1) {
       return connectionInspection(input, "IntegrationConnectionAmbiguous", session);
     }
-    const candidate = candidates[0];
-    if (candidate?.connectedAccount === null || candidate === undefined) {
+    const candidate = active[0];
+    if (candidate !== undefined && candidate.connectedAccount !== null) {
+      return {
+        connectedAccountId: candidate.connectedAccount.id,
+        evidence: {
+          _tag: "IntegrationConnectionConnected" as const,
+          toolkit: input.toolkit,
+          userId: input.userId,
+        },
+        session,
+      };
+    }
+    if (candidates.every(({ connectedAccount }) => connectedAccount === null)) {
       return connectionInspection(input, "IntegrationConnectionMissing", session);
     }
-    if (!candidate.isActive || candidate.connectedAccount.status !== "ACTIVE") {
-      return connectionInspection(input, "IntegrationConnectionStale", session);
-    }
-    return {
-      connectedAccountId: candidate.connectedAccount.id,
-      evidence: {
-        _tag: "IntegrationConnectionConnected" as const,
-        toolkit: input.toolkit,
-        userId: input.userId,
-      },
-      session,
-    };
+    return connectionInspection(input, "IntegrationConnectionStale", session);
   });
 
   const connectionEvidence = Effect.fn("Integrations.connectionEvidence")(function* (input: {
@@ -518,6 +433,7 @@ export const make = (
           manifest.providerTool,
           providerInput,
           connection.connectedAccountId,
+          providerConstraintsFor(manifest, decoded.success),
         );
         return yield* normalizeRead(manifest, execution, decoded.success);
       }
@@ -547,6 +463,7 @@ export const make = (
             });
           }
           const connection = yield* requireConnection(manifest.toolkit, input.userId);
+          yield* ports.retainAction(actionId, { _tag: "Pending", digest });
           if (manifest.operation === "DRIVE_DELIVER_ARTIFACT") {
             const request = yield* Schema.decodeUnknownEffect(DriveDeliverArtifactInput)(
               decoded.success,
@@ -579,14 +496,21 @@ export const make = (
                     toolkit: manifest.toolkit,
                   }),
               ),
+              Effect.tapError(() => ports.retainAction(actionId, { _tag: "NotApplied", digest })),
             );
-            const staged = yield* connection.session.stageFile(artifact);
+            const stageAttempt = yield* Effect.exit(connection.session.stageFile(artifact));
+            if (Predicate.isTagged(stageAttempt, "Failure")) {
+              yield* ports.retainAction(actionId, { _tag: "Ambiguous", digest });
+              return yield* new IntegrationActionAmbiguous({
+                actionId,
+                message: "The integration file staging outcome is unknown",
+              });
+            }
             providerInput = {
-              file_to_upload: staged,
+              file_to_upload: stageAttempt.value,
               folder_to_upload_to: request.targetFolderId,
             };
           }
-          yield* ports.retainAction(actionId, { _tag: "Pending", digest });
           const attempted = yield* Effect.exit(
             connection.session.execute(
               manifest.providerTool,
@@ -605,7 +529,7 @@ export const make = (
             yield* ports.retainAction(actionId, { _tag: "NotApplied", digest });
             return yield* providerRejection(manifest, attempted.value);
           }
-          const result = yield* normalizeEffect(manifest, attempted.value).pipe(
+          const result = yield* normalizeEffect(manifest, attempted.value, decoded.success).pipe(
             Effect.tapError(() => ports.retainAction(actionId, { _tag: "Ambiguous", digest })),
           );
           yield* ports.retainAction(actionId, { _tag: "Applied", digest, result });
@@ -628,8 +552,26 @@ export const make = (
     }),
     connectionEvidence,
     disconnect: Effect.fn("Integrations.disconnect")(function* (input) {
-      const connection = yield* requireConnection(input.toolkit, input.userId);
-      yield* connection.session.disconnect(connection.connectedAccountId);
+      if (!isSupportedToolkit(input.toolkit)) {
+        return yield* unsupportedToolkit(input.toolkit, "DISCONNECT");
+      }
+      const { session } = yield* resolveProviderSession(input.userId);
+      const accounts = (yield* session.inspectToolkits([input.toolkit])).filter(
+        ({ connectedAccount, slug }) => slug === input.toolkit && connectedAccount !== null,
+      );
+      if (accounts.length === 0) {
+        return yield* new IntegrationConnectionUnavailable({
+          message: "The required Integration Connection is not current and unambiguous",
+          toolkit: input.toolkit,
+          userId: input.userId,
+        });
+      }
+      yield* Effect.forEach(
+        accounts,
+        ({ connectedAccount }) =>
+          connectedAccount === null ? Effect.void : session.disconnect(connectedAccount.id),
+        { concurrency: 1, discard: true },
+      );
       return { _tag: "IntegrationConnectionRevoked" as const, toolkit: input.toolkit };
     }),
     execute,
@@ -655,173 +597,6 @@ const connectionInspection = (
   evidence: { _tag: tag, toolkit: input.toolkit, userId: input.userId },
   session,
 });
-
-const providerInputFor = (
-  manifest: ResolvedIntegrationManifestOperation,
-  input: Schema.Json,
-): ProviderInput => {
-  switch (manifest.operation) {
-    case "GMAIL_SEARCH_EMAILS": {
-      const value = Schema.decodeUnknownSync(GmailSearchInput)(input);
-      return {
-        ids_only: false,
-        include_payload: false,
-        include_spam_trash: value.includeSpamTrash,
-        max_results: value.maximumMessages,
-        query: value.query,
-        user_id: "me",
-        verbose: false,
-      };
-    }
-    case "GMAIL_FETCH_THREAD": {
-      const value = Schema.decodeUnknownSync(GmailFetchThreadInput)(input);
-      return { thread_id: value.threadId, user_id: "me" };
-    }
-    case "GMAIL_SEND_EMAIL": {
-      const value = Schema.decodeUnknownSync(GmailMessageInput)(input);
-      const [recipient, ...extraRecipients] = value.recipients;
-      const common = {
-        body: value.body,
-        is_html: false,
-        recipient_email: recipient,
-        subject: value.subject,
-        user_id: "me",
-      } as const;
-      return extraRecipients.length === 0
-        ? common
-        : { ...common, extra_recipients: extraRecipients };
-    }
-    case "CALENDAR_LIST_EVENTS": {
-      const value = Schema.decodeUnknownSync(CalendarListEventsInput)(input);
-      return {
-        calendarId: value.calendarId,
-        maxResults: value.maximumEvents,
-        showDeleted: false,
-        singleEvents: true,
-        timeMax: value.endsAt,
-        timeMin: value.startsAt,
-        timeZone: value.timeZone,
-      };
-    }
-    case "CALENDAR_FIND_AVAILABILITY": {
-      const value = Schema.decodeUnknownSync(CalendarAvailabilityInput)(input);
-      return {
-        calendar_expansion_max: 1,
-        group_expansion_max: 1,
-        items: [value.calendarId],
-        time_max: value.endsAt,
-        time_min: value.startsAt,
-        timezone: value.timeZone,
-      };
-    }
-    case "CALENDAR_CREATE_EVENT": {
-      const value = Schema.decodeUnknownSync(CalendarCreateEventInput)(input);
-      const common = {
-        attendees: [],
-        calendar_id: value.calendarId,
-        create_meeting_room: false,
-        end_datetime: value.endsAt,
-        exclude_organizer: true,
-        send_updates: "none",
-        start_datetime: value.startsAt,
-        summary: value.title,
-        timezone: value.timeZone,
-        visibility: "private",
-      } as const;
-      const recurrence = calendarRecurrence(value.recurrence);
-      return recurrence === undefined ? common : { ...common, recurrence };
-    }
-    case "CALENDAR_DELETE_EVENT": {
-      const value = Schema.decodeUnknownSync(CalendarDeleteEventInput)(input);
-      return {
-        calendar_id: value.calendarId,
-        event_id: value.eventId,
-        send_updates: "none",
-      };
-    }
-    case "DRIVE_SEARCH": {
-      const value = Schema.decodeUnknownSync(DriveSearchInput)(input);
-      return {
-        corpora: "user",
-        fields: "files(id,name,mimeType,size,modifiedTime,createdTime,parents,webViewLink,trashed)",
-        includeItemsFromAllDrives: false,
-        pageSize: value.maximumFiles,
-        q: `(${value.query}) and 'me' in owners and trashed = false`,
-        spaces: "drive",
-        supportsAllDrives: false,
-      };
-    }
-    case "CALENDAR_UPDATE_EVENT": {
-      const value = Schema.decodeUnknownSync(CalendarUpdateEventInput)(input);
-      return {
-        calendar_id: value.calendarId,
-        event_id: value.eventId,
-        send_updates: "none",
-        ...calendarPatchInput(value.changes),
-      };
-    }
-    case "DRIVE_GET_METADATA": {
-      const value = Schema.decodeUnknownSync(DriveGetMetadataInput)(input);
-      return {
-        fields: "id,name,mimeType,size,modifiedTime,webViewLink",
-        fileId: value.fileId,
-        supportsAllDrives: true,
-      };
-    }
-    case "DRIVE_READ_FILE": {
-      const value = Schema.decodeUnknownSync(DriveReadFileInput)(input);
-      return { file_id: value.fileId, mime_type: value.expectedMediaType };
-    }
-    case "DRIVE_DELIVER_ARTIFACT": {
-      const value = Schema.decodeUnknownSync(DriveDeliverArtifactInput)(input);
-      return {
-        file_to_upload: {
-          mimetype: value.mediaType,
-          name: value.fileName,
-          s3key: value.artifactId,
-        },
-        folder_to_upload_to: value.targetFolderId,
-      };
-    }
-    default:
-      throw new Error(`Unsupported retained integration operation: ${manifest.operation}`);
-  }
-};
-
-interface CalendarPatchInput {
-  description?: string;
-  end_time?: string;
-  location?: string;
-  recurrence?: ReadonlyArray<string>;
-  start_time?: string;
-  summary?: string;
-  timezone?: string;
-}
-
-const calendarPatchInput = (
-  changes: typeof CalendarUpdateEventInput.Type.changes,
-): CalendarPatchInput => {
-  const patch: CalendarPatchInput = {};
-  if (changes.description !== undefined) patch.description = changes.description;
-  if (changes.endsAt !== undefined) patch.end_time = changes.endsAt;
-  if (changes.location !== undefined) patch.location = changes.location;
-  if (changes.recurrence !== undefined) {
-    patch.recurrence = calendarRecurrence(changes.recurrence) ?? [];
-  }
-  if (changes.startsAt !== undefined) patch.start_time = changes.startsAt;
-  if (changes.timeZone !== undefined) patch.timezone = changes.timeZone;
-  if (changes.title !== undefined) patch.summary = changes.title;
-  return patch;
-};
-
-const calendarRecurrence = (
-  recurrence: typeof CalendarCreateEventInput.Type.recurrence,
-): ReadonlyArray<string> | undefined => {
-  if (recurrence === null) return undefined;
-  return [
-    `RRULE:FREQ=${recurrence.frequency};INTERVAL=${recurrence.interval};COUNT=${recurrence.count}`,
-  ];
-};
 
 const normalizeRead = (
   manifest: ResolvedIntegrationManifestOperation,
@@ -888,18 +663,41 @@ const decodeUtf8Prefix = (bytes: Uint8Array, maximumBytes: number) => {
 const normalizeEffect = (
   manifest: ResolvedIntegrationManifestOperation,
   execution: ProviderExecutionResult,
+  input: Schema.Json,
 ) =>
   Effect.gen(function* () {
     const providerLogId = yield* validateProviderResult(manifest, execution);
+    const providerResourceId = yield* effectResourceId(manifest, execution.data, input);
     return {
       _tag: "IntegrationEffectCompleted" as const,
-      evidence: { providerLogId },
+      evidence: { providerLogId, providerResourceId },
       manifestVersion: manifest.manifestVersion,
       mutations: 1 as const,
       operation: manifest.operation,
       toolkit: manifest.toolkit,
     };
   });
+
+const ProviderResource = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
+});
+
+const effectResourceId = (
+  manifest: ResolvedIntegrationManifestOperation,
+  data: Schema.JsonObject,
+  input: Schema.Json,
+) => {
+  if (manifest.operation === "CALENDAR_DELETE_EVENT") {
+    return Effect.succeed(Schema.decodeUnknownSync(CalendarDeleteEventInput)(input).eventId);
+  }
+  const decoded = Schema.decodeUnknownOption(ProviderResource)(data);
+  if (Option.isNone(decoded)) return Effect.fail(invalidProviderResult(manifest));
+  if (manifest.operation === "CALENDAR_UPDATE_EVENT") {
+    const expected = Schema.decodeUnknownSync(CalendarUpdateEventInput)(input).eventId;
+    if (decoded.value.id !== expected) return Effect.fail(invalidProviderResult(manifest));
+  }
+  return Effect.succeed(decoded.value.id);
+};
 
 const validateProviderResult = (
   manifest: ResolvedIntegrationManifestOperation,

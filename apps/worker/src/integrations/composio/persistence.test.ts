@@ -27,7 +27,10 @@ describe("Composio persistence", () => {
           digest: `${index}`.repeat(64),
           result: {
             _tag: "IntegrationEffectCompleted" as const,
-            evidence: { providerLogId: `provider-log-${index}` },
+            evidence: {
+              providerLogId: `provider-log-${index}`,
+              providerResourceId: `provider-resource-${index}`,
+            },
             manifestVersion: ManifestVersion.make(manifestVersion),
             mutations: 1 as const,
             operation,

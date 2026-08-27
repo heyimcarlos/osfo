@@ -10,6 +10,7 @@ import {
   decodeExecutionResponse,
   makeFromClient,
   silenceComposioLogs,
+  uploadFile,
 } from "./provider";
 
 describe("Composio Provider", () => {
@@ -150,6 +151,8 @@ describe("Composio Provider", () => {
 
   it.effect("downloads one bounded text Drive result and removes its signed URL", () =>
     Effect.gen(function* () {
+      const signedUrl =
+        "https://temp.4d4f16c61d89ec64e760039c4ec50717.r2.cloudflarestorage.com/project/googledrive/file?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=credential&X-Amz-Date=20260827T120000Z&X-Amz-Expires=3600&X-Amz-Signature=signature&X-Amz-SignedHeaders=host";
       const fetchMock = vi
         .spyOn(globalThis, "fetch")
         .mockResolvedValue(new Response("x".repeat(65_540), { status: 206 }));
@@ -165,7 +168,7 @@ describe("Composio Provider", () => {
             downloaded_file_content: {
               mimetype: "text/plain",
               name: "notes.txt",
-              s3url: "https://files.composio.dev/signed-download",
+              s3url: signedUrl,
             },
           },
           error: null,
@@ -181,26 +184,75 @@ describe("Composio Provider", () => {
       );
       const result = yield* created.session.execute(
         "GOOGLEDRIVE_DOWNLOAD_FILE",
-        { file_id: "file-1", mime_type: "text/plain" },
+        { fileId: "file-1", mime_type: "text/plain" },
         "private-account",
+        { maximumDownloadBytes: 8 },
       );
 
       expect(fetchMock).toHaveBeenCalledWith(
-        "https://files.composio.dev/signed-download",
-        expect.objectContaining({ headers: { range: "bytes=0-65536" } }),
+        signedUrl,
+        expect.objectContaining({
+          headers: { range: "bytes=0-7" },
+          redirect: "error",
+        }),
       );
       expect(result).toEqual({
         data: {
-          content: "x".repeat(65_536),
+          content: "x".repeat(8),
           mimeType: "text/plain",
           name: "notes.txt",
-          size: 65_536,
+          size: 8,
           truncated: true,
         },
         error: null,
         logId: "download-log",
       });
       expect(result.data).not.toHaveProperty("s3url");
+      fetchMock.mockRestore();
+    }),
+  );
+
+  it.effect("rejects an arbitrary HTTPS Drive download origin before fetching it", () =>
+    Effect.gen(function* () {
+      const fetchMock = vi.spyOn(globalThis, "fetch");
+      const session = {
+        authorize: async () => ({ redirectUrl: "https://connect.composio.dev/link" }),
+        sessionId: "provider-session-1",
+      };
+      const provider = makeFromClient({
+        createSession: async () => session,
+        disconnect: async () => undefined,
+        executeOnce: async () => ({
+          data: {
+            downloaded_file_content: {
+              mimetype: "text/plain",
+              name: "notes.txt",
+              s3url: "https://example.com/provider-selected-target",
+            },
+          },
+          error: null,
+          logId: "download-log",
+        }),
+        listConnectedAccounts: async () => ({ items: [] }),
+        uploadFile: async () => ({ mimetype: "text/plain", name: "notes.txt", s3key: "key" }),
+        useSession: async () => session,
+      });
+      const created = yield* provider.createSession(
+        UserId.make("user-1"),
+        directIntegrationProviderConfig,
+      );
+
+      expect(
+        yield* Effect.flip(
+          created.session.execute(
+            "GOOGLEDRIVE_DOWNLOAD_FILE",
+            { fileId: "file-1", mime_type: "text/plain" },
+            "private-account",
+            { maximumDownloadBytes: 8 },
+          ),
+        ),
+      ).toMatchObject({ _tag: "IntegrationProviderUnavailable", operation: "downloadFile" });
+      expect(fetchMock).not.toHaveBeenCalled();
       fetchMock.mockRestore();
     }),
   );
@@ -237,8 +289,9 @@ describe("Composio Provider", () => {
       const failure = yield* Effect.flip(
         created.session.execute(
           "GOOGLEDRIVE_DOWNLOAD_FILE",
-          { file_id: "file-1", mime_type: "text/plain" },
+          { fileId: "file-1", mime_type: "text/plain" },
           "private-account",
+          { maximumDownloadBytes: 8 },
         ),
       );
 
@@ -250,4 +303,50 @@ describe("Composio Provider", () => {
       fetchMock.mockRestore();
     }),
   );
+
+  it("stages an owned artifact through the current presigned API without Node file APIs", async () => {
+    const signedUrl =
+      "https://storage.composio.dev/project/file?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=credential&X-Amz-Date=20260827T120000Z&X-Amz-Expires=3600&X-Amz-Signature=signature&X-Amz-SignedHeaders=host";
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    const createPresignedURL = vi.fn<
+      () => Promise<{
+        key: string;
+        new_presigned_url: string;
+      }>
+    >(async () => ({
+      key: "provider-file-key",
+      new_presigned_url: signedUrl,
+    }));
+    const bytes = new Uint8Array([1, 2, 3]);
+
+    await expect(
+      uploadFile(
+        { createPresignedURL },
+        { bytes, fileName: "report.pdf", mediaType: "application/pdf" },
+      ),
+    ).resolves.toEqual({
+      mimetype: "application/pdf",
+      name: "report.pdf",
+      s3key: "provider-file-key",
+    });
+    expect(createPresignedURL).toHaveBeenCalledWith({
+      filename: "report.pdf",
+      md5: "5289df737df57326fcdd22597afb1fac",
+      mimetype: "application/pdf",
+      tool_slug: "GOOGLEDRIVE_UPLOAD_FILE",
+      toolkit_slug: "googledrive",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      signedUrl,
+      expect.objectContaining({
+        body: bytes.buffer,
+        headers: { "content-type": "application/pdf" },
+        method: "PUT",
+        redirect: "error",
+      }),
+    );
+    fetchMock.mockRestore();
+  });
 });

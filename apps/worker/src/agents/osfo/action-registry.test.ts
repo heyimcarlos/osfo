@@ -279,7 +279,6 @@ it.effect("presents and fences the complete Calendar update", () =>
       calendarId: "calendar-1",
       changes: { location: "Room 2", title: "Updated title" },
       eventId: "event-1",
-      recurringScope: "event" as const,
       sendNotifications: false as const,
     };
     const presentation = yield* presentOsfoAction({
@@ -359,7 +358,6 @@ it.effect("presents and fences the exact Calendar recurrence deletion target", (
     const input = {
       calendarId: "primary",
       eventId: "recurring-event",
-      recurringScope: "series" as const,
       sendNotifications: false as const,
     };
     const presentation = yield* presentOsfoAction({
@@ -386,7 +384,7 @@ it.effect("presents and fences the exact Calendar recurrence deletion target", (
     expect(
       hasExactIntegrationActionInput(presentation, "CALENDAR_DELETE_EVENT", {
         ...input,
-        recurringScope: "event",
+        eventId: "different-event",
       }),
     ).toBe(false);
   }),

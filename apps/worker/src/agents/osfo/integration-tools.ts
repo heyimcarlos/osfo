@@ -206,8 +206,8 @@ export const make = (executor: IntegrationToolExecutor): IntegrationToolRegistry
       executor,
     ),
     calendarDeleteEvent: approvedAction(
-      "Delete the exact Google Calendar event or series shown",
-      "Delete one exact Google Calendar event or recurring series.",
+      "Delete the exact Google Calendar event ID shown",
+      "Delete one exact Google Calendar event ID; a recurring master ID deletes its series.",
       "calendar-delete-event",
       calendarDeleteEventInputSchema,
       operationIdentities.calendarDeleteEvent,
@@ -215,8 +215,8 @@ export const make = (executor: IntegrationToolExecutor): IntegrationToolRegistry
       executor,
     ),
     calendarUpdateEvent: approvedAction(
-      "Update the exact Google Calendar event fields shown",
-      "Patch explicit fields on one exact Google Calendar event.",
+      "Update the exact Google Calendar event ID fields shown",
+      "Patch explicit fields on one exact Google Calendar event ID; a recurring master ID updates its series.",
       "calendar-update-event",
       calendarUpdateEventInputSchema,
       operationIdentities.calendarUpdateEvent,

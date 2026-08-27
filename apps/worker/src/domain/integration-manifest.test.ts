@@ -265,7 +265,6 @@ describe("Integration Capability Manifests", () => {
             timeZone: "America/Toronto",
           },
           eventId: "event-1",
-          recurringScope: "event",
           sendNotifications: false,
         },
       },

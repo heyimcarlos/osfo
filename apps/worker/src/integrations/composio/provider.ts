@@ -1,4 +1,7 @@
 import { Composio, logger, SessionPreset } from "@composio/core";
+import ComposioClient from "@composio/client";
+import { md5 } from "@noble/hashes/legacy.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { Effect, Option, Redacted, Schema } from "effect";
 
 import type { UserId } from "../../domain";
@@ -13,8 +16,8 @@ import {
 } from "../../services/integrations";
 
 const requestTimeoutMillis = 30_000;
-const maximumDriveReadBytes = 65_536;
 const composioApiBaseUrl = "https://backend.composio.dev";
+const composioTemporaryFilesHost = "temp.4d4f16c61d89ec64e760039c4ec50717.r2.cloudflarestorage.com";
 const toolkitVersions = {
   gmail: "20260817_00",
   googlecalendar: "20260812_00",
@@ -87,6 +90,19 @@ interface ComposioClientPort {
   readonly useSession: (providerSessionId: string) => Promise<ComposioSessionPort>;
 }
 
+interface ComposioFilesPort {
+  readonly createPresignedURL: (input: {
+    readonly filename: string;
+    readonly md5: string;
+    readonly mimetype: string;
+    readonly tool_slug: "GOOGLEDRIVE_UPLOAD_FILE";
+    readonly toolkit_slug: "googledrive";
+  }) => Promise<{
+    readonly key: string;
+    readonly new_presigned_url: string;
+  }>;
+}
+
 export interface ComposioSessionConfig {
   readonly manageConnections: false;
   readonly multiAccount: { readonly enable: false };
@@ -140,6 +156,12 @@ export const make = (apiKey: Redacted.Redacted): IntegrationProvider => {
     fileUploadDirs: false,
     toolkitVersions,
   });
+  const filesClient = new ComposioClient({
+    apiKey: value,
+    baseURL: composioApiBaseUrl,
+    maxRetries: 0,
+    timeout: requestTimeoutMillis,
+  });
   return makeFromClient({
     createSession: (userId, config) => composio.sessions.create(userId, config),
     executeOnce: (sessionId, providerTool, input, connectedAccountId) =>
@@ -148,12 +170,7 @@ export const make = (apiKey: Redacted.Redacted): IntegrationProvider => {
       composio.connectedAccounts.delete(connectedAccountId).then(() => undefined),
     listConnectedAccounts: (userId, toolkit) =>
       listConnectedAccounts(composio.connectedAccounts, userId, toolkit),
-    uploadFile: ({ bytes, fileName, mediaType }) =>
-      composio.files.upload({
-        file: new File([Uint8Array.from(bytes).buffer], fileName, { type: mediaType }),
-        toolkitSlug: "googledrive",
-        toolSlug: "GOOGLEDRIVE_UPLOAD_FILE",
-      }),
+    uploadFile: (input) => uploadFile(filesClient.files, input),
     useSession: (providerSessionId) => composio.sessions.use(providerSessionId),
   });
 };
@@ -202,16 +219,16 @@ const adaptSession = (
           : Effect.fail(providerFailure("authorize"));
       }),
     ),
-  execute: (providerTool, input, connectedAccountId) =>
+  execute: (providerTool, input, connectedAccountId, constraints) =>
     providerCall("execute", () =>
       client.executeOnce(session.sessionId, providerTool, input, connectedAccountId),
     ).pipe(
       Effect.flatMap((execution) =>
         providerTool === "GOOGLEDRIVE_DOWNLOAD_FILE" &&
         execution.error === null &&
-        "file_id" in input &&
+        "fileId" in input &&
         "mime_type" in input
-          ? normalizeDriveDownload(execution, input.mime_type)
+          ? normalizeDriveDownload(execution, input.mime_type, constraints?.maximumDownloadBytes)
           : Effect.succeed(execution),
       ),
     ),
@@ -235,8 +252,15 @@ const adaptSession = (
   stageFile: (artifact) => providerCall("stageFile", () => client.uploadFile(artifact)),
 });
 
-const normalizeDriveDownload = (execution: ProviderExecutionResult, expectedMediaType: string) =>
+const normalizeDriveDownload = (
+  execution: ProviderExecutionResult,
+  expectedMediaType: string,
+  maximumBytes: number | undefined,
+) =>
   Effect.gen(function* () {
+    if (maximumBytes === undefined || maximumBytes < 1 || maximumBytes > 65_536) {
+      return yield* providerFailure("downloadFile");
+    }
     const downloaded = yield* Schema.decodeUnknownEffect(DownloadedFile)(
       execution.data.downloaded_file_content,
     ).pipe(Effect.mapError(() => providerFailure("downloadFile")));
@@ -245,12 +269,13 @@ const normalizeDriveDownload = (execution: ProviderExecutionResult, expectedMedi
     const response = yield* providerCall("downloadFile", () =>
       // oxlint-disable-next-line osfo/no-raw-fetch, effecttsgo/global-fetch -- The provider adapter consumes one decoded, public HTTPS download reference.
       fetch(downloaded.s3url, {
-        headers: { range: `bytes=0-${maximumDriveReadBytes}` },
+        headers: { range: `bytes=0-${maximumBytes - 1}` },
+        redirect: "error",
         signal: AbortSignal.timeout(requestTimeoutMillis),
       }),
     );
     if (!response.ok && response.status !== 206) return yield* providerFailure("downloadFile");
-    const read = yield* readBoundedBody(response, maximumDriveReadBytes);
+    const read = yield* readBoundedBody(response, maximumBytes);
     const content = yield* Effect.try({
       try: () => new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(read.bytes),
       catch: () => providerFailure("downloadFile"),
@@ -266,6 +291,32 @@ const normalizeDriveDownload = (execution: ProviderExecutionResult, expectedMedi
       },
     };
   });
+
+/** Stage one exact owned artifact through Composio's current presigned-file API in workerd. */
+// oxlint-disable-next-line effecttsgo/async-function -- This adapter owns the ordered presign and upload Promise boundary.
+export const uploadFile = async (
+  files: ComposioFilesPort,
+  input: { readonly bytes: Uint8Array; readonly fileName: string; readonly mediaType: string },
+): Promise<{ readonly mimetype: string; readonly name: string; readonly s3key: string }> => {
+  const requested = await files.createPresignedURL({
+    filename: input.fileName,
+    md5: bytesToHex(md5(input.bytes)),
+    mimetype: input.mediaType,
+    tool_slug: "GOOGLEDRIVE_UPLOAD_FILE",
+    toolkit_slug: "googledrive",
+  });
+  if (!isSafeUploadUrl(requested.new_presigned_url)) throw new Error("Unsafe upload location");
+  // oxlint-disable-next-line osfo/no-raw-fetch, effecttsgo/global-fetch -- The provider adapter owns the exact decoded presigned upload boundary.
+  const response = await fetch(requested.new_presigned_url, {
+    body: Uint8Array.from(input.bytes).buffer,
+    headers: { "content-type": input.mediaType },
+    method: "PUT",
+    redirect: "error",
+    signal: AbortSignal.timeout(requestTimeoutMillis),
+  });
+  if (!response.ok) throw new Error(`Composio staging failed with HTTP ${response.status}`);
+  return { mimetype: input.mediaType, name: input.fileName, s3key: requested.key };
+};
 
 const readBoundedBody = (response: Response, maximumBytes: number) =>
   Effect.tryPromise({
@@ -306,16 +357,49 @@ const readBoundedBody = (response: Response, maximumBytes: number) =>
 const isSafeDownloadUrl = (value: string) => {
   if (!URL.canParse(value)) return false;
   const url = new URL(value);
-  if (url.protocol !== "https:" || url.username !== "" || url.password !== "") return false;
-  const host = url.hostname.toLowerCase();
+  if (
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.port !== "" ||
+    url.hostname.toLowerCase() !== composioTemporaryFilesHost
+  )
+    return false;
+  const expires = Number(url.searchParams.get("X-Amz-Expires"));
   return (
-    host !== "localhost" &&
-    !host.endsWith(".local") &&
-    !host.startsWith("127.") &&
-    !host.startsWith("10.") &&
-    !host.startsWith("192.168.") &&
-    !/^172\.(?:1[6-9]|2\d|3[01])\./u.test(host) &&
-    !host.includes(":")
+    url.searchParams.get("X-Amz-Algorithm") === "AWS4-HMAC-SHA256" &&
+    (url.searchParams.get("X-Amz-Credential")?.length ?? 0) > 0 &&
+    (url.searchParams.get("X-Amz-Date")?.length ?? 0) > 0 &&
+    Number.isFinite(expires) &&
+    expires > 0 &&
+    expires <= 86_400 &&
+    (url.searchParams.get("X-Amz-Signature")?.length ?? 0) > 0 &&
+    url.searchParams.get("X-Amz-SignedHeaders") === "host"
+  );
+};
+
+const isSafeUploadUrl = (value: string) => {
+  if (!URL.canParse(value)) return false;
+  const url = new URL(value);
+  if (
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.port !== "" ||
+    ![composioTemporaryFilesHost, "storage.composio.dev"].includes(url.hostname.toLowerCase())
+  ) {
+    return false;
+  }
+  const expires = Number(url.searchParams.get("X-Amz-Expires"));
+  return (
+    url.searchParams.get("X-Amz-Algorithm") === "AWS4-HMAC-SHA256" &&
+    (url.searchParams.get("X-Amz-Credential")?.length ?? 0) > 0 &&
+    (url.searchParams.get("X-Amz-Date")?.length ?? 0) > 0 &&
+    Number.isFinite(expires) &&
+    expires > 0 &&
+    expires <= 86_400 &&
+    (url.searchParams.get("X-Amz-Signature")?.length ?? 0) > 0 &&
+    url.searchParams.get("X-Amz-SignedHeaders") === "host"
   );
 };
 
@@ -326,7 +410,7 @@ const listConnectedAccounts = async (
   toolkit: string,
 ): Promise<ComposioConnectedAccountList> => {
   const listed = await connectedAccounts.list({
-    limit: 2,
+    limit: 100,
     toolkitSlugs: [toolkit],
     userIds: [userId],
   });

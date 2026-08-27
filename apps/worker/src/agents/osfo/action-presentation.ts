@@ -329,8 +329,10 @@ const presentCalendarUpdateAction = Effect.fn("ActionPresentation.presentCalenda
     return ActionPresentation.make({
       actionDefinitionVersion: "osfo-calendar-update-v1",
       actionId: ActionId.make(pending.descriptor.toolCallId),
-      consequences: ["Overwrite the selected fields on this exact external calendar event."],
-      description: "Update the exact Google Calendar event shown here.",
+      consequences: [
+        "Overwrite the selected fields on this exact external calendar event ID; a recurring master ID updates its series.",
+      ],
+      description: "Update the exact Google Calendar event ID shown here.",
       fields: calendarUpdatePresentationFields(input),
       operation: "integration.effect",
       presentationId: ActionPresentationId.make(pending.executionId),
@@ -369,8 +371,10 @@ const presentCalendarDeleteAction = Effect.fn("ActionPresentation.presentCalenda
     return ActionPresentation.make({
       actionDefinitionVersion: "osfo-calendar-delete-v1",
       actionId: ActionId.make(pending.descriptor.toolCallId),
-      consequences: ["Delete the exact external calendar target shown here."],
-      description: "Delete the exact Google Calendar event target shown here.",
+      consequences: [
+        "Delete this exact external calendar event ID; a recurring master ID deletes its series.",
+      ],
+      description: "Delete the exact Google Calendar event ID shown here.",
       fields: calendarDeletePresentationFields(input),
       operation: "integration.effect",
       presentationId: ActionPresentationId.make(pending.executionId),
@@ -596,7 +600,6 @@ const gmailPresentationFields = (input: typeof GmailMessageInput.Type) => [
 const calendarUpdatePresentationFields = (input: typeof CalendarUpdateEventInput.Type) => [
   { label: "Calendar", name: "calendarId", value: input.calendarId },
   { label: "Event", name: "eventId", value: input.eventId },
-  { label: "Target", name: "recurringScope", value: input.recurringScope },
   {
     label: "Send notifications",
     name: "sendNotifications",
@@ -623,7 +626,6 @@ const calendarCreatePresentationFields = (input: typeof CalendarCreateEventInput
 const calendarDeletePresentationFields = (input: typeof CalendarDeleteEventInput.Type) => [
   { label: "Calendar", name: "calendarId", value: input.calendarId },
   { label: "Event", name: "eventId", value: input.eventId },
-  { label: "Target", name: "recurringScope", value: input.recurringScope },
   {
     label: "Send notifications",
     name: "sendNotifications",

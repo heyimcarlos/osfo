@@ -230,15 +230,6 @@ const CalendarRecurrence = Schema.NullOr(
   }),
 );
 
-const recurringInstanceSuffix = /_\d{8}T\d{6}Z$/u;
-const validRecurringTarget = (input: {
-  readonly eventId: string;
-  readonly recurringScope: string;
-}) =>
-  (input.recurringScope === "occurrence" && recurringInstanceSuffix.test(input.eventId)) ||
-  (input.recurringScope !== "occurrence" && !recurringInstanceSuffix.test(input.eventId)) ||
-  "Recurring scope does not match the exact Calendar event identity";
-
 export const CalendarCreateEventInput = Schema.Struct({
   attendeeCount: Schema.Literal(0),
   calendarId: boundedIdentity,
@@ -286,16 +277,14 @@ export const CalendarUpdateEventInput = Schema.Struct({
     }),
   ),
   eventId: boundedIdentity,
-  recurringScope: Schema.Literals(["event", "occurrence", "series"]),
   sendNotifications: Schema.Literal(false),
-}).check(Schema.makeFilter(validRecurringTarget));
+});
 
 export const CalendarDeleteEventInput = Schema.Struct({
   calendarId: boundedIdentity,
   eventId: boundedIdentity,
-  recurringScope: Schema.Literals(["event", "occurrence", "series"]),
   sendNotifications: Schema.Literal(false),
-}).check(Schema.makeFilter(validRecurringTarget));
+});
 
 export const DriveSearchInput = Schema.Struct({
   maximumFiles: positiveIntegerAtMost(20),
@@ -319,7 +308,7 @@ export const DriveDeliverArtifactInput = Schema.Struct({
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ]),
-  targetFolderId: Schema.NullOr(boundedIdentity),
+  targetFolderId: Schema.Null,
 });
 
 const readCompletedEvidence = (maximumRecords: number, maximumResponseBytes: bigint) =>

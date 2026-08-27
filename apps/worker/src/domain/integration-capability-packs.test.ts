@@ -128,7 +128,7 @@ describe("curated integration capability packs", () => {
     ).toMatchObject({ maximumRequestBytes: 5_000_000n, mutations: 1 });
   });
 
-  it("rejects ambiguous recurring Calendar identities before provider execution", () => {
+  it("binds Calendar recurrence changes to one exact provider event identity", () => {
     const deletion = Result.getOrThrow(
       resolveManifest({
         manifestVersion: ManifestVersion.make("calendar-v1"),
@@ -138,11 +138,10 @@ describe("curated integration capability packs", () => {
     );
 
     expect(
-      Result.isFailure(
+      Result.isSuccess(
         deletion.decodeInput({
           calendarId: "primary",
           eventId: "recurring-event",
-          recurringScope: "occurrence",
           sendNotifications: false,
         }),
       ),
@@ -152,7 +151,6 @@ describe("curated integration capability packs", () => {
         deletion.decodeInput({
           calendarId: "primary",
           eventId: "recurring-event_20260901T140000Z",
-          recurringScope: "occurrence",
           sendNotifications: false,
         }),
       ),
@@ -161,7 +159,7 @@ describe("curated integration capability packs", () => {
       Result.isFailure(
         deletion.decodeInput({
           calendarId: "primary",
-          eventId: "recurring-event_20260901T140000Z",
+          eventId: "recurring-event",
           recurringScope: "series",
           sendNotifications: false,
         }),
@@ -223,8 +221,28 @@ describe("curated integration capability packs", () => {
           calendarId: "primary",
           changes: { startsAt: "2026-08-28T10:00:00-04:00" },
           eventId: "event-1",
-          recurringScope: "event",
           sendNotifications: false,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("confines owned Drive artifact delivery to the User's private My Drive root", () => {
+    const delivery = Result.getOrThrow(
+      resolveManifest({
+        manifestVersion: ManifestVersion.make("drive-v1"),
+        operation: "DRIVE_DELIVER_ARTIFACT",
+        toolkit: "googledrive",
+      }),
+    );
+    expect(
+      Result.isFailure(
+        delivery.decodeInput({
+          artifactId: "artifact-1",
+          expectedBytes: 3,
+          fileName: "report.pdf",
+          mediaType: "application/pdf",
+          targetFolderId: "arbitrary-shared-folder",
         }),
       ),
     ).toBe(true);
