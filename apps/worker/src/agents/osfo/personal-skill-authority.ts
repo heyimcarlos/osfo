@@ -145,6 +145,12 @@ export interface ResolveGoodRootEvaluationInput {
   readonly userId: UserId;
 }
 
+export interface GoodRootOutcomeEvaluatorAuthority {
+  readonly retainVerified: (
+    input: RetainGoodRootEvaluationInput,
+  ) => Effect.Effect<void, LearningAuthorityError>;
+}
+
 export type SkillLearningClaim =
   | {
       readonly _tag: "Busy";
@@ -319,10 +325,6 @@ export interface Interface {
     input: PinPersonalSkillInput,
   ) => Effect.Effect<PersonalSkillVersion, AuthorityError>;
   readonly recordUse: (input: RecordPersonalSkillUseInput) => Effect.Effect<void, AuthorityError>;
-  /** Evaluator-only minting surface; never published through the User Agent RPC. */
-  readonly retainGoodRootEvaluation: (
-    input: RetainGoodRootEvaluationInput,
-  ) => Effect.Effect<void, LearningAuthorityError>;
   readonly resolveGoodRootEvaluation: (
     input: ResolveGoodRootEvaluationInput,
   ) => Effect.Effect<GoodRootOutcomeReceipt, LearningAuthorityError>;
@@ -1214,61 +1216,6 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
         );
       },
     ),
-    retainGoodRootEvaluation: Effect.fn("PersonalSkillAuthority.retainGoodRootEvaluation")(
-      function* (input) {
-        const receipt = yield* Schema.decodeEffect(GoodRootOutcomeReceipt)(input.receipt).pipe(
-          Effect.mapError(
-            (cause) =>
-              new PersonalSkillInvalid({
-                cause,
-                message: "The evaluator tried to retain an unknown Good Root trace PASS",
-                reason: "envelope",
-              }),
-          ),
-        );
-        const receiptJson = Schema.encodeSync(Schema.fromJsonString(GoodRootOutcomeReceipt))(
-          receipt,
-        );
-        const outcome = yield* attempt("retainGoodRootEvaluation", () =>
-          storage.transactionSync(() => {
-            const existing = storage.sql
-              .exec(
-                `SELECT receipt_json AS receiptJson
-                 FROM osfo_good_root_outcome_evaluations
-                 WHERE evaluation_id = ? LIMIT 1`,
-                input.evaluationId,
-              )
-              .toArray();
-            const retained = Schema.decodeUnknownSync(Schema.Array(GoodRootEvaluationRow))(
-              existing,
-            )[0];
-            if (retained !== undefined) {
-              return retained.receiptJson === receiptJson
-                ? ("Retained" as const)
-                : ("Conflict" as const);
-            }
-            storage.sql.exec(
-              `INSERT INTO osfo_good_root_outcome_evaluations
-                 (evaluation_id, owner_user_id, receipt_json, retained_at_epoch_millis)
-               VALUES (?, ?, ?, ?)`,
-              input.evaluationId,
-              receipt.userId,
-              receiptJson,
-              input.retainedAtEpochMillis,
-            );
-            return "Retained" as const;
-          }),
-        );
-        if (outcome === "Conflict") {
-          return yield* new PersonalSkillInvalid({
-            cause: input.evaluationId,
-            message: "The evaluator PASS identity already names different evidence",
-            reason: "transition",
-          });
-        }
-        return undefined;
-      },
-    ),
     recoverableLearning: Effect.fn("PersonalSkillAuthority.recoverableLearning")(function* (
       nowEpochMillis: number,
     ) {
@@ -1350,6 +1297,61 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
     ),
   };
 };
+
+/** Construct the closed write authority used only by the retained Good Root evaluator. */
+export const makeGoodRootOutcomeEvaluatorAuthority = (
+  storage: PersonalSkillAuthorityStorage,
+): GoodRootOutcomeEvaluatorAuthority => ({
+  retainVerified: Effect.fn("GoodRootOutcomeEvaluatorAuthority.retainVerified")(function* (input) {
+    const receipt = yield* Schema.decodeEffect(GoodRootOutcomeReceipt)(input.receipt).pipe(
+      Effect.mapError(
+        (cause) =>
+          new PersonalSkillInvalid({
+            cause,
+            message: "The evaluator tried to retain an unknown Good Root trace PASS",
+            reason: "envelope",
+          }),
+      ),
+    );
+    const receiptJson = Schema.encodeSync(Schema.fromJsonString(GoodRootOutcomeReceipt))(receipt);
+    const outcome = yield* attempt("retainGoodRootEvaluation", () =>
+      storage.transactionSync(() => {
+        const existing = storage.sql
+          .exec(
+            `SELECT receipt_json AS receiptJson
+               FROM osfo_good_root_outcome_evaluations
+               WHERE evaluation_id = ? LIMIT 1`,
+            input.evaluationId,
+          )
+          .toArray();
+        const retained = Schema.decodeUnknownSync(Schema.Array(GoodRootEvaluationRow))(existing)[0];
+        if (retained !== undefined) {
+          return retained.receiptJson === receiptJson
+            ? ("Retained" as const)
+            : ("Conflict" as const);
+        }
+        storage.sql.exec(
+          `INSERT INTO osfo_good_root_outcome_evaluations
+               (evaluation_id, owner_user_id, receipt_json, retained_at_epoch_millis)
+             VALUES (?, ?, ?, ?)`,
+          input.evaluationId,
+          receipt.userId,
+          receiptJson,
+          input.retainedAtEpochMillis,
+        );
+        return "Retained" as const;
+      }),
+    );
+    if (outcome === "Conflict") {
+      return yield* new PersonalSkillInvalid({
+        cause: input.evaluationId,
+        message: "The evaluator PASS identity already names different evidence",
+        reason: "transition",
+      });
+    }
+    return undefined;
+  }),
+});
 
 const decodeVersion = (input: unknown) => {
   const decoded = decodePersonalSkillVersion(input);

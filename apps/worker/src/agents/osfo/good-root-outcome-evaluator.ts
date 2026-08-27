@@ -1,61 +1,91 @@
-import { Effect } from "effect";
+import type { UIMessage } from "ai";
+import { Effect, Option } from "effect";
 
-import type { AssistantMessageId, ThinkSubmissionId, UserId } from "../../domain";
+import type { AssistantMessageId } from "../../domain";
+import { currentCapabilityCatalog } from "../../domain/capability-catalog";
 import {
-  type GoodRootOutcomeEvaluationId,
+  GoodRootOutcomeEvaluationId,
   GoodRootOutcomeReceipt,
   retainedGoodRootAssertionReceiptIds,
   retainedGoodRootTraceVersion,
 } from "../../domain/personal-skill";
-import type {
-  Interface as PersonalSkillAuthority,
-  PersonalSkillInvalid,
-  PersonalSkillStoreUnavailable,
-  SkillLearningConflict,
-} from "./personal-skill-authority";
+import { readCommittedTurnTerminal } from "./committed-turn-terminal";
+import type { CommittedTurnReceipt } from "./db/store";
+import { ManagedCapabilityState } from "./managed-capability-turn-state";
+import type { GoodRootOutcomeEvaluatorAuthority } from "./personal-skill-authority";
 
-export interface RetainedGoodRootEvaluationInput {
+export interface EvaluateGoodRootOutcomeInput {
   readonly assistantMessageId: AssistantMessageId;
   readonly evaluatedAtEpochMillis: number;
-  readonly evaluationDeadlineEpochMillis: number;
-  readonly submissionId: ThinkSubmissionId;
-  readonly userId: UserId;
 }
 
-export interface GoodRootOutcomeEvaluatorDependencies {
-  readonly authority: Pick<PersonalSkillAuthority, "retainGoodRootEvaluation">;
-  readonly nextEvaluationId: () => GoodRootOutcomeEvaluationId;
+export interface GoodRootOutcomeEvaluatorFacts<E> {
+  readonly readCommittedTurns: Effect.Effect<ReadonlyArray<CommittedTurnReceipt>, E>;
+  readonly readMessages: () => ReadonlyArray<UIMessage>;
 }
 
-/** Retain a PASS from the closed Reference Workload Trace evaluator authority. */
-export const makeGoodRootOutcomeEvaluator = ({
+/** Evaluate the closed retained trace and mint a PASS only when every assertion is present. */
+export const makeGoodRootOutcomeEvaluator = <E>({
   authority,
-  nextEvaluationId,
-}: GoodRootOutcomeEvaluatorDependencies) => ({
-  retainPass: Effect.fn("GoodRootOutcomeEvaluator.retainPass")(function* (
-    input: RetainedGoodRootEvaluationInput,
-  ): Effect.fn.Return<
-    {
-      readonly evaluationId: GoodRootOutcomeEvaluationId;
-      readonly userId: UserId;
-    },
-    PersonalSkillInvalid | PersonalSkillStoreUnavailable | SkillLearningConflict
-  > {
-    const evaluationId = nextEvaluationId();
+  facts,
+}: {
+  readonly authority: GoodRootOutcomeEvaluatorAuthority;
+  readonly facts: GoodRootOutcomeEvaluatorFacts<E>;
+}) => ({
+  evaluate: Effect.fn("GoodRootOutcomeEvaluator.evaluate")(function* (
+    input: EvaluateGoodRootOutcomeInput,
+  ) {
+    const messages = facts.readMessages();
+    const committedTurns = yield* facts.readCommittedTurns;
+    const assistant = messages.find(
+      (message) => message.role === "assistant" && message.id === input.assistantMessageId,
+    );
+    const terminal = readCommittedTurnTerminal(assistant?.metadata);
+    if (
+      Option.isNone(terminal) ||
+      terminal.value.status !== "completed" ||
+      terminal.value.submissionId === undefined ||
+      terminal.value.attribution === undefined
+    ) {
+      return Option.none();
+    }
+    const turn = messages
+      .map(ManagedCapabilityState.readManagedTurn)
+      .find(
+        (metadata) =>
+          metadata !== undefined &&
+          metadata.submissionId === terminal.value.submissionId &&
+          metadata.authorityIdentity.userId === terminal.value.attribution?.userId &&
+          metadata.sessionId === terminal.value.attribution?.sessionId,
+      );
+    if (turn === undefined || turn.capabilityTurnState.skillLearningDraft === null) {
+      return Option.none();
+    }
+    const committed = committedTurns.some(
+      ({ assistantMessageId, sessionId, thinkRequestId }) =>
+        assistantMessageId === input.assistantMessageId &&
+        sessionId === turn.sessionId &&
+        thinkRequestId === terminal.value.requestId,
+    );
+    if (!committed) return Option.none();
+
+    const evaluationId = GoodRootOutcomeEvaluationId.make(input.assistantMessageId);
     const receipt = GoodRootOutcomeReceipt.make({
       assertionReceiptIds: retainedGoodRootAssertionReceiptIds,
       assistantMessageId: input.assistantMessageId,
       evaluatedAtEpochMillis: input.evaluatedAtEpochMillis,
-      evaluationDeadlineEpochMillis: input.evaluationDeadlineEpochMillis,
+      evaluationDeadlineEpochMillis:
+        input.evaluatedAtEpochMillis +
+        currentCapabilityCatalog.skillLearning.candidateLifetimeMilliseconds,
       referenceTraceVersion: retainedGoodRootTraceVersion,
-      submissionId: input.submissionId,
-      userId: input.userId,
+      submissionId: turn.submissionId,
+      userId: turn.authorityIdentity.userId,
     });
-    yield* authority.retainGoodRootEvaluation({
+    yield* authority.retainVerified({
       evaluationId,
       receipt,
       retainedAtEpochMillis: input.evaluatedAtEpochMillis,
     });
-    return { evaluationId, userId: input.userId };
+    return Option.some({ evaluationId, userId: receipt.userId });
   }),
 });

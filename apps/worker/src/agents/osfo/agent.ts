@@ -277,9 +277,11 @@ import { makeFileTools } from "./file-tools";
 import { FileAnalysisReconciliation } from "./file-analysis-reconciliation";
 import { ManagedCapabilityState } from "./managed-capability-turn-state";
 import {
+  makeGoodRootOutcomeEvaluatorAuthority,
   makePersonalSkillAuthority,
   type PersonalSkillAvailability,
 } from "./personal-skill-authority";
+import { makeGoodRootOutcomeEvaluator } from "./good-root-outcome-evaluator";
 import {
   makePersonalSkillTools,
   SkillInspectInput,
@@ -719,6 +721,13 @@ export class OsfoAgent extends Think<Env> {
   readonly #promptAssembly = PromptAssembly.makeRetainedPromptAssembly();
   readonly #store = makeAgentStore(this.#db);
   readonly #personalSkillAuthority = makePersonalSkillAuthority(this.ctx.storage);
+  readonly #goodRootOutcomeEvaluator = makeGoodRootOutcomeEvaluator({
+    authority: makeGoodRootOutcomeEvaluatorAuthority(this.ctx.storage),
+    facts: {
+      readCommittedTurns: this.#store.readCommittedTurns,
+      readMessages: () => this.messages,
+    },
+  });
   readonly #personalSkillTools = makePersonalSkillTools({
     authority: this.#personalSkillAuthority,
     availability: () => this.#personalSkillAvailability,
@@ -2563,18 +2572,7 @@ export class OsfoAgent extends Think<Env> {
     this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
   }
 
-  /** Accept one evaluator-owned Good Root Outcome and durably enqueue its bounded learning. */
-  async recordGoodRootOutcome(input: typeof GoodRootOutcomeEvaluationReference.Encoded) {
-    await this.#migrationsReady;
-    return runRpc(
-      this.#accountDeletionFencedSessionExecution.run(
-        Effect.promise(() => this.#recordGoodRootOutcome(input)),
-        () => ({ _tag: "GoodRootOutcomeRejected" as const, reason: "accountDeletion" as const }),
-      ),
-    );
-  }
-
-  async #recordGoodRootOutcome(input: typeof GoodRootOutcomeEvaluationReference.Encoded) {
+  async #recordGoodRootOutcome(input: GoodRootOutcomeEvaluationReference) {
     const committed = await Effect.runPromise(this.#store.readCommittedTurns);
     const outcome = await Effect.runPromise(
       ingestGoodRootEvaluation({
@@ -2588,6 +2586,17 @@ export class OsfoAgent extends Think<Env> {
     if (outcome._tag !== "SkillLearningQueued") return outcome;
     this.ctx.waitUntil(this.#runSkillLearning(outcome.candidate));
     return { _tag: outcome._tag, candidateId: outcome.candidateId } as const;
+  }
+
+  async #evaluateGoodRootOutcome(assistantMessageId: AssistantMessageId): Promise<void> {
+    const evaluation = await Effect.runPromise(
+      this.#goodRootOutcomeEvaluator.evaluate({
+        assistantMessageId,
+        evaluatedAtEpochMillis: Date.now(),
+      }),
+    );
+    if (Option.isNone(evaluation)) return;
+    await this.#recordGoodRootOutcome(evaluation.value);
   }
 
   async #recoverSkillLearning(): Promise<void> {
@@ -2621,7 +2630,10 @@ export class OsfoAgent extends Think<Env> {
               nowEpochMillis: Date.now(),
             });
             yield* Effect.logInfo("Post-turn personal Skill Learning completed").pipe(
-              Effect.annotateLogs({ outcome: outcome._tag }),
+              Effect.annotateLogs({
+                outcome: outcome._tag,
+                reason: "reason" in outcome ? outcome.reason : undefined,
+              }),
             );
             yield* Effect.tryPromise({
               try: deliverNotifications,
@@ -3614,6 +3626,20 @@ export class OsfoAgent extends Think<Env> {
       ),
     );
     if (result.status === "completed") {
+      this.ctx.waitUntil(
+        Effect.runPromise(
+          Effect.tryPromise({
+            try: () => this.#evaluateGoodRootOutcome(assistantMessageId),
+            catch: (cause) => ({ _tag: "GoodRootEvaluationUnavailable" as const, cause }),
+          }).pipe(
+            Effect.catch((failure) =>
+              Effect.logWarning("Good Root evaluation was isolated from the committed turn").pipe(
+                Effect.annotateLogs({ failure: failure._tag }),
+              ),
+            ),
+          ),
+        ),
+      );
       this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
     }
   }

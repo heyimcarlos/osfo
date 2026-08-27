@@ -8,7 +8,7 @@ import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from "node:sqli
 
 import { describe, expect, it } from "@effect/vitest";
 import type { UIMessage } from "ai";
-import { Effect, Exit, Schema } from "effect";
+import { Effect, Exit, Option, Schema } from "effect";
 
 import {
   AssistantMessageId,
@@ -19,7 +19,6 @@ import {
 } from "../../domain";
 import { ManagedTurnMetadata } from "../../domain/managed-conversation";
 import {
-  GoodRootOutcomeEvaluationId,
   PersonalSkillId,
   PersonalSkillVersionId,
   SkillLearningCandidateId,
@@ -29,6 +28,7 @@ import { CommittedTurnReceipt } from "./db/store";
 import { makeGoodRootOutcomeEvaluator } from "./good-root-outcome-evaluator";
 import { CommittedTurnTerminal, withCommittedTurnTerminal } from "./committed-turn-terminal";
 import {
+  makeGoodRootOutcomeEvaluatorAuthority,
   makePersonalSkillAuthority,
   type PersonalSkillAuthorityStorage,
 } from "./personal-skill-authority";
@@ -468,20 +468,10 @@ describe("PersonalSkillAuthority", () => {
     withDatabase((storage) =>
       Effect.gen(function* () {
         const authority = makePersonalSkillAuthority(storage);
+        expect(authority).not.toHaveProperty("retainGoodRootEvaluation");
         const submissionId = ThinkSubmissionId.make("submission-journey");
         const assistantMessageId = AssistantMessageId.make("assistant-journey");
         const requestId = ThinkRequestId.make("request-journey");
-        const evaluator = makeGoodRootOutcomeEvaluator({
-          authority,
-          nextEvaluationId: () => GoodRootOutcomeEvaluationId.make("evaluation-journey"),
-        });
-        const evaluation = yield* evaluator.retainPass({
-          assistantMessageId,
-          evaluatedAtEpochMillis: 1_788_000_000_100,
-          evaluationDeadlineEpochMillis: 1_788_000_001_100,
-          submissionId,
-          userId,
-        });
         const messages = journeyMessages({ assistantMessageId, requestId, submissionId });
         const committed = yield* Schema.decodeEffect(CommittedTurnReceipt)({
           assistantMessageId,
@@ -491,12 +481,24 @@ describe("PersonalSkillAuthority", () => {
           source: "hook",
           thinkRequestId: requestId,
         });
+        const evaluation = yield* makeGoodRootOutcomeEvaluator({
+          authority: makeGoodRootOutcomeEvaluatorAuthority(storage),
+          facts: {
+            readCommittedTurns: Effect.succeed([committed]),
+            readMessages: () => messages,
+          },
+        }).evaluate({
+          assistantMessageId,
+          evaluatedAtEpochMillis: 1_788_000_000_100,
+        });
+        expect(Option.isSome(evaluation)).toBe(true);
+        if (Option.isNone(evaluation)) return;
         const ingested = yield* ingestGoodRootEvaluation({
           authority,
           committedTurns: [committed],
           messages,
           nowEpochMillis: 1_788_000_000_100,
-          reference: evaluation,
+          reference: evaluation.value,
         });
         expect(ingested._tag).toBe("SkillLearningQueued");
         if (ingested._tag !== "SkillLearningQueued") return;
@@ -594,20 +596,9 @@ describe("PersonalSkillAuthority", () => {
   it.effect("rejects cross-turn, unsuccessful, and uncommitted evaluator PASS pairings", () =>
     withDatabase((storage) =>
       Effect.gen(function* () {
-        const authority = makePersonalSkillAuthority(storage);
         const submissionId = ThinkSubmissionId.make("submission-bound");
         const assistantMessageId = AssistantMessageId.make("assistant-bound");
         const requestId = ThinkRequestId.make("request-bound");
-        const evaluation = yield* makeGoodRootOutcomeEvaluator({
-          authority,
-          nextEvaluationId: () => GoodRootOutcomeEvaluationId.make("evaluation-bound"),
-        }).retainPass({
-          assistantMessageId,
-          evaluatedAtEpochMillis: 1_788_000_000_100,
-          evaluationDeadlineEpochMillis: 1_788_000_001_100,
-          submissionId,
-          userId,
-        });
         const committed = yield* Schema.decodeEffect(CommittedTurnReceipt)({
           assistantMessageId,
           observationSequence: 1,
@@ -616,34 +607,42 @@ describe("PersonalSkillAuthority", () => {
           source: "hook",
           thinkRequestId: requestId,
         });
-        const ingest = (messages: ReadonlyArray<UIMessage>, receipts = [committed]) =>
-          ingestGoodRootEvaluation({
-            authority,
-            committedTurns: receipts,
-            messages,
-            nowEpochMillis: 1_788_000_000_100,
-            reference: evaluation,
+        const evaluate = (messages: ReadonlyArray<UIMessage>, receipts = [committed]) =>
+          makeGoodRootOutcomeEvaluator({
+            authority: makeGoodRootOutcomeEvaluatorAuthority(storage),
+            facts: {
+              readCommittedTurns: Effect.succeed(receipts),
+              readMessages: () => messages,
+            },
+          }).evaluate({
+            assistantMessageId,
+            evaluatedAtEpochMillis: 1_788_000_000_100,
           });
 
         expect(
-          (yield* ingest(
-            journeyMessages({
-              assistantMessageId,
-              requestId,
-              submissionId,
-              terminalSubmissionId: ThinkSubmissionId.make("submission-other"),
-            }),
-          ))._tag,
-        ).toBe("GoodRootOutcomeRejected");
+          Option.isNone(
+            yield* evaluate(
+              journeyMessages({
+                assistantMessageId,
+                requestId,
+                submissionId,
+                terminalSubmissionId: ThinkSubmissionId.make("submission-other"),
+              }),
+            ),
+          ),
+        ).toBe(true);
         expect(
-          (yield* ingest(
-            journeyMessages({ assistantMessageId, requestId, status: "error", submissionId }),
-          ))._tag,
-        ).toBe("GoodRootOutcomeRejected");
+          Option.isNone(
+            yield* evaluate(
+              journeyMessages({ assistantMessageId, requestId, status: "error", submissionId }),
+            ),
+          ),
+        ).toBe(true);
         expect(
-          (yield* ingest(journeyMessages({ assistantMessageId, requestId, submissionId }), []))
-            ._tag,
-        ).toBe("GoodRootOutcomeRejected");
+          Option.isNone(
+            yield* evaluate(journeyMessages({ assistantMessageId, requestId, submissionId }), []),
+          ),
+        ).toBe(true);
       }),
     ),
   );
@@ -723,16 +722,33 @@ describe("PersonalSkillAuthority", () => {
         } as const;
         yield* authority.recordLearningCost(costEvidence);
         yield* authority.recordLearningCost(costEvidence);
-        yield* makeGoodRootOutcomeEvaluator({
-          authority,
-          nextEvaluationId: () => GoodRootOutcomeEvaluationId.make("evaluation-account-delete"),
-        }).retainPass({
-          assistantMessageId: AssistantMessageId.make("assistant-account-delete"),
-          evaluatedAtEpochMillis: 1_788_000_000_250,
-          evaluationDeadlineEpochMillis: 1_788_000_001_250,
-          submissionId: ThinkSubmissionId.make("submission-account-delete"),
-          userId,
+        const deletionAssistantId = AssistantMessageId.make("assistant-account-delete");
+        const deletionRequestId = ThinkRequestId.make("request-account-delete");
+        const deletionSubmissionId = ThinkSubmissionId.make("submission-account-delete");
+        const deletionCommit = yield* Schema.decodeEffect(CommittedTurnReceipt)({
+          assistantMessageId: deletionAssistantId,
+          observationSequence: 2,
+          observedAt: "2026-08-27 00:00:01",
+          sessionId: "session-journey",
+          source: "hook",
+          thinkRequestId: deletionRequestId,
         });
+        const deletionMessages = journeyMessages({
+          assistantMessageId: deletionAssistantId,
+          requestId: deletionRequestId,
+          submissionId: deletionSubmissionId,
+        });
+        const deletionEvaluation = yield* makeGoodRootOutcomeEvaluator({
+          authority: makeGoodRootOutcomeEvaluatorAuthority(storage),
+          facts: {
+            readCommittedTurns: Effect.succeed([deletionCommit]),
+            readMessages: () => deletionMessages,
+          },
+        }).evaluate({
+          assistantMessageId: deletionAssistantId,
+          evaluatedAtEpochMillis: 1_788_000_000_250,
+        });
+        expect(Option.isSome(deletionEvaluation)).toBe(true);
         expect(
           Exit.isFailure(
             yield* Effect.exit(
