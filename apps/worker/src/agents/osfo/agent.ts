@@ -66,6 +66,7 @@ import {
 import { DocumentArtifact } from "../../domain/document-artifact";
 import { ArtifactGenerationComposition } from "../../composition/artifact-generation";
 import { DocumentGenerationComposition } from "../../composition/document-generation";
+import { WhatsAppWakeUpComposition } from "../../composition/whatsapp-wakeups";
 import { ArtifactGeneration } from "../../services/artifact-generation";
 import { IntegrationComposition } from "../../composition/integrations";
 import { Db } from "../../db";
@@ -1081,6 +1082,15 @@ export class OsfoAgent extends Think<Env> {
         callback,
         context,
         "This connection is no longer authorized. Please reconnect it from Osfo.",
+      );
+      return;
+    }
+
+    if (provider === "whatsapp" && !(await this.#consumeWhatsAppWakeUp(link))) {
+      await this.#completeMessengerPolicyReply(
+        callback,
+        context,
+        "I could not authorize that message right now. Please try again.",
       );
       return;
     }
@@ -4897,6 +4907,36 @@ export class OsfoAgent extends Think<Env> {
       return { _tag: "Resolved", link: result.value } as const;
     }
     return { _tag: "Unavailable" } as const;
+  }
+
+  async #consumeWhatsAppWakeUp(link: {
+    readonly channelLinkId: ChannelLinkId;
+    readonly userId: UserId;
+  }): Promise<boolean> {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) return false;
+    const result = await runtime.runPromiseExit(
+      WhatsAppWakeUpComposition.consumeInbound(loadConfig(this.env), link),
+    );
+    if (Exit.isFailure(result)) {
+      await Effect.runPromise(
+        Effect.logError("WhatsApp Wake-up inbound consumption failed").pipe(
+          Effect.annotateLogs({ failureTag: "WhatsAppWakeUpUnavailable" }),
+        ),
+      );
+      return false;
+    }
+    if (result.value === null) return true;
+    await Effect.runPromise(
+      Effect.logInfo("WhatsApp Wake-up consumed before Think ingress").pipe(
+        Effect.annotateLogs({
+          pendingSourceCount: result.value.pending.length,
+          sourceKinds: result.value.pending.map(({ source }) => source._tag).join(","),
+          wakeUpId: result.value.wakeUpId,
+        }),
+      ),
+    );
+    return true;
   }
 
   #inspectCurrentChannelLinkAuthorization(link: {

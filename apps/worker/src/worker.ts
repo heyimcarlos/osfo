@@ -7,6 +7,7 @@ import { OSFO_DIRECTORY_NAME } from "./agents/osfo/directory";
 import { loadConfig, WorkerConfigurationError, type CloudflareEnv } from "./config";
 import { DocumentCostReconciliation } from "./document-cost-reconciliation";
 import { makeWhatsAppAdapter } from "./integrations/whatsapp";
+import { WhatsAppWakeUpComposition } from "./composition/whatsapp-wakeups";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Cloudflare RPC tags and adapter boundaries require these forms. */
 
@@ -40,6 +41,7 @@ const worker = {
         const config = loadConfig(env).whatsApp;
         return makeWhatsAppAdapter({
           accessToken: Redacted.value(config.accessToken),
+          apiUrl: config.apiBaseURL,
           appSecret: Redacted.value(config.appSecret),
           phoneNumberId: config.phoneNumberId,
           userName: config.botUsername,
@@ -67,12 +69,13 @@ const worker = {
   },
   scheduled(_controller: ScheduledController, env: CloudflareEnv, context: ExecutionContext): void {
     try {
-      loadConfig(env);
+      const config = loadConfig(env);
       context.waitUntil(
         Promise.all([
           App.expireChannelLinkInvites(env),
           App.reconcileAccountDeletions(env),
           DocumentCostReconciliation.run(env),
+          WhatsAppWakeUpComposition.drainScheduled(env, config),
         ]).then(() => undefined),
       );
     } catch (error) {

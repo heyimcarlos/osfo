@@ -196,6 +196,13 @@ address a reusable Account or recovery authority. One address has at most one
 active link; acceptance conflicts fail closed.
 _Avoid_: AuthSession, permanent phone login, conversation ownership
 
+**WhatsApp Wake-up**:
+A company-funded, privacy-safe Utility template asking a currently linked User
+to reply because an authorized Reminder or Workflow owner has committed an
+update. It contains no private result, starts no Agent turn, consumes no Plan
+Usage, and is only a latch for returning to normal Think-owned WhatsApp handling.
+_Avoid_: notification delivery, result preview, normal WhatsApp reply, User Usage Event
+
 **Free Plan**:
 The no-cost Subscription established by User Registration. It gives a
 registered User every self-serve digital capability within a light shared Plan

@@ -1,4 +1,5 @@
 import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
+import { whatsappWakeups } from "@osfo/db/schema/whatsapp-wakeups";
 import { and, eq } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 
@@ -47,18 +48,30 @@ const makePort = (bindings: Bindings) =>
       inspectAuthorization: AccountDeletionPostgres.inspectAuthorization(database),
       agents: {
         quiesce: (agentId: AgentId, userId) =>
-          Effect.tryPromise({
-            try: () =>
-              bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).quiesceAgentAccountDeletion(
-                agentId,
-                userId,
-              ),
-            catch: (cause) =>
-              new AccountDeletion.AccountDeletionUnavailable({
-                cause,
-                message: "Agent provider activity could not be quiesced",
-                operation: "quiesceAgentAccountDeletion",
-              }),
+          Effect.gen(function* () {
+            yield* Effect.tryPromise({
+              try: () =>
+                database.delete(whatsappWakeups).where(eq(whatsappWakeups.user_id, userId)),
+              catch: (cause) =>
+                new AccountDeletion.AccountDeletionUnavailable({
+                  cause,
+                  message: "WhatsApp Wake-up deletion preflight is unavailable",
+                  operation: "deleteWhatsAppWakeUps",
+                }),
+            });
+            yield* Effect.tryPromise({
+              try: () =>
+                bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).quiesceAgentAccountDeletion(
+                  agentId,
+                  userId,
+                ),
+              catch: (cause) =>
+                new AccountDeletion.AccountDeletionUnavailable({
+                  cause,
+                  message: "Agent provider activity could not be quiesced",
+                  operation: "quiesceAgentAccountDeletion",
+                }),
+            });
           }),
         remove: (agentId: AgentId) =>
           Effect.tryPromise({

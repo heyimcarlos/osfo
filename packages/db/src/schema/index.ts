@@ -5,3 +5,4 @@ export * from "./billing";
 export * from "./channel-links";
 export * from "./user-lifecycle";
 export * from "./webhooks";
+export * from "./whatsapp-wakeups";

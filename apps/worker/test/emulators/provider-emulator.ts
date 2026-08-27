@@ -30,6 +30,13 @@ export interface TelegramLedgerEntry {
   readonly method: string;
 }
 
+/** One observed Meta messages API request. */
+export interface WhatsAppLedgerEntry {
+  readonly body: string;
+  readonly method: string;
+  readonly path: string;
+}
+
 interface TelegramPayload {
   readonly chatId: number | string;
   readonly messageId?: number;
@@ -69,8 +76,13 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
     const supermemoryLedger: Array<SupermemoryLedgerEntry> = [];
     const telegramLedger: Array<TelegramLedgerEntry> = [];
     const twilioLedger: Array<TwilioLedgerEntry> = [];
+    const whatsAppLedger: Array<WhatsAppLedgerEntry> = [];
     const server = createServer((request, response) => {
-      const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+      const rawUrl = request.url ?? "/";
+      const pathname = new URL(
+        rawUrl.startsWith("//") ? rawUrl.slice(1) : rawUrl,
+        "http://localhost",
+      ).pathname;
       if (request.method === "POST" && pathname === "/_test/reset") {
         stripeLedger.length = 0;
         supermemoryContainers.clear();
@@ -78,6 +90,7 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         supermemoryLedger.length = 0;
         telegramLedger.length = 0;
         twilioLedger.length = 0;
+        whatsAppLedger.length = 0;
         response.statusCode = 204;
         response.end();
         return;
@@ -153,6 +166,10 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         respondJson(response, 200, telegramLedger);
         return;
       }
+      if (request.method === "GET" && pathname === "/_test/whatsapp/ledger") {
+        respondJson(response, 200, whatsAppLedger);
+        return;
+      }
       if (request.method === "POST" && pathname === "/events/track") {
         readTextBody(request)
           .then(() => respondJson(response, 200, {}))
@@ -183,6 +200,19 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
       }
       if (request.method === "POST" && /^\/bot[^/]+\/[A-Za-z]+$/u.test(pathname)) {
         handleTelegram(request, response, pathname, telegramLedger);
+        return;
+      }
+      if (request.method === "POST" && pathname.endsWith("/messages")) {
+        readTextBody(request)
+          .then((body) => {
+            whatsAppLedger.push({ body, method: request.method ?? "POST", path: pathname });
+            respondJson(response, 200, {
+              contacts: [{ input: "redacted", wa_id: "redacted" }],
+              messages: [{ id: `wamid.emulated.${whatsAppLedger.length}` }],
+              messaging_product: "whatsapp",
+            });
+          })
+          .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
         return;
       }
       respondJson(response, 404, {

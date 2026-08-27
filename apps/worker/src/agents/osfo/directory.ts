@@ -55,6 +55,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
       }),
       whatsapp: makeWhatsAppChannel({
         accessToken: this.env.WHATSAPP_ACCESS_TOKEN,
+        apiUrl: config.whatsApp.apiBaseURL,
         appSecret: this.env.WHATSAPP_APP_SECRET,
         conversation,
         phoneNumberId: this.env.WHATSAPP_PHONE_NUMBER_ID,

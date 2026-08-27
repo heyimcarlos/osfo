@@ -66,6 +66,15 @@ const worker = Worker(
         WHATSAPP_BOT_USERNAME: Config.string("WHATSAPP_BOT_USERNAME"),
         WHATSAPP_PHONE_NUMBER_ID: Config.string("WHATSAPP_PHONE_NUMBER_ID"),
         WHATSAPP_VERIFY_TOKEN: Config.redacted("WHATSAPP_VERIFY_TOKEN"),
+        WHATSAPP_WAKEUP_TEMPLATE_APPROVAL: Config.string("WHATSAPP_WAKEUP_TEMPLATE_APPROVAL").pipe(
+          Config.withDefault(""),
+        ),
+        WHATSAPP_WAKEUP_TEMPLATE_NAME: Config.string("WHATSAPP_WAKEUP_TEMPLATE_NAME").pipe(
+          Config.withDefault(""),
+        ),
+        WHATSAPP_WAKEUP_TEMPLATE_POLICY_VERSION: Config.string(
+          "WHATSAPP_WAKEUP_TEMPLATE_POLICY_VERSION",
+        ).pipe(Config.withDefault("")),
       },
       crons: ["0 * * * *"],
       main: "./apps/worker/src/worker.ts",
