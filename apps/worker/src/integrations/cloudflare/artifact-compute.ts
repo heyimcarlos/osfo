@@ -465,11 +465,15 @@ export const makeAttemptStore = (bucket: R2Bucket): AttemptStore => ({
     if (
       !sameAttempt(retained, evidence, "completed") ||
       retained.output === null ||
-      object.size !== retained.output.byteLength
+      object.size !== retained.output.byteLength ||
+      object.size > maximumBytesForInspection(retained.output.inspection)
     ) {
       throw new Error("completed output evidence changed");
     }
-    const bytes = new Uint8Array(await object.arrayBuffer());
+    const bytes = await readBounded(
+      object.body,
+      maximumBytesForInspection(retained.output.inspection),
+    );
     if (
       bytes.byteLength !== retained.output.byteLength ||
       (await digest(bytes)) !== retained.output.sha256
@@ -514,6 +518,12 @@ export const makeAttemptStore = (bucket: R2Bucket): AttemptStore => ({
 
 const decodeAttempt = (encoded: string): AttemptEvidence => {
   const decoded = Schema.decodeSync(AttemptMetadata)(encoded);
+  if (
+    decoded.output !== null &&
+    decoded.output.byteLength > maximumBytesForInspection(decoded.output.inspection)
+  ) {
+    throw new Error("attempt output exceeds its artifact role byte limit");
+  }
   return decoded;
 };
 
@@ -565,13 +575,21 @@ const sameInspection = (current: ArtifactInspection, proposed: ArtifactInspectio
 };
 
 const reconciliationCheckpointKey = "artifact-reconciliation/checkpoint";
+const maximumReconciliationCheckpointBytes = 1_024;
+const reconciliationCheckpointPattern = /^artifact-costs\/(?:[0-9a-f]{2})+\/(?:[0-9a-f]{2})+$/u;
 
 /** Read one bounded batch of incurred visual-artifact costs for scheduled reconciliation. */
 export const readReconciliationBatch = (bucket: R2Bucket) =>
   Effect.tryPromise({
     try: async () => {
       const checkpoint = await bucket.get(reconciliationCheckpointKey);
+      if (checkpoint !== null && checkpoint.size > maximumReconciliationCheckpointBytes) {
+        throw new Error("artifact reconciliation checkpoint is oversized");
+      }
       const startAfter = checkpoint === null ? undefined : await checkpoint.text();
+      if (startAfter !== undefined && !reconciliationCheckpointPattern.test(startAfter)) {
+        throw new Error("artifact reconciliation checkpoint is invalid");
+      }
       const listed = await bucket.list(
         startAfter === undefined
           ? { include: ["customMetadata"], limit: 100, prefix: artifactCostPrefix }
@@ -590,7 +608,7 @@ export const readReconciliationBatch = (bucket: R2Bucket) =>
         if (evidence.cost._tag !== "Incurred") {
           throw new Error("artifact cost evidence is not incurred");
         }
-        return [evidence.cost];
+        return [{ cost: evidence.cost, userId: evidence.userId }];
       });
       const last = listed.objects.at(-1)?.key;
       return { checkpoint: listed.truncated && last !== undefined ? last : null, costs };
@@ -683,6 +701,11 @@ const readBounded = async (stream: ReadableStream<Uint8Array>, maximum: number) 
   }
   return bytes;
 };
+
+const maximumBytesForInspection = (inspection: ArtifactInspection) =>
+  inspection._tag === "Presentation"
+    ? DocumentArtifact.maximumPresentationBytes
+    : DocumentArtifact.maximumImageBytes;
 
 const encodeBase64 = (bytes: Uint8Array) => {
   let binary = "";

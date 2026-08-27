@@ -81,8 +81,9 @@ export const reconcileCosts = (bindings: Pick<Bindings, "ARTIFACTS">, database: 
     Effect.flatMap((batch) =>
       Effect.forEach(
         batch.costs,
-        (cost) =>
-          allowances.record(
+        ({ cost, userId }) =>
+          allowances.recordForUser(
+            userId,
             cost.allowancePeriodId,
             { sourceId: cost.providerOperationId, sourceType: "artifactProviderOperation" },
             [

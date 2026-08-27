@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
-import { allowancePeriods } from "@osfo/db/schema/allowances";
+import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { expect, it } from "@effect/vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 
 import { Db } from "../../src/db";
@@ -100,6 +100,44 @@ it.effect("records final Usage Events idempotently without charging failed or ca
         allowanceKind: "planUsageMicros",
         quantity: 1_000n,
       });
+    }).pipe(Effect.provide(Db.layer({ db: env.DB }))),
+  ),
+);
+
+it.effect("refuses allowance usage when durable evidence names another User's period", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
+        Effect.promise(client.dispose),
+      );
+      const evidenceUserId = yield* registerUser(app, "+15550002522", "Evidence Owner");
+      const periodUserId = yield* registerUser(app, "+15550002523", "Period Owner");
+      const database = yield* Db.database;
+      const period = yield* activateSharedUsage(database, periodUserId, "free");
+      const billing = BillingDb.make(database);
+
+      const failure = yield* billing
+        .recordUsageForUser(
+          evidenceUserId,
+          period.allowancePeriodId,
+          { sourceId: "artifact:foreign-period", sourceType: "artifactProviderOperation" },
+          [{ allowanceKind: "vendorUsdMicros", basis: "conservative", quantity: 50_000n }],
+        )
+        .pipe(Effect.flip);
+      expect(failure._tag).toBe("AllowancePeriodNotFound");
+
+      const rows = yield* Effect.promise(() =>
+        database
+          .select({ sourceId: allowanceUsage.source_id })
+          .from(allowanceUsage)
+          .where(
+            and(
+              eq(allowanceUsage.source_type, "artifactProviderOperation"),
+              eq(allowanceUsage.source_id, "artifact:foreign-period"),
+            ),
+          ),
+      );
+      expect(rows).toEqual([]);
     }).pipe(Effect.provide(Db.layer({ db: env.DB }))),
   ),
 );

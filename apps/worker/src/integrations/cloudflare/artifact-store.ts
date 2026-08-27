@@ -43,7 +43,12 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
       if (body === null || body.size !== metadata.artifact.content.byteLength) {
         return yield* integrityFailure(contentId, "Pending artifact bytes are missing or changed");
       }
-      const bytes = new Uint8Array(yield* attempt("readBytes", () => body.arrayBuffer()));
+      const bytes = yield* attempt("readBytes", () =>
+        readBounded(
+          body.body,
+          DocumentArtifact.maximumBytesForRole(metadata.artifact.artifactRole),
+        ),
+      );
       yield* verifyDigest(metadata, bytes);
       const accounted = yield* attempt("account", () =>
         bucket.put(contentKeyFor(contentId), bytes, {
@@ -81,6 +86,9 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
   put: (stored) =>
     Effect.gen(function* () {
       const content = stored.artifact.content;
+      if (content.byteLength > DocumentArtifact.maximumBytesForRole(stored.artifact.artifactRole)) {
+        return yield* integrityFailure(content.contentId, "Artifact exceeds its role byte limit");
+      }
       yield* verifyDigest(stored, stored.bytes);
       yield* attempt("put", () =>
         DocumentOwnershipIndex.ensure(bucket, stored.userId, content.contentId),
@@ -113,13 +121,23 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
         );
       }
       const content = metadata.artifact.content;
+      if (
+        content.byteLength > DocumentArtifact.maximumBytesForRole(metadata.artifact.artifactRole)
+      ) {
+        return yield* integrityFailure(content.contentId, "Artifact exceeds its role byte limit");
+      }
       const object = yield* attempt("readBytes", () =>
         bucket.get(contentKeyFor(content.contentId)),
       );
       if (object === null || object.size !== content.byteLength) {
         return yield* integrityFailure(content.contentId, "Artifact bytes are missing or changed");
       }
-      const bytes = new Uint8Array(yield* attempt("readBytes", () => object.arrayBuffer()));
+      const bytes = yield* attempt("readBytes", () =>
+        readBounded(
+          object.body,
+          DocumentArtifact.maximumBytesForRole(metadata.artifact.artifactRole),
+        ),
+      );
       yield* verifyDigest(metadata, bytes);
       return bytes;
     }),
@@ -137,9 +155,14 @@ const decodeMetadata = (object: R2Object, contentId: ContentId) =>
     );
     if (
       metadata.artifact.content.contentId !== contentId ||
-      metadata.artifact.content.byteLength !== object.size
+      metadata.artifact.content.byteLength !== object.size ||
+      metadata.artifact.content.byteLength >
+        DocumentArtifact.maximumBytesForRole(metadata.artifact.artifactRole)
     ) {
-      return yield* integrityFailure(contentId, "Artifact identity or length does not match");
+      return yield* integrityFailure(
+        contentId,
+        "Artifact identity, length, or role byte limit does not match",
+      );
     }
     return metadata satisfies StoredArtifactMetadata;
   });
@@ -175,6 +198,36 @@ const encodeMetadata = (stored: StoredArtifact) =>
     retention: stored.retention,
     userId: stored.userId,
   });
+
+// oxlint-disable-next-line effecttsgo/async-function -- ReadableStream is an external Promise boundary.
+const readBounded = async (stream: ReadableStream<Uint8Array>, maximum: number) => {
+  const reader = stream.getReader();
+  const chunks: Array<Uint8Array> = [];
+  let size = 0;
+  try {
+    for (;;) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Stream chunks must be read in order.
+      const next = await reader.read();
+      if (next.done) break;
+      size += next.value.byteLength;
+      if (size > maximum) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Cancellation closes this one ordered read boundary.
+        await reader.cancel("artifact exceeded its bounded size");
+        throw new Error("artifact exceeded its bounded size");
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+};
 
 const attempt = <A>(
   operation: "account" | "delete" | "inspect" | "put" | "readBytes",

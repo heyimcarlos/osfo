@@ -103,6 +103,14 @@ export const ArtifactRef = Schema.Struct({
 
 export type ArtifactRef = typeof ArtifactRef.Type;
 
+/** Absolute retained-byte bound for one decoded artifact role. */
+export const maximumBytesForRole = (role: ArtifactRef["artifactRole"]) =>
+  role._tag === "GeneratedDocumentV1"
+    ? maximumDocumentBytes
+    : role._tag === "GeneratedPresentationV1"
+      ? maximumPresentationBytes
+      : maximumImageBytes;
+
 export const InvalidArtifactReason = Schema.Literals([
   "byteLimit",
   "invalidArtifact",

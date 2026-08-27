@@ -1,6 +1,6 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/new-promise, eslint/no-underscore-dangle, vitest/no-standalone-expect -- Promise fakes model external adapters and assertions execute inside Effect tests. */
 import { expect, it } from "@effect/vitest";
-import { Effect, Result } from "effect";
+import { Data, Effect, Result } from "effect";
 
 import { AllowancePeriodId, UserId } from "../../domain";
 import { ContentId } from "../../domain/client-content";
@@ -14,6 +14,10 @@ import {
   type SandboxClient,
 } from "./artifact-compute";
 import { artifactCostKeyFor, artifactCostPrefix } from "./document-storage-keys";
+
+class TestAttemptReadRejected extends Data.TaggedError("TestAttemptReadRejected")<{
+  readonly cause: unknown;
+}> {}
 
 const request = {
   allowancePeriodId: AllowancePeriodId.make("period-1"),
@@ -56,11 +60,40 @@ it.effect("reconciles immutable cost sidecars independently for every provider a
       artifactCostKeyFor(request.contentId, first.providerOperationId),
       artifactCostKeyFor(request.contentId, retry.providerOperationId),
     ]);
-    expect(batch.costs.map(({ providerOperationId }) => providerOperationId)).toEqual([
+    expect(batch.costs.map(({ cost }) => cost.providerOperationId)).toEqual([
       first.providerOperationId,
       retry.providerOperationId,
     ]);
+    expect(batch.costs.map(({ userId }) => userId)).toEqual([request.userId, request.userId]);
   });
+});
+
+it.effect("rejects an oversized reconciliation checkpoint before reading its body", () => {
+  let bodyRead = false;
+  const base = costBucketStub(new Map());
+  const bucket = {
+    ...base,
+    get: () =>
+      Promise.resolve({
+        size: 1_025,
+        text: () => {
+          bodyRead = true;
+          return Promise.resolve("artifact-costs/corrupt");
+        },
+      }),
+  };
+
+  // SAFETY: The oversized checkpoint fails before any R2 body method beyond size is used.
+  // oxlint-disable-next-line osfo/no-chained-type-assertions, typescript/no-unsafe-type-assertion -- This fake intentionally models a narrow R2 boundary.
+  return readReconciliationBatch(bucket as unknown as R2Bucket).pipe(
+    Effect.result,
+    Effect.tap((result) =>
+      Effect.sync(() => {
+        expect(Result.isFailure(result)).toBe(true);
+        expect(bodyRead).toBe(false);
+      }),
+    ),
+  );
 });
 
 it.effect("fails reconciliation closed when an artifact cost sidecar loses metadata", () => {
@@ -74,6 +107,55 @@ it.effect("fails reconciliation closed when an artifact cost sidecar loses metad
   return readReconciliationBatch(costBucketStub(objects)).pipe(
     Effect.result,
     Effect.tap((result) => Effect.sync(() => expect(Result.isFailure(result)).toBe(true))),
+  );
+});
+
+it.effect("rejects an oversized completed visual before materializing its R2 body", () => {
+  let bodyRead = false;
+  const output = {
+    byteLength: 10_000_001,
+    inspection: { _tag: "Visual" as const, height: 64, width: 64 },
+    sha256: "a".repeat(64),
+  };
+  const evidence: Parameters<AttemptStore["claim"]>[1] = {
+    cost: incurredCost("artifact:oversized"),
+    executionLeaseExpiresAt: 1,
+    intentDigest: request.intentDigest,
+    output,
+    status: "completed",
+    userId: request.userId,
+  };
+  const bucket = {
+    get: () =>
+      Promise.resolve({
+        arrayBuffer: () => {
+          bodyRead = true;
+          return Promise.resolve(new ArrayBuffer(0));
+        },
+        customMetadata: {
+          osfo: JSON.stringify({
+            ...evidence,
+            cost: { ...evidence.cost, usdMicros: "50000" },
+          }),
+        },
+        size: output.byteLength,
+      }),
+  };
+  // SAFETY: This fake models only the completed-attempt read used by this failure path.
+  // oxlint-disable-next-line osfo/no-chained-type-assertions, typescript/no-unsafe-type-assertion -- The fake intentionally models a narrow R2 boundary.
+  const attempts = makeAttemptStore(bucket as unknown as R2Bucket);
+
+  return Effect.tryPromise({
+    try: () => attempts.readCompleted(request.contentId, evidence),
+    catch: (cause) => new TestAttemptReadRejected({ cause }),
+  }).pipe(
+    Effect.result,
+    Effect.tap((result) =>
+      Effect.sync(() => {
+        expect(Result.isFailure(result)).toBe(true);
+        expect(bodyRead).toBe(false);
+      }),
+    ),
   );
 });
 

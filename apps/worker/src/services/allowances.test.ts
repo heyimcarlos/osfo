@@ -24,6 +24,8 @@ describe("Allowances", () => {
               userId,
             }),
           recordUsage: () => Effect.die(new Error("recordUsage is not used by this test")),
+          recordUsageForUser: () =>
+            Effect.die(new Error("recordUsageForUser is not used by this test")),
         },
         catalog: retainedCatalog,
         now: Effect.succeed(new Date("2026-08-23T00:00:00.000Z")),
@@ -82,6 +84,8 @@ const makeInspection = (recorded: bigint) => {
           userId,
         }),
       recordUsage: () => Effect.die(new Error("recordUsage is not used by this test")),
+      recordUsageForUser: () =>
+        Effect.die(new Error("recordUsageForUser is not used by this test")),
     },
     catalog: retainedCatalog,
     now: Effect.succeed(new Date("2026-08-23T00:00:00.000Z")),

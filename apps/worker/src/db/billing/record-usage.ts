@@ -58,6 +58,7 @@ export const recordUsage = (
   allowancePeriodId: AllowancePeriodId,
   source: AllowanceSource,
   items: ReadonlyArray<AllowanceItem>,
+  expectedUserId?: UserId,
 ) => {
   if (items.length === 0) {
     return Effect.succeed({ outcome: ExistingUsage.make({}), period: null, usage: [] });
@@ -92,7 +93,14 @@ export const recordUsage = (
             userId: allowancePeriods.user_id,
           })
           .from(allowancePeriods)
-          .where(eq(allowancePeriods.allowance_period_id, allowancePeriodId))
+          .where(
+            expectedUserId === undefined
+              ? eq(allowancePeriods.allowance_period_id, allowancePeriodId)
+              : and(
+                  eq(allowancePeriods.allowance_period_id, allowancePeriodId),
+                  eq(allowancePeriods.user_id, expectedUserId),
+                ),
+          )
           .for("update")
           .limit(1);
         if (period === undefined) return { _tag: "PeriodNotFound" } as const;
