@@ -6,6 +6,9 @@ import {
   ChannelLinkInviteToken,
   type HelpArea,
   type RegistrationLocale,
+  type SkillChangeRequest,
+  type SkillDeletionPresentation,
+  skillDeletionConfirmation,
 } from "@osfo/api";
 import { Effect, Layer, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
@@ -108,3 +111,38 @@ export const accountDeletionRequestFor = (
   presentationVersion: action.presentationVersion,
   replayToken: action.replayToken,
 });
+
+/** Inspect the authenticated User's active and archived personal Skills. */
+export const inspectSkills = Effect.gen(function* () {
+  const client = yield* apiClient;
+  return yield* client.skills.inspect();
+});
+
+/** Commit one non-destructive personal Skill lifecycle change. */
+export const changeSkill = (payload: SkillChangeRequest) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    if (payload.change === "archive") return yield* client.skills.change({ payload });
+    if (payload.change === "restore") return yield* client.skills.change({ payload });
+    return yield* client.skills.change({ payload });
+  });
+
+/** Present the exact current Skill lineage before destructive Approval. */
+export const presentSkillDeletion = (reference: string) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    return yield* client.skills.presentDeletion({ params: { reference } });
+  });
+
+/** Consume the User's exact Approval over one server-owned Skill presentation. */
+export const deleteSkill = (presentation: SkillDeletionPresentation) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    return yield* client.skills.delete({
+      params: { reference: presentation.reference },
+      payload: {
+        approval: { decision: "approved", presentation },
+        confirmation: skillDeletionConfirmation,
+      },
+    });
+  });

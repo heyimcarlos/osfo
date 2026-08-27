@@ -58,6 +58,7 @@ export const SkillManageInput = Schema.TaggedUnion({
   Create: EditableSkill,
   Delete: SkillDeleteInput.fields,
   Restore: { expectedSkillVersion: PersonalSkillVersionId, skillId: PersonalSkillId },
+  UndoLatest: { expectedSkillVersion: PersonalSkillVersionId, skillId: PersonalSkillId },
   Revise: {
     ...EditableSkill,
     expectedSkillVersion: PersonalSkillVersionId,
@@ -91,9 +92,9 @@ export const makePersonalSkillTools = (dependencies: {
         skillId: input.skillId,
         userId: current.userId,
       });
-      return { _tag: "SkillInspection", ...inspection } as const;
+      return { _tag: "SkillInspection", current: inspection.current } as const;
     }
-    const versions = yield* dependencies.authority.active(current.userId);
+    const versions = yield* dependencies.authority.all(current.userId);
     return {
       _tag: "ActiveSkills",
       skills: versions.map(skillSummary),
@@ -124,6 +125,16 @@ export const makePersonalSkillTools = (dependencies: {
     }
     if (input._tag === "Restore") {
       return yield* dependencies.authority.restore({
+        availability,
+        evidence,
+        expectedSkillVersion: input.expectedSkillVersion,
+        nowEpochMillis,
+        skillId: input.skillId,
+        userId: current.userId,
+      });
+    }
+    if (input._tag === "UndoLatest") {
+      return yield* dependencies.authority.undoLatest({
         availability,
         evidence,
         expectedSkillVersion: input.expectedSkillVersion,

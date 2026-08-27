@@ -5,6 +5,7 @@ import { BillingGroup } from "./groups/billing";
 import { ChannelLinksGroup } from "./groups/channel-links";
 import { RegistrationGroup } from "./groups/registration";
 import { AccountGroup } from "./groups/account";
+import { SkillsGroup } from "./groups/skills";
 
 /** Shared HTTP contract implemented by the Worker and consumed by clients. */
 export const Api = HttpApi.make("osfo")
@@ -13,6 +14,7 @@ export const Api = HttpApi.make("osfo")
   .add(ChannelLinksGroup)
   .add(HealthGroup)
   .add(RegistrationGroup)
+  .add(SkillsGroup)
   .annotateMerge(
     OpenApi.annotations({
       description: "Osfo control-plane HTTP API.",
@@ -75,3 +77,19 @@ export {
   Unauthorized,
   type CurrentUserValue,
 } from "./middleware/auth";
+export {
+  SkillAvailability,
+  SkillChangeRequest,
+  SkillChangeResponse,
+  SkillConflict,
+  SkillDeletionPresentation,
+  SkillDeletionRequest,
+  SkillDeletionResponse,
+  SkillNotFound,
+  SkillSummary,
+  SkillsGroup,
+  SkillsSummary,
+  SkillsUnavailable,
+  skillDeletionConfirmation,
+  skillDeletionPresentationVersion,
+} from "./groups/skills";

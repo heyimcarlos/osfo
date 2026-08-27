@@ -38,6 +38,7 @@ const registrationIncomplete: AuthState = {
   refreshFromAuthority,
 };
 const localStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   cleanup();
@@ -45,6 +46,7 @@ afterEach(() => {
     Object.defineProperty(globalThis, "localStorage", localStorageDescriptor);
   }
   localStorage.clear();
+  globalThis.fetch = originalFetch;
 });
 
 const renderAt = (path: string, authState: AuthState = signedOut) => {
@@ -162,6 +164,22 @@ describe("Osfo route tree", () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: "Profile" })).toBeTruthy());
     expect(screen.getByRole("heading", { name: "Add sign-in credentials" })).toBeTruthy();
     expect(router.state.location.pathname).toBe("/settings/profile");
+  });
+
+  it("protects and restores the Skills direct link", async () => {
+    globalThis.fetch = () => Promise.resolve(Response.json({ skills: [] }));
+    const { router, view } = renderAt("/settings/skills");
+    await waitFor(() => expect(screen.getByText("SMS code")).toBeTruthy());
+
+    view.rerender(
+      <AuthStateProvider value={signedIn}>
+        <RouterProvider router={router} />
+      </AuthStateProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy());
+    expect(router.state.location.pathname).toBe("/settings/skills");
+    expect(screen.getByRole("navigation", { name: "Settings" })).toBeTruthy();
   });
 
   it("routes an authenticated account without an Agent back through registration", async () => {

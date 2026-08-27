@@ -2,6 +2,7 @@ import { BrowserCrypto } from "@effect/platform-browser";
 import { Think, type StreamCallback, type ThinkChannels } from "@cloudflare/think";
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import type { UIMessage } from "ai";
+import type { SkillChangeRequest, SkillDeletionRequest } from "@osfo/api";
 import { Effect, Layer, Option, Redacted } from "effect";
 
 import { loadConfig } from "../../config";
@@ -18,6 +19,7 @@ import { streamTextReply } from "./messenger-stream";
 import { makeOsfoMessengerRouter, type MessengerAddressResolution } from "./messenger-routing";
 import type { AgentInitializationEncoded } from "./db/store";
 import { GroupRefusalCopy } from "./persona";
+import { UserId } from "../../domain";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- Think RPC methods use Promise contracts, this class is the messenger Layer composition root, and Effect results use _tag. */
 
@@ -120,6 +122,65 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
           routeId: result.routeId,
         }
       : null;
+  }
+
+  /** List current personal Skills through one registered User Agent. */
+  async inspectPersonalSkills(
+    agentId: string,
+    actor: { readonly decisionReference: string; readonly userId: string },
+  ) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.inspectPersonalSkills({ ...actor, userId: UserId.make(actor.userId) });
+  }
+
+  /** Commit one non-destructive personal Skill lifecycle change. */
+  async changePersonalSkill(
+    agentId: string,
+    input: {
+      readonly actor: { readonly decisionReference: string; readonly userId: string };
+      readonly change: SkillChangeRequest;
+    },
+  ) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.changePersonalSkill({
+      ...input,
+      actor: { ...input.actor, userId: UserId.make(input.actor.userId) },
+    });
+  }
+
+  /** Present the exact current personal Skill lineage for deletion. */
+  async presentPersonalSkillDeletion(
+    agentId: string,
+    input: {
+      readonly actor: { readonly decisionReference: string; readonly userId: string };
+      readonly reference: string;
+    },
+  ) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.presentPersonalSkillDeletion({
+      ...input,
+      actor: { ...input.actor, userId: UserId.make(input.actor.userId) },
+    });
+  }
+
+  /** Delete one exact personal Skill lineage after Approval. */
+  async deletePersonalSkillFromSettings(
+    agentId: string,
+    input: {
+      readonly actor: { readonly decisionReference: string; readonly userId: string };
+      readonly reference: string;
+      readonly request: SkillDeletionRequest;
+    },
+  ) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.deletePersonalSkillFromSettings({
+      ...input,
+      actor: { ...input.actor, userId: UserId.make(input.actor.userId) },
+    });
   }
 
   /** List the authoritative user-owned facet registry. */

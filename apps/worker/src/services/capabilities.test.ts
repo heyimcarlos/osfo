@@ -933,6 +933,10 @@ it.effect("ignores untrusted capability claims and accounts for each prompt and 
       }),
     ).toMatchObject({ planPolicyOperation: "artifact.generate" });
     expect(bundle.accounting.prompt.alwaysVisibleCoreBytes).toBeGreaterThan(0);
+    expect(bundle.instructions).toContain("A one-time override must not revise the Skill");
+    expect(bundle.instructions).toContain(
+      "If either is ambiguous, inspect the User's Skills and ask them to choose; do not call skillManage.",
+    );
     expect(bundle.accounting.prompt.selectedSkillIndexBytes).toBeGreaterThan(0);
     expect(bundle.accounting.prompt.loadedSkillBodyBytes).toBe(
       new TextEncoder().encode(personalSkill.instructions).byteLength,

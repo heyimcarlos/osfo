@@ -78,6 +78,41 @@ it("drives an OsfoAgent across restart and loads learning only in the matching l
     });
 
     await waitForSkill(state.storage);
+    const settingsActor = {
+      decisionReference: "personal-skill-settings-decision",
+      userId,
+    };
+    const settings = await agent.inspectPersonalSkills(settingsActor);
+    if (!("skills" in settings)) throw new Error("The Agent did not return Skill settings");
+    expect(settings.skills).toHaveLength(1);
+    const settingsSkill = settings.skills[0];
+    if (settingsSkill === undefined) throw new Error("The Agent returned no learned Skill");
+    const archived = await agent.changePersonalSkill({
+      actor: settingsActor,
+      change: {
+        change: "archive",
+        expectedRevision: settingsSkill.revisionReference,
+        reference: settingsSkill.reference,
+      },
+    });
+    if (!("skill" in archived)) throw new Error("The Agent did not archive the learned Skill");
+    expect(archived.skill.status).toBe("archived");
+    const restored = await agent.changePersonalSkill({
+      actor: settingsActor,
+      change: {
+        change: "undo",
+        expectedRevision: archived.skill.revisionReference,
+        reference: archived.skill.reference,
+      },
+    });
+    if (!("skill" in restored)) throw new Error("The Agent did not undo Skill archival");
+    expect(restored.skill.status).toBe("active");
+    const foreign = await agent.inspectPersonalSkills({
+      decisionReference: "foreign-settings-decision",
+      userId: UserId.make("another-user"),
+    });
+    if (!("skills" in foreign)) throw new Error("The Agent did not return foreign isolation");
+    expect(foreign.skills).toEqual([]);
     const restartedAgent = new OsfoAgent(state, runtimeEnv);
     expect(restartedAgent).not.toBe(agent);
     await restartedAgent.onStart();
@@ -139,6 +174,37 @@ it("drives an OsfoAgent across restart and loads learning only in the matching l
     expect(
       latestManagedTurn(unrelatedAgent.messages).capabilityTurnState.eligiblePersonalSkills,
     ).toEqual([]);
+
+    const deletion = await unrelatedAgent.presentPersonalSkillDeletion({
+      actor: settingsActor,
+      reference: restored.skill.reference,
+    });
+    if (!("reference" in deletion)) throw new Error("The Agent did not present Skill deletion");
+    const editedDeletion = await unrelatedAgent.deletePersonalSkillFromSettings({
+      actor: settingsActor,
+      reference: deletion.reference,
+      request: {
+        approval: {
+          decision: "approved",
+          presentation: { ...deletion, expectedRevision: "edited-revision" },
+        },
+        confirmation: "delete-this-skill",
+      },
+    });
+    expect(editedDeletion).toMatchObject({ _tag: "PersonalSkillApprovalInvalid" });
+    expect(
+      await unrelatedAgent.deletePersonalSkillFromSettings({
+        actor: settingsActor,
+        reference: deletion.reference,
+        request: {
+          approval: { decision: "approved", presentation: deletion },
+          confirmation: "delete-this-skill",
+        },
+      }),
+    ).toEqual({ status: "deleted" });
+    const afterDeletion = await unrelatedAgent.inspectPersonalSkills(settingsActor);
+    if (!("skills" in afterDeletion)) throw new Error("The Agent did not confirm Skill deletion");
+    expect(afterDeletion.skills).toEqual([]);
   });
 });
 
