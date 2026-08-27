@@ -88,7 +88,7 @@ const worker = Worker(
 );
 
 // SAFETY: Wrangler 4.127 and the Cloudflare Workers API recognize this
-// zero-config binding shape. Alchemy 2.0.0-beta.74 does not yet expose it in
+// zero-config binding shape. Alchemy 2.0.0-beta.72 does not yet expose it in
 // WorkerBinding, so the owning infrastructure adapter contains the temporary
 // type gap while still publishing the production binding.
 // oxlint-disable-next-line osfo/no-chained-type-assertions, typescript/no-unsafe-type-assertion
