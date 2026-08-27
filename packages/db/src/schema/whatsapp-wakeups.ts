@@ -32,6 +32,7 @@ export const whatsappWakeups = pgTable(
     requested_at: timestamp({ withTimezone: true }),
     settled_at: timestamp({ withTimezone: true }),
     consume_requested_at: timestamp({ withTimezone: true }),
+    exposure_completed_at: timestamp({ withTimezone: true }),
     cancel_requested_at: timestamp({ withTimezone: true }),
     consumed_at: timestamp({ withTimezone: true }),
     canceled_at: timestamp({ withTimezone: true }),
@@ -74,23 +75,28 @@ export const whatsappWakeups = pgTable(
       "whatsapp_wakeups_lifecycle_check",
       sql`(${table.state} = 'pending'
           and ${table.provider_outcome} is null and ${table.requested_at} is null
-          and ${table.settled_at} is null and ${table.consumed_at} is null and ${table.canceled_at} is null)
+          and ${table.settled_at} is null and ${table.exposure_completed_at} is null
+          and ${table.consumed_at} is null and ${table.canceled_at} is null)
         or (${table.state} = 'requested'
           and ${table.provider_outcome} is null and ${table.requested_at} is not null
-          and ${table.settled_at} is null and ${table.consumed_at} is null and ${table.canceled_at} is null)
+          and ${table.settled_at} is null and ${table.consumed_at} is null and ${table.canceled_at} is null
+          and (${table.exposure_completed_at} is null or ${table.consume_requested_at} is not null))
         or (${table.state} in ('accepted', 'ambiguous')
           and ${table.provider_outcome} = ${table.state} and ${table.requested_at} is not null
-          and ${table.settled_at} is not null and ${table.consumed_at} is null and ${table.canceled_at} is null)
+          and ${table.settled_at} is not null and ${table.exposure_completed_at} is null
+          and ${table.consumed_at} is null and ${table.canceled_at} is null)
         or (${table.state} = 'rejected'
           and ${table.provider_outcome} = 'rejected' and ${table.safe_failure_class} = 'providerRejected'
           and ${table.requested_at} is not null and ${table.settled_at} is not null
-          and ${table.consumed_at} is null and ${table.canceled_at} is null)
+          and ${table.exposure_completed_at} is null and ${table.consumed_at} is null and ${table.canceled_at} is null)
         or (${table.state} = 'consumed'
-          and ${table.consumed_at} is not null and ${table.canceled_at} is null
-          and (${table.provider_outcome} is null or ${table.provider_outcome} in ('accepted', 'ambiguous')))
+          and ${table.exposure_completed_at} is not null and ${table.consumed_at} is not null
+          and ${table.canceled_at} is null
+          and (${table.provider_outcome} is null or ${table.provider_outcome} in ('accepted', 'rejected', 'ambiguous')))
         or (${table.state} = 'canceled'
-          and ${table.consumed_at} is null and ${table.canceled_at} is not null
-          and (${table.provider_outcome} is null or ${table.provider_outcome} in ('accepted', 'ambiguous')))`,
+          and ${table.exposure_completed_at} is null and ${table.consumed_at} is null
+          and ${table.canceled_at} is not null
+          and (${table.provider_outcome} is null or ${table.provider_outcome} in ('accepted', 'rejected', 'ambiguous')))`,
     ),
     uniqueIndex("whatsapp_wakeups_active_user_unique")
       .on(table.user_id)

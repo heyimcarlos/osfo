@@ -43,6 +43,12 @@ interface TelegramPayload {
   readonly text: string;
 }
 
+type JsonValue = boolean | number | string | null | JsonObject | ReadonlyArray<JsonValue>;
+
+interface JsonObject {
+  readonly [key: string]: JsonValue;
+}
+
 const TelegramRequest = Schema.Struct({
   chat_id: Schema.optional(Schema.Union([Schema.Finite, Schema.String])),
   message_id: Schema.optional(Schema.Finite),
@@ -61,18 +67,7 @@ const SupermemorySeedRequestFromJson = Schema.fromJsonString(
 const SupermemoryDeleteFailuresFromJson = Schema.fromJsonString(
   Schema.Struct({ count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)) }),
 );
-const WhatsAppTemplateRequestFromJson = Schema.fromJsonString(
-  Schema.Struct({
-    messaging_product: Schema.Literal("whatsapp"),
-    recipient_type: Schema.Literal("individual"),
-    template: Schema.Struct({
-      language: Schema.Struct({ code: Schema.Literals(["en", "es"]) }),
-      name: Schema.Literal("osfo_update"),
-    }),
-    to: Schema.String.check(Schema.isPattern(/^\d{5,20}$/u)),
-    type: Schema.Literal("template"),
-  }),
-);
+const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
 
 /** Local HTTP providers and their request ledgers for composed Worker journeys. */
 export interface ProviderEmulator {
@@ -237,11 +232,10 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         readTextBody(request)
           .then((body) => {
             whatsAppLedger.push({ body, method: request.method ?? "POST", path: pathname });
-            const decoded = Schema.decodeOption(WhatsAppTemplateRequestFromJson)(body);
+            const decoded = Schema.decodeOption(UnknownFromJsonString)(body);
             if (
               whatsAppTemplateOnly &&
-              (Option.isNone(decoded) ||
-                /"(?:components|buttons|media|text|url|parameters)"\s*:/iu.test(body))
+              (Option.isNone(decoded) || !isExactWhatsAppTemplateRequest(decoded.value))
             ) {
               respondJson(response, 422, {
                 error: "Only the fixed variable-free template is accepted",
@@ -284,6 +278,35 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
       });
     });
   });
+
+const isExactWhatsAppTemplateRequest = (value: unknown): boolean => {
+  if (!hasExactKeys(value, ["messaging_product", "recipient_type", "template", "to", "type"])) {
+    return false;
+  }
+  const template = value.template;
+  if (
+    value.messaging_product !== "whatsapp" ||
+    value.recipient_type !== "individual" ||
+    value.type !== "template" ||
+    typeof value.to !== "string" ||
+    !/^\d{5,20}$/u.test(value.to) ||
+    !hasExactKeys(template, ["language", "name"])
+  ) {
+    return false;
+  }
+  const language = template.language;
+  return (
+    template.name === "osfo_update" &&
+    hasExactKeys(language, ["code"]) &&
+    (language.code === "en" || language.code === "es")
+  );
+};
+
+const hasExactKeys = (value: unknown, keys: ReadonlyArray<string>): value is JsonObject => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const actualKeys = Object.keys(value);
+  return actualKeys.length === keys.length && keys.every((key) => actualKeys.includes(key));
+};
 
 const handleSupermemorySeed = (
   request: IncomingMessage,

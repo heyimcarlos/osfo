@@ -353,14 +353,16 @@ export const make = Effect.gen(function* () {
       if (claim === null) break;
       const authorizedSources = yield* retainAuthorizedSources(claim.userId, claim.wakeUpId);
       if (authorizedSources.length === 0) {
-        yield* cancelClaim(claim.wakeUpId, claim.leaseId, "sourceCanceled");
-        counts.canceled += 1;
+        if (yield* cancelClaim(claim.wakeUpId, claim.leaseId, claim.userId, "sourceCanceled")) {
+          counts.canceled += 1;
+        }
         continue;
       }
       const authority = yield* loadAuthority(claim.userId, claim.channelLinkId);
       if (authority === null || authority.locale !== claim.locale) {
-        yield* cancelClaim(claim.wakeUpId, claim.leaseId, "authorityLost");
-        counts.canceled += 1;
+        if (yield* cancelClaim(claim.wakeUpId, claim.leaseId, claim.userId, "authorityLost")) {
+          counts.canceled += 1;
+        }
         continue;
       }
       const locale = yield* Schema.decodeUnknownEffect(Locale)(claim.locale).pipe(
@@ -369,8 +371,9 @@ export const make = Effect.gen(function* () {
       const endpoint = yield* decodeEndpoint(authority.endpoint, "drain.endpoint");
       const endpointFingerprint = yield* digest(crypto, endpoint, "drain.endpointFingerprint");
       if (endpointFingerprint !== claim.endpointFingerprint) {
-        yield* cancelClaim(claim.wakeUpId, claim.leaseId, "authorityLost");
-        counts.canceled += 1;
+        if (yield* cancelClaim(claim.wakeUpId, claim.leaseId, claim.userId, "authorityLost")) {
+          counts.canceled += 1;
+        }
         continue;
       }
       const requested = yield* markRequested({ ...claim, locale });
@@ -443,17 +446,18 @@ export const make = Effect.gen(function* () {
       database
         .update(whatsappWakeups)
         .set({
-          consumed_at: now,
+          consumed_at: sql`case when ${whatsappWakeups.state} = 'requested' then null else ${now.toISOString()}::timestamptz end`,
+          exposure_completed_at: now,
           lease_expires_at: null,
           lease_id: null,
           safe_failure_class: sql`case when ${whatsappWakeups.state} = 'pending' then 'inboundBeforeSend' else ${whatsappWakeups.safe_failure_class} end`,
-          state: "consumed",
+          state: sql`case when ${whatsappWakeups.state} = 'requested' then 'requested' else 'consumed' end`,
           updated_at: now,
         })
         .where(
           and(
             eq(whatsappWakeups.wakeup_id, consumed),
-            inArray(whatsappWakeups.state, ["pending", "accepted", "ambiguous"]),
+            inArray(whatsappWakeups.state, ["pending", "requested", "accepted", "ambiguous"]),
           ),
         ),
     );
@@ -617,19 +621,20 @@ export const make = Effect.gen(function* () {
         .update(whatsappWakeups)
         .set({
           canceled_at: sql`case
-            when ${whatsappWakeups.consume_requested_at} is not null then null
+            when ${whatsappWakeups.exposure_completed_at} is not null then null
             when ${whatsappWakeups.cancel_requested_at} is not null then ${whatsappWakeups.cancel_requested_at}
             else null
           end`,
-          consumed_at: sql`case when ${whatsappWakeups.consume_requested_at} is null then null else ${whatsappWakeups.consume_requested_at} end`,
+          consumed_at: sql`case when ${whatsappWakeups.exposure_completed_at} is null then null else ${whatsappWakeups.exposure_completed_at} end`,
           provider_outcome: "ambiguous",
           safe_failure_class: sql`case
+            when ${whatsappWakeups.exposure_completed_at} is not null then 'connectionLost'
             when ${whatsappWakeups.cancel_requested_at} is null then 'connectionLost'
             else ${whatsappWakeups.safe_failure_class}
           end`,
           settled_at: now,
           state: sql`case
-            when ${whatsappWakeups.consume_requested_at} is not null then 'consumed'
+            when ${whatsappWakeups.exposure_completed_at} is not null then 'consumed'
             when ${whatsappWakeups.cancel_requested_at} is not null then 'canceled'
             else 'ambiguous'
           end`,
@@ -714,27 +719,55 @@ export const make = Effect.gen(function* () {
   const cancelClaim = Effect.fn("WhatsAppWakeUps.cancelClaim")(function* (
     wakeUpId: WakeUpId,
     leaseId: string,
+    userId: UserId,
     failureClass: "authorityLost" | "sourceCanceled",
   ) {
     const now = DateTime.toDateUtc(yield* DateTime.now);
-    yield* attempt("cancelClaim", () =>
-      database
-        .update(whatsappWakeups)
-        .set({
-          canceled_at: now,
-          lease_expires_at: null,
-          lease_id: null,
-          safe_failure_class: failureClass,
-          state: "canceled",
-          updated_at: now,
-        })
-        .where(
-          and(
-            eq(whatsappWakeups.wakeup_id, wakeUpId),
-            eq(whatsappWakeups.state, "pending"),
-            eq(whatsappWakeups.lease_id, leaseId),
-          ),
-        ),
+    return yield* attempt("cancelClaim", () =>
+      database.transaction(async (transaction) => {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${userId}, 0))`,
+        );
+        if (failureClass === "sourceCanceled") {
+          const [attached] = await transaction
+            .select({ requestWakeUpId: whatsappWakeupSources.request_wakeup_id })
+            .from(whatsappWakeupSources)
+            .where(eq(whatsappWakeupSources.wakeup_id, wakeUpId))
+            .limit(1);
+          if (attached !== undefined) {
+            await transaction
+              .update(whatsappWakeups)
+              .set({ lease_expires_at: null, lease_id: null, updated_at: now })
+              .where(
+                and(
+                  eq(whatsappWakeups.wakeup_id, wakeUpId),
+                  eq(whatsappWakeups.state, "pending"),
+                  eq(whatsappWakeups.lease_id, leaseId),
+                ),
+              );
+            return false;
+          }
+        }
+        const canceled = await transaction
+          .update(whatsappWakeups)
+          .set({
+            canceled_at: now,
+            lease_expires_at: null,
+            lease_id: null,
+            safe_failure_class: failureClass,
+            state: "canceled",
+            updated_at: now,
+          })
+          .where(
+            and(
+              eq(whatsappWakeups.wakeup_id, wakeUpId),
+              eq(whatsappWakeups.state, "pending"),
+              eq(whatsappWakeups.lease_id, leaseId),
+            ),
+          )
+          .returning({ wakeUpId: whatsappWakeups.wakeup_id });
+        return canceled.length === 1;
+      }),
     );
   });
 
@@ -840,7 +873,7 @@ export const make = Effect.gen(function* () {
         const [row] = await transaction
           .select({
             cancelRequestedAt: whatsappWakeups.cancel_requested_at,
-            consumeRequestedAt: whatsappWakeups.consume_requested_at,
+            exposureCompletedAt: whatsappWakeups.exposure_completed_at,
           })
           .from(whatsappWakeups)
           .where(
@@ -849,13 +882,13 @@ export const make = Effect.gen(function* () {
           .for("update")
           .limit(1);
         if (row === undefined) return;
-        const consumed = row.consumeRequestedAt !== null && outcome._tag !== "rejected";
-        const canceled = !consumed && row.cancelRequestedAt !== null && outcome._tag !== "rejected";
+        const consumed = row.exposureCompletedAt !== null;
+        const canceled = !consumed && row.cancelRequestedAt !== null;
         await transaction
           .update(whatsappWakeups)
           .set({
             canceled_at: canceled ? row.cancelRequestedAt : null,
-            consumed_at: consumed ? row.consumeRequestedAt : null,
+            consumed_at: consumed ? row.exposureCompletedAt : null,
             provider_message_id_hash: providerMessageIdHash,
             provider_outcome: outcome._tag,
             safe_failure_class: outcome._tag === "accepted" ? null : outcome.failureClass,

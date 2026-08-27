@@ -11,6 +11,7 @@ import { WhatsAppWakeUps } from "../../src/services/whatsapp-wakeups";
 const Ledger = Schema.Array(
   Schema.Struct({ body: Schema.String, method: Schema.String, path: Schema.String }),
 );
+const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 it.effect("uses only the fixed variable-free Meta template shape for en and es", () =>
   Effect.gen(function* () {
@@ -66,6 +67,44 @@ it.effect("uses only the fixed variable-free Meta template shape for en and es",
       },
     ]);
   }).pipe(Effect.provide(wakeUpSenderLayer(loadConfig(env).whatsApp))),
+);
+
+it.effect("rejects every excess field at the local Meta boundary", () =>
+  Effect.gen(function* () {
+    const providerOrigin = loadConfig(env).whatsApp.apiBaseURL ?? "";
+    yield* Effect.promise(() =>
+      fetch(`${providerOrigin}/_test/whatsapp/template-only`, { method: "POST" }),
+    );
+    const valid = {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      template: { language: { code: "en" }, name: "osfo_update" },
+      to: "15551234567",
+      type: "template",
+    };
+    const statuses = yield* Effect.forEach(
+      [
+        { ...valid, private_data: "must-not-pass" },
+        { ...valid, template: { ...valid.template, result_summary: "must-not-pass" } },
+        {
+          ...valid,
+          template: {
+            ...valid.template,
+            language: { ...valid.template.language, fallback: "must-not-pass" },
+          },
+        },
+      ],
+      (body) =>
+        Effect.promise(() =>
+          fetch(`${providerOrigin}/v25.0/123456789/messages`, {
+            body: encodeUnknownJson(body),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          }),
+        ).pipe(Effect.map((response) => response.status)),
+    );
+    expect(statuses).toEqual([422, 422, 422]);
+  }),
 );
 
 it.effect("treats server and rate-limit responses as ambiguous, not proven rejection", () =>
