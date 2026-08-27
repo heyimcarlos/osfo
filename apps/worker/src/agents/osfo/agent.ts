@@ -47,6 +47,8 @@ import {
   UserId,
 } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
+import { closedCapabilityIds } from "../../domain/capability-catalog";
+import { PersonalSkillId, PersonalSkillVersionId } from "../../domain/personal-skill";
 import { DocumentArtifact } from "../../domain/document-artifact";
 import { DocumentGenerationComposition } from "../../composition/document-generation";
 import { Db } from "../../db";
@@ -262,6 +264,19 @@ import { effectToolSchema } from "./effect-tool-schema";
 import { makeFileTools } from "./file-tools";
 import { FileAnalysisReconciliation } from "./file-analysis-reconciliation";
 import { ManagedCapabilityState } from "./managed-capability-turn-state";
+import { makePersonalSkillAuthority } from "./personal-skill-authority";
+import {
+  makePersonalSkillTools,
+  SkillInspectInput,
+  SkillManageInput,
+} from "./personal-skill-tools";
+import {
+  finalizeSkillLearningCandidate,
+  projectSkillLearningDraft,
+  proposeConfirmedSkillChange,
+  type SkillLearningDraft,
+} from "./post-turn-skill-learning";
+import { makeSkillLearningCoordinator } from "./skill-learning-coordinator";
 import {
   projectCommittedConversationSnapshot,
   projectTerminalMarkedCommittedTurns,
@@ -288,6 +303,7 @@ import {
 } from "./deletion-actions";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries, and Effect results use _tag. */
+/* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect -- Agent hooks and Durable Object callbacks supply the wall-clock boundary for retained metadata. */
 
 const pendingSessionId = "__osfo_uninitialized__";
 const gatewayId = "default";
@@ -311,6 +327,17 @@ const capabilityActionNames = [
   "osfoDeleteSession",
   "osfoForgetKnowledge",
 ] as const satisfies ReadonlyArray<Capabilities.RegisteredToolName>;
+const personalSkillAvailability = {
+  capabilityIds: closedCapabilityIds,
+  requirements: [
+    "document-renderer",
+    "file-storage",
+    "native-memory",
+    "personal-agent",
+    "session-history",
+    "skill-store",
+  ],
+} as const;
 type AgentFilePersistenceError =
   | FileAnalysisConflict
   | FileNotFound
@@ -656,6 +683,22 @@ export class OsfoAgent extends Think<Env> {
   #activeCapabilityTurn: CapabilityTurn.Interface | undefined;
   readonly #promptAssembly = PromptAssembly.makeRetainedPromptAssembly();
   readonly #store = makeAgentStore(this.#db);
+  readonly #personalSkillAuthority = makePersonalSkillAuthority(this.ctx.storage);
+  readonly #personalSkillTools = makePersonalSkillTools({
+    authority: this.#personalSkillAuthority,
+    availability: personalSkillAvailability,
+    current: () => {
+      const metadata = this.#activeCapabilityMetadata;
+      return metadata === undefined
+        ? null
+        : {
+            decisionReferenceId: metadata.submissionId,
+            userId: metadata.authorityIdentity.userId,
+          };
+    },
+    nowEpochMillis: Date.now,
+  });
+  readonly #skillLearningDrafts = new Map<string, SkillLearningDraft>();
   readonly #sessionExecution = makeSessionExecution({
     hasPendingOrRunning: callThinkSubmission("listSubmissions", () =>
       this.listSubmissions({ limit: 1, status: ["pending", "running"] }),
@@ -755,6 +798,39 @@ export class OsfoAgent extends Think<Env> {
         "Load one exact Skill Version from the current turn's validated Skill index. This never grants authority or registers Tools.",
       execute: (input) => this.#loadSkill(input),
       inputSchema: effectToolSchema(CapabilityContext.LoadSkillToolInput),
+    }),
+    skillInspect: tool({
+      description: "List active personal Skills or inspect one immutable Skill lineage.",
+      execute: (input) =>
+        Effect.runPromise(
+          this.#personalSkillTools.inspect(input).pipe(
+            Effect.match({
+              onFailure: () => ({
+                _tag: "SkillUnavailable" as const,
+                message: "The personal Skill could not be inspected for this User.",
+              }),
+              onSuccess: (result) => result,
+            }),
+          ),
+        ),
+      inputSchema: effectToolSchema(SkillInspectInput),
+    }),
+    skillManage: tool({
+      description:
+        "Create, revise, archive, restore, roll back, or request approved deletion of a personal Skill after an explicit User request.",
+      execute: (input) =>
+        Effect.runPromise(
+          this.#personalSkillTools.manage(input).pipe(
+            Effect.match({
+              onFailure: () => ({
+                _tag: "SkillUnavailable" as const,
+                message: "The personal Skill lifecycle change could not be committed.",
+              }),
+              onSuccess: (result) => result,
+            }),
+          ),
+        ),
+      inputSchema: effectToolSchema(SkillManageInput),
     }),
   } satisfies ToolSet;
   /** Resolve a safe model before trusted per-turn metadata selects the exact managed route. */
@@ -1026,6 +1102,7 @@ export class OsfoAgent extends Think<Env> {
         "native-memory",
         "personal-agent",
         "session-history",
+        "skill-store",
       ],
       availableToolNames: Object.keys(tools),
     } as const;
@@ -1034,19 +1111,43 @@ export class OsfoAgent extends Think<Env> {
     const capabilityContext = CapabilityContext.projectTurn(context.messages, {
       pendingFileAnalysis: capabilityTurnState.pendingFileAnalyses.length > 0,
     });
+    const personalSkills = await Effect.runPromise(
+      this.#personalSkillAuthority.active(metadata.authorityIdentity.userId),
+    );
     const baseIndex = await Effect.runPromise(
       this.#capabilities.eligibleIndex({
         ...capabilityAvailability,
         catalogVersion: metadata.capabilityCatalogVersion,
         declaredRequirements: [],
         origin: capabilityTurnOrigin(metadata.authorityIdentity),
-        personalSkills: [],
+        personalSkills,
         plan: metadata.plan,
         taskDescription: capabilityContext.taskDescription,
         taskKinds: capabilityContext.taskKinds,
         trustedCapabilityIds: capabilityContext.trustedCapabilityIds,
         userId: metadata.authorityIdentity.userId,
       }),
+    );
+    const priorPersonalSkill = baseIndex.candidates.find(({ source }) => source === "personal");
+    Option.match(
+      projectSkillLearningDraft({
+        origin: capabilityTurnOrigin(metadata.authorityIdentity),
+        ownerUserId: metadata.authorityIdentity.userId,
+        priorSkillId:
+          priorPersonalSkill === undefined
+            ? null
+            : PersonalSkillId.make(priorPersonalSkill.skillId),
+        priorSkillVersion:
+          priorPersonalSkill === undefined
+            ? null
+            : PersonalSkillVersionId.make(priorPersonalSkill.skillVersion),
+        submissionId: metadata.submissionId,
+        taskDescription: capabilityContext.taskDescription,
+      }),
+      {
+        onNone: () => this.#skillLearningDrafts.delete(metadata.submissionId),
+        onSome: (draft) => this.#skillLearningDrafts.set(metadata.submissionId, draft),
+      },
     );
     const restored = this.#capabilities.restoreLoadedSkillReceipts({
       ...capabilityAvailability,
@@ -1062,7 +1163,7 @@ export class OsfoAgent extends Think<Env> {
       capabilities: this.#capabilities,
       index,
       loadedSkills: restored.loadedSkills,
-      personalSkills: [],
+      personalSkills,
       toolSchemas: CapabilityContext.toolSchemaAccounting(trustedToolAssembly),
       userId: metadata.authorityIdentity.userId,
     });
@@ -1273,6 +1374,26 @@ export class OsfoAgent extends Think<Env> {
               );
               if (!receiptCommitted || !activeTurn.commitLoadedSkill(loaded)) {
                 throw new Error("The active turn reached its loaded Skill limit");
+              }
+              if (loaded.source === "personal") {
+                this.ctx.waitUntil(
+                  Effect.runPromise(
+                    this.#personalSkillAuthority
+                      .recordUse({
+                        nowEpochMillis: Date.now(),
+                        skillId: PersonalSkillId.make(loaded.skillId),
+                        skillVersion: PersonalSkillVersionId.make(loaded.skillVersion),
+                        userId: metadata.authorityIdentity.userId,
+                      })
+                      .pipe(
+                        Effect.catch((failure) =>
+                          Effect.logWarning("Personal Skill use metadata was not recorded").pipe(
+                            Effect.annotateLogs({ failure: failure._tag }),
+                          ),
+                        ),
+                      ),
+                  ),
+                );
               }
               return loaded;
             },
@@ -3191,6 +3312,46 @@ export class OsfoAgent extends Think<Env> {
     );
     if (result.status === "completed") {
       this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
+    }
+    if (Option.isSome(activeTurn)) {
+      const draft = this.#skillLearningDrafts.get(activeTurn.value.submissionId);
+      this.#skillLearningDrafts.delete(activeTurn.value.submissionId);
+      if (draft !== undefined && result.status === "completed") {
+        const candidate = finalizeSkillLearningCandidate(draft, assistantMessageId, Date.now());
+        if (Result.isSuccess(candidate)) {
+          const authority = this.#personalSkillAuthority;
+          const userId = activeTurn.value.authorityIdentity.userId;
+          this.ctx.waitUntil(
+            Effect.runPromise(
+              Effect.gen(function* () {
+                const load = yield* authority.learningLoad(userId, Date.now());
+                return yield* makeSkillLearningCoordinator({
+                  authority,
+                  propose: (input) => Effect.sync(() => proposeConfirmedSkillChange(input)),
+                  recordCompanyCost: () => Effect.void,
+                }).run({
+                  availability: personalSkillAvailability,
+                  candidate: candidate.success,
+                  load,
+                  nowEpochMillis: Date.now(),
+                  rootStatus: result.status,
+                });
+              }).pipe(
+                Effect.tap((outcome) =>
+                  Effect.logInfo("Post-turn personal Skill Learning completed").pipe(
+                    Effect.annotateLogs({ outcome: outcome._tag }),
+                  ),
+                ),
+                Effect.catch((failure) =>
+                  Effect.logWarning("Post-turn personal Skill Learning was isolated").pipe(
+                    Effect.annotateLogs({ failure: failure._tag }),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }
+      }
     }
   }
 
