@@ -1,4 +1,4 @@
-import { Composio, SessionPreset } from "@composio/core";
+import { Composio, logger, SessionPreset } from "@composio/core";
 import { Effect, Option, Redacted, Schema } from "effect";
 
 import type { UserId } from "../../domain";
@@ -19,6 +19,7 @@ const toolkitVersions = {
   googlecalendar: "20260812_00",
   googledrive: "20260815_00",
 } as const;
+const silent = () => undefined;
 
 const SessionExecutionResponse = Schema.Struct({
   data: Schema.JsonObject,
@@ -38,19 +39,21 @@ interface ComposioSessionPort {
     options: { readonly callbackUrl: string },
   ) => Promise<{ readonly redirectUrl?: string | null }>;
   readonly sessionId: string;
-  readonly toolkits: (options: { readonly toolkits: Array<string> }) => Promise<{
-    readonly items: ReadonlyArray<{
-      readonly connection?:
-        | {
-            readonly connectedAccount?:
-              | { readonly id: string; readonly status: string }
-              | undefined;
-            readonly isActive: boolean;
-          }
-        | undefined;
-      readonly slug: string;
-    }>;
+}
+
+interface ComposioConnectedAccountList {
+  readonly items: ReadonlyArray<{
+    readonly id: string;
+    readonly status: string;
+    readonly toolkit: { readonly slug: string };
   }>;
+}
+
+interface ComposioLoggerPort {
+  debug: (...args: ReadonlyArray<unknown>) => void;
+  error: (...args: ReadonlyArray<unknown>) => void;
+  info: (...args: ReadonlyArray<unknown>) => void;
+  warn: (...args: ReadonlyArray<unknown>) => void;
 }
 
 interface ComposioClientPort {
@@ -62,7 +65,12 @@ interface ComposioClientPort {
     sessionId: string,
     providerTool: string,
     input: ProviderInput,
+    connectedAccountId: string,
   ) => Promise<ProviderExecutionResult>;
+  readonly listConnectedAccounts: (
+    userId: string,
+    toolkit: string,
+  ) => Promise<ComposioConnectedAccountList>;
   readonly useSession: (providerSessionId: string) => Promise<ComposioSessionPort>;
 }
 
@@ -74,6 +82,21 @@ export interface ComposioSessionConfig {
   readonly sessionPreset: typeof SessionPreset.DIRECT_TOOLS;
   readonly toolkits: Array<string>;
   readonly tools: Record<string, Array<string>>;
+}
+
+interface ComposioConnectedAccountsPort {
+  readonly list: (options: {
+    readonly limit: number;
+    readonly toolkitSlugs: Array<string>;
+    readonly userIds: Array<string>;
+  }) => Promise<{
+    readonly items: ReadonlyArray<{
+      readonly id: string;
+      readonly isDisabled: boolean;
+      readonly status: string;
+      readonly toolkit: { readonly slug: string };
+    }>;
+  }>;
 }
 
 /** Translate Osfo's provider-independent confinement into Composio's current SDK config. */
@@ -96,6 +119,7 @@ export const composioSessionConfig = (
 /** Build the production Composio Platform adapter without exposing provider discovery APIs. */
 export const make = (apiKey: Redacted.Redacted): IntegrationProvider => {
   const value = Redacted.value(apiKey);
+  silenceComposioLogs(logger);
   const composio = new Composio({
     allowTracking: false,
     apiKey: value,
@@ -105,10 +129,20 @@ export const make = (apiKey: Redacted.Redacted): IntegrationProvider => {
   });
   return makeFromClient({
     createSession: (userId, config) => composio.sessions.create(userId, config),
-    executeOnce: (sessionId, providerTool, input) =>
-      executeOnce(value, sessionId, providerTool, input),
+    executeOnce: (sessionId, providerTool, input, connectedAccountId) =>
+      executeOnce(value, sessionId, providerTool, input, connectedAccountId),
+    listConnectedAccounts: (userId, toolkit) =>
+      listConnectedAccounts(composio.connectedAccounts, userId, toolkit),
     useSession: (providerSessionId) => composio.sessions.use(providerSessionId),
   });
+};
+
+/** Disable SDK logging before the secret-bearing SDK constructor reads its environment. */
+export const silenceComposioLogs = (target: ComposioLoggerPort): void => {
+  target.debug = silent;
+  target.error = silent;
+  target.info = silent;
+  target.warn = silent;
 };
 
 /** Adapt the current SDK surface behind the provider-independent Integrations port. */
@@ -119,17 +153,18 @@ export const makeFromClient = (client: ComposioClientPort): IntegrationProvider 
     ).pipe(
       Effect.map((session) => ({
         providerSessionId: session.sessionId,
-        session: adaptSession(client, session),
+        session: adaptSession(client, userId, session),
       })),
     ),
-  useSession: (providerSessionId) =>
+  useSession: (userId, providerSessionId) =>
     providerCall("useSession", () => client.useSession(providerSessionId)).pipe(
-      Effect.map((session) => adaptSession(client, session)),
+      Effect.map((session) => adaptSession(client, userId, session)),
     ),
 });
 
 const adaptSession = (
   client: ComposioClientPort,
+  userId: UserId,
   session: ComposioSessionPort,
 ): ProviderSession => ({
   authorize: (toolkit, callbackUrl) =>
@@ -146,19 +181,46 @@ const adaptSession = (
           : Effect.fail(providerFailure("authorize"));
       }),
     ),
-  execute: (providerTool, input) =>
-    providerCall("execute", () => client.executeOnce(session.sessionId, providerTool, input)),
-  inspectToolkits: (toolkits) =>
-    providerCall("inspectToolkits", () => session.toolkits({ toolkits: [...toolkits] })).pipe(
-      Effect.map(({ items }) =>
-        items.map(({ connection, slug }): ProviderToolkitEvidence => ({
-          connectedAccount: connection?.connectedAccount ?? null,
-          isActive: connection?.isActive ?? false,
-          slug,
-        })),
-      ),
+  execute: (providerTool, input, connectedAccountId) =>
+    providerCall("execute", () =>
+      client.executeOnce(session.sessionId, providerTool, input, connectedAccountId),
     ),
+  inspectToolkits: (toolkits) =>
+    Effect.forEach(
+      toolkits,
+      (toolkit) =>
+        providerCall("inspectToolkits", () => client.listConnectedAccounts(userId, toolkit)).pipe(
+          Effect.map(({ items }) =>
+            items.map(({ id, status, toolkit: accountToolkit }): ProviderToolkitEvidence => ({
+              connectedAccount: { id, status },
+              isActive: status === "ACTIVE",
+              slug: accountToolkit.slug,
+            })),
+          ),
+        ),
+      { concurrency: 1 },
+    ).pipe(Effect.map((groups) => groups.flat())),
 });
+
+// oxlint-disable-next-line effecttsgo/async-function -- The SDK list operation is this Promise-based provider boundary's resource lifetime.
+const listConnectedAccounts = async (
+  connectedAccounts: ComposioConnectedAccountsPort,
+  userId: string,
+  toolkit: string,
+): Promise<ComposioConnectedAccountList> => {
+  const listed = await connectedAccounts.list({
+    limit: 2,
+    toolkitSlugs: [toolkit],
+    userIds: [userId],
+  });
+  return {
+    items: listed.items.map(({ id, isDisabled, status, toolkit: accountToolkit }) => ({
+      id,
+      status: isDisabled && status === "ACTIVE" ? "INACTIVE" : status,
+      toolkit: accountToolkit,
+    })),
+  };
+};
 
 /** One exact HTTP dispatch avoids hidden SDK retries for an Osfo Action attempt. */
 // oxlint-disable-next-line effecttsgo/async-function -- Fetch response decoding is this Promise-based provider boundary's resource lifetime.
@@ -167,19 +229,29 @@ const executeOnce = async (
   sessionId: string,
   providerTool: string,
   input: ProviderInput,
+  connectedAccountId: string,
 ): Promise<ProviderExecutionResult> => {
   // Osfo owns Action retry policy; this host adapter performs one request because the current session SDK may retry writes.
   // oxlint-disable-next-line osfo/no-raw-fetch, effecttsgo/global-fetch -- This is the Composio host adapter and must preserve one execution attempt.
   const response = await fetch(
     `${composioApiBaseUrl}/api/v3.1/tool_router/session/${encodeURIComponent(sessionId)}/execute`,
     {
-      body: JSON.stringify({ arguments: input, tool_slug: providerTool }),
+      body: JSON.stringify({
+        account: connectedAccountId,
+        arguments: input,
+        tool_slug: providerTool,
+      }),
       headers: { "content-type": "application/json", "x-api-key": apiKey },
       method: "POST",
       signal: AbortSignal.timeout(requestTimeoutMillis),
     },
   );
-  if (!response.ok) throw new Error(`Composio execute failed with HTTP ${response.status}`);
+  if (!response.ok) {
+    throw new ComposioHttpFailure({
+      message: `Composio execute failed with HTTP ${response.status}`,
+      status: response.status,
+    });
+  }
   return decodeExecutionResponse(await response.json());
 };
 
@@ -224,5 +296,10 @@ const providerFailureReason = (cause: unknown): IntegrationProviderUnavailable["
   Option.isSome(Schema.decodeUnknownOption(Schema.Struct({ status: Schema.Literal(404) }))(cause))
     ? "missing"
     : "unavailable";
+
+class ComposioHttpFailure extends Schema.TaggedError<ComposioHttpFailure>()("ComposioHttpFailure", {
+  message: Schema.String,
+  status: Schema.Finite,
+}) {}
 
 export * as ComposioProvider from "./provider";

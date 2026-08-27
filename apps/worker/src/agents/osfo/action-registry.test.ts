@@ -1,6 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { Effect, Result, Schema } from "effect";
 
+import { GmailMessageInput } from "../../domain/integration-manifest";
 import {
   ActionPresentationId,
   ActionPresentationUnavailable,
@@ -9,6 +10,7 @@ import {
 import {
   hasExactActionInput,
   hasExactForgetKnowledgeInput,
+  hasExactIntegrationActionInput,
   hasExactPersonalSkillDeleteInput,
   hasExactSessionDeleteInput,
   presentOsfoAction,
@@ -229,6 +231,81 @@ it.effect("projects and fences exact personal Skill lineage deletion", () =>
       hasExactPersonalSkillDeleteInput(presentation, {
         expectedSkillVersion: "weekly-status-v2",
         skillId: "weekly-status",
+      }),
+    ).toBe(false);
+  }),
+);
+
+it.effect("presents and fences the complete Gmail send", () =>
+  Effect.gen(function* () {
+    const input = {
+      body: "Exact message body",
+      recipients: ["first@example.test", "second@example.test"],
+      subject: "Exact subject",
+    } satisfies typeof GmailMessageInput.Type;
+    const presentation = yield* presentOsfoAction({
+      descriptor: {
+        action: "gmailSendEmail",
+        input,
+        kind: "durable-pause",
+        permissions: ["integrations:gmail:send"],
+        requestId: "request-gmail-send",
+        risk: "high",
+        summary: "Send the exact Gmail message shown",
+        toolCallId: "tool-call-gmail-send",
+      },
+      executionId: ActionPresentationId.make("execution-gmail-send"),
+      source: "action",
+    });
+
+    expect(presentation).toMatchObject({
+      actionDefinitionVersion: "osfo-gmail-send-v1",
+      operation: "integration.effect",
+      title: "Send Gmail message",
+    });
+    expect(hasExactIntegrationActionInput(presentation, "GMAIL_SEND_EMAIL", input)).toBe(true);
+    expect(
+      hasExactIntegrationActionInput(presentation, "GMAIL_SEND_EMAIL", {
+        ...input,
+        body: "Changed after approval",
+      }),
+    ).toBe(false);
+  }),
+);
+
+it.effect("presents and fences the complete Calendar update", () =>
+  Effect.gen(function* () {
+    const input = {
+      calendarId: "calendar-1",
+      changes: { location: "Room 2", title: "Updated title" },
+      eventId: "event-1",
+      sendNotifications: false as const,
+    };
+    const presentation = yield* presentOsfoAction({
+      descriptor: {
+        action: "calendarUpdateEvent",
+        input,
+        kind: "durable-pause",
+        permissions: ["integrations:calendar:write"],
+        requestId: "request-calendar-update",
+        risk: "high",
+        summary: "Update the exact Google Calendar event fields shown",
+        toolCallId: "tool-call-calendar-update",
+      },
+      executionId: ActionPresentationId.make("execution-calendar-update"),
+      source: "action",
+    });
+
+    expect(presentation).toMatchObject({
+      actionDefinitionVersion: "osfo-calendar-update-v1",
+      operation: "integration.effect",
+      title: "Update calendar event",
+    });
+    expect(hasExactIntegrationActionInput(presentation, "CALENDAR_UPDATE_EVENT", input)).toBe(true);
+    expect(
+      hasExactIntegrationActionInput(presentation, "CALENDAR_UPDATE_EVENT", {
+        ...input,
+        changes: { location: "Room 3", title: "Updated title" },
       }),
     ).toBe(false);
   }),

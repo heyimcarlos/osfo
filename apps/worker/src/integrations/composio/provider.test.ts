@@ -4,7 +4,12 @@ import { Effect } from "effect";
 
 import { UserId } from "../../domain";
 import { directIntegrationProviderConfig, type ProviderInput } from "../../services/integrations";
-import { composioSessionConfig, decodeExecutionResponse, makeFromClient } from "./provider";
+import {
+  composioSessionConfig,
+  decodeExecutionResponse,
+  makeFromClient,
+  silenceComposioLogs,
+} from "./provider";
 
 describe("Composio Provider", () => {
   it("translates direct manifests into a fully confined current session config", () => {
@@ -30,6 +35,7 @@ describe("Composio Provider", () => {
   it.effect("uses only the narrow session methods and removes private account identity", () =>
     Effect.gen(function* () {
       const executed: Array<{
+        connectedAccountId: string;
         input: ProviderInput;
         providerSessionId: string;
         providerTool: string;
@@ -37,24 +43,22 @@ describe("Composio Provider", () => {
       const session = {
         authorize: async () => ({ redirectUrl: "https://connect.composio.dev/link" }),
         sessionId: "provider-session-1",
-        toolkits: async () => ({
-          items: [
-            {
-              connection: {
-                connectedAccount: { id: "private-account", status: "ACTIVE" },
-                isActive: true,
-              },
-              slug: "gmail",
-            },
-          ],
-        }),
       };
       const provider = makeFromClient({
         createSession: async () => session,
-        executeOnce: async (providerSessionId, providerTool, input) => {
-          executed.push({ input, providerSessionId, providerTool });
+        executeOnce: async (providerSessionId, providerTool, input, connectedAccountId) => {
+          executed.push({ connectedAccountId, input, providerSessionId, providerTool });
           return { data: {}, error: null, logId: "composio-log-1" };
         },
+        listConnectedAccounts: async () => ({
+          items: [
+            {
+              id: "private-account",
+              status: "ACTIVE",
+              toolkit: { slug: "gmail" },
+            },
+          ],
+        }),
         useSession: async () => session,
       });
       const created = yield* provider.createSession(
@@ -76,13 +80,16 @@ describe("Composio Provider", () => {
         subject: "Subject",
         user_id: "me",
       } as const;
-      expect(yield* created.session.execute("GMAIL_SEND_EMAIL", providerInput)).toEqual({
+      expect(
+        yield* created.session.execute("GMAIL_SEND_EMAIL", providerInput, "private-account"),
+      ).toEqual({
         data: {},
         error: null,
         logId: "composio-log-1",
       });
       expect(executed).toEqual([
         {
+          connectedAccountId: "private-account",
           input: providerInput,
           providerSessionId: "provider-session-1",
           providerTool: "GMAIL_SEND_EMAIL",
@@ -107,5 +114,23 @@ describe("Composio Provider", () => {
       error: null,
       logId: "composio-log-1",
     });
+  });
+
+  it("forces every SDK log level silent before a secret enters the SDK", () => {
+    const calls: Array<string> = [];
+    const logger = {
+      debug: (..._args: ReadonlyArray<unknown>) => calls.push("debug"),
+      error: (..._args: ReadonlyArray<unknown>) => calls.push("error"),
+      info: (..._args: ReadonlyArray<unknown>) => calls.push("info"),
+      warn: (..._args: ReadonlyArray<unknown>) => calls.push("warn"),
+    };
+
+    silenceComposioLogs(logger);
+    logger.debug("secret");
+    logger.error("secret");
+    logger.info("secret");
+    logger.warn("secret");
+
+    expect(calls).toEqual([]);
   });
 });

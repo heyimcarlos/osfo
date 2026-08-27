@@ -48,6 +48,7 @@ import {
   UserId,
 } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
+import type { AuthorizationOperation } from "../../domain/authorization-operation";
 import {
   CapabilityId,
   closedCapabilityIds,
@@ -62,6 +63,7 @@ import {
 } from "../../domain/personal-skill";
 import { DocumentArtifact } from "../../domain/document-artifact";
 import { DocumentGenerationComposition } from "../../composition/document-generation";
+import { IntegrationComposition } from "../../composition/integrations";
 import { Db } from "../../db";
 import { BillingDb } from "../../db/billing";
 import { decodeOsfoStage, loadConfig } from "../../config";
@@ -177,6 +179,7 @@ import {
   restoreCoreMemoryAuthorization,
   type ApprovalRequired,
   AuthorizationContext,
+  emptyLiveResourceFacts,
   type Denied,
 } from "../../services/authorization";
 import { DocumentGeneration } from "../../services/document-generation";
@@ -260,6 +263,7 @@ import {
   approvalPresentationFor,
   hasExactActionInput,
   hasExactForgetKnowledgeInput,
+  hasExactIntegrationActionInput,
   hasExactPersonalSkillDeleteInput,
   hasExactSessionDeleteInput,
   makeActionPresentationPersistence,
@@ -328,6 +332,18 @@ import {
   type DeletionAuthorization,
   DeletionActionUnavailable,
 } from "./deletion-actions";
+import {
+  integrationActionNames,
+  IntegrationTools,
+  IntegrationToolUnavailable,
+  type IntegrationOperationIdentity,
+  type IntegrationToolInput,
+} from "./integration-tools";
+import {
+  resolveManifest,
+  type ResolvedIntegrationManifestOperation,
+} from "../../domain/integration-manifest";
+import type { Integrations } from "../../services/integrations";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries, and Effect results use _tag. */
 /* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect -- Agent hooks and Durable Object callbacks supply the wall-clock boundary for retained metadata. */
@@ -339,6 +355,7 @@ const memoryProviderRetryDelaySeconds = 30;
 const accountDeletionProviderPollMilliseconds = 250;
 const accountDeletionProviderQuiescenceTimeoutMilliseconds = 10_000;
 const gatewayCostMaximumLookups = 3;
+const requestTimeoutForIntegrationMillis = 30_000;
 
 class MemoryProviderWorkUnavailable extends Data.TaggedError("MemoryProviderWorkUnavailable")<{
   readonly cause: unknown;
@@ -359,6 +376,7 @@ const capabilityActionNames = [
   "osfoDeleteSession",
   "osfoForgetKnowledge",
   "osfoDeletePersonalSkill",
+  ...integrationActionNames,
 ] as const satisfies ReadonlyArray<Capabilities.RegisteredToolName>;
 const initialPersonalSkillAvailability = {
   capabilityIds: [CapabilityId.make("conversation")],
@@ -529,6 +547,11 @@ export type SessionHistoryRead = SessionHistoryFound | SessionHistoryNotFound;
 
 /** User-scoped Think Durable Object with stable Osfo Agent and Session identity. */
 export class OsfoAgent extends Think<Env> {
+  /** Construct the optional provider boundary at this Agent-owned storage partition. */
+  protected makeIntegrations(): Option.Option<Integrations.Interface> {
+    return IntegrationComposition.make(loadConfig(this.env), this.ctx.storage);
+  }
+
   /** Keep shell execution unavailable until a concrete Osfo tool contract enables it. */
   override workspaceBash = false;
 
@@ -704,6 +727,7 @@ export class OsfoAgent extends Think<Env> {
       readonly actionPresentation: ActionPresentation;
       readonly operation:
         | "file.delete"
+        | "integration.effect"
         | "memory.clear"
         | "memory.forgetKnowledge"
         | "session.delete"
@@ -744,6 +768,19 @@ export class OsfoAgent extends Think<Env> {
   readonly #capabilities = Option.match(this.#runtime, {
     onNone: () => Capabilities.make(),
     onSome: (runtime) => runtime.runSync(Capabilities.Service),
+  });
+  readonly #integrations = this.makeIntegrations();
+  readonly #integrationToolRegistry = Option.map(this.#integrations, () =>
+    IntegrationTools.make({
+      executeEffect: (identity, input, actionId) =>
+        this.#executeIntegrationEffect(identity, input, actionId),
+      executeRead: (identity, input, actionId) =>
+        this.#executeIntegrationRead(identity, input, actionId),
+    }),
+  );
+  readonly #integrationReadTools = Option.match(this.#integrationToolRegistry, {
+    onNone: () => ({}),
+    onSome: ({ tools }) => tools,
   });
   #activeCapabilityTurn: CapabilityTurn.Interface | undefined;
   readonly #promptAssembly = PromptAssembly.makeRetainedPromptAssembly();
@@ -1133,9 +1170,14 @@ export class OsfoAgent extends Think<Env> {
       deleteSession: (input, actionId) => this.#deleteSession(input, actionId),
       forgetKnowledge: (input, actionId) => this.#forgetKnowledge(input, actionId),
     });
+    const integrationActions = Option.match(this.#integrationToolRegistry, {
+      onNone: () => ({}),
+      onSome: ({ actions }) => actions,
+    });
     return {
       ...documentActions,
       ...this.#fileTools.actions,
+      ...integrationActions,
       ...osfoActions,
     };
   }
@@ -1160,16 +1202,21 @@ export class OsfoAgent extends Think<Env> {
     this.#activeCapabilityMetadata = metadata;
     const firstInitialization = !metadata.capabilityTurnState.initialized;
     const capabilityTurnState = ManagedCapabilityState.initialize(this.messages, metadata);
+    const availableIntegrationToolkits = await this.#availableIntegrationToolkits(
+      metadata.authorityIdentity.userId,
+    );
     const trustedToolAssembly = CapabilityContext.trustedToolAssembly({
       actionNames: capabilityActionNames,
       allTools: context.tools,
+      integrationTools: this.#integrationReadTools,
       nativeTools: { ...this.#nativeTools, ...coreMemoryTools(this.session) },
       reservedNames: Capabilities.registeredToolNames,
     });
     const tools = trustedToolAssembly.tools;
     const capabilityAvailability = {
-      availableIntegrationToolkits: [],
+      availableIntegrationToolkits,
       availableRequirements: [
+        ...(Option.isSome(this.#integrations) ? (["composio"] as const) : []),
         "document-renderer",
         "file-storage",
         "native-memory",
@@ -3284,7 +3331,8 @@ export class OsfoAgent extends Think<Env> {
                     found.presentation.operation === "file.delete" ||
                     found.presentation.operation === "memory.forgetKnowledge" ||
                     found.presentation.operation === "session.delete" ||
-                    found.presentation.operation === "skill.manage")
+                    found.presentation.operation === "skill.manage" ||
+                    found.presentation.operation === "integration.effect")
                 ) {
                   this.#currentApprovedActions.set(actionId, {
                     actionPresentation: found.presentation,
@@ -3497,6 +3545,191 @@ export class OsfoAgent extends Think<Env> {
           sessionId: parsed,
         } as const;
       }),
+    );
+  }
+
+  async #availableIntegrationToolkits(
+    userId: UserId,
+  ): Promise<Capabilities.AvailabilityFacts["availableIntegrationToolkits"]> {
+    const integrations = Option.getOrUndefined(this.#integrations);
+    if (integrations === undefined) return [];
+    const toolkitMappings = [
+      { catalog: "gmail" as const, provider: "gmail" },
+      { catalog: "google-calendar" as const, provider: "googlecalendar" },
+      { catalog: "google-drive" as const, provider: "googledrive" },
+    ];
+    return Effect.runPromise(
+      Effect.forEach(
+        toolkitMappings,
+        ({ catalog, provider }) =>
+          integrations.connectionEvidence({ toolkit: provider, userId }).pipe(
+            Effect.match({
+              onFailure: () => [] as const,
+              onSuccess: (evidence) =>
+                evidence._tag === "IntegrationConnectionConnected" ? ([catalog] as const) : [],
+            }),
+          ),
+        { concurrency: 1 },
+      ).pipe(Effect.map((groups) => groups.flat())),
+    );
+  }
+
+  async #executeIntegrationRead(
+    identity: IntegrationOperationIdentity,
+    input: IntegrationToolInput,
+    actionId: ActionId,
+  ) {
+    return Effect.runPromise(this.#executeIntegration(identity, input, actionId, undefined));
+  }
+
+  async #executeIntegrationEffect(
+    identity: IntegrationOperationIdentity,
+    input: IntegrationToolInput,
+    actionId: ActionId,
+  ) {
+    const approvalRequired =
+      identity.operation === "GMAIL_SEND_EMAIL" || identity.operation === "CALENDAR_UPDATE_EVENT";
+    const approved = approvalRequired ? this.#currentApprovedActions.get(actionId) : undefined;
+    if (
+      approvalRequired &&
+      (approved?.operation !== "integration.effect" ||
+        !hasExactIntegrationActionInput(approved.actionPresentation, identity.operation, input))
+    ) {
+      throw new IntegrationToolUnavailable({
+        cause: actionId,
+        message: "The current integration Approval does not match the protected effect",
+        operation: identity.operation,
+      });
+    }
+    return Effect.runPromise(
+      this.#executeIntegration(identity, input, actionId, approved?.presentation),
+    );
+  }
+
+  #executeIntegration(
+    identity: IntegrationOperationIdentity,
+    input: IntegrationToolInput,
+    actionId: ActionId,
+    presentation: ApprovalPresentation | undefined,
+  ) {
+    const integrations = Option.getOrUndefined(this.#integrations);
+    if (integrations === undefined) {
+      return Effect.fail(
+        new IntegrationToolUnavailable({
+          cause: "missing Composio configuration",
+          message: "Integrations are unavailable in this environment",
+          operation: identity.operation,
+        }),
+      );
+    }
+    return Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata).pipe(
+      Effect.mapError(
+        (cause) =>
+          new IntegrationToolUnavailable({
+            cause,
+            message: "The active ToolCall has no trusted integration authority",
+            operation: identity.operation,
+          }),
+      ),
+      Effect.flatMap((metadata) =>
+        integrations.execute({
+          actionId,
+          authorize: this.authorizeIntegration(metadata, identity, actionId, presentation),
+          identity,
+          input,
+          userId: metadata.authorityIdentity.userId,
+        }),
+      ),
+    );
+  }
+
+  protected authorizeIntegration(
+    metadata: ManagedTurnMetadata,
+    identity: IntegrationOperationIdentity,
+    actionId: ActionId,
+    presentation: ApprovalPresentation | undefined,
+  ) {
+    const resolved = resolveManifest(identity);
+    if (Result.isFailure(resolved)) {
+      return Effect.fail(
+        new IntegrationToolUnavailable({
+          cause: resolved.failure,
+          message: "The integration operation is not in the retained manifest",
+          operation: identity.operation,
+        }),
+      );
+    }
+    const operation = integrationAuthorizationOperation(resolved.success, actionId);
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        new IntegrationToolUnavailable({
+          cause: invalidOsfoEnvironment,
+          message: "Current integration authorization has no valid Worker runtime",
+          operation: identity.operation,
+        }),
+      );
+    }
+    return this.#inspectSessionRecallAuthorization(metadata.authorityIdentity).pipe(
+      Effect.flatMap((facts) =>
+        Effect.tryPromise({
+          try: () =>
+            runtime.runPromise(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const database = yield* Db.database;
+                  return yield* BillingDb.make(database).admit(facts.user.userId, facts.now);
+                }),
+              ),
+            ),
+          catch: (cause) =>
+            new IntegrationToolUnavailable({
+              cause,
+              message: "Current integration allowance facts are unavailable",
+              operation: identity.operation,
+            }),
+        }).pipe(
+          Effect.flatMap((allowance) => {
+            const { userId: _userId, ...originatingAuthority } = metadata.authorityIdentity;
+            const result = authorization.admit(
+              AuthorizationContext.make({
+                allowance: { _tag: "Metered", ...allowance },
+                approval:
+                  presentation === undefined
+                    ? null
+                    : approvalFor(facts.user.userId, operation, presentation),
+                ...facts,
+                gmailConnection: null,
+                integrationConnections: [
+                  { _tag: "Connected", toolkit: identity.toolkit, userId: facts.user.userId },
+                ],
+                liveFacts: emptyLiveResourceFacts,
+                originatingAuthority,
+                requestVendorUsdMicros: 0n,
+              }),
+              operation,
+            );
+            return Predicate.isTagged(result, "Admitted")
+              ? Effect.void
+              : Effect.fail(
+                  new IntegrationToolUnavailable({
+                    cause: result,
+                    message: "Current Osfo policy denied the integration operation",
+                    operation: identity.operation,
+                  }),
+                );
+          }),
+        ),
+      ),
+      Effect.mapError((cause) =>
+        Predicate.isTagged(cause, "IntegrationToolUnavailable")
+          ? cause
+          : new IntegrationToolUnavailable({
+              cause,
+              message: "Current integration authority facts are unavailable",
+              operation: identity.operation,
+            }),
+      ),
     );
   }
 
@@ -4312,6 +4545,41 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 }
+
+const integrationAuthorizationOperation = (
+  manifest: ResolvedIntegrationManifestOperation,
+  actionId: ActionId,
+): AuthorizationOperation => {
+  if (manifest.operationKind === "effect") {
+    return {
+      actionId,
+      kind: "integration.effect",
+      manifestVersion: manifest.manifestVersion,
+      providerOperation: manifest.operation,
+      toolkit: manifest.toolkit,
+    };
+  }
+  const exhausted = manifest.exhaustedMode;
+  const windowDays =
+    exhausted?._tag === "CalendarEvents" || exhausted?._tag === "Availability"
+      ? BigInt(exhausted.windowDays)
+      : undefined;
+  const operation: AuthorizationOperation = {
+    actionId,
+    attachments: 0n,
+    deadlineMilliseconds: BigInt(requestTimeoutForIntegrationMillis),
+    kind: "integration.read",
+    manifestVersion: manifest.manifestVersion,
+    pagination: 0n,
+    providerExecutions: BigInt(manifest.hardBounds.providerExecutions),
+    providerOperation: manifest.operation,
+    records: BigInt(manifest.hardBounds.maximumRecords),
+    responseBytes: manifest.hardBounds.maximumResponseBytes,
+    toolkit: manifest.toolkit,
+  };
+  if (windowDays === undefined) return operation;
+  return { ...operation, windowDays };
+};
 
 type SessionLifecycleStoreSourceFailure =
   | AgentStateNotFound

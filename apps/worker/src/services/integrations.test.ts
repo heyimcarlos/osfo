@@ -202,9 +202,12 @@ describe("Integrations", () => {
         logId: "composio-log-1",
       };
       const integrations = make(harness);
+      let authorityChecks = 0;
       const request = {
         actionId: ActionId.make("action-1"),
-        authorize: Effect.void,
+        authorize: Effect.sync(() => {
+          authorityChecks += 1;
+        }),
         identity: {
           manifestVersion: ManifestVersion.make("gmail-v1"),
           operation: "GMAIL_SEND_EMAIL",
@@ -222,6 +225,7 @@ describe("Integrations", () => {
       const replay = yield* integrations.execute(request);
 
       expect(first).toEqual(replay);
+      expect(authorityChecks).toBe(2);
       expect(first).toMatchObject({
         _tag: "IntegrationEffectCompleted",
         evidence: { providerLogId: "composio-log-1" },
@@ -229,6 +233,7 @@ describe("Integrations", () => {
       });
       expect(harness.executed).toEqual([
         {
+          connectedAccountId: "account-1",
           input: {
             body: "Hello",
             is_html: false,
@@ -272,6 +277,43 @@ describe("Integrations", () => {
       );
 
       expect(Exit.isFailure(exit)).toBe(true);
+      expect(harness.executed).toEqual([]);
+      expect(harness.actions.size).toBe(0);
+    }),
+  );
+
+  it.effect("rechecks the connection after current Action authority is restored", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits = [
+        {
+          connectedAccount: { id: "account-before-approval", status: "ACTIVE" },
+          isActive: true,
+          slug: "gmail",
+        },
+      ];
+      const integrations = make(harness);
+      const failure = yield* Effect.flip(
+        integrations.execute({
+          actionId: ActionId.make("action-connection-revoked"),
+          authorize: Effect.sync(() => {
+            harness.toolkits = [{ connectedAccount: null, isActive: false, slug: "gmail" }];
+          }),
+          identity: {
+            manifestVersion: ManifestVersion.make("gmail-v1"),
+            operation: "GMAIL_SEND_EMAIL",
+            toolkit: "gmail",
+          },
+          input: {
+            body: "Hello",
+            recipients: ["person@example.test"],
+            subject: "Subject",
+          },
+          userId,
+        }),
+      );
+
+      expect(failure).toMatchObject({ _tag: "IntegrationConnectionUnavailable" });
       expect(harness.executed).toEqual([]);
       expect(harness.actions.size).toBe(0);
     }),
@@ -474,7 +516,11 @@ const makeHarness = (): IntegrationProvider &
     created: Array<{ config: typeof directIntegrationProviderConfig; userId: UserId }>;
     executeResult: { data: Schema.JsonObject; error: string | null; logId: string };
     executeFailure: IntegrationProviderUnavailable | null;
-    executed: Array<{ input: ProviderInput; providerTool: string }>;
+    executed: Array<{
+      connectedAccountId: string;
+      input: ProviderInput;
+      providerTool: string;
+    }>;
     missingSessions: Set<string>;
     sessions: Map<UserId, string>;
     toolkits: Array<{
@@ -489,7 +535,11 @@ const makeHarness = (): IntegrationProvider &
   const actions = new Map<ActionId, PersistedIntegrationAction>();
   const authorized: Array<{ callbackUrl: string; toolkit: string }> = [];
   const created: Array<{ config: typeof directIntegrationProviderConfig; userId: UserId }> = [];
-  const executed: Array<{ input: ProviderInput; providerTool: string }> = [];
+  const executed: Array<{
+    connectedAccountId: string;
+    input: ProviderInput;
+    providerTool: string;
+  }> = [];
   const toolkits: Array<{
     connectedAccount: { id: string; status: string } | null;
     isActive: boolean;
@@ -514,8 +564,8 @@ const makeHarness = (): IntegrationProvider &
       harness.authorized.push({ callbackUrl: callbackUrl.toString(), toolkit });
       return Effect.succeed(new URL("https://connect.composio.dev/link"));
     },
-    execute: (providerTool, input) => {
-      harness.executed.push({ input, providerTool });
+    execute: (providerTool, input, connectedAccountId) => {
+      harness.executed.push({ connectedAccountId, input, providerTool });
       return harness.executeFailure === null
         ? Effect.succeed(harness.executeResult)
         : Effect.fail(harness.executeFailure);
@@ -555,7 +605,7 @@ const makeHarness = (): IntegrationProvider &
         }
         return retained ?? replacementProviderSessionId;
       }),
-    useSession: (providerSessionId: string) => {
+    useSession: (_userId: UserId, providerSessionId: string) => {
       harness.used.push(providerSessionId);
       return harness.missingSessions.has(providerSessionId)
         ? Effect.fail(

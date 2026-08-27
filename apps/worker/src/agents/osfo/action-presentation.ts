@@ -25,6 +25,8 @@ import {
   type PendingThinkAction,
 } from "./think-action-approvals";
 import { personalSkillDeleteActionName, SkillDeleteInput } from "./personal-skill-tools";
+import type { IntegrationToolInput } from "./integration-tools";
+import { CalendarUpdateEventInput, GmailMessageInput } from "../../domain/integration-manifest";
 
 /** Name registered with Think for retained-document deletion. */
 export const documentDeleteActionName = "deleteDocument";
@@ -54,6 +56,12 @@ export const presentOsfoAction = Effect.fn("ActionPresentation.present")(functio
   }
   if (pending.descriptor.action === personalSkillDeleteActionName) {
     return yield* presentPersonalSkillDeleteAction(pending);
+  }
+  if (pending.descriptor.action === "calendarUpdateEvent") {
+    return yield* presentCalendarUpdateAction(pending);
+  }
+  if (pending.descriptor.action === "gmailSendEmail") {
+    return yield* presentGmailSendAction(pending);
   }
   return yield* new ActionPresentationUnavailable({
     action: pending.descriptor.action,
@@ -175,6 +183,37 @@ export const hasExactPersonalSkillDeleteInput = (
     { name: "expectedSkillVersion", value: input.expectedSkillVersion },
   ]);
 
+/** Verify the exact protected integration effect shown to the User. */
+export const hasExactIntegrationActionInput = (
+  presentation: ActionPresentation,
+  operation: string,
+  input: IntegrationToolInput,
+): boolean => {
+  if (operation === "GMAIL_SEND_EMAIL") {
+    const decoded = Schema.decodeUnknownOption(GmailMessageInput)(input);
+    return Option.isSome(decoded)
+      ? hasExactFields(
+          presentation,
+          "integration.effect",
+          "osfo-gmail-send-v1",
+          gmailPresentationFields(decoded.value),
+        )
+      : false;
+  }
+  if (operation === "CALENDAR_UPDATE_EVENT") {
+    const decoded = Schema.decodeUnknownOption(CalendarUpdateEventInput)(input);
+    return Option.isSome(decoded)
+      ? hasExactFields(
+          presentation,
+          "integration.effect",
+          "osfo-calendar-update-v1",
+          calendarUpdatePresentationFields(decoded.value),
+        )
+      : false;
+  }
+  return false;
+};
+
 const presentCoreMemoryClearAction = Effect.fn("ActionPresentation.presentCoreMemoryClear")(
   function* (pending: PendingThinkAction) {
     const input = yield* Schema.decodeUnknownEffect(ClearCoreMemoryInput)(
@@ -198,6 +237,56 @@ const presentCoreMemoryClearAction = Effect.fn("ActionPresentation.presentCoreMe
       operation: "memory.clear",
       presentationId: ActionPresentationId.make(pending.executionId),
       title: `Clear ${label}`,
+    });
+  },
+);
+
+const presentGmailSendAction = Effect.fn("ActionPresentation.presentGmailSend")(function* (
+  pending: PendingThinkAction,
+) {
+  const input = yield* Schema.decodeUnknownEffect(GmailMessageInput)(pending.descriptor.input).pipe(
+    Effect.mapError(
+      () =>
+        new ActionPresentationUnavailable({
+          action: pending.descriptor.action,
+          message: "The Gmail send input cannot be projected safely",
+        }),
+    ),
+  );
+  return ActionPresentation.make({
+    actionDefinitionVersion: "osfo-gmail-send-v1",
+    actionId: ActionId.make(pending.descriptor.toolCallId),
+    consequences: ["Send this exact message to the listed external recipients."],
+    description: "Send the exact Gmail message shown here.",
+    fields: gmailPresentationFields(input),
+    operation: "integration.effect",
+    presentationId: ActionPresentationId.make(pending.executionId),
+    title: "Send Gmail message",
+  });
+});
+
+const presentCalendarUpdateAction = Effect.fn("ActionPresentation.presentCalendarUpdate")(
+  function* (pending: PendingThinkAction) {
+    const input = yield* Schema.decodeUnknownEffect(CalendarUpdateEventInput)(
+      pending.descriptor.input,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "The Calendar update input cannot be projected safely",
+          }),
+      ),
+    );
+    return ActionPresentation.make({
+      actionDefinitionVersion: "osfo-calendar-update-v1",
+      actionId: ActionId.make(pending.descriptor.toolCallId),
+      consequences: ["Overwrite the selected fields on this exact external calendar event."],
+      description: "Update the exact Google Calendar event shown here.",
+      fields: calendarUpdatePresentationFields(input),
+      operation: "integration.effect",
+      presentationId: ActionPresentationId.make(pending.executionId),
+      title: "Update calendar event",
     });
   },
 );
@@ -370,6 +459,28 @@ const hasExactFields = (
       presentation.fields[index]?.name === field.name &&
       presentation.fields[index]?.value === field.value,
   );
+
+const encodeGmailRecipients = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
+const encodeCalendarChanges = Schema.encodeSync(
+  Schema.fromJsonString(CalendarUpdateEventInput.fields.changes),
+);
+
+const gmailPresentationFields = (input: typeof GmailMessageInput.Type) => [
+  { label: "Recipients", name: "recipients", value: encodeGmailRecipients(input.recipients) },
+  { label: "Subject", name: "subject", value: input.subject },
+  { label: "Message", name: "body", value: input.body },
+];
+
+const calendarUpdatePresentationFields = (input: typeof CalendarUpdateEventInput.Type) => [
+  { label: "Calendar", name: "calendarId", value: input.calendarId },
+  { label: "Event", name: "eventId", value: input.eventId },
+  {
+    label: "Send notifications",
+    name: "sendNotifications",
+    value: String(input.sendNotifications),
+  },
+  { label: "Changes", name: "changes", value: encodeCalendarChanges(input.changes) },
+];
 
 const presentationFieldValueLimit = 2_000;
 
