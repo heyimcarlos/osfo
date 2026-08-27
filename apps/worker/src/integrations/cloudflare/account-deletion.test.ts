@@ -102,6 +102,25 @@ it.effect("retains artifact cost evidence until Allowance Usage proves reconcili
   });
 });
 
+it.effect("fails account deletion closed when artifact cost metadata is corrupt", () => {
+  const deleted: Array<string> = [];
+  const key = `${artifactCostPrefix}corrupt/sidecar`;
+  const files = bucketStub({ deleted });
+  const artifacts = bucketStub({
+    deleted,
+    objectsByPrefix: { [artifactCostPrefix]: [{ key }] },
+  });
+
+  return Effect.gen(function* () {
+    const result = yield* make(files, artifacts, () => deletionEvidence())
+      .remove(UserId.make("user-1"), Effect.void)
+      .pipe(Effect.result);
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(deleted).not.toContain(key);
+  });
+});
+
 it.effect("uses an allowance period to remove legacy attempt evidence without a user id", () => {
   const deleted: Array<string> = [];
   const userId = UserId.make("user-1");

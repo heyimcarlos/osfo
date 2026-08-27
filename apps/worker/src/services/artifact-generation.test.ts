@@ -16,6 +16,21 @@ import { DocumentArtifact } from "../domain/document-artifact";
 import { ArtifactGeneration } from "./artifact-generation";
 
 describe("Artifact Generation", () => {
+  it("rejects diagram text that cannot be rendered on one bounded line", () => {
+    const base = diagram("Bounded diagram");
+    const decode = Schema.decodeResult(ArtifactGeneration.DiagramSource);
+
+    expect(Result.isFailure(decode({ ...base, title: "Clipped\ntitle" }))).toBe(true);
+    expect(
+      Result.isFailure(decode({ ...base, nodes: [{ id: "one", label: "Clipped\nnode" }] })),
+    ).toBe(true);
+    expect(
+      Result.isFailure(
+        decode({ ...base, edges: [{ from: "one", label: "Clipped\nedge", to: "one" }] }),
+      ),
+    ).toBe(true);
+  });
+
   it("rejects a slide that ambiguously names both supported visual kinds", () => {
     const source = presentation("Ambiguous visuals");
     const decoded = Schema.decodeUnknownResult(ArtifactGeneration.PresentationSource)({

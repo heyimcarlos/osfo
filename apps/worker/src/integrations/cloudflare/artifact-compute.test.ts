@@ -1,6 +1,6 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/new-promise, eslint/no-underscore-dangle, vitest/no-standalone-expect -- Promise fakes model external adapters and assertions execute inside Effect tests. */
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
 
 import { AllowancePeriodId, UserId } from "../../domain";
 import { ContentId } from "../../domain/client-content";
@@ -13,7 +13,7 @@ import {
   type ImageProvider,
   type SandboxClient,
 } from "./artifact-compute";
-import { artifactCostKeyFor } from "./document-storage-keys";
+import { artifactCostKeyFor, artifactCostPrefix } from "./document-storage-keys";
 
 const request = {
   allowancePeriodId: AllowancePeriodId.make("period-1"),
@@ -61,6 +61,20 @@ it.effect("reconciles immutable cost sidecars independently for every provider a
       retry.providerOperationId,
     ]);
   });
+});
+
+it.effect("fails reconciliation closed when an artifact cost sidecar loses metadata", () => {
+  const objects = new Map<string, Partial<R2Object>>([
+    [
+      `${artifactCostPrefix}corrupt/sidecar`,
+      { etag: "corrupt", key: `${artifactCostPrefix}corrupt/sidecar`, size: 0, version: "test" },
+    ],
+  ]);
+
+  return readReconciliationBatch(costBucketStub(objects)).pipe(
+    Effect.result,
+    Effect.tap((result) => Effect.sync(() => expect(Result.isFailure(result)).toBe(true))),
+  );
 });
 
 it.effect("moves immutable attempt evidence from no-use claim to incurred completion", () => {

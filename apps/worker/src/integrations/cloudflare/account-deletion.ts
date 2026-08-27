@@ -115,10 +115,12 @@ const deleteArtifacts: (
     ...(yield* discoverObjects(bucket, documentAttemptPrefix, authorizeDelete)),
   ];
   const costObjects = yield* discoverObjects(bucket, artifactCostPrefix, authorizeDelete);
-  const targetCostKeys = costObjects.flatMap((object) => {
-    const decoded = Schema.decodeUnknownResult(ArtifactCostMetadata)(object.customMetadata?.osfo);
-    return decoded._tag === "Success" && decoded.success.userId === userId ? [object.key] : [];
-  });
+  const decodedCostObjects = yield* Effect.forEach(costObjects, (object) =>
+    decodeArtifactCostMetadata(object).pipe(Effect.map((metadata) => ({ metadata, object }))),
+  );
+  const targetCostKeys = decodedCostObjects.flatMap(({ metadata, object }) =>
+    metadata.userId === userId ? [object.key] : [],
+  );
   const legacyContentTargets = yield* Effect.forEach(contentObjects, (object) => {
     const decoded = Schema.decodeUnknownResult(ArtifactMetadata)(object.customMetadata?.osfo);
     if (decoded._tag === "Success" && decoded.success.userId === userId) {

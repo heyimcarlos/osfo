@@ -59,6 +59,34 @@ def font(size: int) -> ImageFont.FreeTypeFont:
     raise ValueError("required artifact font is missing")
 
 
+def bounded_single_line_text(
+    value: object, maximum: int, label: str, *, allow_empty: bool = False
+) -> str:
+    if (
+        not isinstance(value, str)
+        or (not allow_empty and not value)
+        or len(value) > maximum
+        or "\n" in value
+        or "\r" in value
+    ):
+        raise ValueError(f"{label} must be bounded single-line text")
+    return value
+
+
+def require_text_bounds(
+    bounds: tuple[int, int, int, int],
+    container: tuple[float, float, float, float],
+    label: str,
+) -> None:
+    if (
+        bounds[0] < container[0]
+        or bounds[1] < container[1]
+        or bounds[2] > container[2]
+        or bounds[3] > container[3]
+    ):
+        raise ValueError(f"{label} does not fit its render bounds")
+
+
 def render_diagram(source: dict[str, object], output: Path) -> dict[str, object]:
     width = source.get("width")
     height = source.get("height")
@@ -81,10 +109,7 @@ def render_diagram(source: dict[str, object], output: Path) -> dict[str, object]
     draw = ImageDraw.Draw(image)
     title_font = font(max(18, min(36, width // 24)))
     label_font = font(max(14, min(26, width // 34)))
-    title = source.get("title")
-    if not isinstance(title, str) or not title:
-        raise ValueError("diagram title is required")
-    draw.text((width // 2, 24), title, font=title_font, fill="#172554", anchor="ma")
+    title = bounded_single_line_text(source.get("title"), 120, "diagram title")
     columns = len(nodes) if direction == "leftToRight" else min(3, len(nodes))
     rows = math.ceil(len(nodes) / columns)
     margin_x = max(28, width // 20)
@@ -92,8 +117,14 @@ def render_diagram(source: dict[str, object], output: Path) -> dict[str, object]
     available_height = height - top - 30
     cell_width = (width - 2 * margin_x) / columns
     cell_height = available_height / rows
+    if available_height <= 0 or cell_width <= 0 or cell_height <= 0:
+        raise ValueError("diagram dimensions leave no bounded node area")
     box_width = min(cell_width * 0.72, 300)
     box_height = min(cell_height * 0.55, 120)
+    title_center = (width // 2, top // 2)
+    title_bounds = draw.textbbox(title_center, title, font=title_font, anchor="mm")
+    require_text_bounds(title_bounds, (12, 8, width - 12, top - 12), "diagram title")
+    draw.text(title_center, title, font=title_font, fill="#172554", anchor="mm")
     positions: dict[str, tuple[float, float, float, float]] = {}
     for index, node in enumerate(nodes):
         if not isinstance(node, dict) or not isinstance(node.get("id"), str):
@@ -119,14 +150,16 @@ def render_diagram(source: dict[str, object], output: Path) -> dict[str, object]
         finish_point = ((finish[0] + finish[2]) / 2, (finish[1] + finish[3]) / 2)
         draw.line((start_point, finish_point), fill="#64748b", width=4)
         edge_label = edge.get("label")
-        if not isinstance(edge_label, str):
-            raise ValueError("diagram edge label is invalid")
+        edge_label = bounded_single_line_text(
+            edge_label, 60, "diagram edge label", allow_empty=True
+        )
         if edge_label:
             label_center = (
                 (start_point[0] + finish_point[0]) / 2,
                 (start_point[1] + finish_point[1]) / 2,
             )
             bounds = draw.textbbox(label_center, edge_label, font=label_font, anchor="mm")
+            require_text_bounds(bounds, (6, 3, width - 6, height - 3), "diagram edge label")
             draw.rounded_rectangle(
                 (bounds[0] - 6, bounds[1] - 3, bounds[2] + 6, bounds[3] + 3),
                 radius=4,
@@ -136,14 +169,16 @@ def render_diagram(source: dict[str, object], output: Path) -> dict[str, object]
     for node in nodes:
         box = positions[node["id"]]
         draw.rounded_rectangle(box, radius=18, fill="#dbeafe", outline="#1d4ed8", width=3)
-        label = node.get("label")
-        if not isinstance(label, str) or not label:
-            raise ValueError("diagram node label is required")
-        measured = draw.textbbox((0, 0), label, font=label_font)
-        if measured[2] - measured[0] > box_width - 24:
-            raise ValueError("diagram label does not fit its node")
+        label = bounded_single_line_text(node.get("label"), 80, "diagram node label")
+        label_center = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+        measured = draw.textbbox(label_center, label, font=label_font, anchor="mm")
+        require_text_bounds(
+            measured,
+            (box[0] + 12, box[1] + 10, box[2] - 12, box[3] - 10),
+            "diagram node label",
+        )
         draw.text(
-            ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2),
+            label_center,
             label,
             font=label_font,
             fill="#172554",

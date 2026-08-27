@@ -24,6 +24,8 @@ const boundedText = (maximum: number) =>
 const optionalText = (maximum: number) => Schema.String.check(Schema.isMaxLength(maximum));
 const singleLineText = (maximum: number) =>
   Schema.String.check(Schema.isMaxLength(maximum), Schema.isPattern(/^[^\r\n]*$/u));
+const boundedSingleLineText = (maximum: number) =>
+  boundedText(maximum).check(Schema.isPattern(/^[^\r\n]+$/u));
 
 export const PresentationSlide = Schema.Struct({
   body: Schema.Array(singleLineText(160)).check(Schema.isMaxLength(12)),
@@ -75,14 +77,14 @@ const DiagramNodeId = Schema.String.check(
 export const DiagramSource = Schema.Struct({
   direction: Schema.Literals(["leftToRight", "topToBottom"]),
   edges: Schema.Array(
-    Schema.Struct({ from: DiagramNodeId, label: optionalText(60), to: DiagramNodeId }),
+    Schema.Struct({ from: DiagramNodeId, label: singleLineText(60), to: DiagramNodeId }),
   ).check(Schema.isMaxLength(40)),
   height: ImageSource.fields.height,
-  nodes: Schema.Array(Schema.Struct({ id: DiagramNodeId, label: boundedText(80) })).check(
+  nodes: Schema.Array(Schema.Struct({ id: DiagramNodeId, label: boundedSingleLineText(80) })).check(
     Schema.isMinLength(1),
     Schema.isMaxLength(20),
   ),
-  title: boundedText(120),
+  title: boundedSingleLineText(120),
   width: ImageSource.fields.width,
 }).check(
   Schema.makeFilter((source) => {

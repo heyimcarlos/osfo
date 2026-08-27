@@ -161,6 +161,57 @@ class ArtifactRendererTest(unittest.TestCase):
             with Image.open(image_output) as rendered_image:
                 self.assertEqual(rendered_image.size, (96, 64))
 
+    def test_diagram_rejects_text_that_does_not_fit_the_canvas_or_node(self) -> None:
+        base = {
+            "direction": "leftToRight",
+            "edges": [{"from": "one", "label": "then", "to": "two"}],
+            "height": 220,
+            "nodes": [
+                {"id": "one", "label": "One"},
+                {"id": "two", "label": "Two"},
+            ],
+            "title": "Flow",
+            "width": 320,
+        }
+        invalid_sources = [
+            {**base, "title": "A title that is far too wide for this bounded canvas"},
+            {**base, "title": "Two\nlines"},
+            {
+                **base,
+                "nodes": [{"id": "one", "label": "Two\nlines"}, base["nodes"][1]],
+            },
+            {
+                **base,
+                "edges": [
+                    {"from": "one", "label": "W" * 60, "to": "two"}
+                ],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "diagram.png"
+            for index, diagram in enumerate(invalid_sources):
+                source = root / f"diagram-{index}.json"
+                source.write_text(json.dumps({"source": diagram}), encoding="utf-8")
+                completed = subprocess.run(
+                    [
+                        "python3",
+                        str(SCRIPT),
+                        "--kind",
+                        "diagram",
+                        "--input",
+                        str(source),
+                        "--output",
+                        str(output),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                self.assertNotEqual(completed.returncode, 0, f"invalid diagram {index} rendered")
+
     def run_renderer(self, kind: str, source: Path, output: Path) -> dict[str, object]:
         completed = subprocess.run(
             ["python3", str(SCRIPT), "--kind", kind, "--input", str(source), "--output", str(output)],

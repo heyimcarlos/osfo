@@ -584,7 +584,8 @@ export const readReconciliationBatch = (bucket: R2Bucket) =>
       );
       const costs = listed.objects.flatMap((object) => {
         const encoded = object.customMetadata?.osfo;
-        if (encoded === undefined) return [];
+        if (encoded === undefined)
+          throw new Error(`artifact cost metadata missing for ${object.key}`);
         const evidence = decodeCost(encoded);
         if (evidence.cost._tag !== "Incurred") {
           throw new Error("artifact cost evidence is not incurred");
