@@ -7,14 +7,15 @@
 import { Effect, Result, Schema } from "effect";
 
 import { UserId } from "../../domain";
-import { CapabilityId } from "../../domain/capability-catalog";
+import { CapabilityId, currentCapabilityCatalog } from "../../domain/capability-catalog";
 import {
   type PersonalSkillId,
   PersonalSkillVersion,
   PersonalSkillVersionId,
   SkillAvailabilityRequirement,
   SkillLearningCandidate,
-  type SkillLearningCandidateId,
+  SkillLearningCandidateId,
+  type SkillLearningModelAttemptId,
   type SkillEvidenceReference,
   decodePersonalSkillVersion,
   personalSkillVersionValues,
@@ -97,10 +98,38 @@ export interface SettleSkillLearningInput {
   readonly userId: UserId;
 }
 
+export interface RecordSkillLearningCostInput {
+  readonly attemptId: SkillLearningModelAttemptId;
+  readonly basis: "conservative" | "observed";
+  readonly candidateId: SkillLearningCandidateId;
+  readonly modelInputTokens: number;
+  readonly modelOutputTokens: number;
+  readonly outcome: "failure" | "success";
+  readonly recordedAtEpochMillis: number;
+  readonly userId: UserId;
+  readonly vendorUsdMicros: number;
+}
+
 export interface ActivateSkillLearningInput extends SettleSkillLearningInput {
   readonly availability: PersonalSkillAvailability;
   readonly expectedSkillVersion: PersonalSkillVersionId | null;
+  readonly notification: string | null;
+  readonly undoTargetSkillVersion: PersonalSkillVersionId | null;
   readonly version: unknown;
+}
+
+export interface PendingSkillLearningNotification {
+  readonly candidate: SkillLearningCandidate;
+  readonly notification: string;
+  readonly undoTargetSkillVersion: PersonalSkillVersionId | null;
+  readonly version: PersonalSkillVersion;
+}
+
+export interface MarkSkillLearningNotificationDeliveredInput {
+  readonly candidateId: SkillLearningCandidateId;
+  readonly deliveredAtEpochMillis: number;
+  readonly skillVersion: PersonalSkillVersionId;
+  readonly userId: UserId;
 }
 
 export type SkillLearningClaim =
@@ -191,8 +220,12 @@ export class PersonalSkillStoreUnavailable extends Schema.TaggedError<PersonalSk
       "enqueueLearning",
       "inspect",
       "learningLoad",
+      "markLearningNotificationDelivered",
+      "pendingLearningNotifications",
       "pin",
       "recordUse",
+      "recordLearningCost",
+      "recoverableLearning",
       "restore",
       "revise",
       "rollback",
@@ -246,10 +279,11 @@ export interface Interface {
     AuthorityError
   >;
   readonly deleteUserData: (userId: UserId) => Effect.Effect<void, PersonalSkillStoreUnavailable>;
-  readonly enqueueLearning: (
-    candidate: SkillLearningCandidate,
-  ) => Effect.Effect<
-    { readonly _tag: "AlreadyQueued" | "Queued"; readonly candidateId: SkillLearningCandidateId },
+  readonly enqueueLearning: (candidate: SkillLearningCandidate) => Effect.Effect<
+    {
+      readonly _tag: "AlreadyQueued" | "Backpressured" | "Queued";
+      readonly candidateId: SkillLearningCandidateId;
+    },
     LearningAuthorityError
   >;
   readonly inspect: (
@@ -259,10 +293,23 @@ export interface Interface {
     userId: UserId,
     nowEpochMillis: number,
   ) => Effect.Effect<PersonalSkillLearningLoad, PersonalSkillStoreUnavailable>;
+  readonly markLearningNotificationDelivered: (
+    input: MarkSkillLearningNotificationDeliveredInput,
+  ) => Effect.Effect<void, LearningAuthorityError>;
+  readonly pendingLearningNotifications: Effect.Effect<
+    ReadonlyArray<PendingSkillLearningNotification>,
+    PersonalSkillStoreUnavailable
+  >;
   readonly pin: (
     input: PinPersonalSkillInput,
   ) => Effect.Effect<PersonalSkillVersion, AuthorityError>;
   readonly recordUse: (input: RecordPersonalSkillUseInput) => Effect.Effect<void, AuthorityError>;
+  readonly recordLearningCost: (
+    input: RecordSkillLearningCostInput,
+  ) => Effect.Effect<void, LearningAuthorityError>;
+  readonly recoverableLearning: (
+    nowEpochMillis: number,
+  ) => Effect.Effect<ReadonlyArray<SkillLearningCandidate>, PersonalSkillStoreUnavailable>;
   readonly releaseLearning: (
     input: Omit<SettleSkillLearningInput, "status">,
   ) => Effect.Effect<void, LearningAuthorityError>;
@@ -312,6 +359,21 @@ const LearningRow = Schema.Struct({
   claimToken: Schema.NullOr(Schema.String),
   ownerUserId: UserId,
   status: Schema.Literals(["accepted", "claimed", "pending", "rejected"]),
+});
+const LearningCostRow = Schema.Struct({
+  basis: Schema.Literals(["conservative", "observed"]),
+  candidateId: SkillLearningCandidateId,
+  modelInputTokens: Schema.Int,
+  modelOutputTokens: Schema.Int,
+  outcome: Schema.Literals(["failure", "success"]),
+  recordedAtEpochMillis: Schema.Int,
+  vendorUsdMicros: Schema.Int,
+});
+const PendingLearningNotificationRow = Schema.Struct({
+  candidateJson: Schema.String,
+  notification: Schema.String,
+  undoTargetSkillVersion: Schema.NullOr(PersonalSkillVersionId),
+  versionJson: Schema.String,
 });
 
 /** Construct the sole Agent SQLite authority for personal Skill versions. */
@@ -412,6 +474,19 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
           "A learning claim cannot activate another User's Skill",
         );
       }
+      const retainedClaim = yield* attempt("activateLearning", () =>
+        selectLearning(storage, input.candidateId, input.userId),
+      );
+      if (retainedClaim === undefined) {
+        return yield* learningConflict(input.candidateId, "The learning candidate does not exist");
+      }
+      const candidate = yield* decodeLearningJson(retainedClaim.candidateJson);
+      if (!learnedVersionMatchesCandidate(version, candidate, input.expectedSkillVersion)) {
+        return yield* learningConflict(
+          input.candidateId,
+          "The learned revision is not bound to the claimed trusted evidence",
+        );
+      }
       const outcome = yield* attempt("activateLearning", () =>
         storage.transactionSync(() => {
           const learning = selectLearning(storage, input.candidateId, input.userId);
@@ -477,10 +552,15 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
             .exec(
               `UPDATE osfo_personal_skill_learning_candidates
                SET status = 'accepted', claim_token = NULL,
-                   claim_expires_at_epoch_millis = NULL, updated_at_epoch_millis = ?
+                   claim_expires_at_epoch_millis = NULL, accepted_skill_version = ?,
+                   notification_text = ?, notification_delivered_at_epoch_millis = NULL,
+                   undo_target_skill_version = ?, updated_at_epoch_millis = ?
                WHERE candidate_id = ? AND owner_user_id = ? AND status = 'claimed'
                  AND claim_token = ?
                RETURNING candidate_id AS candidateId`,
+              version.skillVersion,
+              input.notification,
+              input.undoTargetSkillVersion,
               input.nowEpochMillis,
               input.candidateId,
               input.userId,
@@ -527,6 +607,23 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
       }
       const outcome = yield* attempt("claimLearning", () =>
         storage.transactionSync(() => {
+          const activeForUser = storage.sql
+            .exec(
+              `SELECT COUNT(*) AS count
+               FROM osfo_personal_skill_learning_candidates
+               WHERE owner_user_id = ? AND status = 'claimed'
+                 AND claim_expires_at_epoch_millis > ?`,
+              input.userId,
+              input.nowEpochMillis,
+            )
+            .toArray();
+          const activeCount =
+            Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ count: Schema.Int })))(
+              activeForUser,
+            )[0]?.count ?? 0;
+          if (activeCount >= currentCapabilityCatalog.skillLearning.concurrentJobsPerUser) {
+            return { _tag: "Busy" as const };
+          }
           const current = selectLearning(storage, input.candidateId, input.userId);
           if (current === undefined) return { _tag: "Missing" as const };
           if (current.status === "accepted" || current.status === "rejected") {
@@ -641,6 +738,16 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
             return { _tag: "Stale" as const, current };
           }
           storage.sql.exec(
+            `DELETE FROM osfo_personal_skill_learning_model_attempts
+             WHERE candidate_id IN (
+               SELECT candidate_id FROM osfo_personal_skill_learning_candidates
+               WHERE owner_user_id = ? AND prior_skill_version IN
+                 (SELECT skill_version FROM osfo_personal_skill_versions WHERE skill_id = ?)
+             )`,
+            input.userId,
+            input.skillId,
+          );
+          storage.sql.exec(
             `DELETE FROM osfo_personal_skill_learning_candidates
              WHERE owner_user_id = ? AND prior_skill_version IN
                (SELECT skill_version FROM osfo_personal_skill_versions WHERE skill_id = ?)`,
@@ -677,6 +784,14 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
       attempt("deleteUserData", () =>
         storage.transactionSync(() => {
           storage.sql.exec(
+            `DELETE FROM osfo_personal_skill_learning_model_attempts
+             WHERE candidate_id IN (
+               SELECT candidate_id FROM osfo_personal_skill_learning_candidates
+               WHERE owner_user_id = ?
+             )`,
+            userId,
+          );
+          storage.sql.exec(
             "DELETE FROM osfo_personal_skill_learning_candidates WHERE owner_user_id = ?",
             userId,
           );
@@ -704,6 +819,53 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
         storage.transactionSync(() => {
           const existing = selectLearning(storage, candidate.candidateId, candidate.ownerUserId);
           if (existing !== undefined) return existing.candidateJson;
+          const pending = storage.sql
+            .exec(
+              `SELECT candidate_id AS candidateId
+               FROM osfo_personal_skill_learning_candidates
+               WHERE owner_user_id = ? AND status IN ('pending', 'claimed')
+               ORDER BY created_at_epoch_millis DESC`,
+              candidate.ownerUserId,
+            )
+            .toArray();
+          if (pending.length >= currentCapabilityCatalog.skillLearning.candidatesPerUser) {
+            const evictionCount =
+              pending.length - currentCapabilityCatalog.skillLearning.candidatesPerUser + 1;
+            const evictable = storage.sql
+              .exec(
+                `SELECT candidate_id AS candidateId
+                 FROM osfo_personal_skill_learning_candidates
+                 WHERE owner_user_id = ? AND status = 'pending'
+                 ORDER BY created_at_epoch_millis ASC
+                 LIMIT ?`,
+                candidate.ownerUserId,
+                evictionCount,
+              )
+              .toArray();
+            if (evictable.length < evictionCount) return "Backpressured" as const;
+            storage.sql.exec(
+              `DELETE FROM osfo_personal_skill_learning_model_attempts
+               WHERE candidate_id IN (
+                 SELECT candidate_id FROM osfo_personal_skill_learning_candidates
+                 WHERE owner_user_id = ? AND status = 'pending'
+                 ORDER BY created_at_epoch_millis ASC
+                 LIMIT ?
+               )`,
+              candidate.ownerUserId,
+              evictionCount,
+            );
+            storage.sql.exec(
+              `DELETE FROM osfo_personal_skill_learning_candidates
+               WHERE candidate_id IN (
+                 SELECT candidate_id FROM osfo_personal_skill_learning_candidates
+                 WHERE owner_user_id = ? AND status = 'pending'
+                 ORDER BY created_at_epoch_millis ASC
+                 LIMIT ?
+              )`,
+              candidate.ownerUserId,
+              evictionCount,
+            );
+          }
           storage.sql.exec(
             `INSERT INTO osfo_personal_skill_learning_candidates
                (attempts, candidate_id, candidate_json, claim_expires_at_epoch_millis,
@@ -721,6 +883,9 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
         }),
       );
       if (outcome !== undefined && outcome !== candidateJson) {
+        if (outcome === "Backpressured") {
+          return { _tag: "Backpressured", candidateId: candidate.candidateId } as const;
+        }
         return yield* learningConflict(
           candidate.candidateId,
           "The candidate identity already names different trusted evidence",
@@ -741,7 +906,7 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
           .exec(
             `SELECT
                (SELECT COUNT(*) FROM osfo_personal_skills WHERE owner_user_id = ?) AS retainedSkills,
-               (SELECT COALESCE(SUM(LENGTH(v.version_json)), 0)
+               (SELECT COALESCE(SUM(LENGTH(CAST(v.version_json AS BLOB))), 0)
                   FROM osfo_personal_skill_versions v
                   JOIN osfo_personal_skills s ON s.skill_id = v.skill_id
                  WHERE s.owner_user_id = ?) AS retainedSkillHistoryBytes,
@@ -750,14 +915,12 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
                (SELECT COUNT(*) FROM osfo_personal_skill_learning_candidates
                  WHERE owner_user_id = ? AND status = 'claimed'
                    AND claim_expires_at_epoch_millis > ?) AS concurrentJobsForUser,
-               (SELECT COUNT(*) FROM osfo_personal_skill_learning_candidates
-                 WHERE status = 'claimed' AND claim_expires_at_epoch_millis > ?) AS concurrentJobsGlobally`,
+               0 AS concurrentJobsGlobally`,
             userId,
             userId,
             userId,
             nowEpochMillis - 86_400_000,
             userId,
-            nowEpochMillis,
             nowEpochMillis,
           )
           .toArray(),
@@ -784,6 +947,86 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
         ...row,
         retainedSkillHistoryBytes: BigInt(row.retainedSkillHistoryBytes),
       };
+    }),
+    markLearningNotificationDelivered: Effect.fn(
+      "PersonalSkillAuthority.markLearningNotificationDelivered",
+    )(function* (input) {
+      const updated = yield* attempt("markLearningNotificationDelivered", () =>
+        storage.sql
+          .exec(
+            `UPDATE osfo_personal_skill_learning_candidates
+             SET notification_delivered_at_epoch_millis =
+               COALESCE(notification_delivered_at_epoch_millis, ?)
+             WHERE candidate_id = ? AND owner_user_id = ? AND status = 'accepted'
+               AND accepted_skill_version = ? AND notification_text IS NOT NULL
+             RETURNING candidate_id AS candidateId`,
+            input.deliveredAtEpochMillis,
+            input.candidateId,
+            input.userId,
+            input.skillVersion,
+          )
+          .toArray(),
+      );
+      if (updated.length !== 1) {
+        return yield* learningConflict(
+          input.candidateId,
+          "The durable Skill Learning notification no longer matches the accepted revision",
+        );
+      }
+      return undefined;
+    }),
+    pendingLearningNotifications: Effect.gen(function* () {
+      const rows = yield* attempt("pendingLearningNotifications", () =>
+        storage.sql
+          .exec(
+            `SELECT c.candidate_json AS candidateJson,
+                    c.notification_text AS notification,
+                    c.undo_target_skill_version AS undoTargetSkillVersion,
+                    v.version_json AS versionJson
+             FROM osfo_personal_skill_learning_candidates c
+             JOIN osfo_personal_skill_versions v
+               ON v.skill_version = c.accepted_skill_version
+             WHERE c.status = 'accepted' AND c.notification_text IS NOT NULL
+               AND c.notification_delivered_at_epoch_millis IS NULL
+             ORDER BY c.updated_at_epoch_millis, c.candidate_id`,
+          )
+          .toArray(),
+      );
+      const decoded = yield* Schema.decodeUnknownEffect(
+        Schema.Array(PendingLearningNotificationRow),
+      )(rows).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PersonalSkillStoreUnavailable({
+              cause,
+              message: "Agent SQLite returned invalid pending Skill Learning notifications",
+              operation: "pendingLearningNotifications",
+            }),
+        ),
+      );
+      return yield* Effect.forEach(
+        decoded,
+        ({ candidateJson, notification, undoTargetSkillVersion, versionJson }) =>
+          Effect.all({
+            candidate: decodeLearningJson(candidateJson),
+            version: decodeVersionJson(versionJson, "pendingLearningNotifications"),
+          }).pipe(
+            Effect.map(({ candidate, version }) => ({
+              candidate,
+              notification,
+              undoTargetSkillVersion,
+              version,
+            })),
+            Effect.mapError(
+              (cause) =>
+                new PersonalSkillStoreUnavailable({
+                  cause,
+                  message: "Agent SQLite retained an invalid Skill Learning notification",
+                  operation: "pendingLearningNotifications",
+                }),
+            ),
+          ),
+      );
     }),
     pin: Effect.fn("PersonalSkillAuthority.pin")(function* (input: PinPersonalSkillInput) {
       const root = yield* readRoot(storage, input, "pin");
@@ -843,6 +1086,100 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
       );
       return undefined;
     }),
+    recordLearningCost: Effect.fn("PersonalSkillAuthority.recordLearningCost")(function* (input) {
+      const outcome = yield* attempt("recordLearningCost", () =>
+        storage.transactionSync(() => {
+          if (selectLearning(storage, input.candidateId, input.userId) === undefined) {
+            return "MissingCandidate" as const;
+          }
+          const existingRows = storage.sql
+            .exec(
+              `SELECT basis, candidate_id AS candidateId,
+                      model_input_tokens AS modelInputTokens,
+                      model_output_tokens AS modelOutputTokens, outcome,
+                      recorded_at_epoch_millis AS recordedAtEpochMillis,
+                      vendor_usd_micros AS vendorUsdMicros
+               FROM osfo_personal_skill_learning_model_attempts
+               WHERE attempt_id = ? LIMIT 1`,
+              input.attemptId,
+            )
+            .toArray();
+          const existing = Schema.decodeUnknownSync(Schema.Array(LearningCostRow))(existingRows)[0];
+          if (existing !== undefined) {
+            return costEvidenceMatches(existing, input)
+              ? ("AlreadyRecorded" as const)
+              : ("Conflict" as const);
+          }
+          const inserted = storage.sql
+            .exec(
+              `INSERT INTO osfo_personal_skill_learning_model_attempts
+               (attempt_id, basis, candidate_id, model_input_tokens, model_output_tokens,
+                outcome, recorded_at_epoch_millis, vendor_usd_micros)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             RETURNING attempt_id AS attemptId`,
+              input.attemptId,
+              input.basis,
+              input.candidateId,
+              input.modelInputTokens,
+              input.modelOutputTokens,
+              input.outcome,
+              input.recordedAtEpochMillis,
+              input.vendorUsdMicros,
+            )
+            .toArray();
+          return inserted.length === 1 ? ("Recorded" as const) : ("Conflict" as const);
+        }),
+      );
+      if (outcome !== "Recorded" && outcome !== "AlreadyRecorded") {
+        return yield* learningConflict(
+          input.candidateId,
+          outcome === "MissingCandidate"
+            ? "The learning cost has no owned candidate"
+            : "The learning model attempt already has different company-cost evidence",
+        );
+      }
+      return undefined;
+    }),
+    recoverableLearning: Effect.fn("PersonalSkillAuthority.recoverableLearning")(function* (
+      nowEpochMillis: number,
+    ) {
+      const rows = yield* attempt("recoverableLearning", () =>
+        storage.sql
+          .exec(
+            `SELECT candidate_json AS candidateJson
+             FROM osfo_personal_skill_learning_candidates
+             WHERE status = 'pending'
+                OR (status = 'claimed' AND claim_expires_at_epoch_millis <= ?)
+             ORDER BY created_at_epoch_millis`,
+            nowEpochMillis,
+          )
+          .toArray(),
+      );
+      const decoded = yield* Schema.decodeUnknownEffect(
+        Schema.Array(Schema.Struct({ candidateJson: Schema.String })),
+      )(rows).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PersonalSkillStoreUnavailable({
+              cause,
+              message: "Agent SQLite returned invalid recoverable Skill Learning rows",
+              operation: "recoverableLearning",
+            }),
+        ),
+      );
+      return yield* Effect.forEach(decoded, ({ candidateJson }) =>
+        decodeLearningJson(candidateJson).pipe(
+          Effect.mapError(
+            (cause) =>
+              new PersonalSkillStoreUnavailable({
+                cause,
+                message: "Agent SQLite returned an invalid recoverable learning candidate",
+                operation: "recoverableLearning",
+              }),
+          ),
+        ),
+      );
+    }),
     releaseLearning: Effect.fn("PersonalSkillAuthority.releaseLearning")((input) =>
       updateLearningStatus(storage, input, "pending", "releaseLearning"),
     ),
@@ -897,6 +1234,52 @@ const decodeVersion = (input: unknown) => {
         }),
       );
 };
+
+const learnedVersionMatchesCandidate = (
+  version: PersonalSkillVersion,
+  candidate: SkillLearningCandidate,
+  expectedSkillVersion: PersonalSkillVersionId | null,
+): boolean => {
+  if (
+    version.ownerUserId !== candidate.ownerUserId ||
+    version.origin !== "learned" ||
+    version.createdBy !== "learning" ||
+    version.parentSkillVersion !== expectedSkillVersion ||
+    candidate.priorSkillVersion !== expectedSkillVersion ||
+    (candidate.priorSkillId !== null && version.skillId !== candidate.priorSkillId)
+  ) {
+    return false;
+  }
+  const evidence =
+    expectedSkillVersion === null ? version.creationEvidence : version.updateEvidence;
+  return (
+    evidence.length === candidate.evidence.length &&
+    evidence.every((reference, index) => referenceEquals(reference, candidate.evidence[index])) &&
+    evidence.some(
+      (reference) =>
+        reference._tag === "ConfirmedRootOutcome" &&
+        reference.referenceId === candidate.rootOutcomeReferenceId,
+    )
+  );
+};
+
+const referenceEquals = (
+  left: SkillEvidenceReference,
+  right: SkillEvidenceReference | undefined,
+): boolean =>
+  right !== undefined && left._tag === right._tag && left.referenceId === right.referenceId;
+
+const costEvidenceMatches = (
+  retained: typeof LearningCostRow.Type,
+  candidate: RecordSkillLearningCostInput,
+): boolean =>
+  retained.basis === candidate.basis &&
+  retained.candidateId === candidate.candidateId &&
+  retained.modelInputTokens === candidate.modelInputTokens &&
+  retained.modelOutputTokens === candidate.modelOutputTokens &&
+  retained.outcome === candidate.outcome &&
+  retained.recordedAtEpochMillis === candidate.recordedAtEpochMillis &&
+  retained.vendorUsdMicros === candidate.vendorUsdMicros;
 
 const validateActivation = (
   version: PersonalSkillVersion,
@@ -1118,7 +1501,7 @@ const readVersions = (
 
 const decodeVersionRows = (
   rows: unknown,
-  operation: "active" | "inspect" | "pin",
+  operation: "active" | "inspect" | "pendingLearningNotifications" | "pin",
 ): Effect.Effect<ReadonlyArray<PersonalSkillVersion>, PersonalSkillInvalid> =>
   Schema.decodeUnknownEffect(Schema.Array(VersionRow))(rows).pipe(
     Effect.flatMap((decodedRows) =>
@@ -1137,7 +1520,7 @@ const decodeVersionRows = (
 
 const decodeVersionJson = (
   versionJson: string,
-  operation: "active" | "inspect" | "pin",
+  operation: "active" | "inspect" | "pendingLearningNotifications" | "pin",
 ): Effect.Effect<PersonalSkillVersion, PersonalSkillInvalid> =>
   Schema.decodeUnknownEffect(Schema.fromJsonString(PersonalSkillVersion))(versionJson).pipe(
     Effect.mapError(
@@ -1200,8 +1583,12 @@ const attempt = <A>(
     | "enqueueLearning"
     | "inspect"
     | "learningLoad"
+    | "markLearningNotificationDelivered"
+    | "pendingLearningNotifications"
     | "pin"
+    | "recordLearningCost"
     | "recordUse"
+    | "recoverableLearning"
     | "releaseLearning"
     | "restore"
     | "revise"

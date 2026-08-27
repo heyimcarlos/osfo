@@ -33,6 +33,7 @@ import type {
   PersonalSkillId,
   PersonalSkillVersionId,
   SkillLearningCandidateId,
+  SkillLearningModelAttemptId,
 } from "../../../domain/personal-skill";
 import type { DbTimestamp } from "../../../db";
 
@@ -89,6 +90,10 @@ const personalSkillVersionId = customType<{
 }>({ dataType: () => "text" });
 const skillLearningCandidateId = customType<{
   data: SkillLearningCandidateId;
+  driverData: string;
+}>({ dataType: () => "text" });
+const skillLearningModelAttemptId = customType<{
+  data: SkillLearningModelAttemptId;
   driverData: string;
 }>({ dataType: () => "text" });
 
@@ -421,15 +426,19 @@ export const personalSkillVersions = sqliteTable(
 export const personalSkillLearningCandidates = sqliteTable(
   "osfo_personal_skill_learning_candidates",
   {
+    accepted_skill_version: personalSkillVersionId(),
     attempts: integer().notNull().default(0),
     candidate_id: skillLearningCandidateId().primaryKey(),
     candidate_json: text().notNull(),
     claim_expires_at_epoch_millis: integer(),
     claim_token: text(),
     created_at_epoch_millis: integer().notNull(),
+    notification_delivered_at_epoch_millis: integer(),
+    notification_text: text(),
     owner_user_id: userId().notNull(),
     prior_skill_version: personalSkillVersionId(),
     status: text({ enum: ["pending", "claimed", "accepted", "rejected"] }).notNull(),
+    undo_target_skill_version: personalSkillVersionId(),
     updated_at_epoch_millis: integer().notNull(),
   },
   (table) => [
@@ -447,5 +456,27 @@ export const personalSkillLearningCandidates = sqliteTable(
       table.status,
       table.created_at_epoch_millis,
     ),
+  ],
+);
+
+/** Idempotent company-funded cost evidence for every Skill Learning model attempt. */
+export const personalSkillLearningModelAttempts = sqliteTable(
+  "osfo_personal_skill_learning_model_attempts",
+  {
+    attempt_id: skillLearningModelAttemptId().primaryKey(),
+    basis: text({ enum: ["conservative", "observed"] }).notNull(),
+    candidate_id: skillLearningCandidateId().notNull(),
+    model_input_tokens: integer().notNull(),
+    model_output_tokens: integer().notNull(),
+    outcome: text({ enum: ["failure", "success"] }).notNull(),
+    recorded_at_epoch_millis: integer().notNull(),
+    vendor_usd_micros: integer().notNull(),
+  },
+  (table) => [
+    check(
+      "osfo_personal_skill_learning_model_attempt_nonnegative",
+      sql`${table.model_input_tokens} >= 0 AND ${table.model_output_tokens} >= 0 AND ${table.vendor_usd_micros} >= 0`,
+    ),
+    index("osfo_personal_skill_learning_model_attempts_by_candidate").on(table.candidate_id),
   ],
 );

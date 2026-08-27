@@ -14,9 +14,11 @@ it("copies forward only trusted pending analysis into a newly admitted turn", ()
   const previousState = state("submission-previous");
   const previous = metadata("submission-previous", previousState);
   const rawActive = metadata("submission-active", {
+    eligiblePersonalSkills: [],
     initialized: false,
     loadedSkillReceipts: [],
     pendingFileAnalyses: [],
+    skillLearningDraft: null,
   });
   const active = Schema.decodeUnknownSync(ManagedTurnMetadata)(rawActive);
   const messages = [
@@ -32,17 +34,21 @@ it("copies forward only trusted pending analysis into a newly admitted turn", ()
       "user-queued",
       "A later queued turn",
       metadata("submission-queued", {
+        eligiblePersonalSkills: [],
         initialized: false,
         loadedSkillReceipts: [],
         pendingFileAnalyses: [],
+        skillLearningDraft: null,
       }),
     ),
   ] satisfies Array<UIMessage>;
 
   expect(ManagedCapabilityState.initialize(messages, active)).toEqual({
+    eligiblePersonalSkills: [],
     initialized: true,
     loadedSkillReceipts: [],
     pendingFileAnalyses: previousState.pendingFileAnalyses,
+    skillLearningDraft: null,
   });
 });
 
@@ -87,9 +93,11 @@ it("keeps immutable Skill receipts within their durable bound and clears complet
 
 it("bounds pending analysis receipts while retaining the newest analysis identifiers", () => {
   const initial: ManagedCapabilityTurnState = {
+    eligiblePersonalSkills: [],
     initialized: true,
     loadedSkillReceipts: [],
     pendingFileAnalyses: [],
+    skillLearningDraft: null,
   };
   const recorded = Array.from({ length: 21 }, (_, index) => index).reduce(
     (current, index) =>
@@ -125,6 +133,7 @@ it("stamps the exact active submission instead of a later queued User message", 
 });
 
 const state = (submissionId: string): ManagedCapabilityTurnState => ({
+  eligiblePersonalSkills: [],
   initialized: true,
   loadedSkillReceipts: [
     {
@@ -143,6 +152,7 @@ const state = (submissionId: string): ManagedCapabilityTurnState => ({
       analysisId: FileAnalysisId.make("analysis-1"),
     },
   ],
+  skillLearningDraft: null,
 });
 
 type TestTurnMetadata = ReturnType<typeof rawMetadata> & {

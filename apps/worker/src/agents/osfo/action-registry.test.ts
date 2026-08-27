@@ -9,6 +9,7 @@ import {
 import {
   hasExactActionInput,
   hasExactForgetKnowledgeInput,
+  hasExactPersonalSkillDeleteInput,
   hasExactSessionDeleteInput,
   presentOsfoAction,
 } from "./action-presentation";
@@ -191,5 +192,44 @@ it.effect("projects the exact Session deletion", () =>
     ]);
     expect(hasExactSessionDeleteInput(presentation, { sessionId: "session-1" })).toBe(true);
     expect(hasExactSessionDeleteInput(presentation, { sessionId: "session-2" })).toBe(false);
+  }),
+);
+
+it.effect("projects and fences exact personal Skill lineage deletion", () =>
+  Effect.gen(function* () {
+    const pending: PendingThinkAction = {
+      descriptor: {
+        action: "osfoDeletePersonalSkill",
+        input: { expectedSkillVersion: "weekly-status-v3", skillId: "weekly-status" },
+        kind: "durable-pause",
+        permissions: ["skills:delete"],
+        requestId: "request-skill-delete",
+        risk: "high",
+        summary: "Delete one personal Skill",
+        toolCallId: "tool-call-skill-delete",
+      },
+      executionId: ActionPresentationId.make("execution-skill-delete"),
+      source: "action",
+    };
+
+    const presentation = yield* presentOsfoAction(pending);
+
+    expect(presentation).toMatchObject({
+      actionDefinitionVersion: "osfo-personal-skill-delete-v1",
+      operation: "skill.manage",
+      title: "Delete personal Skill",
+    });
+    expect(
+      hasExactPersonalSkillDeleteInput(presentation, {
+        expectedSkillVersion: "weekly-status-v3",
+        skillId: "weekly-status",
+      }),
+    ).toBe(true);
+    expect(
+      hasExactPersonalSkillDeleteInput(presentation, {
+        expectedSkillVersion: "weekly-status-v2",
+        skillId: "weekly-status",
+      }),
+    ).toBe(false);
   }),
 );

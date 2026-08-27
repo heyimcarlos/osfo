@@ -2,9 +2,9 @@
 /* oxlint-disable typescript/no-misused-spread -- Test fixtures copy decoded immutable schema values intentionally. */
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 
-import { UserId } from "../../domain";
+import { AssistantMessageId, UserId } from "../../domain";
 import {
   PersonalSkillId,
   PersonalSkillVersion,
@@ -14,9 +14,12 @@ import {
 } from "../../domain/personal-skill";
 import { makeSkillLearningCoordinator, type SkillLearningLoad } from "./skill-learning-coordinator";
 import { PersonalSkillConflict } from "./personal-skill-authority";
+import { makeSkillLearningAdmission } from "./skill-learning-admission";
 
 const userId = UserId.make("user-1");
 const candidate: SkillLearningCandidate = {
+  availableCapabilityIds: ["document-generation"],
+  availableRequirements: ["document-renderer"],
   candidateBytes: 200n,
   candidateId: SkillLearningCandidateId.make("candidate-1"),
   corrections: ["Put the summary first."],
@@ -29,6 +32,7 @@ const candidate: SkillLearningCandidate = {
   ownerUserId: userId,
   priorSkillId: null,
   priorSkillVersion: null,
+  rootAssistantMessageId: AssistantMessageId.make("assistant-1"),
   rootOutcomeReferenceId: "turn-1",
   taskDescription: "Create the weekly status report as a PDF.",
 };
@@ -45,6 +49,18 @@ const availability = {
 } as const;
 
 describe("SkillLearningCoordinator", () => {
+  it.effect("shares one atomic Worker admission fence across coordinator runs", () =>
+    Effect.gen(function* () {
+      const admission = makeSkillLearningAdmission(1);
+      const first = yield* admission.acquire;
+      expect(Option.isSome(first)).toBe(true);
+      expect(Option.isNone(yield* admission.acquire)).toBe(true);
+      if (Option.isNone(first)) return;
+      yield* first.value;
+      expect(Option.isSome(yield* admission.acquire)).toBe(true);
+    }),
+  );
+
   it.effect("does not learn from a straightforward root outcome without reusable evidence", () =>
     Effect.gen(function* () {
       let proposed = false;
@@ -61,7 +77,6 @@ describe("SkillLearningCoordinator", () => {
         candidate: null,
         load,
         nowEpochMillis: 1_788_000_000_100,
-        rootStatus: "completed",
       });
       expect(outcome).toEqual({ _tag: "NoLearning", reason: "noReusableLearning" });
       expect(proposed).toBe(false);
@@ -82,14 +97,18 @@ describe("SkillLearningCoordinator", () => {
             expect(input).toEqual(candidate);
             expect(priorVersion).toBeNull();
             return Effect.succeed({
-              _tag: "Change",
-              evidence: "explicitConfirmation",
-              materiality: "material",
-              modelInputTokens: 400,
-              modelOutputTokens: 200,
-              skillsChanged: 1,
-              vendorUsdMicros: 25,
-              version: skillVersion(1),
+              proposal: {
+                _tag: "Change",
+                evidence: "explicitConfirmation",
+                materiality: "material",
+                skillsChanged: 1,
+                version: skillVersion(1),
+              },
+              usage: modelUsage({
+                modelInputTokens: 400,
+                modelOutputTokens: 200,
+                vendorUsdMicros: 25,
+              }),
             });
           },
           recordCompanyCost: ({ vendorUsdMicros }) =>
@@ -101,7 +120,6 @@ describe("SkillLearningCoordinator", () => {
           candidate,
           load,
           nowEpochMillis: 1_788_000_000_100,
-          rootStatus: "completed",
         });
 
         expect(outcome).toMatchObject({
@@ -131,15 +149,22 @@ describe("SkillLearningCoordinator", () => {
           candidate,
           load,
           nowEpochMillis: 1_788_000_000_100,
-          rootStatus: "completed",
         }),
       ).toMatchObject({ _tag: "Deferred", reason: "modelFailure" });
       expect(released).toEqual(["candidate-1"]);
 
+      let malformedCostRecorded = false;
       const malformed = makeSkillLearningCoordinator({
         authority: fakeAuthority({ released }),
-        propose: () => Effect.succeed({ _tag: "Change", version: { instructions: "```sh" } }),
-        recordCompanyCost: () => Effect.void,
+        propose: () =>
+          Effect.succeed({
+            proposal: { _tag: "Change", version: { instructions: "```sh" } },
+            usage: modelUsage(),
+          }),
+        recordCompanyCost: () =>
+          Effect.sync(() => {
+            malformedCostRecorded = true;
+          }),
       });
       expect(
         yield* malformed.run({
@@ -147,9 +172,9 @@ describe("SkillLearningCoordinator", () => {
           candidate: { ...candidate, candidateId: SkillLearningCandidateId.make("candidate-2") },
           load,
           nowEpochMillis: 1_788_000_000_100,
-          rootStatus: "completed",
         }),
       ).toMatchObject({ _tag: "Rejected", reason: "malformedProposal" });
+      expect(malformedCostRecorded).toBe(true);
 
       let proposed = false;
       const backpressured = makeSkillLearningCoordinator({
@@ -166,7 +191,6 @@ describe("SkillLearningCoordinator", () => {
           candidate,
           load: { ...load, concurrentJobsForUser: 1 },
           nowEpochMillis: 1_788_000_000_100,
-          rootStatus: "completed",
         }),
       ).toEqual({ _tag: "Deferred", reason: "backpressure" });
       expect(proposed).toBe(false);
@@ -236,14 +260,14 @@ describe("SkillLearningCoordinator", () => {
             proposals === 1 ? first.skillVersion : winner.skillVersion,
           );
           return Effect.succeed({
-            _tag: "Change",
-            evidence: "explicitConfirmation",
-            materiality: "minor",
-            modelInputTokens: 10,
-            modelOutputTokens: 10,
-            skillsChanged: 1,
-            vendorUsdMicros: 1,
-            version: next,
+            proposal: {
+              _tag: "Change",
+              evidence: "explicitConfirmation",
+              materiality: "minor",
+              skillsChanged: 1,
+              version: next,
+            },
+            usage: modelUsage(),
           });
         },
         recordCompanyCost: () => Effect.void,
@@ -253,7 +277,6 @@ describe("SkillLearningCoordinator", () => {
         candidate: revisingCandidate,
         load,
         nowEpochMillis: 1_788_000_000_100,
-        rootStatus: "completed",
       });
       expect(outcome).toMatchObject({
         _tag: "Learned",
@@ -266,6 +289,19 @@ describe("SkillLearningCoordinator", () => {
       expect(proposals).toBe(2);
     }),
   );
+});
+
+const modelUsage = (
+  overrides: Partial<{
+    readonly modelInputTokens: number;
+    readonly modelOutputTokens: number;
+    readonly vendorUsdMicros: number;
+  }> = {},
+) => ({
+  costBasis: "observed" as const,
+  modelInputTokens: overrides.modelInputTokens ?? 10,
+  modelOutputTokens: overrides.modelOutputTokens ?? 10,
+  vendorUsdMicros: overrides.vendorUsdMicros ?? 1,
 });
 
 const skillVersion = (revision: number) => ({

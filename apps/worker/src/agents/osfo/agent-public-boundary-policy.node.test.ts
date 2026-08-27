@@ -45,6 +45,7 @@ const publicBoundaryPolicy = {
   pendingApprovals: ["read", "none"],
   probeRuntime: ["read", "none"],
   quiesceAccountDeletion: ["cancellationReconciliationDeletion", "none"],
+  recordGoodRootOutcome: ["ordinaryMutation", "fencedSessionExecution"],
   readActionPresentation: ["read", "none"],
   readCommittedTurns: ["cancellationReconciliationDeletion", "none"],
   readFile: ["read", "none"],

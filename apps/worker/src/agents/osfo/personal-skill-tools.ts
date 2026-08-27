@@ -39,11 +39,23 @@ const EditableSkill = {
   taskKinds: Schema.Array(SkillTaskKind).check(Schema.isMinLength(1), Schema.isMaxLength(12)),
 };
 
+/** Exact personal Skill lineage target retained through durable deletion Approval. */
+export const SkillDeleteInput = Schema.Struct({
+  expectedSkillVersion: PersonalSkillVersionId,
+  skillId: PersonalSkillId,
+});
+
+/** Exact personal Skill lineage target retained through durable deletion Approval. */
+export type SkillDeleteInput = typeof SkillDeleteInput.Type;
+
+/** Name registered with Think for approval-gated personal Skill deletion. */
+export const personalSkillDeleteActionName = "osfoDeletePersonalSkill";
+
 /** Explicit User lifecycle changes. Delete is presented for approval, never executed as a Tool. */
 export const SkillManageInput = Schema.TaggedUnion({
   Archive: { expectedSkillVersion: PersonalSkillVersionId, skillId: PersonalSkillId },
   Create: EditableSkill,
-  Delete: { expectedSkillVersion: PersonalSkillVersionId, skillId: PersonalSkillId },
+  Delete: SkillDeleteInput.fields,
   Restore: { expectedSkillVersion: PersonalSkillVersionId, skillId: PersonalSkillId },
   Revise: {
     ...EditableSkill,
@@ -65,7 +77,7 @@ interface CurrentAuthority {
 /** Bind conversation Tools to the authenticated User and the Agent's current availability. */
 export const makePersonalSkillTools = (dependencies: {
   readonly authority: PersonalSkillAuthority;
-  readonly availability: PersonalSkillAvailability;
+  readonly availability: () => PersonalSkillAvailability;
   readonly current: () => CurrentAuthority | null;
   readonly nowEpochMillis: () => number;
 }) => ({
@@ -90,6 +102,7 @@ export const makePersonalSkillTools = (dependencies: {
     const current = yield* requireCurrent(dependencies.current());
     const evidence = [{ _tag: "UserDecision" as const, referenceId: current.decisionReferenceId }];
     const nowEpochMillis = dependencies.nowEpochMillis();
+    const availability = dependencies.availability();
     if (input._tag === "Delete") {
       return {
         _tag: "ApprovalRequired",
@@ -110,7 +123,7 @@ export const makePersonalSkillTools = (dependencies: {
     }
     if (input._tag === "Restore") {
       return yield* dependencies.authority.restore({
-        availability: dependencies.availability,
+        availability,
         evidence,
         expectedSkillVersion: input.expectedSkillVersion,
         nowEpochMillis,
@@ -120,7 +133,7 @@ export const makePersonalSkillTools = (dependencies: {
     }
     if (input._tag === "Rollback") {
       return yield* dependencies.authority.rollback({
-        availability: dependencies.availability,
+        availability,
         evidence,
         expectedSkillVersion: input.expectedSkillVersion,
         nowEpochMillis,
@@ -133,7 +146,7 @@ export const makePersonalSkillTools = (dependencies: {
       const skillId = PersonalSkillId.make(`skill-${crypto.randomUUID()}`);
       const skillVersion = PersonalSkillVersionId.make(`v1-${crypto.randomUUID()}`);
       return yield* dependencies.authority.create({
-        availability: dependencies.availability,
+        availability,
         version: yield* PersonalSkillVersion.makeEffect({
           ...input,
           createdAtEpochMillis: nowEpochMillis,
@@ -158,7 +171,7 @@ export const makePersonalSkillTools = (dependencies: {
       userId: current.userId,
     });
     return yield* dependencies.authority.revise({
-      availability: dependencies.availability,
+      availability,
       expectedSkillVersion: input.expectedSkillVersion,
       version: yield* PersonalSkillVersion.makeEffect({
         ...personalSkillVersionValues(prior),

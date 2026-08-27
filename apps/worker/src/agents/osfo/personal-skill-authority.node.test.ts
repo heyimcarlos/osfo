@@ -9,11 +9,17 @@ import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from "node:sqli
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Exit, Option, Result } from "effect";
 
-import { CapabilityCatalogVersion, UserId } from "../../domain";
+import {
+  AssistantMessageId,
+  CapabilityCatalogVersion,
+  ThinkSubmissionId,
+  UserId,
+} from "../../domain";
 import {
   PersonalSkillId,
   PersonalSkillVersionId,
   SkillLearningCandidateId,
+  SkillLearningModelAttemptId,
 } from "../../domain/personal-skill";
 import {
   makePersonalSkillAuthority,
@@ -67,6 +73,8 @@ const version = (revision: number, instructions = `Procedure ${revision}`) => ({
 });
 
 const learningCandidate = (candidateId = "candidate-1") => ({
+  availableCapabilityIds: ["document-generation" as const],
+  availableRequirements: ["document-renderer" as const],
   candidateBytes: 200n,
   candidateId: SkillLearningCandidateId.make(candidateId),
   corrections: ["Put the summary first."],
@@ -79,6 +87,7 @@ const learningCandidate = (candidateId = "candidate-1") => ({
   ownerUserId: userId,
   priorSkillId: null,
   priorSkillVersion: null,
+  rootAssistantMessageId: AssistantMessageId.make("assistant-1"),
   rootOutcomeReferenceId: "turn-1",
   taskDescription: "Create the weekly status report as a PDF.",
 });
@@ -160,6 +169,34 @@ describe("PersonalSkillAuthority", () => {
           expect(current.instructions).toBe("Procedure 2");
         }),
       ),
+  );
+
+  it.effect("rejects unknown envelopes and currently unavailable capability requirements", () =>
+    withDatabase((storage) =>
+      Effect.gen(function* () {
+        const authority = makePersonalSkillAuthority(storage);
+        expect(
+          Exit.isFailure(
+            yield* Effect.exit(
+              authority.create({
+                availability,
+                version: { ...version(1), requirements: ["unknown-runtime"] },
+              }),
+            ),
+          ),
+        ).toBe(true);
+        expect(
+          Exit.isFailure(
+            yield* Effect.exit(
+              authority.create({
+                availability,
+                version: { ...version(1), capabilityIds: ["web-search"] },
+              }),
+            ),
+          ),
+        ).toBe(true);
+      }),
+    ),
   );
 
   it.effect("archives, restores, rolls back, deletes, and removes the account lineage", () =>
@@ -256,6 +293,9 @@ describe("PersonalSkillAuthority", () => {
           userId,
         });
         expect(busy._tag).toBe("Busy");
+        expect(
+          (yield* authority.enqueueLearning(learningCandidate("candidate-concurrent")))._tag,
+        ).toBe("Backpressured");
 
         yield* authority.releaseLearning({
           candidateId: candidate.candidateId,
@@ -317,6 +357,25 @@ describe("PersonalSkillAuthority", () => {
           nowEpochMillis: 1_788_000_000_010,
           userId,
         });
+        const forgedEvidence = yield* Effect.exit(
+          authority.activateLearning({
+            availability,
+            candidateId: candidate.candidateId,
+            claimToken: "claim-atomic",
+            expectedSkillVersion: null,
+            notification: null,
+            nowEpochMillis: 1_788_000_000_015,
+            undoTargetSkillVersion: null,
+            userId,
+            version: {
+              ...version(1),
+              creationEvidence: [
+                { _tag: "ExplicitUserCorrection", referenceId: "forged-correction" },
+              ],
+            },
+          }),
+        );
+        expect(Exit.isFailure(forgedEvidence)).toBe(true);
 
         const faultyStorage: PersonalSkillAuthorityStorage = {
           sql: {
@@ -338,7 +397,9 @@ describe("PersonalSkillAuthority", () => {
             candidateId: candidate.candidateId,
             claimToken: "claim-atomic",
             expectedSkillVersion: null,
+            notification: "I learned a weekly status report procedure. You can ask me to undo it.",
             nowEpochMillis: 1_788_000_000_020,
+            undoTargetSkillVersion: null,
             userId,
             version: version(1),
           }),
@@ -351,12 +412,37 @@ describe("PersonalSkillAuthority", () => {
           candidateId: candidate.candidateId,
           claimToken: "claim-atomic",
           expectedSkillVersion: null,
+          notification: "I learned a weekly status report procedure. You can ask me to undo it.",
           nowEpochMillis: 1_788_000_000_030,
+          undoTargetSkillVersion: null,
           userId,
           version: version(1),
         });
         expect(activated._tag).toBe("Created");
         expect((yield* authority.active(userId))[0]?.skillVersion).toBe("weekly-status-v1");
+        const restartedAuthority = makePersonalSkillAuthority(storage);
+        const pendingNotifications = yield* restartedAuthority.pendingLearningNotifications;
+        expect(pendingNotifications).toMatchObject([
+          {
+            candidate: { candidateId: "candidate-atomic" },
+            notification: "I learned a weekly status report procedure. You can ask me to undo it.",
+            undoTargetSkillVersion: null,
+            version: { skillVersion: "weekly-status-v1" },
+          },
+        ]);
+        yield* restartedAuthority.markLearningNotificationDelivered({
+          candidateId: candidate.candidateId,
+          deliveredAtEpochMillis: 1_788_000_000_035,
+          skillVersion: PersonalSkillVersionId.make("weekly-status-v1"),
+          userId,
+        });
+        yield* restartedAuthority.markLearningNotificationDelivered({
+          candidateId: candidate.candidateId,
+          deliveredAtEpochMillis: 1_788_000_000_036,
+          skillVersion: PersonalSkillVersionId.make("weekly-status-v1"),
+          userId,
+        });
+        expect(yield* restartedAuthority.pendingLearningNotifications).toEqual([]);
         expect(
           (yield* authority.claimLearning({
             candidateId: candidate.candidateId,
@@ -375,6 +461,8 @@ describe("PersonalSkillAuthority", () => {
       Effect.gen(function* () {
         const authority = makePersonalSkillAuthority(storage);
         const draft = projectSkillLearningDraft({
+          availableCapabilityIds: ["document-generation"],
+          availableRequirements: ["personal-agent"],
           origin: "channelLink",
           ownerUserId: userId,
           priorSkillId: null,
@@ -386,7 +474,15 @@ describe("PersonalSkillAuthority", () => {
         if (Option.isNone(draft)) return;
         const candidate = finalizeSkillLearningCandidate(
           draft.value,
-          "assistant-journey",
+          {
+            assertionReceiptIds: ["journey-assertion"],
+            assistantMessageId: AssistantMessageId.make("assistant-journey"),
+            evaluatedAtEpochMillis: 1_788_000_000_100,
+            evaluationDeadlineEpochMillis: 1_788_000_001_100,
+            referenceTraceVersion: "skill-learning-v1",
+            submissionId: ThinkSubmissionId.make("submission-journey"),
+            userId,
+          },
           1_788_000_000_100,
         );
         const acceptedCandidate = yield* Result.match(candidate, {
@@ -395,7 +491,16 @@ describe("PersonalSkillAuthority", () => {
         });
         const coordinator = makeSkillLearningCoordinator({
           authority,
-          propose: (input) => Effect.succeed(proposeConfirmedSkillChange(input)),
+          propose: (input) =>
+            Effect.succeed({
+              proposal: proposeConfirmedSkillChange(input),
+              usage: {
+                costBasis: "observed" as const,
+                modelInputTokens: 10,
+                modelOutputTokens: 10,
+                vendorUsdMicros: 1,
+              },
+            }),
           recordCompanyCost: () => Effect.void,
         });
         const outcome = yield* coordinator.run({
@@ -406,7 +511,6 @@ describe("PersonalSkillAuthority", () => {
           candidate: acceptedCandidate,
           load: yield* authority.learningLoad(userId, 1_788_000_000_100),
           nowEpochMillis: 1_788_000_000_100,
-          rootStatus: "completed",
         });
         expect(outcome._tag).toBe("Learned");
 
@@ -461,7 +565,7 @@ describe("PersonalSkillAuthority", () => {
       Effect.gen(function* () {
         const tools = makePersonalSkillTools({
           authority: makePersonalSkillAuthority(storage),
-          availability,
+          availability: () => availability,
           current: () => ({ decisionReferenceId: "submission-manage", userId }),
           nowEpochMillis: () => 1_788_000_000_200,
         });
@@ -518,6 +622,26 @@ describe("PersonalSkillAuthority", () => {
         yield* authority.create({ availability, version: version(1) });
         const candidate = learningCandidate("candidate-account-delete");
         yield* authority.enqueueLearning(candidate);
+        const costEvidence = {
+          attemptId: SkillLearningModelAttemptId.make("account-delete-attempt"),
+          basis: "observed",
+          candidateId: candidate.candidateId,
+          modelInputTokens: 10,
+          modelOutputTokens: 5,
+          outcome: "success",
+          recordedAtEpochMillis: 1_788_000_000_250,
+          userId,
+          vendorUsdMicros: 2,
+        } as const;
+        yield* authority.recordLearningCost(costEvidence);
+        yield* authority.recordLearningCost(costEvidence);
+        expect(
+          Exit.isFailure(
+            yield* Effect.exit(
+              authority.recordLearningCost({ ...costEvidence, vendorUsdMicros: 3 }),
+            ),
+          ),
+        ).toBe(true);
 
         yield* authority.deleteUserData(userId);
 
@@ -542,6 +666,13 @@ describe("PersonalSkillAuthority", () => {
             ),
           ),
         ).toBe(true);
+        expect(
+          storage.sql
+            .exec<{ count: number }>(
+              "SELECT COUNT(*) AS count FROM osfo_personal_skill_learning_model_attempts",
+            )
+            .one().count,
+        ).toBe(0);
       }),
     ),
   );
@@ -570,16 +701,30 @@ const withDatabase = <A, E>(
         PRIMARY KEY (skill_id, revision)
       ) STRICT`);
       database.exec(`CREATE TABLE osfo_personal_skill_learning_candidates (
+        accepted_skill_version TEXT,
         attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
         candidate_id TEXT PRIMARY KEY,
         candidate_json TEXT NOT NULL,
         claim_expires_at_epoch_millis INTEGER,
         claim_token TEXT,
         created_at_epoch_millis INTEGER NOT NULL,
+        notification_delivered_at_epoch_millis INTEGER,
+        notification_text TEXT,
         owner_user_id TEXT NOT NULL,
         prior_skill_version TEXT,
         status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'accepted', 'rejected')),
+        undo_target_skill_version TEXT,
         updated_at_epoch_millis INTEGER NOT NULL
+      ) STRICT`);
+      database.exec(`CREATE TABLE osfo_personal_skill_learning_model_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        basis TEXT NOT NULL CHECK (basis IN ('conservative', 'observed')),
+        candidate_id TEXT NOT NULL,
+        model_input_tokens INTEGER NOT NULL CHECK (model_input_tokens >= 0),
+        model_output_tokens INTEGER NOT NULL CHECK (model_output_tokens >= 0),
+        outcome TEXT NOT NULL CHECK (outcome IN ('failure', 'success')),
+        recorded_at_epoch_millis INTEGER NOT NULL,
+        vendor_usd_micros INTEGER NOT NULL CHECK (vendor_usd_micros >= 0)
       ) STRICT`);
       return { database, storage: nodeStorage(database) };
     }),

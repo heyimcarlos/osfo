@@ -4,7 +4,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Option, Result } from "effect";
 
-import { UserId } from "../../domain";
+import { AssistantMessageId, ThinkSubmissionId, UserId } from "../../domain";
 import { PersonalSkillId, PersonalSkillVersionId } from "../../domain/personal-skill";
 import {
   finalizeSkillLearningCandidate,
@@ -13,6 +13,8 @@ import {
 } from "./post-turn-skill-learning";
 
 const draft = {
+  availableCapabilityIds: ["document-generation" as const],
+  availableRequirements: ["personal-agent" as const],
   origin: "channelLink" as const,
   ownerUserId: UserId.make("user-1"),
   priorSkillId: null,
@@ -20,6 +22,15 @@ const draft = {
   submissionId: "submission-1",
   taskDescription: "Going forward, put the summary first in every weekly report.",
 };
+const goodRootOutcome = {
+  assertionReceiptIds: ["assertion-1"],
+  assistantMessageId: AssistantMessageId.make("assistant-1"),
+  evaluatedAtEpochMillis: 1_788_000_000_000,
+  evaluationDeadlineEpochMillis: 1_788_000_001_000,
+  referenceTraceVersion: "skill-learning-v1",
+  submissionId: ThinkSubmissionId.make("submission-1"),
+  userId: UserId.make("user-1"),
+} as const;
 
 describe("post-turn Skill Learning", () => {
   it("admits only explicit lasting safe direct User guidance", () => {
@@ -43,10 +54,10 @@ describe("post-turn Skill Learning", () => {
   });
 
   it("finalizes after root commit and proposes a safe immutable revision", () => {
-    const candidate = finalizeSkillLearningCandidate(draft, "assistant-1", 1_788_000_000_000);
+    const candidate = finalizeSkillLearningCandidate(draft, goodRootOutcome, 1_788_000_000_000);
     expect(Result.isSuccess(candidate)).toBe(true);
     if (Result.isFailure(candidate)) return;
-    expect(candidate.success.rootOutcomeReferenceId).toBe("assistant-1");
+    expect(candidate.success.rootOutcomeReferenceId).toContain("good-root:skill-learning-v1");
 
     const created = proposeConfirmedSkillChange({
       candidate: candidate.success,
@@ -73,5 +84,38 @@ describe("post-turn Skill Learning", () => {
     expect(PersonalSkillVersionId.make(created.version.skillVersion)).toBe(
       created.version.skillVersion,
     );
+  });
+
+  it("rejects expired or mismatched Good Root Outcome receipts", () => {
+    expect(
+      Result.isFailure(
+        finalizeSkillLearningCandidate(
+          draft,
+          {
+            ...goodRootOutcome,
+            evaluatedAtEpochMillis: goodRootOutcome.evaluationDeadlineEpochMillis + 1,
+          },
+          1_788_000_000_000,
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      Result.isFailure(
+        finalizeSkillLearningCandidate(
+          draft,
+          { ...goodRootOutcome, submissionId: ThinkSubmissionId.make("submission-other") },
+          1_788_000_000_000,
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      Result.isFailure(
+        finalizeSkillLearningCandidate(
+          draft,
+          { ...goodRootOutcome, userId: UserId.make("user-other") },
+          1_788_000_000_000,
+        ),
+      ),
+    ).toBe(true);
   });
 });

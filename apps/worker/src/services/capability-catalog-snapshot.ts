@@ -272,7 +272,7 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
     }),
     entry("skill-management", "Inspect or manage personal Skills.", "skill.manage", {
       availabilityRequirements: ["skill-store"],
-      toolRequirements: ["skillInspect", "skillManage"],
+      toolRequirements: ["osfoDeletePersonalSkill", "skillInspect", "skillManage"],
     }),
     entry("reminders", "Manage bounded reminders.", "reminder.manage", {
       availabilityRequirements: ["reminder-store"],

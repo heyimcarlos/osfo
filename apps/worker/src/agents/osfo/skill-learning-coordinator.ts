@@ -10,6 +10,7 @@ import {
   PersonalSkillVersion,
   type SkillLearningCandidate,
   type SkillLearningCandidateId,
+  SkillLearningModelAttemptId,
 } from "../../domain/personal-skill";
 import { currentCapabilityCatalog } from "../../domain/capability-catalog";
 import type {
@@ -17,32 +18,50 @@ import type {
   PersonalSkillAvailability,
   SkillLearningClaim,
 } from "./personal-skill-authority";
+import {
+  makeSkillLearningAdmission,
+  type SkillLearningAdmission,
+} from "./skill-learning-admission";
+
+const workerSkillLearningAdmission = makeSkillLearningAdmission(
+  currentCapabilityCatalog.skillLearning.concurrentJobsGlobally,
+);
 
 /** Current company-funded frequency, retention, and concurrency facts. */
 export interface SkillLearningLoad extends PersonalSkillLearningLoad {}
 
 /** Exact trusted input supplied to the isolated learning model. */
 export interface SkillLearningModelInput {
+  readonly attemptId: SkillLearningModelAttemptId;
   readonly candidate: SkillLearningCandidate;
   readonly priorVersion: PersonalSkillVersion | null;
 }
 
-const ProposalUsage = {
+const AttemptUsage = Schema.Struct({
+  costBasis: Schema.Literals(["conservative", "observed"]),
   modelInputTokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   modelOutputTokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   vendorUsdMicros: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-};
+});
+
+/** Trusted adapter result pairing untrusted semantic output with measured attempt evidence. */
+export const SkillLearningModelResult = Schema.Struct({
+  proposal: Schema.Unknown,
+  usage: AttemptUsage,
+});
+
+/** Trusted adapter result pairing untrusted semantic output with measured attempt evidence. */
+export type SkillLearningModelResult = typeof SkillLearningModelResult.Type;
 
 /** Closed model output. Unknown fields and unsafe Skill bodies are rejected. */
 export const SkillLearningProposal = Schema.TaggedUnion({
   Change: {
-    ...ProposalUsage,
     evidence: Schema.Literals(["confirmedEffect", "explicitConfirmation", "successfulReuse"]),
     materiality: Schema.Literals(["material", "minor"]),
     skillsChanged: Schema.Int.check(Schema.isGreaterThan(0)),
     version: PersonalSkillVersion,
   },
-  NoChange: ProposalUsage,
+  NoChange: {},
 });
 
 /** Closed model output. Unknown fields and unsafe Skill bodies are rejected. */
@@ -54,7 +73,9 @@ interface LearningAuthority<Error> {
     readonly candidateId: SkillLearningCandidateId;
     readonly claimToken: string;
     readonly expectedSkillVersion: PersonalSkillVersion["skillVersion"] | null;
+    readonly notification: string | null;
     readonly nowEpochMillis: number;
+    readonly undoTargetSkillVersion: PersonalSkillVersion["skillVersion"] | null;
     readonly userId: SkillLearningCandidate["ownerUserId"];
     readonly version: unknown;
   }) => Effect.Effect<
@@ -68,11 +89,16 @@ interface LearningAuthority<Error> {
     readonly nowEpochMillis: number;
     readonly userId: SkillLearningCandidate["ownerUserId"];
   }) => Effect.Effect<SkillLearningClaim, Error>;
-  readonly enqueueLearning: (
-    candidate: SkillLearningCandidate,
-  ) => Effect.Effect<{ readonly candidateId: SkillLearningCandidateId }, Error>;
+  readonly enqueueLearning: (candidate: SkillLearningCandidate) => Effect.Effect<
+    {
+      readonly _tag?: "AlreadyQueued" | "Backpressured" | "Queued";
+      readonly candidateId: SkillLearningCandidateId;
+    },
+    Error
+  >;
   readonly pin: (input: {
     readonly skillId: NonNullable<SkillLearningCandidate["priorSkillId"]>;
+    readonly skillVersion?: NonNullable<SkillLearningCandidate["priorSkillVersion"]>;
     readonly userId: SkillLearningCandidate["ownerUserId"];
   }) => Effect.Effect<PersonalSkillVersion, Error>;
   readonly releaseLearning: (input: {
@@ -95,7 +121,6 @@ export interface SkillLearningRunInput {
   readonly candidate: SkillLearningCandidate | null;
   readonly load: SkillLearningLoad;
   readonly nowEpochMillis: number;
-  readonly rootStatus: "aborted" | "completed" | "error";
 }
 
 export type SkillLearningOutcome =
@@ -115,11 +140,7 @@ export type SkillLearningOutcome =
     }
   | {
       readonly _tag: "NoLearning";
-      readonly reason:
-        | "alreadySettled"
-        | "noMaterialChange"
-        | "noReusableLearning"
-        | "rootNotCompleted";
+      readonly reason: "alreadySettled" | "noMaterialChange" | "noReusableLearning";
     }
   | {
       readonly _tag: "Rejected";
@@ -131,16 +152,21 @@ export const makeSkillLearningCoordinator = <AuthorityError, ModelError, CostErr
   readonly authority: LearningAuthority<AuthorityError>;
   readonly propose: (input: SkillLearningModelInput) => Effect.Effect<unknown, ModelError>;
   readonly recordCompanyCost: (input: {
+    readonly attemptId: SkillLearningModelAttemptId;
+    readonly basis: "conservative" | "observed";
     readonly candidateId: SkillLearningCandidateId;
+    readonly modelInputTokens: number;
+    readonly modelOutputTokens: number;
+    readonly outcome: "failure" | "success";
+    readonly recordedAtEpochMillis: number;
+    readonly userId: SkillLearningCandidate["ownerUserId"];
     readonly vendorUsdMicros: number;
   }) => Effect.Effect<void, CostError>;
+  readonly admission?: SkillLearningAdmission;
 }) => ({
   run: Effect.fn("SkillLearningCoordinator.run")(function* (
     input: SkillLearningRunInput,
   ): Effect.fn.Return<SkillLearningOutcome> {
-    if (input.rootStatus !== "completed") {
-      return { _tag: "NoLearning", reason: "rootNotCompleted" };
-    }
     const candidate = input.candidate;
     if (candidate === null) {
       return { _tag: "NoLearning", reason: "noReusableLearning" };
@@ -149,145 +175,181 @@ export const makeSkillLearningCoordinator = <AuthorityError, ModelError, CostErr
       return { _tag: "Deferred", reason: "backpressure" };
     }
 
-    const queued = yield* Effect.exit(dependencies.authority.enqueueLearning(candidate));
-    if (queued._tag === "Failure") return { _tag: "Deferred", reason: "storageFailure" };
-    const claimToken = crypto.randomUUID();
-    const claimed = yield* Effect.exit(
-      dependencies.authority.claimLearning({
-        candidateId: candidate.candidateId,
-        claimToken,
-        leaseMilliseconds: 30_000,
-        nowEpochMillis: input.nowEpochMillis,
-        userId: candidate.ownerUserId,
-      }),
-    );
-    if (claimed._tag === "Failure") return { _tag: "Deferred", reason: "storageFailure" };
-    if (claimed.value._tag === "Busy") return { _tag: "Deferred", reason: "backpressure" };
-    if (claimed.value._tag === "Settled") {
-      return { _tag: "NoLearning", reason: "alreadySettled" };
-    }
-    const claim = claimed.value;
-    const priorVersion = yield* resolvePrior(dependencies.authority, claim.candidate);
-    if (Result.isFailure(priorVersion)) {
-      yield* releaseClaim(dependencies.authority, claim, input.nowEpochMillis);
-      return { _tag: "Deferred", reason: "storageFailure" };
-    }
-    const proposed = yield* Effect.exit(
-      dependencies.propose({ candidate: claim.candidate, priorVersion: priorVersion.success }),
-    );
-    if (proposed._tag === "Failure") {
-      yield* releaseClaim(dependencies.authority, claim, input.nowEpochMillis);
-      return { _tag: "Deferred", reason: "modelFailure" };
-    }
-    const decoded = Schema.decodeUnknownResult(SkillLearningProposal)(proposed.value, {
-      onExcessProperty: "error",
-    });
-    if (Result.isFailure(decoded)) {
-      yield* settleRejected(dependencies.authority, claim, input.nowEpochMillis);
-      return { _tag: "Rejected", reason: "malformedProposal" };
-    }
-    const proposal = decoded.success;
-    const costRecorded = yield* Effect.exit(
-      dependencies.recordCompanyCost({
-        candidateId: claim.candidate.candidateId,
-        vendorUsdMicros: proposal.vendorUsdMicros,
-      }),
-    );
-    if (costRecorded._tag === "Failure") {
-      yield* releaseClaim(dependencies.authority, claim, input.nowEpochMillis);
-      return { _tag: "Deferred", reason: "storageFailure" };
-    }
-    if (proposal._tag === "NoChange") {
-      yield* settleRejected(dependencies.authority, claim, input.nowEpochMillis);
-      return { _tag: "NoLearning", reason: "noMaterialChange" };
-    }
-    const verdict = evaluateSkillLearning(
-      {
-        attempts: claim.attempts,
-        candidateBytes: claim.candidate.candidateBytes,
-        createdAt: new Date(claim.candidate.createdAtEpochMillis),
-        id: claim.candidate.candidateId,
-      },
-      {
-        evidence: proposal.evidence,
-        modelInputTokens: proposal.modelInputTokens,
-        modelOutputTokens: proposal.modelOutputTokens,
-        skillBodyBytes: BigInt(encodedBytes(proposal.version.instructions)),
-        skillVersionBytes: BigInt(encodedBytes(JSON.stringify(proposal.version))),
-        skillsChanged: proposal.skillsChanged,
-      },
-      input.load,
-      new Date(input.nowEpochMillis),
-    );
-    if (verdict._tag !== "Accepted") {
-      yield* settleRejected(dependencies.authority, claim, input.nowEpochMillis);
-      return verdict._tag === "Backpressured"
-        ? { _tag: "Deferred", reason: "backpressure" }
-        : { _tag: "Rejected", reason: "limits" };
-    }
+    const permit = yield* (dependencies.admission ?? workerSkillLearningAdmission).acquire;
+    if (Option.isNone(permit)) return { _tag: "Deferred", reason: "backpressure" };
 
-    const changed = yield* Effect.exit(
-      dependencies.authority.activateLearning({
-        availability: input.availability,
-        candidateId: claim.candidate.candidateId,
-        claimToken: claim.claimToken,
-        expectedSkillVersion: priorVersion.success?.skillVersion ?? null,
-        nowEpochMillis: input.nowEpochMillis,
-        userId: claim.candidate.ownerUserId,
-        version: proposal.version,
-      }),
-    );
-    if (changed._tag === "Failure") {
-      const activationError = Option.getOrUndefined(Cause.findErrorOption(changed.cause));
-      if (
-        priorVersion.success !== null &&
-        Predicate.isTagged(activationError, "PersonalSkillConflict")
-      ) {
-        const converged = yield* convergeStaleRevision({
-          authority: dependencies.authority,
-          availability: input.availability,
-          attempts: claim.attempts,
-          candidate: claim.candidate,
-          claimToken: claim.claimToken,
-          nowEpochMillis: input.nowEpochMillis,
-          load: input.load,
-          propose: dependencies.propose,
-          recordCompanyCost: dependencies.recordCompanyCost,
-        });
-        if (Result.isSuccess(converged)) {
-          const version = converged.success.version;
-          return {
-            _tag: "Learned",
-            change: "revised",
-            notification:
-              converged.success.materiality === "material"
-                ? materialChangeNotification(version.description)
-                : null,
-            undo: {
-              skillId: version.skillId,
-              targetSkillVersion: converged.success.previousSkillVersion,
-            },
-            version,
-          };
-        }
+    return yield* Effect.gen(function* () {
+      const queued = yield* Effect.exit(dependencies.authority.enqueueLearning(candidate));
+      if (queued._tag === "Failure") return { _tag: "Deferred", reason: "storageFailure" } as const;
+      if (queued.value._tag === "Backpressured") {
+        return { _tag: "Deferred", reason: "backpressure" } as const;
       }
-      yield* releaseClaim(dependencies.authority, claim, input.nowEpochMillis);
-      return { _tag: "Deferred", reason: "storageFailure" };
-    }
-    const version = changed.value.version;
-    return {
-      _tag: "Learned",
-      change: priorVersion.success === null ? "created" : "revised",
-      notification:
-        proposal.materiality === "material"
-          ? materialChangeNotification(version.description)
-          : null,
-      undo: {
-        skillId: version.skillId,
-        targetSkillVersion: priorVersion.success?.skillVersion ?? null,
-      },
-      version,
-    };
+      const claimToken = crypto.randomUUID();
+      const claimed = yield* Effect.exit(
+        dependencies.authority.claimLearning({
+          candidateId: candidate.candidateId,
+          claimToken,
+          leaseMilliseconds: 30_000,
+          nowEpochMillis: input.nowEpochMillis,
+          userId: candidate.ownerUserId,
+        }),
+      );
+      if (claimed._tag === "Failure")
+        return { _tag: "Deferred", reason: "storageFailure" } as const;
+      if (claimed.value._tag === "Busy")
+        return { _tag: "Deferred", reason: "backpressure" } as const;
+      if (claimed.value._tag === "Settled") {
+        return { _tag: "NoLearning", reason: "alreadySettled" } as const;
+      }
+      const claim = claimed.value;
+      const priorVersion = yield* resolvePrior(dependencies.authority, claim.candidate);
+      if (Result.isFailure(priorVersion)) {
+        yield* releaseClaim(dependencies.authority, claim, input.nowEpochMillis);
+        return { _tag: "Deferred", reason: "storageFailure" } as const;
+      }
+      const proposed = yield* Effect.exit(
+        dependencies.propose({
+          attemptId: modelAttemptId(claim.candidate.candidateId, claim.attempts, "initial"),
+          candidate: claim.candidate,
+          priorVersion: priorVersion.success,
+        }),
+      );
+      if (proposed._tag === "Failure") {
+        yield* releaseClaim(dependencies.authority, claim, input.nowEpochMillis);
+        return { _tag: "Deferred", reason: "modelFailure" } as const;
+      }
+      const modelResult = Schema.decodeUnknownResult(SkillLearningModelResult)(proposed.value, {
+        onExcessProperty: "error",
+      });
+      if (Result.isFailure(modelResult)) {
+        yield* settleRejected(dependencies.authority, claim, input.nowEpochMillis);
+        return { _tag: "Rejected", reason: "malformedProposal" } as const;
+      }
+      const costRecorded = yield* Effect.exit(
+        dependencies.recordCompanyCost({
+          attemptId: modelAttemptId(claim.candidate.candidateId, claim.attempts, "initial"),
+          basis: modelResult.success.usage.costBasis,
+          candidateId: claim.candidate.candidateId,
+          modelInputTokens: modelResult.success.usage.modelInputTokens,
+          modelOutputTokens: modelResult.success.usage.modelOutputTokens,
+          outcome: "success",
+          recordedAtEpochMillis: input.nowEpochMillis,
+          userId: claim.candidate.ownerUserId,
+          vendorUsdMicros: modelResult.success.usage.vendorUsdMicros,
+        }),
+      );
+      if (costRecorded._tag === "Failure") {
+        yield* releaseClaim(dependencies.authority, claim, input.nowEpochMillis);
+        return { _tag: "Deferred", reason: "storageFailure" } as const;
+      }
+      const decoded = Schema.decodeUnknownResult(SkillLearningProposal)(
+        modelResult.success.proposal,
+        {
+          onExcessProperty: "error",
+        },
+      );
+      if (Result.isFailure(decoded)) {
+        yield* settleRejected(dependencies.authority, claim, input.nowEpochMillis);
+        return { _tag: "Rejected", reason: "malformedProposal" } as const;
+      }
+      const proposal = decoded.success;
+      if (proposal._tag === "NoChange") {
+        yield* settleRejected(dependencies.authority, claim, input.nowEpochMillis);
+        return { _tag: "NoLearning", reason: "noMaterialChange" } as const;
+      }
+      const verdict = evaluateSkillLearning(
+        {
+          attempts: claim.attempts,
+          candidateBytes: claim.candidate.candidateBytes,
+          createdAt: new Date(claim.candidate.createdAtEpochMillis),
+          id: claim.candidate.candidateId,
+        },
+        {
+          evidence: proposal.evidence,
+          modelInputTokens: modelResult.success.usage.modelInputTokens,
+          modelOutputTokens: modelResult.success.usage.modelOutputTokens,
+          skillBodyBytes: BigInt(encodedBytes(proposal.version.instructions)),
+          skillVersionBytes: BigInt(encodedBytes(JSON.stringify(proposal.version))),
+          skillsChanged: proposal.skillsChanged,
+        },
+        input.load,
+        new Date(input.nowEpochMillis),
+      );
+      if (verdict._tag !== "Accepted") {
+        yield* settleRejected(dependencies.authority, claim, input.nowEpochMillis);
+        return verdict._tag === "Backpressured"
+          ? ({ _tag: "Deferred", reason: "backpressure" } as const)
+          : ({ _tag: "Rejected", reason: "limits" } as const);
+      }
+
+      const changed = yield* Effect.exit(
+        dependencies.authority.activateLearning({
+          availability: input.availability,
+          candidateId: claim.candidate.candidateId,
+          claimToken: claim.claimToken,
+          expectedSkillVersion: priorVersion.success?.skillVersion ?? null,
+          notification:
+            proposal.materiality === "material"
+              ? materialChangeNotification(proposal.version.description)
+              : null,
+          nowEpochMillis: input.nowEpochMillis,
+          undoTargetSkillVersion: priorVersion.success?.skillVersion ?? null,
+          userId: claim.candidate.ownerUserId,
+          version: proposal.version,
+        }),
+      );
+      if (changed._tag === "Failure") {
+        const activationError = Option.getOrUndefined(Cause.findErrorOption(changed.cause));
+        if (
+          priorVersion.success !== null &&
+          Predicate.isTagged(activationError, "PersonalSkillConflict")
+        ) {
+          const converged = yield* convergeStaleRevision({
+            authority: dependencies.authority,
+            availability: input.availability,
+            attempts: claim.attempts,
+            candidate: claim.candidate,
+            claimToken: claim.claimToken,
+            nowEpochMillis: input.nowEpochMillis,
+            load: input.load,
+            propose: dependencies.propose,
+            recordCompanyCost: dependencies.recordCompanyCost,
+          });
+          if (Result.isSuccess(converged)) {
+            const version = converged.success.version;
+            return {
+              _tag: "Learned",
+              change: "revised",
+              notification:
+                converged.success.materiality === "material"
+                  ? materialChangeNotification(version.description)
+                  : null,
+              undo: {
+                skillId: version.skillId,
+                targetSkillVersion: converged.success.previousSkillVersion,
+              },
+              version,
+            } as const;
+          }
+        }
+        yield* releaseClaim(dependencies.authority, claim, input.nowEpochMillis);
+        return { _tag: "Deferred", reason: "storageFailure" } as const;
+      }
+      const version = changed.value.version;
+      return {
+        _tag: "Learned",
+        change: priorVersion.success === null ? "created" : "revised",
+        notification:
+          proposal.materiality === "material"
+            ? materialChangeNotification(version.description)
+            : null,
+        undo: {
+          skillId: version.skillId,
+          targetSkillVersion: priorVersion.success?.skillVersion ?? null,
+        },
+        version,
+      } as const;
+    }).pipe(Effect.ensuring(permit.value));
   }),
 });
 
@@ -302,7 +364,14 @@ const convergeStaleRevision = Effect.fn("SkillLearningCoordinator.convergeStaleR
     readonly load: SkillLearningLoad;
     readonly propose: (input: SkillLearningModelInput) => Effect.Effect<unknown, ModelError>;
     readonly recordCompanyCost: (input: {
+      readonly attemptId: SkillLearningModelAttemptId;
+      readonly basis: "conservative" | "observed";
       readonly candidateId: SkillLearningCandidateId;
+      readonly modelInputTokens: number;
+      readonly modelOutputTokens: number;
+      readonly outcome: "failure" | "success";
+      readonly recordedAtEpochMillis: number;
+      readonly userId: SkillLearningCandidate["ownerUserId"];
       readonly vendorUsdMicros: number;
     }) => Effect.Effect<void, CostError>;
   }) {
@@ -315,12 +384,23 @@ const convergeStaleRevision = Effect.fn("SkillLearningCoordinator.convergeStaleR
     );
     if (current._tag === "Failure") return Result.fail("storage" as const);
     const proposed = yield* Effect.exit(
-      input.propose({ candidate: input.candidate, priorVersion: current.value }),
+      input.propose({
+        attemptId: modelAttemptId(input.candidate.candidateId, input.attempts, "rebase"),
+        candidate: input.candidate,
+        priorVersion: current.value,
+      }),
     );
     if (proposed._tag === "Failure") return Result.fail("model" as const);
-    const decoded = Schema.decodeUnknownResult(SkillLearningProposal)(proposed.value, {
+    const modelResult = Schema.decodeUnknownResult(SkillLearningModelResult)(proposed.value, {
       onExcessProperty: "error",
     });
+    if (Result.isFailure(modelResult)) return Result.fail("proposal" as const);
+    const decoded = Schema.decodeUnknownResult(SkillLearningProposal)(
+      modelResult.success.proposal,
+      {
+        onExcessProperty: "error",
+      },
+    );
     if (Result.isFailure(decoded) || decoded.success._tag !== "Change") {
       return Result.fail("proposal" as const);
     }
@@ -333,8 +413,8 @@ const convergeStaleRevision = Effect.fn("SkillLearningCoordinator.convergeStaleR
       },
       {
         evidence: decoded.success.evidence,
-        modelInputTokens: decoded.success.modelInputTokens,
-        modelOutputTokens: decoded.success.modelOutputTokens,
+        modelInputTokens: modelResult.success.usage.modelInputTokens,
+        modelOutputTokens: modelResult.success.usage.modelOutputTokens,
         skillBodyBytes: BigInt(encodedBytes(decoded.success.version.instructions)),
         skillVersionBytes: BigInt(encodedBytes(JSON.stringify(decoded.success.version))),
         skillsChanged: decoded.success.skillsChanged,
@@ -345,8 +425,15 @@ const convergeStaleRevision = Effect.fn("SkillLearningCoordinator.convergeStaleR
     if (verdict._tag !== "Accepted") return Result.fail("limits" as const);
     const cost = yield* Effect.exit(
       input.recordCompanyCost({
+        attemptId: modelAttemptId(input.candidate.candidateId, input.attempts, "rebase"),
+        basis: modelResult.success.usage.costBasis,
         candidateId: input.candidate.candidateId,
-        vendorUsdMicros: decoded.success.vendorUsdMicros,
+        modelInputTokens: modelResult.success.usage.modelInputTokens,
+        modelOutputTokens: modelResult.success.usage.modelOutputTokens,
+        outcome: "success",
+        recordedAtEpochMillis: input.nowEpochMillis,
+        userId: input.candidate.ownerUserId,
+        vendorUsdMicros: modelResult.success.usage.vendorUsdMicros,
       }),
     );
     if (cost._tag === "Failure") return Result.fail("cost" as const);
@@ -356,7 +443,12 @@ const convergeStaleRevision = Effect.fn("SkillLearningCoordinator.convergeStaleR
         candidateId: input.candidate.candidateId,
         claimToken: input.claimToken,
         expectedSkillVersion: current.value.skillVersion,
+        notification:
+          decoded.success.materiality === "material"
+            ? materialChangeNotification(decoded.success.version.description)
+            : null,
         nowEpochMillis: input.nowEpochMillis,
+        undoTargetSkillVersion: current.value.skillVersion,
         userId: input.candidate.ownerUserId,
         version: decoded.success.version,
       }),
@@ -378,7 +470,15 @@ const resolvePrior = <Error>(
   candidate.priorSkillId === null
     ? Effect.succeed(Result.succeed<PersonalSkillVersion | null>(null))
     : Effect.match(
-        authority.pin({ skillId: candidate.priorSkillId, userId: candidate.ownerUserId }),
+        authority.pin(
+          candidate.priorSkillVersion === null
+            ? { skillId: candidate.priorSkillId, userId: candidate.ownerUserId }
+            : {
+                skillId: candidate.priorSkillId,
+                skillVersion: candidate.priorSkillVersion,
+                userId: candidate.ownerUserId,
+              },
+        ),
         {
           onFailure: Result.fail,
           onSuccess: (version) => Result.succeed<PersonalSkillVersion | null>(version),
@@ -438,5 +538,12 @@ const materialChangeNotification = (description: string): string => {
 };
 
 const encodedBytes = (value: string): number => new TextEncoder().encode(value).byteLength;
+
+const modelAttemptId = (
+  candidateId: SkillLearningCandidateId,
+  claimAttempt: number,
+  phase: "initial" | "rebase",
+): SkillLearningModelAttemptId =>
+  SkillLearningModelAttemptId.make(`${candidateId}:claim-${claimAttempt}:${phase}`);
 
 export * as SkillLearningCoordinator from "./skill-learning-coordinator";

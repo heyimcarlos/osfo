@@ -2,7 +2,7 @@ import { Result, Schema } from "effect";
 
 /* oxlint-disable osfo/no-unknown-parameters -- These exported decoders are the owning trust boundary for persistence and Capability inputs. */
 
-import { UserId } from "../domain";
+import { AssistantMessageId, ThinkSubmissionId, UserId } from "../domain";
 import { CapabilityId, currentCapabilityCatalog } from "./capability-catalog";
 
 const maximumVersionBytes = Number(currentCapabilityCatalog.skillLearning.skillVersionBytes);
@@ -78,6 +78,14 @@ export const SkillLearningCandidateId = boundedText(160).pipe(
 /** Stable identity of one bounded post-turn learning candidate. */
 export type SkillLearningCandidateId = typeof SkillLearningCandidateId.Type;
 
+/** Stable identity of one company-funded Skill Learning model attempt. */
+export const SkillLearningModelAttemptId = boundedText(200).pipe(
+  Schema.brand("SkillLearningModelAttemptId"),
+);
+
+/** Stable identity of one company-funded Skill Learning model attempt. */
+export type SkillLearningModelAttemptId = typeof SkillLearningModelAttemptId.Type;
+
 /** Closed trusted evidence references. Content stays in its owning store. */
 export const SkillEvidenceReference = Schema.TaggedUnion({
   ConfirmedEffect: { referenceId: boundedText(200) },
@@ -99,6 +107,33 @@ export const SkillOutcomeFacts = Schema.Struct({
 
 /** Confirmed outcome facts retained without provider payloads or Session content. */
 export type SkillOutcomeFacts = typeof SkillOutcomeFacts.Type;
+
+/** Trusted PASS emitted only by a versioned Reference Workload Trace evaluator. */
+export const GoodRootOutcomeReceipt = Schema.Struct({
+  assertionReceiptIds: Schema.Array(boundedText(200)).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(20),
+  ),
+  assistantMessageId: AssistantMessageId,
+  evaluatedAtEpochMillis: nonNegativeInteger,
+  evaluationDeadlineEpochMillis: nonNegativeInteger,
+  referenceTraceVersion: boundedText(100),
+  submissionId: ThinkSubmissionId,
+  userId: UserId,
+}).check(
+  Schema.makeFilter(
+    (receipt) =>
+      receipt.evaluatedAtEpochMillis <= receipt.evaluationDeadlineEpochMillis ||
+      "A Good Root Outcome must pass before its Evaluation Deadline",
+  ),
+);
+
+/** Trusted PASS emitted only by a versioned Reference Workload Trace evaluator. */
+export type GoodRootOutcomeReceipt = typeof GoodRootOutcomeReceipt.Type;
+
+/** Stable evidence identity for one accepted Good Root Outcome. */
+export const goodRootOutcomeReferenceId = (receipt: GoodRootOutcomeReceipt): string =>
+  `good-root:${receipt.referenceTraceVersion}:${receipt.submissionId}:${receipt.assistantMessageId}`;
 
 const SkillInstructionText = Schema.String.check(
   Schema.isMinLength(1),
@@ -191,6 +226,8 @@ export const personalSkillVersionValues = (version: PersonalSkillVersion) => ({
 
 /** Bounded trusted input admitted only after a completed root outcome commits. */
 export const SkillLearningCandidate = Schema.Struct({
+  availableCapabilityIds: Schema.Array(CapabilityId).check(Schema.isMaxLength(22)),
+  availableRequirements: Schema.Array(SkillAvailabilityRequirement).check(Schema.isMaxLength(10)),
   candidateBytes: Schema.BigIntFromString.check(Schema.isGreaterThanBigInt(0n)),
   candidateId: SkillLearningCandidateId,
   corrections: Schema.Array(TrustedSkillLearningText).check(Schema.isMaxLength(10)),
@@ -203,6 +240,7 @@ export const SkillLearningCandidate = Schema.Struct({
   ownerUserId: UserId,
   priorSkillId: Schema.NullOr(PersonalSkillId),
   priorSkillVersion: Schema.NullOr(PersonalSkillVersionId),
+  rootAssistantMessageId: AssistantMessageId,
   rootOutcomeReferenceId: boundedText(200),
   taskDescription: boundedText(500),
 }).check(
@@ -232,18 +270,57 @@ export const decodePersonalSkillVersions = (
 const encodedBytes = (value: string): number => new TextEncoder().encode(value).byteLength;
 
 const instructionIsSafe = (instructions: string): boolean => {
-  const forbidden = [
-    /```/u,
-    /(^|\n)\s*#!\//u,
-    /<script\b/iu,
-    /\b(?:api[-_ ]?key|authorization\s*:|bearer\s+[A-Za-z0-9._~-]+|client[-_ ]?secret|password\s*=|private[-_ ]?key)\b/iu,
-    /https?:\/\/\S+[?&](?:access_token|api_key|auth|key|signature|token)=/iu,
-    /\b(?:bypass|disable|skip)\s+(?:an?\s+)?(?:approval|authorization|policy)\b/iu,
-    /\bgrant(?:s|ed)?\s+(?:the\s+)?(?:tool|permission|plan|authority|access)\b/iu,
-    /\bignore\s+(?:the\s+)?(?:current\s+)?(?:user request|product policy|authorization policy)\b/iu,
-    /"(?:properties|additionalProperties|oneOf|anyOf|allOf)"\s*:/u,
-  ];
-  return forbidden.every((pattern) => !pattern.test(instructions));
+  if (!naturalLanguageCharacters.test(instructions)) return false;
+  const words = instructions.toLocaleLowerCase("en-US").match(/[\p{L}][\p{L}\p{N}-]*/gu) ?? [];
+  if (words.length === 0) return false;
+  return words.every((word) => !reservedInstructionWords.has(word));
 };
+
+// Skills retain prose, not transport syntax. Excluding code punctuation and reserved boundary
+// vocabulary makes the admitted language intentionally less expressive than an ordinary prompt.
+const naturalLanguageCharacters = /^[\p{L}\p{N}\p{Zs}\n.,;!?()'’"-]+$/u;
+const reservedInstructionWords = new Set([
+  "access-token",
+  "api-key",
+  "apikey",
+  "admin",
+  "approval",
+  "authorization",
+  "bearer",
+  "bypass",
+  "client-secret",
+  "cookie",
+  "credential",
+  "credentials",
+  "curl",
+  "disable",
+  "eval",
+  "execute",
+  "grant",
+  "grants",
+  "header",
+  "headers",
+  "http",
+  "https",
+  "javascript",
+  "key",
+  "password",
+  "plan",
+  "permission",
+  "private-key",
+  "provider",
+  "provider-payload",
+  "payload",
+  "prompt",
+  "role",
+  "rm",
+  "schema",
+  "secret",
+  "shell",
+  "skip",
+  "token",
+  "tool-call",
+  "webhook",
+]);
 
 export * as PersonalSkill from "./personal-skill";

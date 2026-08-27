@@ -24,6 +24,7 @@ import {
   ThinkApprovalUnavailable,
   type PendingThinkAction,
 } from "./think-action-approvals";
+import { personalSkillDeleteActionName, SkillDeleteInput } from "./personal-skill-tools";
 
 /** Name registered with Think for retained-document deletion. */
 export const documentDeleteActionName = "deleteDocument";
@@ -50,6 +51,9 @@ export const presentOsfoAction = Effect.fn("ActionPresentation.present")(functio
   }
   if (pending.descriptor.action === sessionDeleteActionName) {
     return yield* presentSessionDeleteAction(pending);
+  }
+  if (pending.descriptor.action === personalSkillDeleteActionName) {
+    return yield* presentPersonalSkillDeleteAction(pending);
   }
   return yield* new ActionPresentationUnavailable({
     action: pending.descriptor.action,
@@ -161,6 +165,16 @@ export const hasExactSessionDeleteInput = (
     { name: "sessionId", value: input.sessionId },
   ]);
 
+/** Verify the exact personal Skill lineage selected for permanent deletion. */
+export const hasExactPersonalSkillDeleteInput = (
+  presentation: ActionPresentation,
+  input: typeof SkillDeleteInput.Encoded,
+): boolean =>
+  hasExactFields(presentation, "skill.manage", "osfo-personal-skill-delete-v1", [
+    { name: "skillId", value: input.skillId },
+    { name: "expectedSkillVersion", value: input.expectedSkillVersion },
+  ]);
+
 const presentCoreMemoryClearAction = Effect.fn("ActionPresentation.presentCoreMemoryClear")(
   function* (pending: PendingThinkAction) {
     const input = yield* Schema.decodeUnknownEffect(ClearCoreMemoryInput)(
@@ -210,6 +224,41 @@ const presentDocumentDeleteAction = Effect.fn("ActionPresentation.presentDocumen
       operation: "file.delete",
       presentationId: ActionPresentationId.make(pending.executionId),
       title: "Delete generated document",
+    });
+  },
+);
+
+const presentPersonalSkillDeleteAction = Effect.fn("ActionPresentation.presentPersonalSkillDelete")(
+  function* (pending: PendingThinkAction) {
+    const input = yield* Schema.decodeUnknownEffect(SkillDeleteInput)(
+      pending.descriptor.input,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "The personal Skill deletion input cannot be projected safely",
+          }),
+      ),
+    );
+    return ActionPresentation.make({
+      actionDefinitionVersion: "osfo-personal-skill-delete-v1",
+      actionId: ActionId.make(pending.descriptor.toolCallId),
+      consequences: [
+        "Permanently delete this personal Skill, its immutable versions, and linked learning state.",
+      ],
+      description: "Delete the exact personal Skill lineage shown here.",
+      fields: [
+        { label: "Skill", name: "skillId", value: input.skillId },
+        {
+          label: "Current version",
+          name: "expectedSkillVersion",
+          value: input.expectedSkillVersion,
+        },
+      ],
+      operation: "skill.manage",
+      presentationId: ActionPresentationId.make(pending.executionId),
+      title: "Delete personal Skill",
     });
   },
 );

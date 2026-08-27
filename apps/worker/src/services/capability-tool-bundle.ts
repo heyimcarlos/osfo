@@ -20,6 +20,7 @@ export const registeredToolNameValues = [
   "osfoClearCoreMemory",
   "osfoDeleteSession",
   "osfoForgetKnowledge",
+  "osfoDeletePersonalSkill",
   "skillInspect",
   "skillManage",
   "readFile",

@@ -1,4 +1,5 @@
 /* oxlint-disable effecttsgo/crypto-random-uuid -- UUIDs are opaque durable identities, not deterministic test inputs. */
+/* oxlint-disable eslint/no-underscore-dangle -- Domain tagged unions use _tag. */
 
 import { Option, Result, Schema } from "effect";
 
@@ -11,12 +12,16 @@ import {
   SkillLearningCandidate,
   SkillLearningCandidateId,
   TrustedSkillLearningText,
+  GoodRootOutcomeReceipt,
+  goodRootOutcomeReferenceId,
   type SkillTaskKind,
   type SkillTurnOrigin,
 } from "../../domain/personal-skill";
 import type { SkillLearningModelInput, SkillLearningProposal } from "./skill-learning-coordinator";
 
 export interface SkillLearningDraft {
+  readonly availableCapabilityIds: ReadonlyArray<CapabilityId>;
+  readonly availableRequirements: ReadonlyArray<PersonalSkillVersion["requirements"][number]>;
   readonly origin: SkillTurnOrigin;
   readonly ownerUserId: UserId;
   readonly priorSkillId: PersonalSkillId | null;
@@ -24,6 +29,22 @@ export interface SkillLearningDraft {
   readonly submissionId: string;
   readonly taskDescription: string;
 }
+
+/** Narrow semantic decision returned by the isolated learning model. Identity stays deterministic. */
+export const SkillLearningModelDecision = Schema.TaggedUnion({
+  Change: {
+    description: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
+    instructions: TrustedSkillLearningText,
+    keywords: Schema.Array(
+      Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+    ).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
+    materiality: Schema.Literals(["material", "minor"]),
+  },
+  NoChange: {},
+});
+
+/** Narrow semantic decision returned by the isolated learning model. Identity stays deterministic. */
+export type SkillLearningModelDecision = typeof SkillLearningModelDecision.Type;
 
 const lastingInstruction =
   /\b(?:always|from now on|for future|going forward|make this (?:a )?skill|remember this as (?:a )?skill)\b/iu;
@@ -40,10 +61,24 @@ export const projectSkillLearningDraft = (
 /** Finalize a bounded candidate only after the root assistant outcome has committed. */
 export const finalizeSkillLearningCandidate = (
   draft: SkillLearningDraft,
-  rootOutcomeReferenceId: string,
+  input: typeof GoodRootOutcomeReceipt.Encoded,
   nowEpochMillis: number,
 ): Result.Result<SkillLearningCandidate, Schema.SchemaError> => {
+  const decodedOutcome = Schema.decodeResult(GoodRootOutcomeReceipt, {
+    onExcessProperty: "error",
+  })(input);
+  if (Result.isFailure(decodedOutcome)) return Result.fail(decodedOutcome.failure);
+  const goodRootOutcome = decodedOutcome.success;
+  if (
+    draft.submissionId !== goodRootOutcome.submissionId ||
+    draft.ownerUserId !== goodRootOutcome.userId
+  ) {
+    return Schema.decodeUnknownResult(SkillLearningCandidate)({});
+  }
+  const rootOutcomeReferenceId = goodRootOutcomeReferenceId(goodRootOutcome);
   const unencoded = {
+    availableCapabilityIds: draft.availableCapabilityIds,
+    availableRequirements: draft.availableRequirements,
     candidateBytes: "1",
     candidateId: SkillLearningCandidateId.make(`turn-${draft.submissionId}`),
     corrections: [draft.taskDescription],
@@ -56,6 +91,7 @@ export const finalizeSkillLearningCandidate = (
     ownerUserId: draft.ownerUserId,
     priorSkillId: draft.priorSkillId,
     priorSkillVersion: draft.priorSkillVersion,
+    rootAssistantMessageId: goodRootOutcome.assistantMessageId,
     rootOutcomeReferenceId,
     taskDescription: draft.taskDescription,
   };
@@ -69,14 +105,11 @@ export const finalizeSkillLearningCandidate = (
 export const proposeConfirmedSkillChange = ({
   candidate,
   priorVersion,
-}: SkillLearningModelInput): SkillLearningProposal => {
+}: Omit<SkillLearningModelInput, "attemptId">): SkillLearningProposal => {
   const correction = candidate.corrections.join("\n");
   if (priorVersion !== null && priorVersion.instructions.includes(correction)) {
     return {
       _tag: "NoChange",
-      modelInputTokens: 0,
-      modelOutputTokens: 0,
-      vendorUsdMicros: 0,
     };
   }
   const taskKind = inferTaskKind(candidate.taskDescription);
@@ -116,11 +149,28 @@ export const proposeConfirmedSkillChange = ({
     _tag: "Change",
     evidence: "explicitConfirmation",
     materiality: "material",
-    modelInputTokens: 0,
-    modelOutputTokens: 0,
     skillsChanged: 1,
-    vendorUsdMicros: 0,
     version,
+  };
+};
+
+/** Bind a decoded model decision to deterministic identity, evidence, and measured provider usage. */
+export const bindSkillLearningModelDecision = (
+  input: SkillLearningModelInput,
+  decision: SkillLearningModelDecision,
+): SkillLearningProposal => {
+  if (decision._tag === "NoChange") return { _tag: "NoChange" };
+  const deterministic = proposeConfirmedSkillChange(input);
+  if (deterministic._tag === "NoChange") return { _tag: "NoChange" };
+  return {
+    ...deterministic,
+    materiality: decision.materiality,
+    version: PersonalSkillVersion.make({
+      ...deterministic.version,
+      description: decision.description,
+      instructions: decision.instructions,
+      keywords: decision.keywords,
+    }),
   };
 };
 

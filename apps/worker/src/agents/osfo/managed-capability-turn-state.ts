@@ -21,9 +21,11 @@ export const initialize = (
   }
   const previous = previousManagedTurn(messages, activeMetadata.submissionId);
   return {
+    eligiblePersonalSkills: [],
     initialized: true,
     loadedSkillReceipts: [],
     pendingFileAnalyses: previous?.capabilityTurnState.pendingFileAnalyses ?? [],
+    skillLearningDraft: null,
   };
 };
 
@@ -94,7 +96,10 @@ const previousManagedTurn = (
   return undefined;
 };
 
-const managedTurn = (message: UIMessage | undefined): ManagedTurnMetadata | undefined => {
+/** Decode only server-owned managed-turn metadata from one persisted User message. */
+export const readManagedTurn = (
+  message: UIMessage | undefined,
+): ManagedTurnMetadata | undefined => {
   if (message?.role !== "user") return undefined;
   return Option.getOrUndefined(
     Option.map(
@@ -103,5 +108,7 @@ const managedTurn = (message: UIMessage | undefined): ManagedTurnMetadata | unde
     ),
   );
 };
+
+const managedTurn = readManagedTurn;
 
 export * as ManagedCapabilityState from "./managed-capability-turn-state";
