@@ -157,7 +157,7 @@ process_group_is_owned() {
     [[ -n "$member" ]] || continue
     found=true
     if ! tr '\0' '\n' <"/proc/$member/environ" \
-      | rg --fixed-strings --line-regexp --quiet "OSFO_VERIFICATION_RUN_ID=$run_id"; then
+      | grep -F -x -q -- "OSFO_VERIFICATION_RUN_ID=$run_id"; then
       return 1
     fi
   done < <(process_group_members "$process_group_id")
@@ -230,7 +230,11 @@ start_worker_process() {
     >>"$artifact_dir/logs/worker.log" 2>&1 &
   worker_pid="$!"
   record_process "$state_dir" worker "$worker_pid"
-  wait_for_url "$worker_origin/auth/get-session" 'Worker' "$worker_pid"
+  if ! wait_for_url "$worker_origin/auth/get-session" 'Worker' "$worker_pid"; then
+    printf 'Worker log follows:\n' >&2
+    tail -n 200 "$artifact_dir/logs/worker.log" >&2 || true
+    return 1
+  fi
 }
 
 inspect_agent_runtime() {
@@ -650,7 +654,7 @@ channel_invite() {
     curl --fail --silent --show-error "$provider_origin/_test/telegram/ledger" | jq . >"$ledger_path"
     invite_url="$(jq --raw-output \
       '.[].body | fromjson? | (.text? // .rich_message.markdown? // empty)' "$ledger_path" \
-      | rg --only-matching "${web_origin//./\\.}/verify/[A-Za-z0-9_-]+" \
+      | grep -E -o "${web_origin//./\\.}/verify/[A-Za-z0-9_-]+" \
       | tail -n 1 || true)"
     if [[ -n "$invite_url" ]]; then
       break
@@ -1043,27 +1047,27 @@ evidence_finish() {
       exit 1
     fi
   done
-  if ! rg --quiet 'phase=action ' "$feature_dir/browser-actions.txt" || \
-    ! rg --quiet 'phase=result ' "$feature_dir/browser-actions.txt"; then
+  if ! grep -q 'phase=action ' "$feature_dir/browser-actions.txt" || \
+    ! grep -q 'phase=result ' "$feature_dir/browser-actions.txt"; then
     printf 'Evidence needs both action and result browser records\n' >&2
     exit 1
   fi
   if [[ "$feature" == account-deletion ]] && \
-    { ! rg --fixed-strings --quiet 'Permanent account removal requires confirmation.' \
+    { ! grep -F -q 'Permanent account removal requires confirmation.' \
         "$feature_dir/browser-actions.txt" || \
-      ! rg --fixed-strings --quiet 'Permanently delete this account and all of its data.' \
+      ! grep -F -q 'Permanently delete this account and all of its data.' \
         "$feature_dir/browser-actions.txt" || \
-      ! rg --fixed-strings --quiet 'exactly one server-owned consequence' \
+      ! grep -F -q 'exactly one server-owned consequence' \
         "$feature_dir/browser-actions.txt" || \
-      ! rg --fixed-strings --quiet 'Sign in and Get started' \
+      ! grep -F -q 'Sign in and Get started' \
         "$feature_dir/browser-actions.txt"; }; then
     printf 'Account-deletion evidence needs the generic prefetch, one exact server consequence, and signed-out result\n' >&2
     exit 1
   fi
   if [[ "$feature" == account-deletion-replay ]] && \
-    { ! rg --fixed-strings --quiet 'exact retained request after refresh' \
+    { ! grep -F -q 'exact retained request after refresh' \
         "$feature_dir/browser-actions.txt" || \
-      ! rg --fixed-strings --quiet 'Sign in and Get started' \
+      ! grep -F -q 'Sign in and Get started' \
         "$feature_dir/browser-actions.txt"; }; then
     printf 'Account-deletion replay evidence needs the exact retained request after refresh and signed-out result\n' >&2
     exit 1
