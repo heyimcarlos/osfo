@@ -479,6 +479,7 @@ export const make = (
               ),
             );
             if (ports.readOwned === undefined) {
+              yield* ports.retainAction(actionId, { _tag: "NotApplied", digest });
               return yield* new IntegrationExecutionRejected({
                 code: "providerUnavailable",
                 message: "Owned artifact delivery is unavailable",

@@ -781,6 +781,43 @@ describe("Integrations", () => {
     }),
   );
 
+  it.effect("leaves a Drive Action retryable when owned artifact access is not configured", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits.push({
+        connectedAccount: { id: "drive-account", status: "ACTIVE" },
+        isActive: true,
+        slug: "googledrive",
+      });
+      const actionId = ActionId.make("drive-no-artifact-access");
+
+      expect(
+        yield* Effect.flip(
+          make(harness).execute({
+            actionId,
+            authorize: Effect.void,
+            identity: {
+              manifestVersion: ManifestVersion.make("drive-v1"),
+              operation: "DRIVE_DELIVER_ARTIFACT",
+              toolkit: "googledrive",
+            },
+            input: {
+              artifactId: "artifact-1",
+              expectedBytes: 3,
+              fileName: "report.pdf",
+              mediaType: "application/pdf",
+              targetFolderId: null,
+            },
+            userId,
+          }),
+        ),
+      ).toMatchObject({ _tag: "IntegrationExecutionRejected", code: "providerUnavailable" });
+      expect(harness.actions.get(actionId)).toMatchObject({ _tag: "NotApplied" });
+      expect(harness.staged).toEqual([]);
+      expect(harness.executed).toEqual([]);
+    }),
+  );
+
   it.effect("fences an uncertain Drive staging attempt before any retry can duplicate it", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
