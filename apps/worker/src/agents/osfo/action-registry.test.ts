@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { Effect, Result, Schema } from "effect";
 
-import { GmailMessageInput } from "../../domain/integration-manifest";
+import type { GmailMessageInput } from "../../domain/integration-manifest";
 import {
   ActionPresentationId,
   ActionPresentationUnavailable,
