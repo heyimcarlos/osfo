@@ -5,7 +5,8 @@ import { whatsappWakeups, whatsappWakeupSources } from "@osfo/db/schema/whatsapp
 import { env } from "cloudflare:workers";
 import { expect, it } from "@effect/vitest";
 import { eq } from "drizzle-orm";
-import { Deferred, Effect, Fiber, Layer, Redacted, Ref, Schema } from "effect";
+import { Deferred, Effect, Fiber, Latch, Layer, Redacted, Ref, Schema } from "effect";
+import postgres, { type Sql } from "postgres";
 
 import { loadConfig } from "../../src/config";
 import { AccountDeletionComposition } from "../../src/composition/account-deletion";
@@ -325,6 +326,63 @@ it.effect("does not cancel a newly coalesced source from a stale empty-source sn
         });
         expect((yield* Ref.get(calls)).length).toBe(1);
       }),
+  ),
+);
+
+it.effect("waits for the User serialization fence before direct source cancellation", () =>
+  withFixture(({ database, link, sources, userId, wakeUps }) =>
+    Effect.gen(function* () {
+      const source = WhatsAppWakeUps.Source.cases.Reminder.make({
+        identity: WhatsAppWakeUps.SourceIdentity.make("reminder-direct-cancel-race"),
+      });
+      yield* Ref.set(sources, [{ committedAt: new Date("2026-08-27T12:00:00.000Z"), source }]);
+      yield* wakeUps.request({
+        channelLinkId: link.channelLinkId,
+        source,
+        traceId: WhatsAppWakeUps.TraceId.make("trace-direct-cancel-first"),
+        userId,
+        wakeUpId: WhatsAppWakeUps.WakeUpId.make("wakeup-direct-cancel-first"),
+      });
+      const fenceReady = Latch.makeUnsafe();
+      const fenceRelease = Latch.makeUnsafe();
+      yield* Effect.acquireUseRelease(
+        Effect.sync(() => ({
+          blockerClient: postgres(env.DB.connectionString, { max: 1, prepare: false }),
+          lockObserver: postgres(env.DB.connectionString, { max: 1, prepare: false }),
+        })),
+        ({ blockerClient, lockObserver }) =>
+          Effect.gen(function* () {
+            yield* Effect.promise(() =>
+              Promise.all([lockObserver`select 1`, blockerClient`select 1`]),
+            );
+            const fence = yield* Effect.forkChild(
+              Effect.promise(() =>
+                blockerClient.begin(async (transaction) => {
+                  await transaction`select pg_advisory_xact_lock(hashtextextended(${userId}, 0))`;
+                  fenceReady.openUnsafe();
+                  await Effect.runPromise(fenceRelease.await);
+                }),
+              ),
+            );
+            yield* fenceReady.await.pipe(Effect.timeout("5 seconds"));
+            const cancellation = yield* Effect.forkChild(wakeUps.cancelSource({ source, userId }));
+            yield* awaitPostgresLockWaiters(lockObserver, 1);
+            expect(cancellation.pollUnsafe()).toBeUndefined();
+            yield* fenceRelease.open;
+            yield* Fiber.join(fence);
+            yield* Fiber.join(cancellation);
+          }).pipe(Effect.ensuring(fenceRelease.open)),
+        ({ blockerClient, lockObserver }) =>
+          Effect.promise(() => Promise.all([blockerClient.end(), lockObserver.end()])),
+      );
+      const [afterRelease] = yield* Effect.promise(() =>
+        database
+          .select({ state: whatsappWakeups.state })
+          .from(whatsappWakeups)
+          .where(eq(whatsappWakeups.wakeup_id, "wakeup-direct-cancel-first")),
+      );
+      expect(afterRelease?.state).toBe("canceled");
+    }),
   ),
 );
 
@@ -878,3 +936,32 @@ interface Fixture {
   readonly userId: UserId;
   readonly wakeUps: WhatsAppWakeUps.Interface;
 }
+
+const awaitPostgresLockWaiters = (
+  client: Sql,
+  expected: number,
+  attemptsRemaining = 500,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const [row] = yield* Effect.promise(
+      () =>
+        client<Array<{ readonly waiting_count: number }>>`
+        select count(*)::integer as waiting_count
+        from pg_stat_activity
+        where datname = current_database()
+          and pid <> pg_backend_pid()
+          and wait_event_type = 'Lock'
+      `,
+    );
+    if (row !== undefined && row.waiting_count >= expected) return undefined;
+    if (attemptsRemaining === 0) {
+      return yield* Effect.die(
+        new Error(
+          `Expected ${expected} PostgreSQL lock waiters, observed ${row?.waiting_count ?? 0}`,
+        ),
+      );
+    }
+    yield* Effect.yieldNow;
+    yield* awaitPostgresLockWaiters(client, expected, attemptsRemaining - 1);
+    return undefined;
+  });

@@ -471,6 +471,9 @@ export const make = Effect.gen(function* () {
     const now = DateTime.toDateUtc(yield* DateTime.now);
     yield* attempt("cancelSource", () =>
       database.transaction(async (transaction) => {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${input.userId}, 0))`,
+        );
         const rows = await transaction
           .select({ wakeUpId: whatsappWakeupSources.wakeup_id })
           .from(whatsappWakeupSources)
