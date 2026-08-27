@@ -22,7 +22,6 @@ import type {
   Interface as PersonalSkillAuthority,
   PersonalSkillAvailability,
 } from "./personal-skill-authority";
-import { PersonalSkillInvalid } from "./personal-skill-authority";
 
 /** Small read surface for listing active Skills or inspecting one immutable lineage. */
 export const SkillInspectInput = Schema.TaggedUnion({
@@ -135,46 +134,12 @@ export const makePersonalSkillTools = (dependencies: {
       });
     }
     if (input._tag === "UndoLatest") {
-      const inspection = yield* dependencies.authority.inspect({
-        skillId: input.skillId,
-        userId: current.userId,
-      });
-      const previous = inspection.versions.find(
-        ({ skillVersion }) => skillVersion === inspection.current.parentSkillVersion,
-      );
-      if (previous === undefined) {
-        return yield* new PersonalSkillInvalid({
-          cause: { skillId: input.skillId },
-          message: "This Skill has no material change to undo",
-          reason: "transition",
-        });
-      }
-      if (inspection.current.status === "archived") {
-        return yield* dependencies.authority.restore({
-          availability,
-          evidence,
-          expectedSkillVersion: input.expectedSkillVersion,
-          nowEpochMillis,
-          skillId: input.skillId,
-          userId: current.userId,
-        });
-      }
-      if (previous.status === "archived") {
-        return yield* dependencies.authority.archive({
-          evidence,
-          expectedSkillVersion: input.expectedSkillVersion,
-          nowEpochMillis,
-          skillId: input.skillId,
-          userId: current.userId,
-        });
-      }
-      return yield* dependencies.authority.rollback({
+      return yield* dependencies.authority.undoLatest({
         availability,
         evidence,
         expectedSkillVersion: input.expectedSkillVersion,
         nowEpochMillis,
         skillId: input.skillId,
-        targetSkillVersion: previous.skillVersion,
         userId: current.userId,
       });
     }

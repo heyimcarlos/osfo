@@ -158,22 +158,24 @@ export function SkillsSettingsContent({
                     )}
                     {archived ? "Restore" : "Archive"}
                   </Button>
-                  <Button
-                    disabled={busy}
-                    size="sm"
-                    type="button"
-                    variant="ghost"
-                    onClick={() =>
-                      onChange({
-                        change: "undo",
-                        expectedRevision: skill.revisionReference,
-                        reference: skill.reference,
-                      })
-                    }
-                  >
-                    <Undo2 aria-hidden="true" className="size-4" />
-                    Undo latest change
-                  </Button>
+                  {skill.canUndo ? (
+                    <Button
+                      disabled={busy}
+                      size="sm"
+                      type="button"
+                      variant="ghost"
+                      onClick={() =>
+                        onChange({
+                          change: "undo",
+                          expectedRevision: skill.revisionReference,
+                          reference: skill.reference,
+                        })
+                      }
+                    >
+                      <Undo2 aria-hidden="true" className="size-4" />
+                      Undo latest change
+                    </Button>
+                  ) : null}
                   <Button
                     className="text-[#c9364d] hover:bg-[#fff0f2]"
                     disabled={busy || onDelete === undefined}

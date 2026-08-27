@@ -73,8 +73,7 @@ export const makePersonalSkillControl = (dependencies: {
               skillId,
               userId,
             })
-          : yield* undoLatest({
-              authority: dependencies.authority,
+          : yield* dependencies.authority.undoLatest({
               availability,
               evidence,
               expectedSkillVersion,
@@ -127,37 +126,6 @@ export const makePersonalSkillControl = (dependencies: {
   return { change, delete: deleteSkill, inspect, presentDeletion };
 };
 
-const undoLatest = Effect.fn("PersonalSkillControl.undoLatest")(function* (input: {
-  readonly authority: PersonalSkillAuthority;
-  readonly availability: PersonalSkillAvailability;
-  readonly evidence: ReadonlyArray<{
-    readonly _tag: "UserDecision";
-    readonly referenceId: string;
-  }>;
-  readonly expectedSkillVersion: PersonalSkillVersionId;
-  readonly nowEpochMillis: number;
-  readonly skillId: PersonalSkillId;
-  readonly userId: UserId;
-}) {
-  const inspection = yield* input.authority.inspect(input);
-  const current = inspection.current;
-  const previous = inspection.versions.find(
-    ({ skillVersion }) => skillVersion === current.parentSkillVersion,
-  );
-  if (previous === undefined) {
-    return yield* new PersonalSkillApprovalInvalid({
-      message: "This Skill has no material change to undo.",
-    });
-  }
-  if (current.status === "archived") {
-    return yield* input.authority.restore(input);
-  }
-  if (previous.status === "archived") {
-    return yield* input.authority.archive(input);
-  }
-  return yield* input.authority.rollback({ ...input, targetSkillVersion: previous.skillVersion });
-});
-
 const projectSkill = (
   version: PersonalSkillVersion,
   availability: PersonalSkillAvailability,
@@ -182,6 +150,7 @@ const projectSkill = (
         }
       : { state: "available" },
     behavior: version.taskDescription,
+    canUndo: version.parentSkillVersion !== null,
     capabilities,
     lastUsedAt:
       version.lastUsedAtEpochMillis === null

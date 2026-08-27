@@ -19,6 +19,7 @@ afterEach(cleanup);
 const skill = {
   availability: { state: "available" },
   behavior: "Put the summary before the details.",
+  canUndo: true,
   capabilities: ["Generate one bounded PDF or DOCX."],
   lastUsedAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-26T12:00:00.000Z")),
   purpose: "Prepare the weekly report.",
@@ -83,6 +84,7 @@ describe("SkillsSettingsContent", () => {
           {
             availability: { state: "available" },
             behavior: "Put the summary before the details.",
+            canUndo: true,
             capabilities: ["Generate one bounded PDF or DOCX."],
             lastUsedAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-26T12:00:00.000Z")),
             purpose: "Prepare the weekly report.",
@@ -97,6 +99,7 @@ describe("SkillsSettingsContent", () => {
               state: "unavailable",
             },
             behavior: "Read the latest messages before drafting a reply.",
+            canUndo: false,
             capabilities: ["Read Gmail."],
             lastUsedAt: null,
             purpose: "Draft inbox replies.",
@@ -118,6 +121,19 @@ describe("SkillsSettingsContent", () => {
     expect(html).toContain("Delete");
     expect(html).not.toContain("private-skill-id");
     expect(html).not.toContain("private-version-id");
+  });
+
+  it("does not offer undo until a Skill has a prior material version", () => {
+    const html = renderToStaticMarkup(
+      <SkillsSettingsContent
+        busyReference={null}
+        notice={null}
+        onChange={() => undefined}
+        skills={[{ ...skill, canUndo: false }]}
+      />,
+    );
+
+    expect(html).not.toContain("Undo latest change");
   });
 
   it("keeps loading and failed inspection safe, then retries from the authority", async () => {

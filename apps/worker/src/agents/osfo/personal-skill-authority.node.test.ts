@@ -740,6 +740,7 @@ describe("PersonalSkillAuthority", () => {
             {
               availability: { state: "available" },
               behavior: "Create the weekly status report as a PDF.",
+              canUndo: false,
               capabilities: ["Generate one bounded PDF or DOCX."],
               purpose: "Prepare the User's weekly status report.",
               status: "active",
@@ -754,7 +755,7 @@ describe("PersonalSkillAuthority", () => {
           });
           expect(archived).toMatchObject({
             notice: "Skill archived.",
-            skill: { status: "archived" },
+            skill: { canUndo: true, status: "archived" },
           });
           const restored = yield* control.change(userId, {
             change: "undo",
@@ -788,6 +789,56 @@ describe("PersonalSkillAuthority", () => {
           expect((yield* control.inspect(UserId.make("another-user"))).skills).toEqual([]);
         }),
       ),
+  );
+
+  it.effect("deletes the initial accepted learning candidate and its model attempts", () =>
+    withDatabase((storage) =>
+      Effect.gen(function* () {
+        const authority = makePersonalSkillAuthority(storage);
+        yield* authority.create({ availability, version: version(1) });
+        const candidate = learningCandidate("candidate-initial-skill-delete");
+        yield* authority.enqueueLearning(candidate);
+        yield* authority.recordLearningCost({
+          attemptId: SkillLearningModelAttemptId.make("initial-skill-delete-attempt"),
+          basis: "observed",
+          candidateId: candidate.candidateId,
+          modelInputTokens: 10,
+          modelOutputTokens: 5,
+          outcome: "success",
+          recordedAtEpochMillis: 1_788_000_000_250,
+          userId,
+          vendorUsdMicros: 2,
+        });
+        storage.sql.exec(
+          `UPDATE osfo_personal_skill_learning_candidates
+           SET accepted_skill_version = ?, status = 'accepted'
+           WHERE candidate_id = ?`,
+          PersonalSkillVersionId.make("weekly-status-v1"),
+          candidate.candidateId,
+        );
+
+        yield* authority.delete({
+          expectedSkillVersion: PersonalSkillVersionId.make("weekly-status-v1"),
+          skillId: PersonalSkillId.make("weekly-status"),
+          userId,
+        });
+
+        expect(
+          storage.sql
+            .exec<{ count: number }>(
+              "SELECT COUNT(*) AS count FROM osfo_personal_skill_learning_candidates",
+            )
+            .one().count,
+        ).toBe(0);
+        expect(
+          storage.sql
+            .exec<{ count: number }>(
+              "SELECT COUNT(*) AS count FROM osfo_personal_skill_learning_model_attempts",
+            )
+            .one().count,
+        ).toBe(0);
+      }),
+    ),
   );
 
   it.effect("removes Skill versions and pending learning through User deletion lineage", () =>

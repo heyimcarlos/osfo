@@ -17,6 +17,7 @@ export const SkillAvailability = Schema.Union([
 export const SkillSummary = Schema.Struct({
   availability: SkillAvailability,
   behavior: PlainText,
+  canUndo: Schema.Boolean,
   capabilities: Schema.Array(PlainText).check(Schema.isMaxLength(24)),
   lastUsedAt: Schema.NullOr(Schema.DateFromString),
   purpose: PlainText,

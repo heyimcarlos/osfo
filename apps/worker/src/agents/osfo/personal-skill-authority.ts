@@ -67,6 +67,8 @@ export interface RollbackPersonalSkillInput extends RestorePersonalSkillInput {
   readonly targetSkillVersion: PersonalSkillVersionId;
 }
 
+export type UndoPersonalSkillInput = RestorePersonalSkillInput;
+
 export interface DeletePersonalSkillInput extends InspectPersonalSkillInput {
   readonly expectedSkillVersion: PersonalSkillVersionId;
 }
@@ -359,6 +361,14 @@ export interface Interface {
     { readonly _tag: "RolledBack"; readonly version: PersonalSkillVersion },
     AuthorityError
   >;
+  readonly undoLatest: (
+    input: UndoPersonalSkillInput,
+  ) => Effect.Effect<
+    | { readonly _tag: "Archived"; readonly version: PersonalSkillVersion }
+    | { readonly _tag: "Restored"; readonly version: PersonalSkillVersion }
+    | { readonly _tag: "RolledBack"; readonly version: PersonalSkillVersion },
+    AuthorityError
+  >;
   readonly settleLearning: (
     input: SettleSkillLearningInput,
   ) => Effect.Effect<void, LearningAuthorityError>;
@@ -455,6 +465,63 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
       version: next,
     });
     return revised.version;
+  });
+
+  const archive = Effect.fn("PersonalSkillAuthority.archive")(function* (
+    input: LifecycleMutationInput,
+  ) {
+    const revision = yield* lifecycleRevision(input, "archived", "user");
+    return { _tag: "Archived", version: revision } as const;
+  });
+
+  const restore = Effect.fn("PersonalSkillAuthority.restore")(function* (
+    input: RestorePersonalSkillInput,
+  ) {
+    const revision = yield* lifecycleRevision(
+      input,
+      "active",
+      "user",
+      undefined,
+      input.availability,
+    );
+    return { _tag: "Restored", version: revision } as const;
+  });
+
+  const rollback = Effect.fn("PersonalSkillAuthority.rollback")(function* (
+    input: RollbackPersonalSkillInput,
+  ) {
+    const target = yield* makePersonalSkillAuthority(storage).pin({
+      skillId: input.skillId,
+      skillVersion: input.targetSkillVersion,
+      userId: input.userId,
+    });
+    const revision = yield* lifecycleRevision(
+      input,
+      "active",
+      "rollback",
+      target,
+      input.availability,
+    );
+    return { _tag: "RolledBack", version: revision } as const;
+  });
+
+  const undoLatest = Effect.fn("PersonalSkillAuthority.undoLatest")(function* (
+    input: UndoPersonalSkillInput,
+  ) {
+    const inspection = yield* inspect(input);
+    const previous = inspection.versions.find(
+      ({ skillVersion }) => skillVersion === inspection.current.parentSkillVersion,
+    );
+    if (previous === undefined) {
+      return yield* new PersonalSkillInvalid({
+        cause: { skillId: input.skillId },
+        message: "This Skill has no material change to undo",
+        reason: "transition",
+      });
+    }
+    if (inspection.current.status === "archived") return yield* restore(input);
+    if (previous.status === "archived") return yield* archive(input);
+    return yield* rollback({ ...input, targetSkillVersion: previous.skillVersion });
   });
 
   return {
@@ -660,10 +727,7 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
       }
       return { _tag: outcome._tag, version };
     }),
-    archive: Effect.fn("PersonalSkillAuthority.archive")(function* (input) {
-      const revision = yield* lifecycleRevision(input, "archived", "user");
-      return { _tag: "Archived", version: revision } as const;
-    }),
+    archive,
     claimLearning: Effect.fn("PersonalSkillAuthority.claimLearning")(function* (
       input: ClaimSkillLearningInput,
     ) {
@@ -806,17 +870,27 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
             `DELETE FROM osfo_personal_skill_learning_model_attempts
              WHERE candidate_id IN (
                SELECT candidate_id FROM osfo_personal_skill_learning_candidates
-               WHERE owner_user_id = ? AND prior_skill_version IN
-                 (SELECT skill_version FROM osfo_personal_skill_versions WHERE skill_id = ?)
+               WHERE owner_user_id = ? AND (
+                 prior_skill_version IN
+                   (SELECT skill_version FROM osfo_personal_skill_versions WHERE skill_id = ?)
+                 OR accepted_skill_version IN
+                   (SELECT skill_version FROM osfo_personal_skill_versions WHERE skill_id = ?)
+               )
              )`,
             input.userId,
+            input.skillId,
             input.skillId,
           );
           storage.sql.exec(
             `DELETE FROM osfo_personal_skill_learning_candidates
-             WHERE owner_user_id = ? AND prior_skill_version IN
-               (SELECT skill_version FROM osfo_personal_skill_versions WHERE skill_id = ?)`,
+             WHERE owner_user_id = ? AND (
+               prior_skill_version IN
+                 (SELECT skill_version FROM osfo_personal_skill_versions WHERE skill_id = ?)
+               OR accepted_skill_version IN
+                 (SELECT skill_version FROM osfo_personal_skill_versions WHERE skill_id = ?)
+             )`,
             input.userId,
+            input.skillId,
             input.skillId,
           );
           const deleted = storage.sql
@@ -1299,16 +1373,7 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
     releaseLearning: Effect.fn("PersonalSkillAuthority.releaseLearning")((input) =>
       updateLearningStatus(storage, input, "pending", "releaseLearning"),
     ),
-    restore: Effect.fn("PersonalSkillAuthority.restore")(function* (input) {
-      const revision = yield* lifecycleRevision(
-        input,
-        "active",
-        "user",
-        undefined,
-        input.availability,
-      );
-      return { _tag: "Restored", version: revision } as const;
-    }),
+    restore,
     revise: Effect.fn("PersonalSkillAuthority.revise")(function* (input: RevisePersonalSkillInput) {
       const version = yield* decodeVersion(input.version);
       yield* validateActivation(version, input.availability);
@@ -1317,24 +1382,11 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
         version,
       });
     }),
-    rollback: Effect.fn("PersonalSkillAuthority.rollback")(function* (input) {
-      const target = yield* makePersonalSkillAuthority(storage).pin({
-        skillId: input.skillId,
-        skillVersion: input.targetSkillVersion,
-        userId: input.userId,
-      });
-      const revision = yield* lifecycleRevision(
-        input,
-        "active",
-        "rollback",
-        target,
-        input.availability,
-      );
-      return { _tag: "RolledBack", version: revision } as const;
-    }),
+    rollback,
     settleLearning: Effect.fn("PersonalSkillAuthority.settleLearning")((input) =>
       updateLearningStatus(storage, input, input.status, "settleLearning"),
     ),
+    undoLatest,
   };
 };
 

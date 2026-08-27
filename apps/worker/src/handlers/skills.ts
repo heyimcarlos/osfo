@@ -71,7 +71,8 @@ export const layer = (bindings: Bindings) =>
           .handle("inspect", () =>
             withRoute(
               directory,
-              (agentId, actor) => rpc(stub.inspectPersonalSkills(agentId, actor), SkillsSummary),
+              (agentId, actor) =>
+                validateSkillRpcResponse(stub.inspectPersonalSkills(agentId, actor), SkillsSummary),
               unavailable,
             ),
           )
@@ -79,7 +80,7 @@ export const layer = (bindings: Bindings) =>
             withRoute(
               directory,
               (agentId, actor) =>
-                rpc(
+                validateSkillRpcResponse(
                   stub.changePersonalSkill(agentId, { actor, change: payload }),
                   SkillChangeResponse,
                 ),
@@ -90,7 +91,7 @@ export const layer = (bindings: Bindings) =>
             withRoute(
               directory,
               (agentId, actor) =>
-                rpc(
+                validateSkillRpcResponse(
                   stub.presentPersonalSkillDeletion(agentId, {
                     actor,
                     reference: params.reference,
@@ -104,7 +105,7 @@ export const layer = (bindings: Bindings) =>
             withRoute(
               directory,
               (agentId, actor) =>
-                rpc(
+                validateSkillRpcResponse(
                   stub.deletePersonalSkillFromSettings(agentId, {
                     actor,
                     reference: params.reference,
@@ -133,7 +134,7 @@ const withRoute = <Value, Error, PublicError>(
     });
   }).pipe(Effect.mapError(mapError));
 
-const rpc = <SchemaValue extends Schema.Top>(
+export const validateSkillRpcResponse = <SchemaValue extends Schema.Top>(
   promise: Promise<object | null>,
   schema: SchemaValue,
 ) =>
@@ -142,7 +143,7 @@ const rpc = <SchemaValue extends Schema.Top>(
     catch: unavailable,
   }).pipe(
     Effect.flatMap((value) =>
-      Schema.decodeEffect(schema)(value).pipe(Effect.mapError(() => rpcFailure(value))),
+      Schema.is(schema)(value) ? Effect.succeed(value) : Effect.fail(rpcFailure(value)),
     ),
   );
 
