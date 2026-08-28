@@ -31,6 +31,9 @@ describe("Web", () => {
       "PrIvAtE_KeY",
       "signing-key",
       "access_key_id",
+      "key",
+      "key_id",
+      "client-key-id",
       "TOKEN",
       "api_key",
       "apikey",
@@ -54,6 +57,23 @@ describe("Web", () => {
     for (const key of ["topic", "page", "query", "sort", "filter", "locale"]) {
       expect(isSafePublicUrl(`https://example.com/report?${key}=public`)).toBe(true);
     }
+  });
+
+  it("rejects bounded nested credential URLs while preserving public nested values", () => {
+    const signedUrl = "https://cdn.example.com/report?X-Amz-Signature=retained-secret";
+    const ambiguousSignedUrl = "https://[broken?auth_token=retained-secret";
+    const unsafeUrls = [
+      `https://example.com/report?redirect=${encodeURIComponent(signedUrl)}`,
+      `https://example.com/report?redirect=${encodeURIComponent(encodeURIComponent(signedUrl))}`,
+      `https://example.com/report?redirect=${encodeURIComponent(ambiguousSignedUrl)}`,
+    ];
+
+    for (const url of unsafeUrls) expect(isSafePublicUrl(url)).toBe(false);
+    expect(
+      isSafePublicUrl(
+        `https://example.com/report?redirect=${encodeURIComponent("https://cdn.example.com/report?topic=public&page=2")}`,
+      ),
+    ).toBe(true);
   });
 
   it.effect("keeps ranked result identities stable and grounds search in fetched pages", () =>

@@ -639,7 +639,13 @@ export const canonicalPublicUrl = (value: string) => {
 };
 
 /** Reject non-public schemes, credentials, hostnames, IP literals, and non-standard ports. */
-export const isSafePublicUrl = (value: string): boolean => {
+export const isSafePublicUrl = (value: string): boolean => isSafePublicUrlAtDepth(value, 0);
+
+const maxNestedUrlDepth = 2;
+const maxNestedQueryValueLength = 4_096;
+const maxNestedDecodePasses = 2;
+
+const isSafePublicUrlAtDepth = (value: string, depth: number): boolean => {
   let url: URL;
   try {
     url = new URL(value);
@@ -648,7 +654,14 @@ export const isSafePublicUrl = (value: string): boolean => {
   }
   if (url.protocol !== "https:" || url.username.length > 0 || url.password.length > 0) return false;
   if (url.port !== "" && url.port !== "443") return false;
-  if (Array.from(url.searchParams.keys()).some(isCredentialQueryKey)) return false;
+  if (
+    Array.from(url.searchParams).some(
+      ([key, queryValue]) =>
+        isCredentialQueryKey(key) || hasUnsafeNestedQueryValue(queryValue, depth),
+    )
+  ) {
+    return false;
+  }
   const hostname = url.hostname.toLowerCase().replace(/\.$/u, "");
   if (
     hostname.length === 0 ||
@@ -690,11 +703,59 @@ const isCredentialQueryKey = (value: string) => {
     .replaceAll(/[^a-z0-9]/gu, "");
   return (
     exactCredentialQueryKeys.has(normalized) ||
+    normalized === "key" ||
+    normalized.endsWith("keyid") ||
+    normalized.endsWith("keyidentifier") ||
     strongCredentialQueryMarkers.some((marker) => normalized.includes(marker)) ||
     credentialKeyFamilies.some((family) => normalized.includes(family)) ||
     structuredAuthQueryKeys.some((family) => normalized.startsWith(family))
   );
 };
+
+const hasUnsafeNestedQueryValue = (value: string, depth: number) => {
+  if (value.length > maxNestedQueryValueLength) return true;
+  const candidates = [value];
+  let decoded = value;
+  for (let pass = 0; pass < maxNestedDecodePasses; pass += 1) {
+    let next: string;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      break;
+    }
+    if (next === decoded) break;
+    candidates.push(next);
+    decoded = next;
+  }
+  return candidates.some((candidate) => {
+    let nestedUrl: URL | undefined;
+    try {
+      nestedUrl = new URL(candidate);
+    } catch {
+      return looksLikeNestedUrl(candidate) && hasCredentialAssignment(candidate);
+    }
+    if (depth >= maxNestedUrlDepth) return true;
+    return !isSafePublicUrlAtDepth(nestedUrl.href, depth + 1);
+  });
+};
+
+const looksLikeNestedUrl = (value: string) =>
+  /^[a-z][a-z0-9+.-]*:\/\//iu.test(value) || value.startsWith("//");
+
+const hasCredentialAssignment = (value: string) =>
+  value
+    .split(/[?&#;]/u)
+    .slice(1)
+    .some((part) => {
+      const separator = part.indexOf("=");
+      if (separator <= 0) return false;
+      const key = part.slice(0, separator);
+      try {
+        return isCredentialQueryKey(decodeURIComponent(key));
+      } catch {
+        return isCredentialQueryKey(key);
+      }
+    });
 
 const isUnsafeIpLiteral = (hostname: string) => {
   const normalized =

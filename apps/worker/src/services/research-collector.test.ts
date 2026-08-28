@@ -115,6 +115,7 @@ it.effect("deduplicates canonical variants before assigning page-operation ident
 });
 
 it.effect("never fetches or manifests credential-bearing discovery URLs", () => {
+  const nestedSignedUrl = "https://cdn.example.com/report?X-Amz-Signature=private";
   const fixture = makeFixture({
     discoveryUrls: [
       "https://example.com/report?access_token=private",
@@ -122,6 +123,10 @@ it.effect("never fetches or manifests credential-bearing discovery URLs", () => 
       "https://example.com/report?auth_token=private",
       "https://example.com/report?api-token=private",
       "https://example.com/report?private_key=private",
+      "https://example.com/report?key=private",
+      "https://example.com/report?key_id=private",
+      `https://example.com/report?redirect=${encodeURIComponent(nestedSignedUrl)}`,
+      `https://example.com/report?redirect=${encodeURIComponent(encodeURIComponent(nestedSignedUrl))}`,
     ],
   });
   return Effect.gen(function* () {
@@ -135,7 +140,7 @@ it.effect("never fetches or manifests credential-bearing discovery URLs", () => 
     const persistedSearch = fixture.resultJson.get(`${workflowId}:provider:0`) ?? "";
     expect(persistedSearch).toContain('"results":[]');
     expect(persistedSearch).not.toContain("private");
-    expect(persistedSearch).not.toMatch(/access|auth|api|private|signature|token/iu);
+    expect(persistedSearch).not.toMatch(/access|auth|api|key|private|redirect|signature|token/iu);
     expect(Array.from(fixture.operations.values()).some(({ input }) => input._tag === "Page")).toBe(
       false,
     );
