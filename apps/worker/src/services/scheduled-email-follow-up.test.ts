@@ -30,6 +30,7 @@ describe("ScheduledEmailFollowUp delivery Session selection", () => {
     sourceExposedAt: null,
     submissionId: null,
     userId: email.userId,
+    wakeRequestedAt: null,
     workflowId: email.workflowId,
     whatsAppChannelLinkId: null,
   };

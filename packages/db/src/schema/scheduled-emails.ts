@@ -179,6 +179,7 @@ export const scheduledEmailNotifications = pgTable(
     claimed_at: timestamp({ withTimezone: true }).notNull(),
     think_submission_id: text(),
     accepted_at: timestamp({ withTimezone: true }),
+    wake_requested_at: timestamp({ withTimezone: true }),
     source_exposed_at: timestamp({ withTimezone: true }),
   },
   (table) => [
@@ -194,6 +195,7 @@ export const scheduledEmailNotifications = pgTable(
         and ((${table.think_submission_id} is null) = (${table.accepted_at} is null))
         and (${table.think_submission_id} is null or (length(${table.think_submission_id}) between 1 and 160 and position(':' in ${table.think_submission_id}) = 0))
         and (${table.accepted_at} is null or ${table.accepted_at} >= ${table.claimed_at})
+        and (${table.wake_requested_at} is null or (${table.accepted_at} is not null and ${table.wake_requested_at} >= ${table.accepted_at}))
         and (${table.source_exposed_at} is null or (${table.accepted_at} is not null and ${table.source_exposed_at} >= ${table.accepted_at}))`,
     ),
   ],

@@ -194,6 +194,59 @@ describe("ScheduledEmail", () => {
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 
+  it.effect("uses the durable Workflow trigger after the original AuthSession expires", () => {
+    const fixture = makeFixture();
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      fixture.currentAuthorization = {
+        ...fixture.currentAuthorization,
+        authority: {
+          _tag: "RevokedAuthSession",
+          authSessionId: AuthSessionId.make("scheduled-email-auth-session"),
+          userId,
+        },
+      };
+      yield* TestClock.setTime(scheduledAt.getTime());
+
+      expect(yield* emails.sendDue(payload)).toMatchObject({ state: "success" });
+      expect(fixture.sendAttempts).toBe(1);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect("authorizes inspect and cancel from the current caller session", () => {
+    const fixture = makeFixture();
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const current: AuthorizationContext = {
+        ...authorization(),
+        authority: {
+          _tag: "AuthSession",
+          authSessionId: AuthSessionId.make("replacement-auth-session"),
+          expiresAt: periodEndsAt,
+          userId,
+        },
+        originatingAuthority: {
+          _tag: "AuthSession",
+          authSessionId: AuthSessionId.make("replacement-auth-session"),
+        },
+      };
+
+      expect(yield* emails.inspect(started.email.workflowId, current)).toMatchObject({
+        state: "accepted",
+      });
+      expect(yield* emails.cancel(started.email.workflowId, current)).toMatchObject({
+        _tag: "CancelRequested",
+        email: { state: "canceled" },
+      });
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
   it.effect("keeps an ambiguous provider outcome nonterminal and never resends blindly", () => {
     const fixture = makeFixture({ sendOutcome: "ambiguous" });
     return Effect.gen(function* () {
@@ -203,10 +256,18 @@ describe("ScheduledEmail", () => {
       const payload = payloadFor(started.email);
       yield* emails.beginWaiting(payload);
       yield* TestClock.setTime(scheduledAt.getTime());
-      const failed = yield* emails.sendDue(payload);
+      const unknown = yield* emails.sendDue(payload);
+      const pending = yield* emails.sendDue(payload);
+
+      expect(unknown).toMatchObject({ sendOutcome: null, state: "sending", terminalAt: null });
+      expect(pending).toMatchObject({ sendOutcome: null, state: "sending", terminalAt: null });
+      expect(fixture.gmailSendFacts).toBe(0);
+      fixture.reconciliation = { _tag: "Ambiguous" };
+      yield* TestClock.setTime(scheduledAt.getTime() + 120_000);
+      const conservative = yield* emails.sendDue(payload);
       const replayed = yield* emails.sendDue(payload);
 
-      expect(failed).toMatchObject({
+      expect(conservative).toMatchObject({
         sendOutcome: "ambiguous",
         state: "send_pending_reconciliation",
         terminalAt: null,
@@ -219,6 +280,55 @@ describe("ScheduledEmail", () => {
       expect(fixture.sendAttempts).toBe(1);
       expect(fixture.gmailSendFacts).toBe(1);
       expect(fixture.followUps).toBe(0);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect("settles NotApplied evidence before conservative ambiguity accounting", () => {
+    const fixture = makeFixture({ sendOutcome: "ambiguous" });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      yield* TestClock.setTime(scheduledAt.getTime());
+      expect(yield* emails.sendDue(payload)).toMatchObject({ state: "sending" });
+      fixture.reconciliation = {
+        _tag: "NotApplied",
+        providerLogId: "proved-not-applied-log",
+      };
+
+      const settled = yield* emails.sendDue(payload);
+      expect(settled).toMatchObject({
+        providerLogId: "proved-not-applied-log",
+        sendOutcome: "notApplied",
+        state: "failure",
+      });
+      expect(fixture.gmailSendFacts).toBe(0);
+      expect(fixture.followUps).toBe(1);
+      expect(fixture.sendAttempts).toBe(1);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect("retries the same Action only when reconciliation proves no attempt started", () => {
+    const fixture = makeFixture({ sendOutcome: "unavailable" });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      yield* TestClock.setTime(scheduledAt.getTime());
+
+      expect(yield* emails.sendDue(payload).pipe(Effect.result)).toMatchObject({
+        failure: { operation: "send.preclaim" },
+      });
+      expect(fixture.stored).toMatchObject({ sendOutcome: null, state: "sending" });
+      fixture.reconciliation = { _tag: "NotStarted" };
+      fixture.sendOutcome = "applied";
+
+      expect(yield* emails.recoverClaimed(payload)).toMatchObject({ state: "success" });
+      expect(fixture.sendAttempts).toBe(2);
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 
@@ -280,7 +390,7 @@ describe("ScheduledEmail", () => {
       yield* emails.beginWaiting(payload);
       yield* TestClock.setTime(scheduledAt.getTime());
       yield* emails.sendDue(payload);
-      const cancellation = yield* emails.cancel(started.email.workflowId, userId);
+      const cancellation = yield* emails.cancel(started.email.workflowId, authorization());
       expect(cancellation).toMatchObject({ _tag: "ReconciliationRequired" });
       fixture.reconciliation = { _tag: "Applied", result: applied };
 
@@ -303,11 +413,47 @@ describe("ScheduledEmail", () => {
       const retained = fixture.stored;
       expect(retained).toMatchObject({ state: "accepted", workflowStartAccountedAt: null });
       if (retained === null) throw new Error("accepted Scheduled Email was not retained");
+      fixture.currentAuthorization = {
+        ...fixture.currentAuthorization,
+        authority: {
+          _tag: "RevokedAuthSession",
+          authSessionId: AuthSessionId.make("scheduled-email-auth-session"),
+          userId,
+        },
+      };
       fixture.failWorkflowAccounting = false;
       const recovered = yield* emails.recoverClaimed(payloadFor(retained));
       expect(recovered).toMatchObject({ state: "waiting" });
       expect(recovered.workflowStartAccountedAt).not.toBeNull();
       expect(fixture.workflowStartFacts).toBe(1);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect("cancels an admitted row when origin authority ends before acceptance", () => {
+    const fixture = makeFixture();
+    fixture.failWorkflowCreate = true;
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const pending = yield* emails.start(startInput());
+      expect(pending).toMatchObject({ _tag: "AcceptancePending", email: { state: "admitted" } });
+      fixture.failWorkflowCreate = false;
+      fixture.currentAuthorization = {
+        ...fixture.currentAuthorization,
+        authority: {
+          _tag: "RevokedAuthSession",
+          authSessionId: AuthSessionId.make("scheduled-email-auth-session"),
+          userId,
+        },
+      };
+
+      const canceled = yield* emails.recoverClaimed(payloadFor(pending.email));
+      expect(canceled).toMatchObject({
+        safeFailureCode: "authority-ended-before-acceptance",
+        state: "canceled",
+      });
+      expect(fixture.instances).toHaveLength(0);
+      expect(fixture.sendAttempts).toBe(0);
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 
@@ -320,8 +466,11 @@ describe("ScheduledEmail", () => {
       const payload = payloadFor(started.email);
       yield* emails.beginWaiting(payload);
       yield* TestClock.setTime(scheduledAt.getTime());
+      yield* emails.sendDue(payload);
+      fixture.reconciliation = { _tag: "Ambiguous" };
+      yield* TestClock.setTime(scheduledAt.getTime() + 120_000);
       fixture.failSendAccounting = true;
-      expect(yield* emails.sendDue(payload).pipe(Effect.result)).toMatchObject({
+      expect(yield* emails.recoverClaimed(payload).pipe(Effect.result)).toMatchObject({
         failure: { operation: "send-accounting" },
       });
       expect(fixture.stored).toMatchObject({
@@ -361,6 +510,38 @@ describe("ScheduledEmail", () => {
       expect(fixture.gmailSendFacts).toBe(1);
       expect(fixture.followUps).toBe(1);
       expect(fixture.sendAttempts).toBe(1);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect("drains an outstanding Workflow-start fact from terminal recovery", () => {
+    const fixture = makeFixture();
+    fixture.failWorkflowAccounting = true;
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      yield* emails.start(startInput()).pipe(Effect.result);
+      const retained = fixture.stored;
+      if (retained === null) throw new Error("accepted Scheduled Email was not retained");
+      yield* fixture.port.persistence.markWaiting(retained.workflowId, retained.inputDigest, now);
+      yield* fixture.port.persistence.beginSend(
+        retained.workflowId,
+        retained.inputDigest,
+        scheduledAt,
+      );
+      const terminal = yield* fixture.port.persistence.finishApplied(
+        retained.workflowId,
+        retained.inputDigest,
+        applied,
+        scheduledAt,
+      );
+      fixture.failWorkflowAccounting = false;
+
+      expect(yield* emails.recoverClaimed(payloadFor(terminal))).toMatchObject({
+        state: "success",
+      });
+      expect(fixture.workflowStartFacts).toBe(1);
+      expect(fixture.gmailSendFacts).toBe(1);
+      expect(fixture.followUps).toBe(1);
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 });
@@ -417,7 +598,9 @@ const applied: IntegrationEffectCompleted = {
 };
 
 const makeFixture = (
-  options: { readonly sendOutcome?: "ambiguous" | "applied" | "notApplied" } = {},
+  options: {
+    readonly sendOutcome?: "ambiguous" | "applied" | "notApplied" | "unavailable";
+  } = {},
 ) => {
   let stored: ScheduledEmail.Record | null = null;
   let workflowStartFacts = 0;
@@ -427,8 +610,10 @@ const makeFixture = (
   let currentAuthorization = authorization();
   let reconciliation: ScheduledEmail.SendReconciliation = { _tag: "Pending" };
   let failWorkflowAccounting = false;
+  let failWorkflowCreate = false;
   let failSendAccounting = false;
   let failFollowUp = false;
+  let configuredSendOutcome = options.sendOutcome;
   const calls = new Array<string>();
   const instances = new Array<ScheduledEmail.CloudflareInstanceId>();
   const terminalFacts = new Set<ScheduledEmail.WorkflowId>();
@@ -437,13 +622,14 @@ const makeFixture = (
 
   const sendResult = (): Effect.Effect<
     IntegrationEffectCompleted,
-    ScheduledEmail.SendAmbiguous | ScheduledEmail.SendNotApplied
+    ScheduledEmail.SendAmbiguous | ScheduledEmail.SendNotApplied | ScheduledEmail.Unavailable
   > => {
     sendAttempts += 1;
-    if (options.sendOutcome === "ambiguous") {
+    if (configuredSendOutcome === "unavailable") return Effect.fail(unavailable("send.preclaim"));
+    if (configuredSendOutcome === "ambiguous") {
       return Effect.fail(new ScheduledEmail.SendAmbiguous({ message: "unknown outcome" }));
     }
-    if (options.sendOutcome === "notApplied") {
+    if (configuredSendOutcome === "notApplied") {
       return Effect.fail(
         new ScheduledEmail.SendNotApplied({
           message: "provider rejected before applying",
@@ -476,7 +662,27 @@ const makeFixture = (
               followUps += 1;
             }
           }),
-    currentAuthorization: () => Effect.succeed(currentAuthorization),
+    currentAuthorization: (email, authority) =>
+      Effect.succeed({
+        ...currentAuthorization,
+        authority:
+          authority === "durableTrigger"
+            ? {
+                _tag: "DurableTrigger" as const,
+                triggerId: email.workflowId,
+                triggerType: "workflow" as const,
+                userId: email.userId,
+              }
+            : currentAuthorization.authority,
+        originatingAuthority:
+          authority === "durableTrigger"
+            ? {
+                _tag: "DurableTrigger" as const,
+                triggerId: email.workflowId,
+                triggerType: "workflow" as const,
+              }
+            : currentAuthorization.originatingAuthority,
+      }),
     persistence: {
       admit: (email) =>
         Effect.sync(() => {
@@ -610,10 +816,12 @@ const makeFixture = (
     send: (_email, authorize) => authorize.pipe(Effect.andThen(Effect.suspend(sendResult))),
     workflow: {
       create: (instanceId) =>
-        Effect.sync(() => {
-          calls.push("workflow.create");
-          if (!instances.includes(instanceId)) instances.push(instanceId);
-        }),
+        failWorkflowCreate
+          ? Effect.fail(unavailable("workflow.create"))
+          : Effect.sync(() => {
+              calls.push("workflow.create");
+              if (!instances.includes(instanceId)) instances.push(instanceId);
+            }),
       terminate: (instanceId) =>
         Effect.sync(() => {
           const index = instances.indexOf(instanceId);
@@ -642,6 +850,9 @@ const makeFixture = (
     set failWorkflowAccounting(value: boolean) {
       failWorkflowAccounting = value;
     },
+    set failWorkflowCreate(value: boolean) {
+      failWorkflowCreate = value;
+    },
     get gmailSendFacts() {
       return gmailSendFacts;
     },
@@ -655,6 +866,9 @@ const makeFixture = (
     },
     get sendAttempts() {
       return sendAttempts;
+    },
+    set sendOutcome(next: "ambiguous" | "applied" | "notApplied" | "unavailable" | undefined) {
+      configuredSendOutcome = next;
     },
     get workflowStartFacts() {
       return workflowStartFacts;

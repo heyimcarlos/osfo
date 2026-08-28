@@ -248,7 +248,7 @@ it.effect(
         let workflowCreates = 0;
         let providerInspections = 0;
         const followUps = ScheduledEmailFollowUpPostgres.make(database);
-        const currentAuthorization = ScheduledEmailPostgres.makeCurrentAuthorization(database);
+        const loadCurrentAuthorization = ScheduledEmailPostgres.makeCurrentAuthorization(database);
         const port = ScheduledEmail.Port.of({
           commitTerminalFollowUp: (email) =>
             Effect.gen(function* () {
@@ -260,6 +260,7 @@ it.effect(
               yield* followUps.selectDeliverySession(notificationId, email.sessionId);
               const submissionId = yield* ScheduledEmailFollowUp.submissionIdFor(notificationId);
               yield* followUps.markAccepted(notificationId, submissionId, sendAt);
+              yield* followUps.markWakeRequested(notificationId, sendAt);
             }).pipe(
               Effect.mapError(
                 (cause) =>
@@ -270,10 +271,27 @@ it.effect(
                   }),
               ),
             ),
-          currentAuthorization: (email) =>
-            currentAuthorization(email).pipe(
+          currentAuthorization: (email, authority) =>
+            loadCurrentAuthorization(email, authority).pipe(
               Effect.map((current) => ({
                 ...current,
+                authority:
+                  authority === "durableTrigger"
+                    ? {
+                        _tag: "DurableTrigger" as const,
+                        triggerId: email.workflowId,
+                        triggerType: "workflow" as const,
+                        userId: email.userId,
+                      }
+                    : current.authority,
+                originatingAuthority:
+                  authority === "durableTrigger"
+                    ? {
+                        _tag: "DurableTrigger" as const,
+                        triggerId: email.workflowId,
+                        triggerType: "workflow" as const,
+                      }
+                    : current.originatingAuthority,
                 subscription: { ...current.subscription, plan: "adventurer" as const },
               })),
             ),
@@ -354,7 +372,11 @@ it.effect(
         const notification = yield* followUps.inspect(
           ScheduledEmailFollowUp.NotificationId.make(`${claimedInput.workflowId}-terminal`),
         );
-        expect(notification).toMatchObject({ acceptedAt: expect.any(Date), state: "success" });
+        expect(notification).toMatchObject({
+          acceptedAt: expect.any(Date),
+          state: "success",
+          wakeRequestedAt: expect.any(Date),
+        });
         expect(workflowCreates).toBe(1);
         expect(providerInspections).toBe(1);
       }),
@@ -505,6 +527,9 @@ it.effect("retargets terminal delivery before acceptance and fences every later 
           )
           .pipe(Effect.result),
       ).toMatchObject({ failure: { _tag: "ScheduledEmailFollowUpUnavailable" } });
+      expect(
+        yield* followUps.markWakeRequested(notificationId, sendAt).pipe(Effect.result),
+      ).toMatchObject({ failure: { _tag: "ScheduledEmailFollowUpUnavailable" } });
     }),
   ),
 );
@@ -550,6 +575,19 @@ it.effect("retains one exact WhatsApp terminal source and rejects revoked or del
       const submissionId = ThinkSubmissionId.make("scheduled-email-whatsapp-submission");
       const accepted = yield* followUps.markAccepted(notificationId, submissionId, sendAt);
       expect(yield* followUps.markAccepted(notificationId, submissionId, sendAt)).toEqual(accepted);
+      yield* persistence.markWorkflowStartAccounted(email.workflowId, email.inputDigest, sendAt);
+      yield* persistence.markSendAccounted(email.workflowId, email.inputDigest, sendAt);
+      expect(
+        yield* ScheduledEmailPostgres.reconciliationBatch(database, sendAt, 20),
+      ).toContainEqual(expect.objectContaining({ workflowId: email.workflowId }));
+      const wakeRequested = yield* followUps.markWakeRequested(notificationId, sendAt);
+      expect(wakeRequested.wakeRequestedAt).toEqual(sendAt);
+      expect(yield* followUps.markWakeRequested(notificationId, sendAt)).toEqual(wakeRequested);
+      expect(
+        (yield* ScheduledEmailPostgres.reconciliationBatch(database, sendAt, 20)).some(
+          ({ workflowId }) => workflowId === email.workflowId,
+        ),
+      ).toBe(false);
 
       const source = WhatsAppWakeUps.Source.cases.ScheduledEmail.make({
         identity: WhatsAppWakeUps.SourceIdentity.make(notificationId),

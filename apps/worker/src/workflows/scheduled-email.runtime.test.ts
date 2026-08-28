@@ -29,6 +29,9 @@ const encodedResult = (state: ScheduledEmail.State, dueAt = payload.dueAt) => ({
 
 const makeStep = (sleeps: Array<Date | number>): ScheduledEmailWorkflowStep => ({
   do: (_name, callback) => callback(),
+  sleep: async (_name, duration) => {
+    sleeps.push(duration);
+  },
   sleepUntil: async (_name, timestamp) => {
     sleeps.push(timestamp);
   },
@@ -73,6 +76,7 @@ it("bounds in-host ambiguity polling and leaves truthful nonterminal state for m
 
   expect(executions).toBe(5);
   expect(sleeps).toHaveLength(5);
+  expect(sleeps.slice(1)).toEqual([30_000, 30_000, 30_000, 30_000]);
   expect(result).toMatchObject({ state: "send_pending_reconciliation", terminalAt: null });
 });
 

@@ -179,6 +179,7 @@ export type CancelResult =
 
 export type SendReconciliation =
   | { readonly _tag: "Applied"; readonly result: IntegrationEffectCompleted }
+  | { readonly _tag: "Ambiguous" }
   | { readonly _tag: "NotStarted" }
   | { readonly _tag: "NotApplied"; readonly providerLogId: string | null }
   | { readonly _tag: "Pending" };
@@ -220,6 +221,7 @@ type Persisted =
 export interface PortInterface {
   readonly currentAuthorization: (
     email: Record,
+    authority: "durableTrigger" | "origin",
   ) => Effect.Effect<AuthorizationContext, Unavailable>;
   readonly send: (
     email: Record,
@@ -306,11 +308,11 @@ export interface Interface {
   ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
   readonly cancel: (
     workflowId: WorkflowId,
-    userId: UserId,
+    authorization: AuthorizationContext,
   ) => Effect.Effect<CancelResult, Conflict | Denied | NotFound | Unavailable>;
   readonly inspect: (
     workflowId: WorkflowId,
-    userId: UserId,
+    authorization: AuthorizationContext,
   ) => Effect.Effect<Record, Denied | NotFound | Unavailable>;
   readonly inspectExecution: (
     payload: WorkflowPayload,
@@ -372,7 +374,8 @@ export const make = Effect.gen(function* () {
         workflowId: email.workflowId,
       });
     }
-    const accounted = yield* drainSendAccounting(email);
+    const workflowAccounted = yield* drainWorkflowStartAccounting(email);
+    const accounted = yield* drainSendAccounting(workflowAccounted);
     yield* ports.commitTerminalFollowUp(accounted);
     return accounted;
   });
@@ -399,11 +402,15 @@ export const make = Effect.gen(function* () {
 
   const authorizeControl = Effect.fn("ScheduledEmail.authorizeControl")(function* (
     email: Record,
+    current: AuthorizationContext,
     kind: "workflow.cancel" | "workflow.inspect",
   ) {
-    const current = yield* ports.currentAuthorization(email);
     const result = authorization.recheck(
-      { ...current, approval: null },
+      {
+        ...current,
+        approval: null,
+        subscription: { ...current.subscription, planPolicyVersion: email.planPolicyVersion },
+      },
       { actionId: email.actionId, kind },
     );
     if (Predicate.isTagged(result, "Denied")) return yield* Effect.fail(result);
@@ -412,11 +419,12 @@ export const make = Effect.gen(function* () {
 
   const inspect = Effect.fn("ScheduledEmail.inspect")(function* (
     workflowId: WorkflowId,
-    userId: UserId,
+    current: AuthorizationContext,
   ) {
+    const userId = current.user.userId;
     const email = yield* ports.persistence.inspect(workflowId);
     if (email === null || email.userId !== userId) return yield* new NotFound({ workflowId });
-    return yield* authorizeControl(email, "workflow.inspect");
+    return yield* authorizeControl(email, current, "workflow.inspect");
   });
 
   const authorizeContinuation = Effect.fn("ScheduledEmail.authorizeContinuation")(function* (
@@ -439,7 +447,7 @@ export const make = Effect.gen(function* () {
   const authorizeProtectedSend = Effect.fn("ScheduledEmail.authorizeProtectedSend")(function* (
     email: Record,
   ) {
-    const current = yield* ports.currentAuthorization(email);
+    const current = yield* ports.currentAuthorization(email, "durableTrigger");
     const operation = integrationOperation(email.actionId);
     const result = authorization.recheck(
       {
@@ -487,8 +495,22 @@ export const make = Effect.gen(function* () {
         workflowId,
       });
     }
-    const current = yield* ports.currentAuthorization(email);
-    yield* authorizeContinuation(email, current);
+    const current = yield* ports.currentAuthorization(email, "origin");
+    const continuation = yield* authorizeContinuation(email, current).pipe(Effect.result);
+    if (Predicate.isTagged(continuation, "Failure")) {
+      const terminalAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+      return yield* ports.persistence
+        .finishTerminal(
+          email.workflowId,
+          email.inputDigest,
+          "canceled",
+          null,
+          null,
+          "authority-ended-before-acceptance",
+          terminalAt,
+        )
+        .pipe(Effect.flatMap(settleTerminal));
+    }
     return yield* accept(email);
   });
 
@@ -497,9 +519,11 @@ export const make = Effect.gen(function* () {
   ) {
     const retained = yield* inspectExecution(payload);
     const email =
-      retained.state === "admitted" || retained.state === "accepted"
+      retained.state === "admitted"
         ? yield* reconcileAcceptance(retained.workflowId, retained.inputDigest)
-        : retained;
+        : retained.state === "accepted"
+          ? yield* accept(retained)
+          : retained;
     if (
       [
         "waiting",
@@ -595,38 +619,49 @@ export const make = Effect.gen(function* () {
         outcomeAt,
       );
     }
-    const pending = yield* ports.persistence.markAmbiguous(
-      email.workflowId,
-      email.inputDigest,
-      outcomeAt,
-    );
-    return yield* drainSendAccounting(pending);
+    return email;
   });
 
   const reconcileClaimedSend = Effect.fn("ScheduledEmail.reconcileClaimedSend")(function* (
     email: Record,
   ) {
-    const accounted = yield* drainSendAccounting(email);
-    const reconciliation = yield* ports.reconcileSend(accounted);
-    if (reconciliation._tag === "NotStarted") return yield* executeClaimedSend(accounted);
-    if (reconciliation._tag === "Pending") return accounted;
+    const reconciliation = yield* ports.reconcileSend(email);
+    if (reconciliation._tag === "NotStarted") return yield* executeClaimedSend(email);
     const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     if (reconciliation._tag === "Applied") {
       const completed = yield* ports.persistence.finishApplied(
-        accounted.workflowId,
-        accounted.inputDigest,
+        email.workflowId,
+        email.inputDigest,
         reconciliation.result,
         outcomeAt,
       );
       return yield* settleTerminal(completed);
     }
-    return yield* finishAfterClaim(
-      accounted,
-      "notApplied",
-      reconciliation.providerLogId,
-      "send-not-applied",
+    if (reconciliation._tag === "NotApplied") {
+      return yield* finishAfterClaim(
+        email,
+        "notApplied",
+        reconciliation.providerLogId,
+        "send-not-applied",
+        outcomeAt,
+      );
+    }
+    if (email.state === "send_pending_reconciliation") {
+      return yield* drainSendAccounting(email);
+    }
+    if (
+      reconciliation._tag === "Pending" ||
+      email.sendStartedAt === null ||
+      outcomeAt.getTime() - email.sendStartedAt.getTime() < 120_000
+    ) {
+      return email;
+    }
+    const ambiguous = yield* ports.persistence.markAmbiguous(
+      email.workflowId,
+      email.inputDigest,
       outcomeAt,
     );
+    return yield* drainSendAccounting(ambiguous);
   });
 
   const sendDue = Effect.fn("ScheduledEmail.sendDue")(function* (payload: WorkflowPayload) {
@@ -685,8 +720,7 @@ export const make = Effect.gen(function* () {
           workflowId,
         });
       }
-      const current = yield* ports.currentAuthorization(existing);
-      yield* authorizeContinuation(existing, current);
+      yield* authorizeContinuation(existing, input.authorization);
       const accepted = yield* accept(existing).pipe(
         Effect.catchIf(isWorkflowAcknowledgementFailure, () => Effect.succeed(null)),
       );
@@ -831,11 +865,12 @@ export const make = Effect.gen(function* () {
 
   const cancel = Effect.fn("ScheduledEmail.cancel")(function* (
     workflowId: WorkflowId,
-    userId: UserId,
+    current: AuthorizationContext,
   ) {
+    const userId = current.user.userId;
     const email = yield* ports.persistence.inspect(workflowId);
     if (email === null || email.userId !== userId) return yield* new NotFound({ workflowId });
-    yield* authorizeControl(email, "workflow.cancel");
+    yield* authorizeControl(email, current, "workflow.cancel");
     const requestedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     const requested = yield* ports.persistence.requestCancel(workflowId, userId, requestedAt);
     if (terminalStates.has(requested.state)) {

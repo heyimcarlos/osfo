@@ -1,5 +1,5 @@
 {
-  "id": "39aff040-9e59-47bc-bfa1-a6dbc1af67a4",
+  "id": "3bcecc65-35be-478c-b5f3-965b6e6c0648",
   "prevId": "b7f67afa-84e9-4edd-ab4b-d723fffa152c",
   "version": "7",
   "dialect": "postgresql",
@@ -3316,6 +3316,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "wake_requested_at": {
+          "name": "wake_requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "source_exposed_at": {
           "name": "source_exposed_at",
           "type": "timestamp with time zone",
@@ -3387,7 +3393,7 @@
       "checkConstraints": {
         "scheduled_email_notifications_identity_check": {
           "name": "scheduled_email_notifications_identity_check",
-          "value": "length(btrim(\"scheduled_email_notifications\".\"notification_id\")) > 0\n        and length(btrim(\"scheduled_email_notifications\".\"agent_id\")) > 0\n        and length(btrim(\"scheduled_email_notifications\".\"route_id\")) > 0\n        and length(btrim(\"scheduled_email_notifications\".\"origin_session_id\")) > 0\n        and (\"scheduled_email_notifications\".\"delivery_session_id\" is null or length(btrim(\"scheduled_email_notifications\".\"delivery_session_id\")) > 0)\n        and ((\"scheduled_email_notifications\".\"think_submission_id\" is null) = (\"scheduled_email_notifications\".\"accepted_at\" is null))\n        and (\"scheduled_email_notifications\".\"think_submission_id\" is null or (length(\"scheduled_email_notifications\".\"think_submission_id\") between 1 and 160 and position(':' in \"scheduled_email_notifications\".\"think_submission_id\") = 0))\n        and (\"scheduled_email_notifications\".\"accepted_at\" is null or \"scheduled_email_notifications\".\"accepted_at\" >= \"scheduled_email_notifications\".\"claimed_at\")\n        and (\"scheduled_email_notifications\".\"source_exposed_at\" is null or (\"scheduled_email_notifications\".\"accepted_at\" is not null and \"scheduled_email_notifications\".\"source_exposed_at\" >= \"scheduled_email_notifications\".\"accepted_at\"))"
+          "value": "length(btrim(\"scheduled_email_notifications\".\"notification_id\")) > 0\n        and length(btrim(\"scheduled_email_notifications\".\"agent_id\")) > 0\n        and length(btrim(\"scheduled_email_notifications\".\"route_id\")) > 0\n        and length(btrim(\"scheduled_email_notifications\".\"origin_session_id\")) > 0\n        and (\"scheduled_email_notifications\".\"delivery_session_id\" is null or length(btrim(\"scheduled_email_notifications\".\"delivery_session_id\")) > 0)\n        and ((\"scheduled_email_notifications\".\"think_submission_id\" is null) = (\"scheduled_email_notifications\".\"accepted_at\" is null))\n        and (\"scheduled_email_notifications\".\"think_submission_id\" is null or (length(\"scheduled_email_notifications\".\"think_submission_id\") between 1 and 160 and position(':' in \"scheduled_email_notifications\".\"think_submission_id\") = 0))\n        and (\"scheduled_email_notifications\".\"accepted_at\" is null or \"scheduled_email_notifications\".\"accepted_at\" >= \"scheduled_email_notifications\".\"claimed_at\")\n        and (\"scheduled_email_notifications\".\"wake_requested_at\" is null or (\"scheduled_email_notifications\".\"accepted_at\" is not null and \"scheduled_email_notifications\".\"wake_requested_at\" >= \"scheduled_email_notifications\".\"accepted_at\"))\n        and (\"scheduled_email_notifications\".\"source_exposed_at\" is null or (\"scheduled_email_notifications\".\"accepted_at\" is not null and \"scheduled_email_notifications\".\"source_exposed_at\" >= \"scheduled_email_notifications\".\"accepted_at\"))"
         }
       },
       "isRLSEnabled": false

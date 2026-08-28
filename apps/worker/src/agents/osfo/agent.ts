@@ -4083,6 +4083,18 @@ export class OsfoAgent extends Think<Env> {
       this.#markScheduledEmailFollowUpAccepted(notificationId, submissionId);
     const requestWakeUp = (accepted: ScheduledEmailFollowUp.Notification) =>
       this.#requestScheduledEmailWakeUp(accepted);
+    const ensureWakeUp = (accepted: ScheduledEmailFollowUp.Notification) =>
+      accepted.wakeRequestedAt !== null
+        ? Effect.void
+        : requestWakeUp(accepted).pipe(
+            Effect.andThen(
+              Effect.tryPromise({
+                try: () => this.#markScheduledEmailWakeRequested(notificationId),
+                catch: (cause) => scheduledEmailFollowUpUnavailable("markWakeRequested", cause),
+              }),
+            ),
+            Effect.asVoid,
+          );
     const runFollowUp = (current: ScheduledEmailFollowUp.Notification) =>
       this.runTurn({
         idempotencyKey: `scheduled-email-follow-up-${submissionId}`,
@@ -4111,7 +4123,7 @@ export class OsfoAgent extends Think<Env> {
         return yield* scheduledEmailFollowUpUnavailable("authority", notificationId);
       }
       if (notification.acceptedAt !== null) {
-        yield* requestWakeUp(notification);
+        yield* ensureWakeUp(notification);
         return { _tag: "Replayed" as const, notificationId, submissionId };
       }
       const selected = yield* Effect.tryPromise({
@@ -4148,7 +4160,7 @@ export class OsfoAgent extends Think<Env> {
         try: markAccepted,
         catch: (cause) => scheduledEmailFollowUpUnavailable("markAccepted", cause),
       });
-      yield* requestWakeUp(accepted);
+      yield* ensureWakeUp(accepted);
       return { _tag: "Accepted" as const, notificationId, submissionId };
     }).pipe(
       Effect.mapError((cause) =>
@@ -4204,6 +4216,18 @@ export class OsfoAgent extends Think<Env> {
         { DB: this.env.DB },
         ScheduledEmailFollowUp.Service.pipe(
           Effect.flatMap((followUps) => followUps.markAccepted(notificationId, submissionId)),
+          Effect.orDie,
+        ),
+      ),
+    );
+  }
+
+  #markScheduledEmailWakeRequested(notificationId: ScheduledEmailFollowUp.NotificationId) {
+    return Effect.runPromise(
+      ScheduledEmailComposition.followUpEffect(
+        { DB: this.env.DB },
+        ScheduledEmailFollowUp.Service.pipe(
+          Effect.flatMap((followUps) => followUps.markWakeRequested(notificationId)),
           Effect.orDie,
         ),
       ),
@@ -5308,7 +5332,10 @@ export class OsfoAgent extends Think<Env> {
       throw scheduledEmailUnavailable("start.exactApproval", actionId);
     }
     const current = await Effect.runPromise(
-      this.#currentScheduledEmailAuthorization(metadata, actionId, approved.presentation),
+      this.#currentScheduledEmailAuthorization(metadata, {
+        actionId,
+        presentation: approved.presentation,
+      }),
     );
     const operation = ScheduledEmail.Service.pipe(
       Effect.flatMap((emails) =>
@@ -5338,10 +5365,11 @@ export class OsfoAgent extends Think<Env> {
     const metadata = await Effect.runPromise(
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
     );
+    const current = await Effect.runPromise(
+      this.#currentScheduledEmailAuthorization(metadata, null),
+    );
     const operation = ScheduledEmail.Service.pipe(
-      Effect.flatMap((emails) =>
-        emails.inspect(input.workflowId, metadata.authorityIdentity.userId),
-      ),
+      Effect.flatMap((emails) => emails.inspect(input.workflowId, current)),
       Effect.map(projectScheduledEmailStatus),
     );
     return Effect.runPromise(
@@ -5355,10 +5383,11 @@ export class OsfoAgent extends Think<Env> {
     const metadata = await Effect.runPromise(
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
     );
+    const current = await Effect.runPromise(
+      this.#currentScheduledEmailAuthorization(metadata, null),
+    );
     const operation = ScheduledEmail.Service.pipe(
-      Effect.flatMap((emails) =>
-        emails.cancel(input.workflowId, metadata.authorityIdentity.userId),
-      ),
+      Effect.flatMap((emails) => emails.cancel(input.workflowId, current)),
       Effect.map((result) => ({
         _tag: result._tag,
         email: projectScheduledEmailStatus(result.email),
@@ -5388,8 +5417,7 @@ export class OsfoAgent extends Think<Env> {
 
   #currentScheduledEmailAuthorization(
     metadata: ManagedTurnMetadata,
-    actionId: ActionId,
-    presentation: ApprovalPresentation,
+    approved: { readonly actionId: ActionId; readonly presentation: ApprovalPresentation } | null,
   ) {
     const runtime = Option.getOrUndefined(this.#runtime);
     const integrations = Option.getOrUndefined(this.#integrations);
@@ -5425,11 +5453,14 @@ export class OsfoAgent extends Think<Env> {
                   const { userId: _userId, ...originatingAuthority } = metadata.authorityIdentity;
                   return AuthorizationContext.make({
                     allowance: { _tag: "Metered", ...allowance },
-                    approval: approvalFor(
-                      facts.user.userId,
-                      ScheduledEmail.integrationOperation(actionId),
-                      presentation,
-                    ),
+                    approval:
+                      approved === null
+                        ? null
+                        : approvalFor(
+                            facts.user.userId,
+                            ScheduledEmail.integrationOperation(approved.actionId),
+                            approved.presentation,
+                          ),
                     ...facts,
                     gmailConnection,
                     integrationConnections: gmailConnection === null ? [] : [gmailConnection],

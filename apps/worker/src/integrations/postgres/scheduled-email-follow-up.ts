@@ -28,6 +28,7 @@ const selection = {
   sourceExposedAt: scheduledEmailNotifications.source_exposed_at,
   submissionId: scheduledEmailNotifications.think_submission_id,
   userId: scheduledEmailNotifications.user_id,
+  wakeRequestedAt: scheduledEmailNotifications.wake_requested_at,
   workflowId: scheduledEmailNotifications.workflow_id,
   whatsAppChannelLinkId: sql<string | null>`(
     select channel_link_id
@@ -192,6 +193,51 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
           .set({ accepted_at: current.acceptedAt ?? acceptedAt, think_submission_id: submissionId })
           .where(eq(scheduledEmailNotifications.notification_id, notificationId));
         return { ...current, acceptedAt: current.acceptedAt ?? acceptedAt, submissionId };
+      }),
+    ).pipe(Effect.flatMap((row) => requireNotification(notificationId, row))),
+  markWakeRequested: (notificationId, requestedAt) =>
+    attempt("markWakeRequested", () =>
+      database.transaction(async (transaction) => {
+        const [identity] = await transaction
+          .select({
+            userId: scheduledEmails.user_id,
+            workflowId: scheduledEmailNotifications.workflow_id,
+          })
+          .from(scheduledEmailNotifications)
+          .innerJoin(
+            scheduledEmails,
+            eq(scheduledEmails.workflow_id, scheduledEmailNotifications.workflow_id),
+          )
+          .where(eq(scheduledEmailNotifications.notification_id, notificationId))
+          .limit(1);
+        if (identity === undefined || !(await lockWorkflowUser(transaction, identity.userId))) {
+          return null;
+        }
+        const [email] = await transaction
+          .select({ workflowId: scheduledEmails.workflow_id })
+          .from(scheduledEmails)
+          .where(eq(scheduledEmails.workflow_id, identity.workflowId))
+          .for("update")
+          .limit(1);
+        if (email === undefined || (await isAccessFenced(transaction, identity.userId)))
+          return null;
+        const [current] = await transaction
+          .select({ ...selection, state: scheduledEmails.state })
+          .from(scheduledEmailNotifications)
+          .innerJoin(
+            scheduledEmails,
+            eq(scheduledEmails.workflow_id, scheduledEmailNotifications.workflow_id),
+          )
+          .where(eq(scheduledEmailNotifications.notification_id, notificationId))
+          .for("update")
+          .limit(1);
+        if (current === undefined || current.acceptedAt === null) return null;
+        const wakeRequestedAt = current.wakeRequestedAt ?? requestedAt;
+        await transaction
+          .update(scheduledEmailNotifications)
+          .set({ wake_requested_at: wakeRequestedAt })
+          .where(eq(scheduledEmailNotifications.notification_id, notificationId));
+        return { ...current, wakeRequestedAt };
       }),
     ).pipe(Effect.flatMap((row) => requireNotification(notificationId, row))),
   selectDeliverySession: (notificationId, sessionId) =>

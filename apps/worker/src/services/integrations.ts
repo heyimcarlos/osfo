@@ -70,6 +70,7 @@ export type ProviderExecutionEvidence =
 
 export interface ProviderAttemptCorrelation {
   readonly connectedAccountId: string;
+  readonly providerSessionId: string | null;
   readonly providerTool: string;
   readonly startedAt: number;
 }
@@ -393,21 +394,74 @@ export const make = (
             ),
           );
           if (resumed._tag === "Resumed") {
-            return { resumed: true, session: resumed.session } as const;
+            return {
+              providerSessionId: retained,
+              resumed: true,
+              session: resumed.session,
+            } as const;
           }
           const created = yield* ports.createSession(userId, directIntegrationProviderConfig);
           const winner = yield* ports.replaceSession(userId, retained, created.providerSessionId);
           return winner === created.providerSessionId
-            ? ({ resumed: false, session: created.session } as const)
-            : ({ resumed: true, session: yield* ports.useSession(userId, winner) } as const);
+            ? ({
+                providerSessionId: created.providerSessionId,
+                resumed: false,
+                session: created.session,
+              } as const)
+            : ({
+                providerSessionId: winner,
+                resumed: true,
+                session: yield* ports.useSession(userId, winner),
+              } as const);
         }
         const created = yield* ports.createSession(userId, directIntegrationProviderConfig);
         const winner = yield* ports.retainSession(userId, created.providerSessionId);
         return winner === created.providerSessionId
-          ? ({ resumed: false, session: created.session } as const)
-          : ({ resumed: true, session: yield* ports.useSession(userId, winner) } as const);
+          ? ({
+              providerSessionId: created.providerSessionId,
+              resumed: false,
+              session: created.session,
+            } as const)
+          : ({
+              providerSessionId: winner,
+              resumed: true,
+              session: yield* ports.useSession(userId, winner),
+            } as const);
       }),
     );
+
+  const inspectConnectionInSession = Effect.fn("Integrations.inspectConnectionInSession")(
+    function* (
+      input: { readonly toolkit: string; readonly userId: UserId },
+      session: ProviderSession,
+    ) {
+      const candidates = (yield* session.inspectToolkits([input.toolkit])).filter(
+        ({ slug }) => slug === input.toolkit,
+      );
+      const active = candidates.filter(
+        (candidate) => candidate.isActive && candidate.connectedAccount?.status === "ACTIVE",
+      );
+      if (active.length > 1) {
+        return connectionInspection(input, "IntegrationConnectionAmbiguous", session);
+      }
+      const candidate = active[0];
+      if (candidate !== undefined && candidate.connectedAccount !== null) {
+        return {
+          connectedAccountId: candidate.connectedAccount.id,
+          evidence: {
+            _tag: "IntegrationConnectionConnected" as const,
+            toolkit: input.toolkit,
+            userId: input.userId,
+          },
+          session,
+        };
+      }
+      if (candidates.every(({ connectedAccount }) => connectedAccount === null)) {
+        return connectionInspection(input, "IntegrationConnectionMissing", session);
+      }
+      return connectionInspection(input, "IntegrationConnectionStale", session);
+    },
+  );
 
   const inspectConnection = Effect.fn("Integrations.inspectConnection")(function* (input: {
     readonly toolkit: string;
@@ -417,31 +471,7 @@ export const make = (
       return yield* unsupportedToolkit(input.toolkit, "CONNECTION_EVIDENCE");
     }
     const { session } = yield* resolveProviderSession(input.userId);
-    const candidates = (yield* session.inspectToolkits([input.toolkit])).filter(
-      ({ slug }) => slug === input.toolkit,
-    );
-    const active = candidates.filter(
-      (candidate) => candidate.isActive && candidate.connectedAccount?.status === "ACTIVE",
-    );
-    if (active.length > 1) {
-      return connectionInspection(input, "IntegrationConnectionAmbiguous", session);
-    }
-    const candidate = active[0];
-    if (candidate !== undefined && candidate.connectedAccount !== null) {
-      return {
-        connectedAccountId: candidate.connectedAccount.id,
-        evidence: {
-          _tag: "IntegrationConnectionConnected" as const,
-          toolkit: input.toolkit,
-          userId: input.userId,
-        },
-        session,
-      };
-    }
-    if (candidates.every(({ connectedAccount }) => connectedAccount === null)) {
-      return connectionInspection(input, "IntegrationConnectionMissing", session);
-    }
-    return connectionInspection(input, "IntegrationConnectionStale", session);
+    return yield* inspectConnectionInSession(input, session);
   });
 
   const connectionEvidence = Effect.fn("Integrations.connectionEvidence")(function* (input: {
@@ -498,7 +528,6 @@ export const make = (
       const digest = yield* actionDigest(manifest, decoded.success);
       return yield* actionLock.withPermits(1)(
         Effect.gen(function* () {
-          yield* input.authorize;
           const retained = yield* ports.readAction(actionId);
           if (retained?._tag === "Applied" && retained.digest === digest) return retained.result;
           if (retained !== null && retained.digest !== digest) {
@@ -513,9 +542,29 @@ export const make = (
               message: "The integration Action has an unresolved provider outcome",
             });
           }
-          const connection = yield* requireConnection(manifest.toolkit, input.userId);
+          const actionSession = yield* ports.createSession(
+            input.userId,
+            directIntegrationProviderConfig,
+          );
+          const inspectedConnection = yield* inspectConnectionInSession(
+            { toolkit: manifest.toolkit, userId: input.userId },
+            actionSession.session,
+          );
+          if (!("connectedAccountId" in inspectedConnection)) {
+            return yield* new IntegrationConnectionUnavailable({
+              message: "The required Integration Connection is not current and unambiguous",
+              toolkit: manifest.toolkit,
+              userId: input.userId,
+            });
+          }
+          yield* input.authorize;
+          const connection = {
+            connectedAccountId: inspectedConnection.connectedAccountId,
+            session: actionSession.session,
+          };
           const correlation = {
             connectedAccountId: connection.connectedAccountId,
+            providerSessionId: actionSession.providerSessionId,
             providerTool: manifest.providerTool,
             startedAt: yield* Clock.currentTimeMillis,
           } satisfies ProviderAttemptCorrelation;
@@ -655,7 +704,13 @@ export const make = (
           yield* ports.retainAction(input.actionId, retained);
         }
         if (retained.correlation === null) return { _tag: "Ambiguous" as const };
-        const { session } = yield* resolveProviderSession(input.userId);
+        if (retained.correlation.providerSessionId === null) {
+          return { _tag: "Ambiguous" as const };
+        }
+        const session = yield* ports.useSession(
+          input.userId,
+          retained.correlation.providerSessionId,
+        );
         if (session.inspectExecution === undefined) return { _tag: "Ambiguous" as const };
         const evidence = yield* session.inspectExecution(retained.correlation, providerInput);
         if (evidence._tag === "Unknown") return { _tag: "Ambiguous" as const };

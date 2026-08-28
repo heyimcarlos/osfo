@@ -167,6 +167,7 @@ describe("Composio Provider", () => {
                 ? { unexpected: true }
                 : { data: { id: "message-1" }, error: null },
             status: detailMode === "failedNoStep" ? ("error" as const) : ("success" as const),
+            session: { id: id === "other-session" ? "provider-session-2" : "provider-session-1" },
             steps:
               detailMode === "failedNoStep" || detailMode === "successNoStep"
                 ? []
@@ -182,21 +183,29 @@ describe("Composio Provider", () => {
       );
       const correlation = {
         connectedAccountId: "private-account",
+        providerSessionId: "provider-session-1",
         providerTool: "GMAIL_SEND_EMAIL",
         startedAt: 1_000_000,
       };
       const inspectExecution = created.session.inspectExecution;
       if (inspectExecution === undefined) throw new Error("provider log inspection is missing");
 
+      expect(
+        yield* inspectExecution({ ...correlation, providerSessionId: null }, input),
+      ).toEqual({ _tag: "Unknown" });
       expect(yield* inspectExecution(correlation, input)).toMatchObject({
         _tag: "Applied",
         execution: { logId: "log-1" },
       });
+      listed = [exactToolLog("other-session")];
+      expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
       listed = [
         exactToolLog("log-1"),
         { ...exactToolLog("wrong-account"), connectedAccountId: "another-account" },
         { ...exactToolLog("wrong-tool"), actionKey: "GMAIL_FETCH_EMAILS" },
         { ...exactToolLog("wrong-time"), createdAt: 900 },
+        { ...exactToolLog("future-time"), createdAt: 1_400 },
+        exactToolLog("other-session"),
         exactToolLog("wrong-payload"),
       ];
       expect(yield* inspectExecution(correlation, input)).toMatchObject({ _tag: "Applied" });

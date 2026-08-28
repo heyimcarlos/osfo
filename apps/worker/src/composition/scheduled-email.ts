@@ -93,12 +93,12 @@ export const serviceLayerFromDatabase = (
   integrations: Integrations.Interface,
 ) => {
   const accounting = makeAccounting(database);
-  const currentAuthorization = ScheduledEmailPostgres.makeCurrentAuthorization(database);
+  const loadCurrentAuthorization = ScheduledEmailPostgres.makeCurrentAuthorization(database);
   const port = ScheduledEmail.Port.of({
     commitTerminalFollowUp: makeTerminalFollowUpCommitter(bindings, database),
-    currentAuthorization: (email) =>
+    currentAuthorization: (email, authority) =>
       Effect.gen(function* () {
-        const current = yield* currentAuthorization(email);
+        const current = yield* loadCurrentAuthorization(email, authority);
         const evidence = yield* integrations
           .connectionEvidence({ toolkit: "gmail", userId: email.userId })
           .pipe(Effect.mapError((cause) => unavailable("authorization.gmailConnection", cause)));
@@ -107,8 +107,25 @@ export const serviceLayerFromDatabase = (
           : null;
         return {
           ...current,
+          authority:
+            authority === "durableTrigger"
+              ? {
+                  _tag: "DurableTrigger" as const,
+                  triggerId: email.workflowId,
+                  triggerType: "workflow" as const,
+                  userId: email.userId,
+                }
+              : current.authority,
           gmailConnection,
           integrationConnections: gmailConnection === null ? [] : [gmailConnection],
+          originatingAuthority:
+            authority === "durableTrigger"
+              ? {
+                  _tag: "DurableTrigger" as const,
+                  triggerId: email.workflowId,
+                  triggerType: "workflow" as const,
+                }
+              : current.originatingAuthority,
         };
       }),
     persistence: ScheduledEmailPostgres.make(database),
@@ -126,8 +143,10 @@ export const serviceLayerFromDatabase = (
             if (inspection._tag === "NotApplied") {
               return { _tag: "NotApplied", providerLogId: inspection.providerLogId };
             }
-            if (inspection._tag === "NotStarted") return inspection;
-            return { _tag: "Pending" };
+            if (inspection._tag === "NotStarted" || inspection._tag === "Pending") {
+              return inspection;
+            }
+            return { _tag: "Ambiguous" };
           }),
           Effect.mapError((cause) => unavailable("send.reconcile", cause)),
         ),
@@ -162,12 +181,14 @@ export const serviceLayerFromDatabase = (
             IntegrationConnectionUnavailable: (cause) =>
               Effect.fail(new ScheduledEmail.SendAuthorityEnded({ message: cause.message })),
             IntegrationExecutionRejected: (cause) =>
-              Effect.fail(
-                new ScheduledEmail.SendNotApplied({
-                  message: cause.message,
-                  providerLogId: cause.providerLogId ?? null,
-                }),
-              ),
+              cause.code === "resultInvalid"
+                ? Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message }))
+                : Effect.fail(
+                    new ScheduledEmail.SendNotApplied({
+                      message: cause.message,
+                      providerLogId: cause.providerLogId ?? null,
+                    }),
+                  ),
             IntegrationManifestUnavailable: (cause) =>
               Effect.fail(
                 new ScheduledEmail.SendNotApplied({ message: cause.message, providerLogId: null }),
@@ -179,9 +200,7 @@ export const serviceLayerFromDatabase = (
             IntegrationPersistenceUnavailable: (cause) =>
               Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
             IntegrationProviderUnavailable: (cause) =>
-              Effect.fail(
-                new ScheduledEmail.SendNotApplied({ message: cause.message, providerLogId: null }),
-              ),
+              Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
           }),
         ),
     workflow: makeWorkflowPort(bindings.SCHEDULED_EMAIL_WORKFLOW),

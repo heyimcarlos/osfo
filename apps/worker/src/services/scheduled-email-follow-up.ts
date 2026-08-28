@@ -52,6 +52,7 @@ export const Notification = Schema.Struct({
   sourceExposedAt: Schema.NullOr(Schema.Date),
   submissionId: Schema.NullOr(ThinkSubmissionId),
   userId: UserId,
+  wakeRequestedAt: Schema.NullOr(Schema.Date),
   workflowId: ScheduledEmail.WorkflowId,
   whatsAppChannelLinkId: Schema.NullOr(ChannelLinkId),
 });
@@ -81,6 +82,10 @@ export interface PortInterface {
     submissionId: ThinkSubmissionId,
     acceptedAt: Date,
   ) => Effect.Effect<Notification, Unavailable>;
+  readonly markWakeRequested: (
+    notificationId: NotificationId,
+    requestedAt: Date,
+  ) => Effect.Effect<Notification, Unavailable>;
   readonly selectDeliverySession: (
     notificationId: NotificationId,
     sessionId: SessionId,
@@ -99,6 +104,9 @@ export class Service extends Context.Service<
     readonly markAccepted: (
       notificationId: NotificationId,
       submissionId: ThinkSubmissionId,
+    ) => Effect.Effect<Notification, Unavailable>;
+    readonly markWakeRequested: (
+      notificationId: NotificationId,
     ) => Effect.Effect<Notification, Unavailable>;
     readonly selectDeliverySession: PortInterface["selectDeliverySession"];
   }
@@ -119,6 +127,11 @@ export const make = Effect.gen(function* () {
       DateTime.now.pipe(
         Effect.map(DateTime.toDateUtc),
         Effect.flatMap((acceptedAt) => port.markAccepted(notificationId, submissionId, acceptedAt)),
+      ),
+    markWakeRequested: (notificationId) =>
+      DateTime.now.pipe(
+        Effect.map(DateTime.toDateUtc),
+        Effect.flatMap((requestedAt) => port.markWakeRequested(notificationId, requestedAt)),
       ),
     selectDeliverySession: port.selectDeliverySession,
   });

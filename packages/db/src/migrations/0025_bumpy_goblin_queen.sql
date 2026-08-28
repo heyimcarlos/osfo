@@ -16,6 +16,7 @@ CREATE TABLE "scheduled_email_notifications" (
 	"claimed_at" timestamp with time zone NOT NULL,
 	"think_submission_id" text,
 	"accepted_at" timestamp with time zone,
+	"wake_requested_at" timestamp with time zone,
 	"source_exposed_at" timestamp with time zone,
 	CONSTRAINT "scheduled_email_notifications_identity_check" CHECK (length(btrim("scheduled_email_notifications"."notification_id")) > 0
         and length(btrim("scheduled_email_notifications"."agent_id")) > 0
@@ -25,6 +26,7 @@ CREATE TABLE "scheduled_email_notifications" (
         and (("scheduled_email_notifications"."think_submission_id" is null) = ("scheduled_email_notifications"."accepted_at" is null))
         and ("scheduled_email_notifications"."think_submission_id" is null or (length("scheduled_email_notifications"."think_submission_id") between 1 and 160 and position(':' in "scheduled_email_notifications"."think_submission_id") = 0))
         and ("scheduled_email_notifications"."accepted_at" is null or "scheduled_email_notifications"."accepted_at" >= "scheduled_email_notifications"."claimed_at")
+        and ("scheduled_email_notifications"."wake_requested_at" is null or ("scheduled_email_notifications"."accepted_at" is not null and "scheduled_email_notifications"."wake_requested_at" >= "scheduled_email_notifications"."accepted_at"))
         and ("scheduled_email_notifications"."source_exposed_at" is null or ("scheduled_email_notifications"."accepted_at" is not null and "scheduled_email_notifications"."source_exposed_at" >= "scheduled_email_notifications"."accepted_at")))
 );
 --> statement-breakpoint

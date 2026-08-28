@@ -62,6 +62,7 @@ const ToolLogDetail = Schema.Struct({
   connection: Schema.Struct({ id: Schema.String }),
   payloadReceived: Schema.JsonObject,
   response: Schema.JsonObject,
+  session: Schema.JsonObject,
   status: Schema.String,
   steps: Schema.Array(Schema.Struct({ type: Schema.String })),
 });
@@ -301,6 +302,9 @@ const inspectExecution = (
   correlation: ProviderAttemptCorrelation,
   input: ProviderInput,
 ) => {
+  if (correlation.providerSessionId === null) {
+    return Effect.succeed({ _tag: "Unknown" as const });
+  }
   if (client.listToolLogs === undefined || client.retrieveToolLog === undefined) {
     return Effect.succeed({ _tag: "Unknown" as const });
   }
@@ -318,7 +322,8 @@ const inspectExecution = (
       return (
         candidate.actionKey === correlation.providerTool &&
         candidate.connectedAccountId === correlation.connectedAccountId &&
-        createdAt >= correlation.startedAt - 60_000
+        createdAt >= correlation.startedAt - 60_000 &&
+        createdAt <= correlation.startedAt + 300_000
       );
     });
     type ExactExecutionEvidence = {
@@ -337,6 +342,7 @@ const inspectExecution = (
                 ? detail.payloadReceived.arguments
                 : detail.payloadReceived;
             return detail.connection.id === correlation.connectedAccountId &&
+              providerSessionIdFrom(detail.session) === correlation.providerSessionId &&
               sameJson(received, expectedInput)
               ? {
                   id: candidate.id,
@@ -381,6 +387,14 @@ const sortJson = (value: Schema.Json): Schema.Json => {
   // oxlint-disable-next-line unicorn/no-array-sort -- The Worker target does not include ES2023 Array#toSorted.
   entries.sort(([left], [right]) => left.localeCompare(right));
   return Object.fromEntries(entries.map(([key, child]) => [key, sortJson(child)]));
+};
+
+const providerSessionIdFrom = (session: Schema.JsonObject): string | null => {
+  for (const key of ["id", "sessionId", "session_id"] as const) {
+    const decoded = Schema.decodeUnknownOption(Schema.String)(session[key]);
+    if (Option.isSome(decoded)) return decoded.value;
+  }
+  return null;
 };
 
 const executeDriveDownload = (

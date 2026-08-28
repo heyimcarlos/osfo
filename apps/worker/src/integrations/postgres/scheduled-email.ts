@@ -562,10 +562,15 @@ export const reconciliationBatch = (database: Database, now: Date, limit: number
               inArray(scheduledEmails.state, ["success", "failure", "canceled"]),
               or(
                 and(
+                  isNotNull(scheduledEmails.accepted_at),
+                  isNull(scheduledEmails.workflow_start_accounted_at),
+                ),
+                and(
                   isNotNull(scheduledEmails.send_outcome),
                   isNull(scheduledEmails.send_accounted_at),
                 ),
                 isNull(scheduledEmailNotifications.accepted_at),
+                isNull(scheduledEmailNotifications.wake_requested_at),
               ),
               accessIsAvailable,
             ),

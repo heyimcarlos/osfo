@@ -15,6 +15,7 @@ const boundedProviderIdentity = Schema.String.check(Schema.isMinLength(1), Schem
 const actionDigest = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const ProviderAttemptCorrelation = Schema.Struct({
   connectedAccountId: boundedProviderIdentity,
+  providerSessionId: Schema.optionalKey(Schema.NullOr(boundedProviderIdentity)),
   providerTool: boundedProviderIdentity,
   startedAt: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -161,7 +162,16 @@ const normalizePersistedAction = (
   value: typeof PersistedAction.Type,
 ): PersistedIntegrationAction => {
   if (value._tag === "Pending" || value._tag === "Ambiguous") {
-    return { ...value, correlation: value.correlation ?? null };
+    return {
+      ...value,
+      correlation:
+        value.correlation === undefined || value.correlation === null
+          ? null
+          : {
+              ...value.correlation,
+              providerSessionId: value.correlation.providerSessionId ?? null,
+            },
+    };
   }
   if (value._tag === "NotApplied") {
     return { ...value, providerLogId: value.providerLogId ?? null };

@@ -32,6 +32,7 @@ export interface ScheduledEmailDirectory {
 
 export interface ScheduledEmailWorkflowStep {
   readonly do: <Value>(name: string, callback: () => Promise<Value>) => Promise<Value>;
+  readonly sleep: (name: string, duration: number) => Promise<void>;
   readonly sleepUntil: (name: string, timestamp: Date | number) => Promise<void>;
 }
 
@@ -65,9 +66,9 @@ export const runScheduledEmailHost = async (
       return result;
     }
     if (attempt === maximumReconciliationPolls) return result;
-    await step.sleepUntil(
+    await step.sleep(
       `wait for scheduled email reconciliation ${attempt + 1}`,
-      Date.now() + reconciliationPollMilliseconds,
+      reconciliationPollMilliseconds,
     );
   }
   throw new Error("Scheduled Email reconciliation bound was not exhaustive");
