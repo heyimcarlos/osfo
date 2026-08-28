@@ -548,43 +548,57 @@ it.effect("presents and fences the complete Gmail send", () =>
   }),
 );
 
-it.effect("presents and fences one exact scheduled Gmail message", () =>
-  Effect.gen(function* () {
-    const input = {
-      body: "Exact scheduled body",
-      gmailResource: "primary" as const,
-      recipients: ["recipient@example.test"] as const,
-      scheduledAt: new Date("2026-09-01T16:00:00.000Z"),
-      subject: "Exact scheduled subject",
-    };
-    const presentation = yield* presentOsfoAction({
-      descriptor: {
-        action: scheduledEmailStartActionName,
-        input,
-        kind: "durable-pause",
-        permissions: ["workflows:start", "integrations:gmail:send"],
-        requestId: "request-scheduled-email",
-        risk: "high",
-        summary: "Schedule the exact Gmail message shown",
-        toolCallId: "tool-call-scheduled-email",
-      },
-      executionId: ActionPresentationId.make("execution-scheduled-email"),
-      source: "action",
-    });
+it.effect(
+  "uses one original Action approval receipt for the exact scheduled effect without a milestone submission",
+  () =>
+    Effect.gen(function* () {
+      const input = {
+        body: "Exact scheduled body",
+        gmailResource: "primary" as const,
+        recipients: ["recipient@example.test"] as const,
+        scheduledAt: new Date("2026-09-01T16:00:00.000Z"),
+        subject: "Exact scheduled subject",
+      };
+      const pending = {
+        descriptor: {
+          action: scheduledEmailStartActionName,
+          input,
+          kind: "durable-pause",
+          permissions: ["workflows:start", "integrations:gmail:send"],
+          requestId: "request-scheduled-email",
+          risk: "high",
+          summary: "Schedule the exact Gmail message shown",
+          toolCallId: "tool-call-scheduled-email",
+        },
+        executionId: ActionPresentationId.make("execution-scheduled-email"),
+        source: "action",
+      } as const;
+      const presentation = yield* presentOsfoAction(pending);
+      const replay = yield* presentOsfoAction(pending);
 
-    expect(presentation).toMatchObject({
-      actionDefinitionVersion: "osfo-scheduled-email-start-v1",
-      operation: "integration.effect",
-      title: "Schedule Gmail message",
-    });
-    expect(hasExactScheduledEmailStartInput(presentation, input)).toBe(true);
-    expect(
-      hasExactScheduledEmailStartInput(presentation, {
-        ...input,
-        scheduledAt: new Date("2026-09-01T16:01:00.000Z"),
-      }),
-    ).toBe(false);
-  }),
+      expect(presentation).toMatchObject({
+        actionDefinitionVersion: "osfo-scheduled-email-start-v1",
+        operation: "integration.effect",
+        title: "Schedule Gmail message",
+      });
+      expect(presentation.fields).toEqual([
+        { label: "Gmail mailbox", name: "gmailResource", value: "primary" },
+        { label: "Recipients", name: "recipients", value: '["recipient@example.test"]' },
+        { label: "Subject", name: "subject", value: "Exact scheduled subject" },
+        { label: "Message", name: "body", value: "Exact scheduled body" },
+        { label: "Send at", name: "scheduledAt", value: "2026-09-01T16:00:00.000Z" },
+      ]);
+      expect(replay).toEqual(presentation);
+      expect(hasExactScheduledEmailStartInput(presentation, input)).toBe(true);
+      for (const changed of [
+        { ...input, body: "Changed body" },
+        { ...input, recipients: ["other@example.test"] as const },
+        { ...input, scheduledAt: new Date("2026-09-01T16:01:00.000Z") },
+        { ...input, subject: "Changed subject" },
+      ]) {
+        expect(hasExactScheduledEmailStartInput(presentation, changed)).toBe(false);
+      }
+    }),
 );
 
 it.effect("presents and fences the complete Calendar update", () =>

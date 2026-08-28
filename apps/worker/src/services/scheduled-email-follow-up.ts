@@ -2,38 +2,58 @@ import { Context, DateTime, Effect, Layer, Schema } from "effect";
 
 import {
   AgentId,
+  AllowancePeriodId,
+  CapabilityCatalogVersion,
+  ChannelLinkId,
   ConversationRouteId,
   ModelAccessPolicyVersion,
   PlanPolicyVersion,
   ResourcePriceVersion,
   SessionId,
+  ThinkSubmissionId,
   UserId,
+  Plan,
 } from "../domain";
 import { ManagedModelRoute } from "../domain/model-access-policy";
-import type { ScheduledEmail } from "./scheduled-email";
+import { ScheduledEmail } from "./scheduled-email";
 
 const identity = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
 export const NotificationId = identity.pipe(Schema.brand("ScheduledEmailNotificationId"));
 export type NotificationId = typeof NotificationId.Type;
-export const SubmissionId = identity.pipe(Schema.brand("ScheduledEmailSubmissionId"));
-export type SubmissionId = typeof SubmissionId.Type;
+
+export const SubmissionSuccess = Schema.Union([
+  Schema.TaggedStruct("Accepted", {
+    notificationId: NotificationId,
+    submissionId: ThinkSubmissionId,
+  }),
+  Schema.TaggedStruct("Replayed", {
+    notificationId: NotificationId,
+    submissionId: ThinkSubmissionId,
+  }),
+]);
+export type SubmissionSuccess = typeof SubmissionSuccess.Type;
 
 export const Notification = Schema.Struct({
   acceptedAt: Schema.NullOr(Schema.Date),
   agentId: AgentId,
+  allowancePeriodId: AllowancePeriodId,
+  capabilityCatalogVersion: CapabilityCatalogVersion,
   claimedAt: Schema.Date,
   deliverySessionId: Schema.NullOr(SessionId),
   modelAccessPolicyVersion: ModelAccessPolicyVersion,
   modelRoute: ManagedModelRoute,
   notificationId: NotificationId,
   originSessionId: SessionId,
+  plan: Plan,
   planPolicyVersion: PlanPolicyVersion,
   resourcePriceVersion: ResourcePriceVersion,
   routeId: ConversationRouteId,
   state: Schema.Literals(["success", "failure", "canceled"]),
-  submissionId: Schema.NullOr(SubmissionId),
+  sourceExposedAt: Schema.NullOr(Schema.Date),
+  submissionId: Schema.NullOr(ThinkSubmissionId),
   userId: UserId,
-  workflowId: Schema.String,
+  workflowId: ScheduledEmail.WorkflowId,
+  whatsAppChannelLinkId: Schema.NullOr(ChannelLinkId),
 });
 export type Notification = typeof Notification.Type;
 
@@ -58,7 +78,7 @@ export interface PortInterface {
   ) => Effect.Effect<Notification | null, Unavailable>;
   readonly markAccepted: (
     notificationId: NotificationId,
-    submissionId: SubmissionId,
+    submissionId: ThinkSubmissionId,
     acceptedAt: Date,
   ) => Effect.Effect<Notification, Unavailable>;
   readonly selectDeliverySession: (
@@ -78,7 +98,7 @@ export class Service extends Context.Service<
     readonly inspect: PortInterface["inspect"];
     readonly markAccepted: (
       notificationId: NotificationId,
-      submissionId: SubmissionId,
+      submissionId: ThinkSubmissionId,
     ) => Effect.Effect<Notification, Unavailable>;
     readonly selectDeliverySession: PortInterface["selectDeliverySession"];
   }
@@ -111,7 +131,7 @@ export const submissionIdFor = (notificationId: NotificationId) =>
     crypto.subtle.digest("SHA-256", new TextEncoder().encode(notificationId)),
   ).pipe(
     Effect.map((bytes) =>
-      SubmissionId.make(
+      ThinkSubmissionId.make(
         `scheduled-email-${Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("")}`,
       ),
     ),

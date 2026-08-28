@@ -13,19 +13,24 @@ describe("ScheduledEmailFollowUp delivery Session selection", () => {
   const notification: ScheduledEmailFollowUp.Notification = {
     acceptedAt: null,
     agentId: email.agentId,
+    allowancePeriodId: email.allowancePeriodId,
+    capabilityCatalogVersion: email.capabilityCatalogVersion,
     claimedAt: terminalAt,
     deliverySessionId: historicalSessionId,
     modelAccessPolicyVersion: email.modelAccessPolicyVersion,
     modelRoute: email.modelRoute,
     notificationId: ScheduledEmailFollowUp.NotificationId.make(`${email.workflowId}-terminal`),
     originSessionId: email.sessionId,
+    plan: email.plan,
     planPolicyVersion: email.planPolicyVersion,
     resourcePriceVersion: email.resourcePriceVersion,
     routeId: email.routeId,
     state: "success",
+    sourceExposedAt: null,
     submissionId: null,
     userId: email.userId,
     workflowId: email.workflowId,
+    whatsAppChannelLinkId: null,
   };
 
   it("retargets an unaccepted notification to the route's current Session", () => {

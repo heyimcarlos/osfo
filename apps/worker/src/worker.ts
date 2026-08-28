@@ -7,9 +7,10 @@ import { OSFO_DIRECTORY_NAME } from "./agents/osfo/directory";
 import { loadConfig, WorkerConfigurationError, type CloudflareEnv } from "./config";
 import { DocumentCostReconciliation } from "./document-cost-reconciliation";
 import { DocumentBuildHostReconciliation } from "./document-build-host-reconciliation";
+import { ScheduledEmailReconciliation } from "./scheduled-email-reconciliation";
 import { makeWhatsAppAdapter } from "./integrations/whatsapp";
 import { WhatsAppWakeUpComposition } from "./composition/whatsapp-wakeups";
-import { settleScheduledBranches } from "./scheduled-lifecycle";
+import { scheduledRunKind, settleScheduledBranches } from "./scheduled-lifecycle";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Cloudflare RPC tags and adapter boundaries require these forms. */
 
@@ -22,6 +23,7 @@ export { DocumentBuildWorkflow } from "./workflows/document-build";
 export { DocumentBuildTimerWorkflow } from "./workflows/document-build-timer";
 export { ResearchReportWorkflow } from "./workflows/research-report";
 export { ResearchReportTimerWorkflow } from "./workflows/research-report-timer";
+export { ScheduledEmailWorkflow } from "./workflows/scheduled-email";
 /** Disposable artifact compute has no direct public-network path or injected credentials. */
 class ArtifactSandbox extends Sandbox {
   override enableInternet = false;
@@ -73,8 +75,13 @@ const worker = {
     }
     return fetchApp(request, app);
   },
-  scheduled(_controller: ScheduledController, env: CloudflareEnv, context: ExecutionContext): void {
+  scheduled(controller: ScheduledController, env: CloudflareEnv, context: ExecutionContext): void {
     try {
+      if (scheduledRunKind(controller.cron) === "scheduledEmailReconciliation") {
+        context.waitUntil(ScheduledEmailReconciliation.run(env));
+        return;
+      }
+      if (scheduledRunKind(controller.cron) !== "hourlyMaintenance") return;
       const config = loadConfig(env);
       context.waitUntil(
         settleScheduledBranches([

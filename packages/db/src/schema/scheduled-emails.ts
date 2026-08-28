@@ -22,6 +22,7 @@ const states = [
   "failure",
   "canceled",
 ] as const;
+const plans = ["free", "adventurer"] as const;
 
 /** PostgreSQL product truth for one exact future Gmail effect. */
 export const scheduledEmails = pgTable(
@@ -36,6 +37,7 @@ export const scheduledEmails = pgTable(
     route_id: text().notNull(),
     session_id: text().notNull(),
     originating_authority_json: text().notNull(),
+    plan: text({ enum: plans }).notNull(),
     approval_presentation: text().notNull(),
     input_digest: text().notNull(),
     request_json: text().notNull(),
@@ -134,14 +136,18 @@ export const scheduledEmailNotifications = pgTable(
     agent_id: text().notNull(),
     route_id: text().notNull(),
     origin_session_id: text().notNull(),
+    allowance_period_id: text().notNull(),
+    capability_catalog_version: text().notNull(),
     delivery_session_id: text(),
     plan_policy_version: text().notNull(),
+    plan: text({ enum: plans }).notNull(),
     model_access_policy_version: text().notNull(),
     model_route: text().notNull(),
     resource_price_version: text().notNull(),
     claimed_at: timestamp({ withTimezone: true }).notNull(),
     think_submission_id: text(),
     accepted_at: timestamp({ withTimezone: true }),
+    source_exposed_at: timestamp({ withTimezone: true }),
   },
   (table) => [
     uniqueIndex("scheduled_email_notifications_workflow_unique").on(table.workflow_id),
@@ -155,7 +161,8 @@ export const scheduledEmailNotifications = pgTable(
         and (${table.delivery_session_id} is null or length(btrim(${table.delivery_session_id})) > 0)
         and ((${table.think_submission_id} is null) = (${table.accepted_at} is null))
         and (${table.think_submission_id} is null or (length(${table.think_submission_id}) between 1 and 160 and position(':' in ${table.think_submission_id}) = 0))
-        and (${table.accepted_at} is null or ${table.accepted_at} >= ${table.claimed_at})`,
+        and (${table.accepted_at} is null or ${table.accepted_at} >= ${table.claimed_at})
+        and (${table.source_exposed_at} is null or (${table.accepted_at} is not null and ${table.source_exposed_at} >= ${table.accepted_at}))`,
     ),
   ],
 );

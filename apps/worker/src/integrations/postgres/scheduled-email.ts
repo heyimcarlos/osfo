@@ -5,7 +5,7 @@ import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { channelLinks } from "@osfo/db/schema/channel-links";
 import { scheduledEmails } from "@osfo/db/schema/scheduled-emails";
 import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
-import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, lte, notExists, or, sql } from "drizzle-orm";
 import { DateTime, Effect, Predicate, Result, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -16,6 +16,7 @@ import {
   ConversationRouteId,
   ManifestVersion,
   ModelAccessPolicyVersion,
+  Plan,
   PlanPolicyVersion,
   ResourcePriceVersion,
   SessionId,
@@ -66,6 +67,7 @@ const EncodedRecord = Schema.Struct({
   modelAccessPolicyVersion: ModelAccessPolicyVersion,
   modelRoute: ManagedModelRoute,
   originatingAuthority: OriginatingAuthority,
+  plan: Plan,
   planPolicyVersion: PlanPolicyVersion,
   providerLogId: Schema.NullOr(Schema.String),
   providerResourceId: Schema.NullOr(Schema.String),
@@ -82,6 +84,10 @@ const EncodedRecord = Schema.Struct({
   userId: UserId,
   waitingAt: Schema.NullOr(Schema.Date),
   workflowId: ScheduledEmail.WorkflowId,
+});
+const StoredRequest = Schema.Struct({
+  ...ScheduledEmail.Request.fields,
+  scheduledAt: Schema.DateFromString,
 });
 
 export const make = (database: Database): ScheduledEmail.PortInterface["persistence"] => ({
@@ -450,6 +456,78 @@ export const quiesceForAccountDeletion = (database: Database, userId: UserId, te
     ),
   );
 
+export const countActiveForUser = (database: Database, userId: UserId) =>
+  attempt("countActiveForUser", () =>
+    database.transaction((transaction) => countActiveWorkflows(transaction, userId)),
+  ).pipe(Effect.map(BigInt));
+
+/** Read a bounded batch whose due or claimed send still needs durable reconciliation. */
+export const reconciliationBatch = (database: Database, now: Date, limit: number) =>
+  attempt("reconciliationBatch", () =>
+    database.transaction(async (transaction) => {
+      const rows = await transaction
+        .select({
+          agentId: scheduledEmails.agent_id,
+          dueAt: scheduledEmails.due_at,
+          inputDigest: scheduledEmails.input_digest,
+          kind: sql<"claimed" | "due">`case
+            when ${scheduledEmails.state} = 'waiting' then 'due'
+            else 'claimed'
+          end`,
+          workflowId: scheduledEmails.workflow_id,
+        })
+        .from(scheduledEmails)
+        .where(
+          or(
+            and(
+              eq(scheduledEmails.state, "waiting"),
+              lte(scheduledEmails.due_at, now),
+              notExists(
+                transaction
+                  .select({ id: deletionCases.deletion_case_id })
+                  .from(deletionCases)
+                  .where(
+                    and(
+                      eq(deletionCases.user_id, scheduledEmails.user_id),
+                      isNotNull(deletionCases.access_fenced_at),
+                    ),
+                  ),
+              ),
+            ),
+            inArray(scheduledEmails.state, ["sending", "send_pending_reconciliation"]),
+          ),
+        )
+        .orderBy(asc(scheduledEmails.updated_at), asc(scheduledEmails.due_at))
+        .limit(limit)
+        .for("update", { skipLocked: true });
+      if (rows.length > 0) {
+        await transaction
+          .update(scheduledEmails)
+          .set({ updated_at: now })
+          .where(
+            inArray(
+              scheduledEmails.workflow_id,
+              rows.map(({ workflowId }) => workflowId),
+            ),
+          );
+      }
+      return rows;
+    }),
+  ).pipe(
+    Effect.flatMap(
+      Schema.decodeUnknownEffect(Schema.Array(ScheduledEmail.ReconciliationCandidate)),
+    ),
+    Effect.mapError((cause) =>
+      Schema.is(ScheduledEmail.Unavailable)(cause)
+        ? cause
+        : unavailable(
+            "reconciliationBatch",
+            "PostgreSQL returned invalid Scheduled Email recovery identities",
+            cause,
+          ),
+    ),
+  );
+
 const transition = (
   database: Database,
   workflowId: ScheduledEmail.WorkflowId,
@@ -545,7 +623,7 @@ const decodeRow = (row: Row): Effect.Effect<ScheduledEmail.Record, ScheduledEmai
   const authority = Schema.decodeUnknownResult(Schema.fromJsonString(OriginatingAuthority))(
     row.originating_authority_json,
   );
-  const request = Schema.decodeUnknownResult(Schema.fromJsonString(ScheduledEmail.Request))(
+  const request = Schema.decodeUnknownResult(Schema.fromJsonString(StoredRequest))(
     row.request_json,
   );
   if (Result.isFailure(authority) || Result.isFailure(request)) {
@@ -572,6 +650,7 @@ const decodeRow = (row: Row): Effect.Effect<ScheduledEmail.Record, ScheduledEmai
     modelAccessPolicyVersion: row.model_access_policy_version,
     modelRoute: row.model_route,
     originatingAuthority: authority.success,
+    plan: row.plan,
     planPolicyVersion: row.plan_policy_version,
     providerLogId: row.provider_log_id,
     providerResourceId: row.provider_resource_id,
@@ -613,10 +692,11 @@ const encodeInsert = (record: ScheduledEmail.Record): typeof scheduledEmails.$in
   originating_authority_json: Schema.encodeSync(Schema.fromJsonString(OriginatingAuthority))(
     record.originatingAuthority,
   ),
+  plan: record.plan,
   plan_policy_version: record.planPolicyVersion,
   provider_log_id: record.providerLogId,
   provider_resource_id: record.providerResourceId,
-  request_json: Schema.encodeSync(Schema.fromJsonString(ScheduledEmail.Request))(record.request),
+  request_json: Schema.encodeSync(Schema.fromJsonString(StoredRequest))(record.request),
   resource_price_version: record.resourcePriceVersion,
   route_id: record.routeId,
   safe_failure_code: record.safeFailureCode,

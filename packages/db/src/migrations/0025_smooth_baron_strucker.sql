@@ -5,14 +5,18 @@ CREATE TABLE "scheduled_email_notifications" (
 	"agent_id" text NOT NULL,
 	"route_id" text NOT NULL,
 	"origin_session_id" text NOT NULL,
+	"allowance_period_id" text NOT NULL,
+	"capability_catalog_version" text NOT NULL,
 	"delivery_session_id" text,
 	"plan_policy_version" text NOT NULL,
+	"plan" text NOT NULL,
 	"model_access_policy_version" text NOT NULL,
 	"model_route" text NOT NULL,
 	"resource_price_version" text NOT NULL,
 	"claimed_at" timestamp with time zone NOT NULL,
 	"think_submission_id" text,
 	"accepted_at" timestamp with time zone,
+	"source_exposed_at" timestamp with time zone,
 	CONSTRAINT "scheduled_email_notifications_identity_check" CHECK (length(btrim("scheduled_email_notifications"."notification_id")) > 0
         and length(btrim("scheduled_email_notifications"."agent_id")) > 0
         and length(btrim("scheduled_email_notifications"."route_id")) > 0
@@ -20,7 +24,8 @@ CREATE TABLE "scheduled_email_notifications" (
         and ("scheduled_email_notifications"."delivery_session_id" is null or length(btrim("scheduled_email_notifications"."delivery_session_id")) > 0)
         and (("scheduled_email_notifications"."think_submission_id" is null) = ("scheduled_email_notifications"."accepted_at" is null))
         and ("scheduled_email_notifications"."think_submission_id" is null or (length("scheduled_email_notifications"."think_submission_id") between 1 and 160 and position(':' in "scheduled_email_notifications"."think_submission_id") = 0))
-        and ("scheduled_email_notifications"."accepted_at" is null or "scheduled_email_notifications"."accepted_at" >= "scheduled_email_notifications"."claimed_at"))
+        and ("scheduled_email_notifications"."accepted_at" is null or "scheduled_email_notifications"."accepted_at" >= "scheduled_email_notifications"."claimed_at")
+        and ("scheduled_email_notifications"."source_exposed_at" is null or ("scheduled_email_notifications"."accepted_at" is not null and "scheduled_email_notifications"."source_exposed_at" >= "scheduled_email_notifications"."accepted_at")))
 );
 --> statement-breakpoint
 CREATE TABLE "scheduled_emails" (
@@ -31,6 +36,7 @@ CREATE TABLE "scheduled_emails" (
 	"route_id" text NOT NULL,
 	"session_id" text NOT NULL,
 	"originating_authority_json" text NOT NULL,
+	"plan" text NOT NULL,
 	"approval_presentation" text NOT NULL,
 	"input_digest" text NOT NULL,
 	"request_json" text NOT NULL,

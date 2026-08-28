@@ -263,6 +263,19 @@ export interface ExecuteIntegrationInput<E> {
   readonly userId: UserId;
 }
 
+export interface InspectIntegrationActionInput {
+  readonly actionId: ActionId;
+  readonly identity: ExecuteIntegrationInput<never>["identity"];
+  readonly input: unknown;
+}
+
+export type IntegrationActionInspection =
+  | { readonly _tag: "NotStarted" }
+  | { readonly _tag: "Pending" }
+  | { readonly _tag: "Ambiguous" }
+  | { readonly _tag: "NotApplied" }
+  | { readonly _tag: "Applied"; readonly result: IntegrationEffectCompleted };
+
 /** Deep Osfo-owned session, connection, manifest, and execution interface. */
 export interface Interface {
   readonly connectLink: (input: {
@@ -312,6 +325,15 @@ export interface Interface {
     | IntegrationManifestValueInvalid
     | IntegrationPersistenceUnavailable
     | IntegrationProviderUnavailable
+  >;
+  readonly inspectAction: (
+    input: InspectIntegrationActionInput,
+  ) => Effect.Effect<
+    IntegrationActionInspection,
+    | IntegrationActionConflict
+    | IntegrationManifestUnavailable
+    | IntegrationManifestValueInvalid
+    | IntegrationPersistenceUnavailable
   >;
   readonly resolveSession: (userId: UserId) => Effect.Effect<
     {
@@ -541,6 +563,33 @@ export const make = (
       );
     });
 
+  const inspectAction = Effect.fn("Integrations.inspectAction")(function* (
+    input: InspectIntegrationActionInput,
+  ) {
+    const resolved = resolveManifest(input.identity);
+    if (Result.isFailure(resolved)) return yield* resolved.failure;
+    const manifest = resolved.success;
+    if (manifest.operationKind !== "effect") {
+      return yield* new IntegrationActionConflict({
+        actionId: input.actionId,
+        message: "Only an integration effect has a durable Action identity",
+      });
+    }
+    const decoded = manifest.decodeInput(input.input);
+    if (Result.isFailure(decoded)) return yield* decoded.failure;
+    const digest = yield* actionDigest(manifest, decoded.success);
+    const retained = yield* actionLock.withPermits(1)(ports.readAction(input.actionId));
+    if (retained === null) return { _tag: "NotStarted" as const };
+    if (retained.digest !== digest) {
+      return yield* new IntegrationActionConflict({
+        actionId: input.actionId,
+        message: "The Action identity is already bound to different integration facts",
+      });
+    }
+    if (retained._tag === "Applied") return { _tag: "Applied" as const, result: retained.result };
+    return { _tag: retained._tag };
+  });
+
   return {
     connectLink: Effect.fn("Integrations.connectLink")(function* (input) {
       if (!isSupportedToolkit(input.toolkit))
@@ -578,6 +627,7 @@ export const make = (
       return { _tag: "IntegrationConnectionRevoked" as const, toolkit: input.toolkit };
     }),
     execute,
+    inspectAction,
     resolveSession: Effect.fn("Integrations.resolveSession")(function* (userId) {
       const resolved = yield* resolveProviderSession(userId);
       return {

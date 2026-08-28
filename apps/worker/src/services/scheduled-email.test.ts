@@ -100,6 +100,22 @@ describe("ScheduledEmail", () => {
         "account.workflowStart",
       ]);
       expect(fixture.instances).toHaveLength(1);
+      expect(
+        yield* emails
+          .beginWaiting({
+            ...payloadFor(started.email),
+            agentId: AgentId.make("different-agent"),
+          })
+          .pipe(Effect.result),
+      ).toMatchObject({ failure: { _tag: "ScheduledEmailConflict" } });
+      expect(
+        yield* emails
+          .beginWaiting({
+            ...payloadFor(started.email),
+            dueAt: new Date(started.email.dueAt.getTime() + 60_000),
+          })
+          .pipe(Effect.result),
+      ).toMatchObject({ failure: { _tag: "ScheduledEmailConflict" } });
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 
@@ -124,6 +140,34 @@ describe("ScheduledEmail", () => {
       expect(fixture.workflowStartFacts).toBe(1);
       expect(fixture.gmailSendFacts).toBe(1);
       expect(fixture.followUps).toBe(1);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect("exposes each Scheduled Email SLO interval without terminalizing ambiguity", () => {
+    const fixture = makeFixture();
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      yield* TestClock.setTime(scheduledAt.getTime() + 30_000);
+      const sent = yield* emails.sendDue(payload);
+      const acceptedAt = new Date((sent.terminalAt?.getTime() ?? 0) + 30_000);
+      expect(ScheduledEmail.sloEvidence(sent, acceptedAt)).toEqual({
+        dueToSendClaimMilliseconds: 30_000,
+        sendClaimToTerminalMilliseconds: 0,
+        terminalToFollowUpAcceptedMilliseconds: 30_000,
+      });
+      const ambiguous = {
+        ...sent,
+        state: "send_pending_reconciliation" as const,
+        terminalAt: null,
+      };
+      expect(ScheduledEmail.sloEvidence(ambiguous, null)).toMatchObject({
+        sendClaimToTerminalMilliseconds: null,
+        terminalToFollowUpAcceptedMilliseconds: null,
+      });
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 

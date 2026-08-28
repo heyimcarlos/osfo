@@ -7,6 +7,7 @@ import {
   type ConversationRouteId,
   ManifestVersion,
   ModelAccessPolicyVersion,
+  type Plan,
   type PlanPolicyVersion,
   type ResourcePriceVersion,
   type SessionId,
@@ -73,6 +74,12 @@ export const WorkflowPayload = Schema.Struct({
 });
 export type WorkflowPayload = typeof WorkflowPayload.Type;
 
+export const ReconciliationCandidate = Schema.Struct({
+  ...WorkflowPayload.fields,
+  kind: Schema.Literals(["claimed", "due"]),
+});
+export type ReconciliationCandidate = typeof ReconciliationCandidate.Type;
+
 export const State = Schema.Literals([
   "admitted",
   "accepted",
@@ -101,6 +108,7 @@ export interface Record {
   readonly dueAt: Date;
   readonly state: State;
   readonly allowancePeriodId: AllowancePeriodId;
+  readonly plan: Plan;
   readonly planPolicyVersion: PlanPolicyVersion;
   readonly capabilityCatalogVersion: CapabilityCatalogVersion;
   readonly modelAccessPolicyVersion: ModelAccessPolicyVersion;
@@ -120,6 +128,20 @@ export interface Record {
   readonly cancelRequestedAt: Date | null;
   readonly terminalAt: Date | null;
 }
+
+/** Observable SLO intervals; unresolved phases remain null instead of implying completion. */
+export const sloEvidence = (email: Record, followUpAcceptedAt: Date | null) => ({
+  dueToSendClaimMilliseconds:
+    email.sendStartedAt === null ? null : email.sendStartedAt.getTime() - email.dueAt.getTime(),
+  sendClaimToTerminalMilliseconds:
+    email.sendStartedAt === null || email.terminalAt === null
+      ? null
+      : email.terminalAt.getTime() - email.sendStartedAt.getTime(),
+  terminalToFollowUpAcceptedMilliseconds:
+    email.terminalAt === null || followUpAcceptedAt === null
+      ? null
+      : followUpAcceptedAt.getTime() - email.terminalAt.getTime(),
+});
 
 export interface StartInput {
   readonly actionId: ActionId;
@@ -271,6 +293,9 @@ export interface Interface {
     workflowId: WorkflowId,
     inputDigest: InputDigest,
   ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
+  readonly recoverClaimed: (
+    payload: WorkflowPayload,
+  ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
   readonly sendDue: (
     payload: WorkflowPayload,
   ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
@@ -553,6 +578,20 @@ export const make = Effect.gen(function* () {
     return yield* executeClaimedSend(begun);
   });
 
+  const recoverClaimed = Effect.fn("ScheduledEmail.recoverClaimed")(function* (
+    payload: WorkflowPayload,
+  ) {
+    const email = yield* inspectExecution(payload);
+    if (terminalStates.has(email.state)) return yield* settleTerminal(email);
+    if (email.state !== "sending" && email.state !== "send_pending_reconciliation") {
+      return yield* new Conflict({
+        message: "Only an already-claimed Scheduled Email can use deletion-safe recovery",
+        workflowId: email.workflowId,
+      });
+    }
+    return yield* reconcileClaimedSend(email);
+  });
+
   const start = Effect.fn("ScheduledEmail.start")(function* (input: StartInput) {
     const userId = input.authorization.user.userId;
     const workflowId = yield* workflowIdFor(userId, input.actionId);
@@ -662,6 +701,7 @@ export const make = Effect.gen(function* () {
       dueAt: input.request.scheduledAt,
       state: "admitted",
       allowancePeriodId: workflowAdmission.allowancePeriod.allowancePeriodId,
+      plan: input.authorization.subscription.plan,
       planPolicyVersion: input.authorization.subscription.planPolicyVersion,
       capabilityCatalogVersion: workflowAdmission.capabilityCatalogVersion,
       modelAccessPolicyVersion: ModelAccessPolicyVersion.make(modelAccessPolicy.planPolicyVersion),
@@ -734,6 +774,7 @@ export const make = Effect.gen(function* () {
     inspect,
     inspectExecution,
     reconcileAcceptance,
+    recoverClaimed,
     sendDue,
     settleTerminal,
     start,

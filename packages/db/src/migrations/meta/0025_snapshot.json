@@ -1,5 +1,5 @@
 {
-  "id": "e62adc3d-d17d-4d5b-98d2-48dc01b78c2b",
+  "id": "973d290a-f400-4649-ab65-39c498c8328d",
   "prevId": "b7f67afa-84e9-4edd-ab4b-d723fffa152c",
   "version": "7",
   "dialect": "postgresql",
@@ -3438,6 +3438,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "allowance_period_id": {
+          "name": "allowance_period_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "capability_catalog_version": {
+          "name": "capability_catalog_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "delivery_session_id": {
           "name": "delivery_session_id",
           "type": "text",
@@ -3446,6 +3458,12 @@
         },
         "plan_policy_version": {
           "name": "plan_policy_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plan": {
+          "name": "plan",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -3482,6 +3500,12 @@
         },
         "accepted_at": {
           "name": "accepted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_exposed_at": {
+          "name": "source_exposed_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -3559,7 +3583,7 @@
       "checkConstraints": {
         "scheduled_email_notifications_identity_check": {
           "name": "scheduled_email_notifications_identity_check",
-          "value": "length(btrim(\"scheduled_email_notifications\".\"notification_id\")) > 0\n        and length(btrim(\"scheduled_email_notifications\".\"agent_id\")) > 0\n        and length(btrim(\"scheduled_email_notifications\".\"route_id\")) > 0\n        and length(btrim(\"scheduled_email_notifications\".\"origin_session_id\")) > 0\n        and (\"scheduled_email_notifications\".\"delivery_session_id\" is null or length(btrim(\"scheduled_email_notifications\".\"delivery_session_id\")) > 0)\n        and ((\"scheduled_email_notifications\".\"think_submission_id\" is null) = (\"scheduled_email_notifications\".\"accepted_at\" is null))\n        and (\"scheduled_email_notifications\".\"think_submission_id\" is null or (length(\"scheduled_email_notifications\".\"think_submission_id\") between 1 and 160 and position(':' in \"scheduled_email_notifications\".\"think_submission_id\") = 0))\n        and (\"scheduled_email_notifications\".\"accepted_at\" is null or \"scheduled_email_notifications\".\"accepted_at\" >= \"scheduled_email_notifications\".\"claimed_at\")"
+          "value": "length(btrim(\"scheduled_email_notifications\".\"notification_id\")) > 0\n        and length(btrim(\"scheduled_email_notifications\".\"agent_id\")) > 0\n        and length(btrim(\"scheduled_email_notifications\".\"route_id\")) > 0\n        and length(btrim(\"scheduled_email_notifications\".\"origin_session_id\")) > 0\n        and (\"scheduled_email_notifications\".\"delivery_session_id\" is null or length(btrim(\"scheduled_email_notifications\".\"delivery_session_id\")) > 0)\n        and ((\"scheduled_email_notifications\".\"think_submission_id\" is null) = (\"scheduled_email_notifications\".\"accepted_at\" is null))\n        and (\"scheduled_email_notifications\".\"think_submission_id\" is null or (length(\"scheduled_email_notifications\".\"think_submission_id\") between 1 and 160 and position(':' in \"scheduled_email_notifications\".\"think_submission_id\") = 0))\n        and (\"scheduled_email_notifications\".\"accepted_at\" is null or \"scheduled_email_notifications\".\"accepted_at\" >= \"scheduled_email_notifications\".\"claimed_at\")\n        and (\"scheduled_email_notifications\".\"source_exposed_at\" is null or (\"scheduled_email_notifications\".\"accepted_at\" is not null and \"scheduled_email_notifications\".\"source_exposed_at\" >= \"scheduled_email_notifications\".\"accepted_at\"))"
         }
       },
       "isRLSEnabled": false
@@ -3606,6 +3630,12 @@
         },
         "originating_authority_json": {
           "name": "originating_authority_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plan": {
+          "name": "plan",
           "type": "text",
           "primaryKey": false,
           "notNull": true

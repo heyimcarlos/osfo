@@ -279,6 +279,55 @@ describe("Integrations", () => {
     }),
   );
 
+  it.effect("inspects one exact effect Action without provider I/O", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits = [
+        {
+          connectedAccount: { id: "account-1", status: "ACTIVE" },
+          isActive: true,
+          slug: "gmail",
+        },
+      ];
+      harness.executeResult = {
+        data: { id: "provider-message-1" },
+        error: null,
+        logId: "composio-log-1",
+      };
+      const integrations = make(harness);
+      const exact = {
+        actionId: ActionId.make("inspect-action"),
+        identity: {
+          manifestVersion: ManifestVersion.make("gmail-v1"),
+          operation: "GMAIL_SEND_EMAIL",
+          toolkit: "gmail",
+        },
+        input: {
+          body: "Hello",
+          recipients: ["person@example.test"],
+          subject: "Subject",
+        },
+      } as const;
+
+      expect(yield* integrations.inspectAction(exact)).toEqual({ _tag: "NotStarted" });
+      const result = yield* integrations.execute({
+        ...exact,
+        authorize: Effect.void,
+        userId,
+      });
+      expect(yield* integrations.inspectAction(exact)).toEqual({
+        _tag: "Applied",
+        result,
+      });
+      expect(
+        yield* integrations
+          .inspectAction({ ...exact, input: { ...exact.input, body: "changed" } })
+          .pipe(Effect.result),
+      ).toMatchObject({ failure: { _tag: "IntegrationActionConflict" } });
+      expect(harness.executed).toHaveLength(1);
+    }),
+  );
+
   it.effect("prevents provider execution when current Osfo authority is lost", () =>
     Effect.gen(function* () {
       const harness = makeHarness();

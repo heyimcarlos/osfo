@@ -1,7 +1,18 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/new-promise, vitest/no-standalone-expect -- Deferred Promises model the Cloudflare scheduled lifecycle boundary. */
 import { expect, it } from "@effect/vitest";
 
-import { settleScheduledBranches } from "./scheduled-lifecycle";
+import {
+  hourlyMaintenanceCron,
+  scheduledEmailReconciliationCron,
+  scheduledRunKind,
+  settleScheduledBranches,
+} from "./scheduled-lifecycle";
+
+it("routes minute Scheduled Email recovery separately from hourly maintenance", () => {
+  expect(scheduledRunKind(scheduledEmailReconciliationCron)).toBe("scheduledEmailReconciliation");
+  expect(scheduledRunKind(hourlyMaintenanceCron)).toBe("hourlyMaintenance");
+  expect(scheduledRunKind("17 4 * * *")).toBe("unknown");
+});
 
 it("awaits every scheduled branch before surfacing a safe aggregate failure", async () => {
   let finishLate: (() => void) | undefined;

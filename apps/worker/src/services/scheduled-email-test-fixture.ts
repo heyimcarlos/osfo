@@ -37,6 +37,7 @@ export const makeRecord = (
     _tag: "AuthSession",
     authSessionId: AuthSessionId.make("scheduled-email-session-authority"),
   },
+  plan: "adventurer",
   planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
   providerLogId: null,
   providerResourceId: null,
