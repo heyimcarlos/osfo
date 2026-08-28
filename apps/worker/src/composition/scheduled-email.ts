@@ -90,7 +90,7 @@ export const makeWorkflowPort = (
 export const serviceLayerFromDatabase = (
   bindings: Bindings,
   database: Database,
-  integrations: Integrations.Interface,
+  integrations: Integrations.Interface | null,
 ) => {
   const accounting = makeAccounting(database);
   const loadCurrentAuthorization = ScheduledEmailPostgres.makeCurrentAuthorization(database);
@@ -98,6 +98,12 @@ export const serviceLayerFromDatabase = (
     commitTerminalFollowUp: makeTerminalFollowUpCommitter(bindings, database),
     currentAuthorization: (email, authority) =>
       Effect.gen(function* () {
+        if (integrations === null) {
+          return yield* unavailable(
+            "authorization.integrations",
+            new Error("Integration provider is unavailable"),
+          );
+        }
         const current = yield* loadCurrentAuthorization(email, authority);
         const evidence = yield* integrations
           .connectionEvidence({ toolkit: "gmail", userId: email.userId })
@@ -130,26 +136,33 @@ export const serviceLayerFromDatabase = (
       }),
     persistence: ScheduledEmailPostgres.make(database),
     reconcileSend: (email) =>
-      integrations
-        .inspectAction({
-          actionId: email.actionId,
-          identity: integrationIdentity(email),
-          input: gmailInput(email),
-          userId: email.userId,
-        })
-        .pipe(
-          Effect.map((inspection): ScheduledEmail.SendReconciliation => {
-            if (inspection._tag === "Applied") return inspection;
-            if (inspection._tag === "NotApplied") {
-              return { _tag: "NotApplied", providerLogId: inspection.providerLogId };
-            }
-            if (inspection._tag === "NotStarted" || inspection._tag === "Pending") {
-              return inspection;
-            }
-            return { _tag: "Ambiguous" };
-          }),
-          Effect.mapError((cause) => unavailable("send.reconcile", cause)),
-        ),
+      integrations === null
+        ? Effect.fail(
+            unavailable(
+              "send.reconcile.integrations",
+              new Error("Integration provider is unavailable"),
+            ),
+          )
+        : integrations
+            .inspectAction({
+              actionId: email.actionId,
+              identity: integrationIdentity(email),
+              input: gmailInput(email),
+              userId: email.userId,
+            })
+            .pipe(
+              Effect.map((inspection): ScheduledEmail.SendReconciliation => {
+                if (inspection._tag === "Applied") return inspection;
+                if (inspection._tag === "NotApplied") {
+                  return { _tag: "NotApplied", providerLogId: inspection.providerLogId };
+                }
+                if (inspection._tag === "NotStarted" || inspection._tag === "Pending") {
+                  return inspection;
+                }
+                return { _tag: "Ambiguous" };
+              }),
+              Effect.mapError((cause) => unavailable("send.reconcile", cause)),
+            ),
     recordSendOutcome: (email) =>
       accounting
         .recordSendOutcome(email)
@@ -159,50 +172,60 @@ export const serviceLayerFromDatabase = (
         .recordWorkflowStart(email)
         .pipe(Effect.mapError((cause) => unavailable("accounting.workflowStart", cause))),
     send: (email, authorize) =>
-      integrations
-        .execute({
-          actionId: email.actionId,
-          authorize,
-          identity: integrationIdentity(email),
-          input: gmailInput(email),
-          userId: email.userId,
-        })
-        .pipe(
-          Effect.flatMap((result) =>
-            result._tag === "IntegrationEffectCompleted"
-              ? Effect.succeed(result)
-              : Effect.fail(unavailable("send.readOutcome", result)),
-          ),
-          Effect.catchTags({
-            IntegrationActionAmbiguous: (cause) =>
-              Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
-            IntegrationActionConflict: (cause) =>
-              Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
-            IntegrationConnectionUnavailable: (cause) =>
-              Effect.fail(new ScheduledEmail.SendAuthorityEnded({ message: cause.message })),
-            IntegrationExecutionRejected: (cause) =>
-              cause.code === "resultInvalid"
-                ? Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message }))
-                : Effect.fail(
+      integrations === null
+        ? Effect.fail(
+            new ScheduledEmail.SendAmbiguous({ message: "Integration provider unavailable" }),
+          )
+        : integrations
+            .execute({
+              actionId: email.actionId,
+              authorize,
+              identity: integrationIdentity(email),
+              input: gmailInput(email),
+              userId: email.userId,
+            })
+            .pipe(
+              Effect.flatMap((result) =>
+                result._tag === "IntegrationEffectCompleted"
+                  ? Effect.succeed(result)
+                  : Effect.fail(unavailable("send.readOutcome", result)),
+              ),
+              Effect.catchTags({
+                IntegrationActionAmbiguous: (cause) =>
+                  Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
+                IntegrationActionConflict: (cause) =>
+                  Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
+                IntegrationConnectionUnavailable: (cause) =>
+                  Effect.fail(new ScheduledEmail.SendAuthorityEnded({ message: cause.message })),
+                IntegrationExecutionRejected: (cause) =>
+                  cause.code === "resultInvalid"
+                    ? Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message }))
+                    : Effect.fail(
+                        new ScheduledEmail.SendNotApplied({
+                          message: cause.message,
+                          providerLogId: cause.providerLogId ?? null,
+                        }),
+                      ),
+                IntegrationManifestUnavailable: (cause) =>
+                  Effect.fail(
                     new ScheduledEmail.SendNotApplied({
                       message: cause.message,
-                      providerLogId: cause.providerLogId ?? null,
+                      providerLogId: null,
                     }),
                   ),
-            IntegrationManifestUnavailable: (cause) =>
-              Effect.fail(
-                new ScheduledEmail.SendNotApplied({ message: cause.message, providerLogId: null }),
-              ),
-            IntegrationManifestValueInvalid: (cause) =>
-              Effect.fail(
-                new ScheduledEmail.SendNotApplied({ message: cause.message, providerLogId: null }),
-              ),
-            IntegrationPersistenceUnavailable: (cause) =>
-              Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
-            IntegrationProviderUnavailable: (cause) =>
-              Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
-          }),
-        ),
+                IntegrationManifestValueInvalid: (cause) =>
+                  Effect.fail(
+                    new ScheduledEmail.SendNotApplied({
+                      message: cause.message,
+                      providerLogId: null,
+                    }),
+                  ),
+                IntegrationPersistenceUnavailable: (cause) =>
+                  Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
+                IntegrationProviderUnavailable: (cause) =>
+                  Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
+              }),
+            ),
     workflow: makeWorkflowPort(bindings.SCHEDULED_EMAIL_WORKFLOW),
   });
   return ScheduledEmail.layerWithoutDependencies.pipe(
@@ -212,7 +235,7 @@ export const serviceLayerFromDatabase = (
 
 export const effect = <Value, Failure>(
   bindings: Bindings,
-  integrations: Integrations.Interface,
+  integrations: Integrations.Interface | null,
   operation: Effect.Effect<Value, Failure, ScheduledEmail.Service>,
 ) =>
   Effect.scoped(
@@ -237,6 +260,15 @@ const provideFollowUp = <Value, Failure>(
       ),
     ),
   );
+
+export const followUpLayerFromDatabase = (database: Database) =>
+  ScheduledEmailFollowUp.layerWithoutDependencies.pipe(
+    Layer.provide(
+      Layer.succeed(ScheduledEmailFollowUp.Port, ScheduledEmailFollowUpPostgres.make(database)),
+    ),
+  );
+
+export const followUpLayer = Layer.unwrap(Db.database.pipe(Effect.map(followUpLayerFromDatabase)));
 
 export const followUpEffect = <Value, Failure>(
   bindings: Pick<Bindings, "DB">,

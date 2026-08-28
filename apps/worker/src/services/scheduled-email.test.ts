@@ -247,7 +247,30 @@ describe("ScheduledEmail", () => {
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 
-  it.effect("keeps an ambiguous provider outcome nonterminal and never resends blindly", () => {
+  it.effect("keeps inspect and cancellation available without live Gmail evidence", () => {
+    const fixture = makeFixture();
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const current = {
+        ...authorization(),
+        gmailConnection: null,
+        integrationConnections: [],
+      } satisfies AuthorizationContext;
+
+      expect(yield* emails.inspect(started.email.workflowId, current)).toMatchObject({
+        state: "accepted",
+      });
+      expect(yield* emails.cancel(started.email.workflowId, current)).toMatchObject({
+        _tag: "CancelRequested",
+        email: { state: "canceled" },
+      });
+      expect(fixture.sendAttempts).toBe(0);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect("terminalizes unresolved ambiguity after the bounded evidence window", () => {
     const fixture = makeFixture({ sendOutcome: "ambiguous" });
     return Effect.gen(function* () {
       yield* TestClock.setTime(now.getTime());
@@ -268,18 +291,20 @@ describe("ScheduledEmail", () => {
       const replayed = yield* emails.sendDue(payload);
 
       expect(conservative).toMatchObject({
+        safeFailureCode: "send-outcome-unknown",
+        sendAccountingBasis: "conservative",
         sendOutcome: "ambiguous",
-        state: "send_pending_reconciliation",
-        terminalAt: null,
+        state: "failure",
       });
+      expect(conservative.terminalAt).not.toBeNull();
       expect(replayed).toMatchObject({
+        sendAccountingBasis: "conservative",
         sendOutcome: "ambiguous",
-        state: "send_pending_reconciliation",
-        terminalAt: null,
+        state: "failure",
       });
       expect(fixture.sendAttempts).toBe(1);
       expect(fixture.gmailSendFacts).toBe(1);
-      expect(fixture.followUps).toBe(0);
+      expect(fixture.followUps).toBe(1);
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 
@@ -380,6 +405,33 @@ describe("ScheduledEmail", () => {
     },
   );
 
+  it.effect("honors cancellation before retrying a claim with no retained Action", () => {
+    const fixture = makeFixture();
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      yield* TestClock.setTime(scheduledAt.getTime());
+      yield* fixture.port.persistence.beginSend(
+        started.email.workflowId,
+        started.email.inputDigest,
+        scheduledAt,
+      );
+      expect(yield* emails.cancel(started.email.workflowId, authorization())).toMatchObject({
+        _tag: "ReconciliationRequired",
+      });
+      fixture.reconciliation = { _tag: "NotStarted" };
+
+      expect(yield* emails.recoverClaimed(payload)).toMatchObject({
+        safeFailureCode: "cancel-requested",
+        state: "canceled",
+      });
+      expect(fixture.sendAttempts).toBe(0);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
   it.effect("reconciles ambiguous Applied truth despite a later cancellation request", () => {
     const fixture = makeFixture({ sendOutcome: "ambiguous" });
     return Effect.gen(function* () {
@@ -475,13 +527,52 @@ describe("ScheduledEmail", () => {
       });
       expect(fixture.stored).toMatchObject({
         sendAccountedAt: null,
-        state: "send_pending_reconciliation",
+        sendAccountingBasis: "conservative",
+        state: "failure",
       });
       fixture.failSendAccounting = false;
       const recovered = yield* emails.recoverClaimed(payload);
       expect(recovered.sendAccountedAt).not.toBeNull();
       expect(fixture.gmailSendFacts).toBe(1);
       expect(fixture.sendAttempts).toBe(1);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect("preserves a conservative accounting decision when later evidence is Applied", () => {
+    const fixture = makeFixture({ sendOutcome: "ambiguous" });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      yield* TestClock.setTime(scheduledAt.getTime());
+      yield* emails.sendDue(payload);
+      fixture.reconciliation = { _tag: "Ambiguous" };
+      yield* TestClock.setTime(scheduledAt.getTime() + 120_000);
+      fixture.failSendAccountingMarker = true;
+
+      expect(yield* emails.recoverClaimed(payload).pipe(Effect.result)).toMatchObject({
+        failure: { operation: "send-accounting-marker" },
+      });
+      expect(fixture.gmailSendFacts).toBe(1);
+      expect(fixture.stored).toMatchObject({
+        sendAccountedAt: null,
+        sendAccountingBasis: "conservative",
+        sendOutcome: "ambiguous",
+        state: "failure",
+      });
+
+      fixture.failSendAccountingMarker = false;
+      fixture.reconciliation = { _tag: "Applied", result: applied };
+      expect(yield* emails.recoverClaimed(payload)).toMatchObject({
+        sendAccountingBasis: "conservative",
+        sendOutcome: "applied",
+        state: "success",
+      });
+      expect(fixture.gmailSendFacts).toBe(1);
+      expect(fixture.gmailSendBases).toEqual(["conservative"]);
+      expect(fixture.followUps).toBe(1);
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 
@@ -612,11 +703,12 @@ const makeFixture = (
   let failWorkflowAccounting = false;
   let failWorkflowCreate = false;
   let failSendAccounting = false;
+  let failSendAccountingMarker = false;
   let failFollowUp = false;
   let configuredSendOutcome = options.sendOutcome;
   const calls = new Array<string>();
   const instances = new Array<ScheduledEmail.CloudflareInstanceId>();
-  const terminalFacts = new Set<ScheduledEmail.WorkflowId>();
+  const terminalFacts = new Map<ScheduledEmail.WorkflowId, "conservative" | "observed">();
   const workflowFacts = new Set<ScheduledEmail.WorkflowId>();
   const followUpFacts = new Set<ScheduledEmail.WorkflowId>();
 
@@ -705,10 +797,23 @@ const makeFixture = (
       finishApplied: (workflowId, digest, result, outcomeAt) =>
         requireStored(workflowId, digest).pipe(
           Effect.map((email) => {
+            const canRefineUnaccountedAmbiguity =
+              email.state === "failure" &&
+              email.sendOutcome === "ambiguous" &&
+              email.sendAccountingBasis === "conservative" &&
+              email.sendAccountedAt === null;
+            if (
+              email.state !== "sending" &&
+              email.state !== "send_pending_reconciliation" &&
+              !canRefineUnaccountedAmbiguity
+            ) {
+              return email;
+            }
             stored = {
               ...email,
               providerLogId: result.evidence.providerLogId,
               providerResourceId: result.evidence.providerResourceId,
+              sendAccountingBasis: email.sendAccountingBasis ?? "observed",
               sendOutcome: "applied",
               sendOutcomeAt: outcomeAt,
               state: "success",
@@ -722,6 +827,7 @@ const makeFixture = (
           Effect.map((email) => {
             stored = {
               ...email,
+              sendAccountingBasis: "conservative",
               sendOutcome: "ambiguous",
               sendOutcomeAt: outcomeAt,
               state: "send_pending_reconciliation",
@@ -741,7 +847,17 @@ const makeFixture = (
         requireStored(workflowId, digest).pipe(
           Effect.map((email) => {
             if (ScheduledEmail.terminalStates.has(email.state)) return email;
-            stored = { ...email, providerLogId, safeFailureCode, sendOutcome, state, terminalAt };
+            stored = {
+              ...email,
+              providerLogId,
+              safeFailureCode,
+              sendAccountingBasis:
+                email.sendAccountingBasis ?? (sendOutcome === "ambiguous" ? "conservative" : null),
+              sendOutcome,
+              sendOutcomeAt: sendOutcome === null ? email.sendOutcomeAt : terminalAt,
+              state,
+              terminalAt,
+            };
             return stored;
           }),
         ),
@@ -762,12 +878,14 @@ const makeFixture = (
           }),
         ),
       markSendAccounted: (workflowId, digest, accountedAt) =>
-        requireStored(workflowId, digest).pipe(
-          Effect.map((email) => {
-            stored = { ...email, sendAccountedAt: email.sendAccountedAt ?? accountedAt };
-            return stored;
-          }),
-        ),
+        failSendAccountingMarker
+          ? Effect.fail(unavailable("send-accounting-marker"))
+          : requireStored(workflowId, digest).pipe(
+              Effect.map((email) => {
+                stored = { ...email, sendAccountedAt: email.sendAccountedAt ?? accountedAt };
+                return stored;
+              }),
+            ),
       markWorkflowStartAccounted: (workflowId, digest, accountedAt) =>
         requireStored(workflowId, digest).pipe(
           Effect.map((email) => {
@@ -796,10 +914,16 @@ const makeFixture = (
         : Effect.sync(() => {
             if (
               (email.sendOutcome === "applied" || email.sendOutcome === "ambiguous") &&
-              !terminalFacts.has(email.workflowId)
+              email.sendAccountingBasis !== null
             ) {
-              terminalFacts.add(email.workflowId);
-              gmailSendFacts += 1;
+              const retainedBasis = terminalFacts.get(email.workflowId);
+              if (retainedBasis !== undefined && retainedBasis !== email.sendAccountingBasis) {
+                throw new Error("Scheduled Email accounting basis changed across replay");
+              }
+              if (retainedBasis === undefined) {
+                terminalFacts.set(email.workflowId, email.sendAccountingBasis);
+                gmailSendFacts += 1;
+              }
             }
           }),
     recordWorkflowStart: (email) =>
@@ -847,6 +971,9 @@ const makeFixture = (
     set failSendAccounting(value: boolean) {
       failSendAccounting = value;
     },
+    set failSendAccountingMarker(value: boolean) {
+      failSendAccountingMarker = value;
+    },
     set failWorkflowAccounting(value: boolean) {
       failWorkflowAccounting = value;
     },
@@ -855,6 +982,9 @@ const makeFixture = (
     },
     get gmailSendFacts() {
       return gmailSendFacts;
+    },
+    get gmailSendBases() {
+      return [...terminalFacts.values()];
     },
     instances,
     port,

@@ -53,6 +53,7 @@ export const makeRecord = (
   routeId: ConversationRouteId.make("scheduled-email-route"),
   safeFailureCode: null,
   sendOutcome: null,
+  sendAccountingBasis: null,
   sendOutcomeAt: null,
   sendAccountedAt: null,
   sendStartedAt: null,

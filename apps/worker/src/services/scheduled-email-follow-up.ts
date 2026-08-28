@@ -69,6 +69,9 @@ export class Unavailable extends Schema.TaggedError<Unavailable>()(
 ) {}
 
 export interface PortInterface {
+  readonly deliveredForUser: (
+    userId: UserId,
+  ) => Effect.Effect<ReadonlyArray<Notification>, Unavailable>;
   readonly claimTerminal: (
     email: ScheduledEmail.Record,
     notificationId: NotificationId,
@@ -100,6 +103,7 @@ export class Service extends Context.Service<
   Service,
   {
     readonly claimTerminal: (email: ScheduledEmail.Record) => Effect.Effect<Claim, Unavailable>;
+    readonly deliveredForUser: PortInterface["deliveredForUser"];
     readonly inspect: PortInterface["inspect"];
     readonly markAccepted: (
       notificationId: NotificationId,
@@ -122,6 +126,7 @@ export const make = Effect.gen(function* () {
           port.claimTerminal(email, NotificationId.make(`${email.workflowId}-terminal`), claimedAt),
         ),
       ),
+    deliveredForUser: port.deliveredForUser,
     inspect: port.inspect,
     markAccepted: (notificationId, submissionId) =>
       DateTime.now.pipe(

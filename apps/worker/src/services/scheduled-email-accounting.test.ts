@@ -4,6 +4,7 @@ import { Effect } from "effect";
 
 import type { AllowanceItem, AllowanceSource } from "../domain/allowance";
 import { PlanPolicyVersion } from "../domain";
+import { ActionId } from "../domain/action-execution";
 import { ScheduledEmailAccounting } from "./scheduled-email-accounting";
 import { makeRecord } from "./scheduled-email-test-fixture";
 
@@ -13,8 +14,17 @@ it.effect("records stable launch Workflow and Gmail facts without provider cost"
     recordLegacy: (_period, source, items) => retain(facts, source, items),
   });
   const accepted = makeRecord({ state: "accepted" });
-  const ambiguous = makeRecord({ sendOutcome: "ambiguous", state: "send_pending_reconciliation" });
-  const applied = makeRecord({ sendOutcome: "applied", state: "success" });
+  const ambiguous = makeRecord({
+    sendAccountingBasis: "conservative",
+    sendOutcome: "ambiguous",
+    state: "send_pending_reconciliation",
+  });
+  const applied = makeRecord({
+    actionId: ActionId.make("scheduled-email-applied-action"),
+    sendAccountingBasis: "observed",
+    sendOutcome: "applied",
+    state: "success",
+  });
 
   return Effect.gen(function* () {
     yield* accounting.recordWorkflowStart(accepted);
@@ -25,6 +35,7 @@ it.effect("records stable launch Workflow and Gmail facts without provider cost"
     expect([...facts.values()].flat()).toEqual([
       { allowanceKind: "workflowStarts", basis: "known_at_start", quantity: 1n },
       { allowanceKind: "gmailSends", basis: "conservative", quantity: 1n },
+      { allowanceKind: "gmailSends", basis: "observed", quantity: 1n },
     ]);
     expect(
       [...facts.values()].flat().some(({ allowanceKind }) => allowanceKind === "vendorUsdMicros"),
@@ -39,6 +50,7 @@ it.effect("does not create a zero-cost shared Usage charge or a NotApplied Gmail
   });
   const shared = makeRecord({
     planPolicyVersion: PlanPolicyVersion.make("shared-usage-v1"),
+    sendAccountingBasis: "observed",
     sendOutcome: "applied",
     state: "success",
   });

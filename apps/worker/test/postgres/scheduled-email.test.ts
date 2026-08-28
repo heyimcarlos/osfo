@@ -178,6 +178,48 @@ it.effect("rejects NULL-hole pending and success lifecycle rows", () =>
   ),
 );
 
+it.effect(
+  "preserves conservative accounting when Applied evidence refines an unaccounted failure",
+  () =>
+    withDatabase((database) =>
+      Effect.gen(function* () {
+        const seeded = yield* seedUser(database, "conservative-refinement");
+        const email = record(seeded, "conservative-refinement");
+        const persistence = ScheduledEmailPostgres.make(database);
+        yield* persistence.admit(email, 5n);
+        yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+        yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+        const unknown = yield* persistence.finishTerminal(
+          email.workflowId,
+          email.inputDigest,
+          "failure",
+          "ambiguous",
+          null,
+          "send-outcome-unknown",
+          sendAt,
+        );
+        expect(unknown).toMatchObject({
+          sendAccountedAt: null,
+          sendAccountingBasis: "conservative",
+          sendOutcome: "ambiguous",
+          state: "failure",
+        });
+
+        const refined = yield* persistence.finishApplied(
+          email.workflowId,
+          email.inputDigest,
+          applied,
+          new Date("2026-08-28T12:00:02.000Z"),
+        );
+        expect(refined).toMatchObject({
+          sendAccountingBasis: "conservative",
+          sendOutcome: "applied",
+          state: "success",
+        });
+      }),
+    ),
+);
+
 it.effect("selects pre-wait hosts and post-commit obligations for minute repair", () =>
   withDatabase((database) =>
     Effect.gen(function* () {

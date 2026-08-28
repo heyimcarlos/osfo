@@ -88,6 +88,7 @@ const EncodedRecord = Schema.Struct({
   routeId: ConversationRouteId,
   safeFailureCode: Schema.NullOr(Schema.String),
   sendOutcome: Schema.NullOr(Schema.Literals(["applied", "ambiguous", "notApplied"])),
+  sendAccountingBasis: Schema.NullOr(Schema.Literals(["conservative", "observed"])),
   sendOutcomeAt: Schema.NullOr(Schema.Date),
   sendAccountedAt: Schema.NullOr(Schema.Date),
   sendStartedAt: Schema.NullOr(Schema.Date),
@@ -165,13 +166,25 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
   finishApplied: (workflowId, inputDigest, result, outcomeAt) =>
     transition(database, workflowId, inputDigest, "finishApplied", async (transaction, row) => {
       if (row.state === "success") return found(row);
-      if (row.state !== "sending" && row.state !== "send_pending_reconciliation") return changed();
+      const canRefineUnaccountedAmbiguity =
+        row.state === "failure" &&
+        row.send_outcome === "ambiguous" &&
+        row.send_accounting_basis === "conservative" &&
+        row.send_accounted_at === null;
+      if (
+        row.state !== "sending" &&
+        row.state !== "send_pending_reconciliation" &&
+        !canRefineUnaccountedAmbiguity
+      ) {
+        return changed();
+      }
       const [updated] = await transaction
         .update(scheduledEmails)
         .set({
           provider_log_id: result.evidence.providerLogId,
           provider_resource_id: result.evidence.providerResourceId,
           safe_failure_code: null,
+          send_accounting_basis: row.send_accounting_basis ?? "observed",
           send_outcome: "applied",
           send_outcome_at: outcomeAt,
           state: "success",
@@ -202,6 +215,8 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
         .update(scheduledEmails)
         .set({
           safe_failure_code: safeFailureCode,
+          send_accounting_basis:
+            row.send_accounting_basis ?? (sendOutcome === "ambiguous" ? "conservative" : null),
           send_outcome: sendOutcome,
           send_outcome_at: sendOutcome === null ? row.send_outcome_at : terminalAt,
           provider_log_id: providerLogId ?? row.provider_log_id,
@@ -240,6 +255,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
         .update(scheduledEmails)
         .set({
           send_outcome: "ambiguous",
+          send_accounting_basis: "conservative",
           send_outcome_at: outcomeAt,
           state: "send_pending_reconciliation",
           updated_at: sql`clock_timestamp()`,
@@ -738,6 +754,7 @@ const decodeRow = (row: Row): Effect.Effect<ScheduledEmail.Record, ScheduledEmai
     routeId: row.route_id,
     safeFailureCode: row.safe_failure_code,
     sendOutcome: row.send_outcome,
+    sendAccountingBasis: row.send_accounting_basis,
     sendOutcomeAt: row.send_outcome_at,
     sendAccountedAt: row.send_accounted_at,
     sendStartedAt: row.send_started_at,
@@ -782,6 +799,7 @@ const encodeInsert = (record: ScheduledEmail.Record): typeof scheduledEmails.$in
   route_id: record.routeId,
   safe_failure_code: record.safeFailureCode,
   send_outcome: record.sendOutcome,
+  send_accounting_basis: record.sendAccountingBasis,
   send_outcome_at: record.sendOutcomeAt,
   send_accounted_at: record.sendAccountedAt,
   send_started_at: record.sendStartedAt,

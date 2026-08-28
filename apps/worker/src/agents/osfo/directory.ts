@@ -31,6 +31,7 @@ import { UserId } from "../../domain";
 import { AuthSessionId } from "../../domain/auth-session";
 import { WebFileUpload } from "./web-file-upload";
 import { DocumentBuildFileResolution } from "./document-build-file-resolution";
+import type { DecideActionApprovalRequest } from "./think-action-approvals";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle, osfo/no-unknown-parameters -- Think RPC methods receive untrusted payloads and immediately schema-decode them at this messenger composition root. */
 
@@ -328,6 +329,20 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
       authSessionId: AuthSessionId.make(actor.authSessionId),
       userId: UserId.make(actor.userId),
     });
+  }
+
+  /** List one User Agent's exact pending Action presentations. */
+  async listActionPresentations(agentId: string, actor: unknown) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.listActionPresentations(actor);
+  }
+
+  /** Resolve one User Agent's exact pending Action presentation. */
+  async decideActionApproval(agentId: string, input: DecideActionApprovalRequest) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.decideActionApproval(input);
   }
 
   /** Acquire one provider-hosted Integration Connect Link. */

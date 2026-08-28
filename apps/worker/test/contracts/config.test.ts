@@ -39,6 +39,34 @@ it("admits only an explicit loopback Research provider in test or development", 
   );
 });
 
+it("admits only an explicit loopback Integration provider in test or development", () => {
+  expect(
+    loadConfig({
+      ...env,
+      INTEGRATION_PROVIDER_BASE_URL: "http://127.0.0.1:43124",
+      OSFO_STAGE: "development",
+    }).integrationProvider,
+  ).toEqual({ _tag: "LocalVerification", baseURL: "http://127.0.0.1:43124/" });
+  expect(() =>
+    loadConfig({
+      ...env,
+      INTEGRATION_PROVIDER_BASE_URL: "http://127.0.0.1:43124",
+      OSFO_STAGE: "production",
+    }),
+  ).toThrowError(
+    "Worker configuration is invalid: INTEGRATION_PROVIDER_BASE_URL is restricted to local verification",
+  );
+  expect(() =>
+    loadConfig({
+      ...env,
+      INTEGRATION_PROVIDER_BASE_URL: "https://provider.example.com",
+      OSFO_STAGE: "test",
+    }),
+  ).toThrowError(
+    "Worker configuration is invalid: INTEGRATION_PROVIDER_BASE_URL must use a loopback host",
+  );
+});
+
 it("keeps WhatsApp Wake-up inactive unless the exact policy attestation is present", () => {
   const configuredEnv: CloudflareEnv = env;
   const {

@@ -266,6 +266,7 @@ import {
   type ActionPresentationNotFound,
   type ActionPresentationUnavailable,
   ActionApprovalRequestInvalid,
+  ApprovalActor,
   ApprovalActorAuthorizationUnavailable,
   type ApprovalActorUnauthorized,
   type ApprovalAlreadyResolved,
@@ -4698,6 +4699,23 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  /** List immutable pending presentations for an authenticated User. */
+  async listActionPresentations(input: unknown) {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeUnknownEffect(ApprovalActor)(input).pipe(
+        Effect.mapError(
+          () =>
+            new ActionApprovalRequestInvalid({
+              message: "The Action Presentation list request is invalid",
+              operation: "listActionPresentations",
+            }),
+        ),
+        Effect.flatMap((actor) => this.#actionApprovals.list(actor)),
+      ),
+    );
+  }
+
   /** Record the first authenticated exact Approval decision and dispatch it to Think. */
   async decideActionApproval(
     input: DecideActionApprovalRequest,
@@ -5404,13 +5422,9 @@ export class OsfoAgent extends Think<Env> {
   #runScheduledEmail<Value, Failure>(
     operation: Effect.Effect<Value, Failure, ScheduledEmail.Service>,
   ): Effect.Effect<Value, Failure | ScheduledEmail.Unavailable> {
-    const integrations = Option.getOrUndefined(this.#integrations);
-    if (integrations === undefined) {
-      return Effect.fail(scheduledEmailUnavailable("integrations.unavailable"));
-    }
     return ScheduledEmailComposition.effect(
       ScheduledEmailComposition.bindingsFromEnv(this.env),
-      integrations,
+      Option.getOrNull(this.#integrations),
       operation,
     );
   }
@@ -5421,7 +5435,7 @@ export class OsfoAgent extends Think<Env> {
   ) {
     const runtime = Option.getOrUndefined(this.#runtime);
     const integrations = Option.getOrUndefined(this.#integrations);
-    if (runtime === undefined || integrations === undefined) {
+    if (runtime === undefined || (approved !== null && integrations === undefined)) {
       return Effect.fail(scheduledEmailUnavailable("start.runtime"));
     }
     return this.#inspectSessionRecallAuthorization(metadata.authorityIdentity).pipe(
@@ -5432,14 +5446,20 @@ export class OsfoAgent extends Think<Env> {
               Effect.scoped(
                 Effect.gen(function* () {
                   const database = yield* Db.database;
-                  const [allowance, concurrentWorkflows, connection] = yield* Effect.all([
+                  const [allowance, concurrentWorkflows] = yield* Effect.all([
                     BillingDb.make(database).admit(facts.user.userId, facts.now),
                     ScheduledEmailPostgres.countActiveForUser(database, facts.user.userId),
-                    integrations.connectionEvidence({
+                  ]);
+                  let connection: Integrations.IntegrationConnectionEvidence | null = null;
+                  if (approved !== null) {
+                    if (integrations === undefined) {
+                      return yield* scheduledEmailUnavailable("start.integrations");
+                    }
+                    connection = yield* integrations.connectionEvidence({
                       toolkit: "gmail",
                       userId: facts.user.userId,
-                    }),
-                  ]);
+                    });
+                  }
                   const gmailConnection = Predicate.isTagged(
                     connection,
                     "IntegrationConnectionConnected",

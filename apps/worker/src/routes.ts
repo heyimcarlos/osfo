@@ -22,12 +22,15 @@ import { DocumentBuildComposition } from "./composition/document-build";
 import type { SkillsHandlers } from "./handlers/skills";
 import type { IntegrationHandlers } from "./handlers/integrations";
 import type { FilesHandlers } from "./handlers/files";
+import type { ScheduledEmailHandlers } from "./handlers/scheduled-emails";
+import { ScheduledEmailComposition } from "./composition/scheduled-email";
 
 /** Cloudflare bindings used by the Worker route tree. */
 export type Bindings = AccountDeletionComposition.Bindings &
   RegistrationCloudflare.Bindings &
   SkillsHandlers.Bindings &
   IntegrationHandlers.Bindings &
+  ScheduledEmailHandlers.Bindings &
   FilesHandlers.Bindings &
   WebhookHandlers.Bindings & {
     readonly ARTIFACTS?: R2Bucket;
@@ -55,6 +58,9 @@ export const layer = (options: Options) => {
     ),
     Layer.provide(
       DocumentBuildComposition.followUpLayer.pipe(Layer.provide(options.authDependencies)),
+    ),
+    Layer.provide(
+      ScheduledEmailComposition.followUpLayer.pipe(Layer.provide(options.authDependencies)),
     ),
     Layer.provide(ChannelLinks.layerFromConfig(options.config)),
     Layer.provide(Registration.layerWithoutDependencies),

@@ -25,6 +25,7 @@ type RawConfigBinding =
   | "COMPANY_CONVERSATION_MODEL"
   | "COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT"
   | "COMPOSIO_API_KEY"
+  | "INTEGRATION_PROVIDER_BASE_URL"
   | "OSFO_STAGE"
   | "RESEARCH_REPORT_PROVIDER_BASE_URL"
   | "STRIPE_ADVENTURER_PRICE_ID"
@@ -66,6 +67,7 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly COMPANY_CONVERSATION_MODEL?: string;
   readonly COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT?: string;
   readonly COMPOSIO_API_KEY?: string;
+  readonly INTEGRATION_PROVIDER_BASE_URL?: string;
   readonly OSFO_STAGE?: string;
   readonly RESEARCH_REPORT_PROVIDER_BASE_URL?: string;
   readonly STRIPE_ADVENTURER_PRICE_ID?: string;
@@ -188,11 +190,17 @@ export type ResearchReportProviderConfig =
   | { readonly _tag: "Cloudflare" }
   | { readonly _tag: "LocalVerification"; readonly baseURL: string };
 
+/** Provider selection for approved direct integrations. */
+export type IntegrationProviderConfig =
+  | { readonly _tag: "Composio"; readonly config: ComposioConfig | null }
+  | { readonly _tag: "LocalVerification"; readonly baseURL: string };
+
 /** Parsed configuration used by one request application. */
 export interface CloudflareConfig {
   readonly auth: AuthConfig;
   readonly companyConversation: CompanyConversationConfig;
   readonly composio: ComposioConfig | null;
+  readonly integrationProvider: IntegrationProviderConfig;
   readonly researchReportProvider: ResearchReportProviderConfig;
   readonly stage: OsfoStage;
   readonly stripe: StripeConfig;
@@ -254,6 +262,7 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
       env.COMPOSIO_API_KEY === undefined || env.COMPOSIO_API_KEY.trim().length === 0
         ? null
         : { apiKey: Redacted.make(env.COMPOSIO_API_KEY) },
+    integrationProvider: parseIntegrationProvider(stage, env),
     researchReportProvider: parseResearchReportProvider(stage, env),
     stage,
     stripe: {
@@ -296,6 +305,7 @@ type RequiredBinding = Exclude<
   RawConfigBinding,
   | "BETTER_AUTH_API_URL"
   | "COMPOSIO_API_KEY"
+  | "INTEGRATION_PROVIDER_BASE_URL"
   | "OSFO_STAGE"
   | "RESEARCH_REPORT_PROVIDER_BASE_URL"
   | "STRIPE_API_BASE_URL"
@@ -374,6 +384,26 @@ const parseResearchReportProvider = (
   const baseURL = parseUrl("RESEARCH_REPORT_PROVIDER_BASE_URL", value);
   if (!loopbackHosts.has(baseURL.hostname)) {
     return invalid("RESEARCH_REPORT_PROVIDER_BASE_URL must use a loopback host");
+  }
+  return { _tag: "LocalVerification", baseURL: baseURL.href };
+};
+
+const parseIntegrationProvider = (
+  stage: OsfoStage,
+  env: CloudflareEnv,
+): IntegrationProviderConfig => {
+  const value = env.INTEGRATION_PROVIDER_BASE_URL?.trim();
+  const composio =
+    env.COMPOSIO_API_KEY === undefined || env.COMPOSIO_API_KEY.trim().length === 0
+      ? null
+      : { apiKey: Redacted.make(env.COMPOSIO_API_KEY) };
+  if (value === undefined || value.length === 0) return { _tag: "Composio", config: composio };
+  if (stage !== "development" && stage !== "test") {
+    return invalid("INTEGRATION_PROVIDER_BASE_URL is restricted to local verification");
+  }
+  const baseURL = parseUrl("INTEGRATION_PROVIDER_BASE_URL", value);
+  if (!loopbackHosts.has(baseURL.hostname)) {
+    return invalid("INTEGRATION_PROVIDER_BASE_URL must use a loopback host");
   }
   return { _tag: "LocalVerification", baseURL: baseURL.href };
 };

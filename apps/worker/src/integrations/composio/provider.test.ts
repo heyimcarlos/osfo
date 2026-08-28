@@ -140,7 +140,10 @@ describe("Composio Provider", () => {
       } as const;
       let listed = [exactToolLog("log-1")];
       let detailMode: "applied" | "failedNoStep" | "malformed" | "successNoStep" = "applied";
+      let endlessPages = false;
       let listFailure = false;
+      let listCalls = 0;
+      let laterPage = false;
       let retrieveFailure = false;
       const session = {
         authorize: async () => ({ redirectUrl: "https://connect.composio.dev/link" }),
@@ -151,9 +154,22 @@ describe("Composio Provider", () => {
         disconnect: async () => undefined,
         executeOnce: async () => ({ data: {}, error: null, logId: "unused" }),
         listConnectedAccounts: async () => ({ items: [] }),
-        listToolLogs: async () => {
+        listToolLogs: async ({ cursor }) => {
+          listCalls += 1;
           if (listFailure) throw new Error("list unavailable");
-          return { data: listed };
+          if (endlessPages) {
+            return { data: [], nextCursor: (cursor ?? 0) + 100 };
+          }
+          if (laterPage && cursor === null) {
+            return {
+              data: Array.from({ length: 100 }, (_, index) => ({
+                ...exactToolLog(`unrelated-${index}`),
+                connectedAccountId: "another-account",
+              })),
+              nextCursor: 100,
+            };
+          }
+          return { data: listed, nextCursor: null };
         },
         retrieveToolLog: async (id) => {
           if (retrieveFailure) throw new Error("retrieve unavailable");
@@ -190,9 +206,9 @@ describe("Composio Provider", () => {
       const inspectExecution = created.session.inspectExecution;
       if (inspectExecution === undefined) throw new Error("provider log inspection is missing");
 
-      expect(
-        yield* inspectExecution({ ...correlation, providerSessionId: null }, input),
-      ).toEqual({ _tag: "Unknown" });
+      expect(yield* inspectExecution({ ...correlation, providerSessionId: null }, input)).toEqual({
+        _tag: "Unknown",
+      });
       expect(yield* inspectExecution(correlation, input)).toMatchObject({
         _tag: "Applied",
         execution: { logId: "log-1" },
@@ -224,15 +240,24 @@ describe("Composio Provider", () => {
       expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
       detailMode = "malformed";
       expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
-      listFailure = true;
-      expect(yield* inspectExecution(correlation, input).pipe(Effect.result)).toMatchObject({
-        failure: { _tag: "IntegrationProviderUnavailable", operation: "inspectExecution" },
+      detailMode = "applied";
+      listed = [exactToolLog("later-page-exact")];
+      laterPage = true;
+      expect(yield* inspectExecution(correlation, input)).toMatchObject({
+        _tag: "Applied",
+        execution: { logId: "later-page-exact" },
       });
+      laterPage = false;
+      endlessPages = true;
+      listCalls = 0;
+      expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
+      expect(listCalls).toBe(5);
+      endlessPages = false;
+      listFailure = true;
+      expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
       listFailure = false;
       retrieveFailure = true;
-      expect(yield* inspectExecution(correlation, input).pipe(Effect.result)).toMatchObject({
-        failure: { _tag: "IntegrationProviderUnavailable", operation: "inspectExecution" },
-      });
+      expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
     }),
   );
 

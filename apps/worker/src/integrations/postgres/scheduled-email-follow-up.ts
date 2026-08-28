@@ -1,6 +1,6 @@
 import { scheduledEmailNotifications, scheduledEmails } from "@osfo/db/schema/scheduled-emails";
 import { deletionCases } from "@osfo/db/schema/user-lifecycle";
-import { and, eq, inArray, isNotNull, isNull, notExists, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, notExists, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -42,6 +42,35 @@ const selection = {
 };
 
 export const make = (database: Database): ScheduledEmailFollowUp.PortInterface => ({
+  deliveredForUser: (userId) =>
+    attempt("deliveredForUser", () =>
+      database
+        .select({ ...selection, state: scheduledEmails.state })
+        .from(scheduledEmailNotifications)
+        .innerJoin(
+          scheduledEmails,
+          eq(scheduledEmails.workflow_id, scheduledEmailNotifications.workflow_id),
+        )
+        .where(
+          and(
+            eq(scheduledEmailNotifications.user_id, userId),
+            isNotNull(scheduledEmailNotifications.accepted_at),
+            notExists(
+              database
+                .select({ id: deletionCases.deletion_case_id })
+                .from(deletionCases)
+                .where(
+                  and(
+                    eq(deletionCases.user_id, scheduledEmails.user_id),
+                    isNotNull(deletionCases.access_fenced_at),
+                  ),
+                ),
+            ),
+          ),
+        )
+        .orderBy(desc(scheduledEmailNotifications.accepted_at))
+        .limit(20),
+    ).pipe(Effect.flatMap((rows) => Effect.forEach(rows, (row) => decode(row, row.state)))),
   claimTerminal: (email, notificationId, claimedAt) =>
     attempt("claimTerminal", () =>
       database.transaction(async (transaction) => {

@@ -33,17 +33,20 @@ export interface Interface {
 /** Record launch counters only; gmail-v1 declares zero marginal provider cost. */
 export const make = (port: Port): Interface => ({
   recordSendOutcome: (email) => {
-    if (
-      email.planPolicyVersion !== "launch-v1" ||
-      (email.sendOutcome !== "applied" && email.sendOutcome !== "ambiguous")
-    ) {
+    if (email.planPolicyVersion !== "launch-v1" || email.sendAccountingBasis === null) {
       return Effect.void;
     }
     return record(
       port,
       email,
       { sourceId: email.actionId, sourceType: "integrationAction" },
-      [{ allowanceKind: "gmailSends", basis: "conservative", quantity: 1n }],
+      [
+        {
+          allowanceKind: "gmailSends",
+          basis: email.sendAccountingBasis,
+          quantity: 1n,
+        },
+      ],
       "gmailSend",
     );
   },

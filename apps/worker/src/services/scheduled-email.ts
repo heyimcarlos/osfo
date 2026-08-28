@@ -132,6 +132,7 @@ export interface Record {
   readonly providerLogId: string | null;
   readonly providerResourceId: string | null;
   readonly sendOutcome: "applied" | "ambiguous" | "notApplied" | null;
+  readonly sendAccountingBasis: "conservative" | "observed" | null;
   readonly safeFailureCode: string | null;
   readonly admittedAt: Date;
   readonly acceptedAt: Date | null;
@@ -357,7 +358,7 @@ export const make = Effect.gen(function* () {
   const drainSendAccounting = Effect.fn("ScheduledEmail.drainSendAccounting")(function* (
     email: Record,
   ) {
-    if (email.sendOutcome === null || email.sendAccountedAt !== null) return email;
+    if (email.sendAccountingBasis === null || email.sendAccountedAt !== null) return email;
     yield* ports.recordSendOutcome(email);
     const accountedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     return yield* ports.persistence.markSendAccounted(
@@ -566,7 +567,7 @@ export const make = Effect.gen(function* () {
 
   const finishAfterClaim = (
     email: Record,
-    sendOutcome: "notApplied" | null,
+    sendOutcome: "ambiguous" | "notApplied" | null,
     providerLogId: string | null,
     safeFailureCode: string,
     terminalAt: Date,
@@ -626,8 +627,12 @@ export const make = Effect.gen(function* () {
     email: Record,
   ) {
     const reconciliation = yield* ports.reconcileSend(email);
-    if (reconciliation._tag === "NotStarted") return yield* executeClaimedSend(email);
     const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    if (reconciliation._tag === "NotStarted") {
+      return email.cancelRequestedAt === null
+        ? yield* executeClaimedSend(email)
+        : yield* finishCanceled(email, "cancel-requested", outcomeAt);
+    }
     if (reconciliation._tag === "Applied") {
       const completed = yield* ports.persistence.finishApplied(
         email.workflowId,
@@ -646,9 +651,6 @@ export const make = Effect.gen(function* () {
         outcomeAt,
       );
     }
-    if (email.state === "send_pending_reconciliation") {
-      return yield* drainSendAccounting(email);
-    }
     if (
       reconciliation._tag === "Pending" ||
       email.sendStartedAt === null ||
@@ -656,13 +658,29 @@ export const make = Effect.gen(function* () {
     ) {
       return email;
     }
-    const ambiguous = yield* ports.persistence.markAmbiguous(
-      email.workflowId,
-      email.inputDigest,
+    return yield* finishAfterClaim(
+      email,
+      "ambiguous",
+      email.providerLogId,
+      "send-outcome-unknown",
       outcomeAt,
     );
-    return yield* drainSendAccounting(ambiguous);
   });
+
+  const refineUnaccountedAmbiguity = Effect.fn("ScheduledEmail.refineUnaccountedAmbiguity")(
+    function* (email: Record) {
+      const reconciliation = yield* ports.reconcileSend(email);
+      if (reconciliation._tag !== "Applied") return yield* settleTerminal(email);
+      const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+      const completed = yield* ports.persistence.finishApplied(
+        email.workflowId,
+        email.inputDigest,
+        reconciliation.result,
+        outcomeAt,
+      );
+      return yield* settleTerminal(completed);
+    },
+  );
 
   const sendDue = Effect.fn("ScheduledEmail.sendDue")(function* (payload: WorkflowPayload) {
     const email = yield* inspectExecution(payload);
@@ -693,6 +711,14 @@ export const make = Effect.gen(function* () {
     payload: WorkflowPayload,
   ) {
     const email = yield* inspectExecution(payload);
+    if (
+      email.state === "failure" &&
+      email.sendOutcome === "ambiguous" &&
+      email.sendAccountingBasis === "conservative" &&
+      email.sendAccountedAt === null
+    ) {
+      return yield* refineUnaccountedAmbiguity(email);
+    }
     if (terminalStates.has(email.state)) return yield* settleTerminal(email);
     if (email.state === "admitted" || email.state === "accepted") {
       return yield* beginWaiting(payload);
@@ -826,6 +852,7 @@ export const make = Effect.gen(function* () {
       providerLogId: null,
       providerResourceId: null,
       sendOutcome: null,
+      sendAccountingBasis: null,
       safeFailureCode: null,
       admittedAt: input.authorization.now,
       acceptedAt: null,

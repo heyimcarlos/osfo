@@ -90,6 +90,14 @@ export const ActionPresentationFound = Schema.TaggedStruct("ActionPresentationFo
 /** Pending Action Presentation returned to an authenticated client. */
 export type ActionPresentationFound = typeof ActionPresentationFound.Type;
 
+/** Pending immutable Action presentations visible to one authenticated User. */
+export const ActionPresentationsFound = Schema.TaggedStruct("ActionPresentationsFound", {
+  presentations: Schema.Array(ActionPresentation),
+});
+
+/** Pending immutable Action presentations visible to one authenticated User. */
+export type ActionPresentationsFound = typeof ActionPresentationsFound.Type;
+
 /** Accepted handoff of one exact decision to Think. */
 export const ApprovalDecisionAccepted = Schema.TaggedStruct("ApprovalDecisionAccepted", {
   decision: Schema.Literals(["approved", "rejected", "canceled"]),
@@ -177,6 +185,19 @@ export interface ThinkApprovalPort {
 
 /** Build the thin protocol adapter over Think's native Approval lifecycle. */
 export const makeThinkActionApprovalAdapter = (options: { readonly think: ThinkApprovalPort }) => {
+  const listPending = callThink("pendingApprovals", () => options.think.pending()).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(ThinkPendingApproval))),
+    Effect.mapError((failure) =>
+      Schema.is(ThinkApprovalUnavailable)(failure)
+        ? failure
+        : new ThinkApprovalUnavailable({
+            cause: failure,
+            message: "Think returned invalid pending Approvals",
+            operation: "pendingApprovals",
+          }),
+    ),
+  );
+
   const findPending = (presentationId: ActionPresentationId) =>
     callThink("pendingApprovals", () => options.think.pending(presentationId)).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(ThinkPendingApproval))),
@@ -225,7 +246,7 @@ export const makeThinkActionApprovalAdapter = (options: { readonly think: ThinkA
       }),
     );
 
-  return { findPending, resolve };
+  return { findPending, listPending, resolve };
 };
 
 const callThink = <A>(operation: string, run: () => Promise<A>) =>

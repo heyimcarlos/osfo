@@ -55,6 +55,7 @@ CREATE TABLE "scheduled_emails" (
 	"provider_log_id" text,
 	"provider_resource_id" text,
 	"send_outcome" text,
+	"send_accounting_basis" text,
 	"safe_failure_code" text,
 	"admitted_at" timestamp with time zone NOT NULL,
 	"accepted_at" timestamp with time zone,
@@ -89,25 +90,30 @@ CREATE TABLE "scheduled_emails" (
 	CONSTRAINT "scheduled_emails_outcome_check" CHECK ((
           "scheduled_emails"."state" in ('admitted', 'accepted', 'waiting', 'sending', 'canceled')
           and "scheduled_emails"."send_outcome" is null
+          and "scheduled_emails"."send_accounting_basis" is null
           and "scheduled_emails"."send_outcome_at" is null
           and "scheduled_emails"."provider_resource_id" is null
         ) or (
           "scheduled_emails"."state" = 'send_pending_reconciliation'
           and "scheduled_emails"."send_outcome" is not null
           and "scheduled_emails"."send_outcome" = 'ambiguous'
+          and "scheduled_emails"."send_accounting_basis" = 'conservative'
           and "scheduled_emails"."send_outcome_at" is not null
           and "scheduled_emails"."provider_resource_id" is null
         ) or (
           "scheduled_emails"."state" = 'success'
           and "scheduled_emails"."send_outcome" is not null
           and "scheduled_emails"."send_outcome" = 'applied'
+          and "scheduled_emails"."send_accounting_basis" in ('observed', 'conservative')
           and "scheduled_emails"."send_outcome_at" is not null
           and "scheduled_emails"."provider_log_id" is not null
           and "scheduled_emails"."provider_resource_id" is not null
         ) or (
           "scheduled_emails"."state" = 'failure'
           and "scheduled_emails"."send_outcome" is not null
-          and "scheduled_emails"."send_outcome" = 'notApplied'
+          and "scheduled_emails"."send_outcome" in ('notApplied', 'ambiguous')
+          and ("scheduled_emails"."send_outcome" <> 'ambiguous' or "scheduled_emails"."send_accounting_basis" = 'conservative')
+          and ("scheduled_emails"."send_outcome" <> 'notApplied' or "scheduled_emails"."send_accounting_basis" is null or "scheduled_emails"."send_accounting_basis" = 'conservative')
           and "scheduled_emails"."send_outcome_at" is not null
           and "scheduled_emails"."provider_resource_id" is null
         )),
@@ -121,7 +127,8 @@ CREATE TABLE "scheduled_emails" (
         and ("scheduled_emails"."state" <> 'send_pending_reconciliation' or ("scheduled_emails"."send_outcome" is not null and "scheduled_emails"."send_outcome" = 'ambiguous' and "scheduled_emails"."send_outcome_at" is not null and "scheduled_emails"."terminal_at" is null))
         and ("scheduled_emails"."state" not in ('sending', 'send_pending_reconciliation', 'success', 'failure') or "scheduled_emails"."send_started_at" is not null)
         and ("scheduled_emails"."state" <> 'success' or ("scheduled_emails"."send_outcome" is not null and "scheduled_emails"."send_outcome" = 'applied' and "scheduled_emails"."send_outcome_at" is not null and "scheduled_emails"."provider_log_id" is not null and "scheduled_emails"."provider_resource_id" is not null))
-        and ("scheduled_emails"."send_accounted_at" is null or "scheduled_emails"."send_outcome" is not null)
+        and ("scheduled_emails"."send_accounted_at" is null or "scheduled_emails"."send_accounting_basis" is not null)
+        and ("scheduled_emails"."send_accounting_basis" <> 'observed' or "scheduled_emails"."send_outcome" = 'applied')
         and ("scheduled_emails"."workflow_start_accounted_at" is null or "scheduled_emails"."accepted_at" is not null)
         and ("scheduled_emails"."safe_failure_code" is null or length(btrim("scheduled_emails"."safe_failure_code")) between 1 and 120))
 );

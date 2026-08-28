@@ -16,6 +16,8 @@ import {
   type directIntegrationProviderConfig,
 } from "../../services/integrations";
 
+/* oxlint-disable effecttsgo/async-function, eslint/no-await-in-loop -- Composio log cursors must be scanned sequentially under one bounded AbortSignal. */
+
 const requestTimeoutMillis = 30_000;
 const composioApiBaseUrl = "https://backend.composio.dev";
 const composioTemporaryFilesHost = "temp.4d4f16c61d89ec64e760039c4ec50717.r2.cloudflarestorage.com";
@@ -56,6 +58,7 @@ const ToolLogList = Schema.Struct({
       status: Schema.String,
     }),
   ),
+  nextCursor: Schema.NullOr(Schema.Finite),
 });
 
 const ToolLogDetail = Schema.Struct({
@@ -108,10 +111,15 @@ interface ComposioClientPort {
     toolkit: string,
   ) => Promise<ComposioConnectedAccountList>;
   readonly listToolLogs?: (input: {
+    readonly cursor: number | null;
     readonly from: number;
+    readonly signal: AbortSignal;
     readonly to: number;
   }) => Promise<typeof ToolLogList.Type>;
-  readonly retrieveToolLog?: (id: string) => Promise<typeof ToolLogDetail.Type>;
+  readonly retrieveToolLog?: (
+    id: string,
+    signal: AbortSignal,
+  ) => Promise<typeof ToolLogDetail.Type>;
   readonly uploadFile: (input: {
     readonly bytes: Uint8Array;
     readonly fileName: string;
@@ -207,12 +215,14 @@ export const make = (apiKey: Redacted.Redacted): IntegrationProvider => {
       composio.connectedAccounts.delete(connectedAccountId).then(() => undefined),
     listConnectedAccounts: (userId, toolkit) =>
       listConnectedAccounts(composio.connectedAccounts, userId, toolkit),
-    listToolLogs: ({ from, to }) =>
+    listToolLogs: ({ cursor, from, signal, to }) =>
       filesClient.logs.tools
-        .list({ cursor: null, from, limit: 100, to })
+        .list({ cursor, from, limit: 100, to }, { signal })
         .then(Schema.decodeUnknownPromise(ToolLogList)),
-    retrieveToolLog: (id) =>
-      filesClient.logs.tools.retrieve(id).then(Schema.decodeUnknownPromise(ToolLogDetail)),
+    retrieveToolLog: (id, signal) =>
+      filesClient.logs.tools
+        .retrieve(id, { signal })
+        .then(Schema.decodeUnknownPromise(ToolLogDetail)),
     uploadFile: (input) => uploadFile(filesClient.files, input),
     useSession: (providerSessionId) => composio.sessions.use(providerSessionId),
   });
@@ -313,10 +323,12 @@ const inspectExecution = (
   const expectedInput = Schema.decodeUnknownSync(Schema.Json)(input);
   // oxlint-disable-next-line effecttsgo/async-function -- This adapter owns the bounded Composio log-list Promise boundary.
   return providerCall("inspectExecution", async () => {
+    const signal = AbortSignal.timeout(10_000);
     const from = Math.floor((correlation.startedAt - 60_000) / 1_000);
     const to = Math.ceil((correlation.startedAt + 300_000) / 1_000);
-    const listed = await listToolLogs({ from, to });
-    const candidates = listed.data.filter((candidate) => {
+    const listed = await boundedToolLogScan(listToolLogs, from, signal, to);
+    if (listed === null) return { _tag: "Unknown" as const };
+    const candidates = listed.filter((candidate) => {
       const createdAt =
         candidate.createdAt < 1_000_000_000_000 ? candidate.createdAt * 1_000 : candidate.createdAt;
       return (
@@ -326,6 +338,7 @@ const inspectExecution = (
         createdAt <= correlation.startedAt + 300_000
       );
     });
+    if (candidates.length > 25) return { _tag: "Unknown" as const };
     type ExactExecutionEvidence = {
       readonly id: string;
       readonly listedStatus: string;
@@ -336,7 +349,7 @@ const inspectExecution = (
     const exact = (
       await Promise.all(
         candidates.map((candidate) =>
-          retrieveToolLog(candidate.id).then((detail): ExactExecutionEvidence | null => {
+          retrieveToolLog(candidate.id, signal).then((detail): ExactExecutionEvidence | null => {
             const received =
               "arguments" in detail.payloadReceived
                 ? detail.payloadReceived.arguments
@@ -374,7 +387,26 @@ const inspectExecution = (
     } catch {
       return { _tag: "Unknown" as const };
     }
-  });
+  }).pipe(Effect.orElseSucceed(() => ({ _tag: "Unknown" as const })));
+};
+
+const boundedToolLogScan = async (
+  listToolLogs: NonNullable<ComposioClientPort["listToolLogs"]>,
+  from: number,
+  signal: AbortSignal,
+  to: number,
+) => {
+  const maximumPages = 5;
+  const collected: Array<(typeof ToolLogList.Type)["data"][number]> = [];
+  let cursor: number | null = null;
+  for (let page = 0; page < maximumPages; page += 1) {
+    if (signal.aborted) return null;
+    const listed = await listToolLogs({ cursor, from, signal, to });
+    collected.push(...listed.data);
+    if (listed.nextCursor === null) return collected;
+    cursor = listed.nextCursor;
+  }
+  return null;
 };
 
 const sameJson = (left: Schema.Json, right: Schema.Json): boolean =>

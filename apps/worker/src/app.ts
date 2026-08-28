@@ -149,6 +149,9 @@ const adaptBindings = (env: CloudflareEnv, config: CloudflareConfig): Bindings =
           directory.connectIntegrationFromSettings(agentId, input),
         disconnectIntegrationFromSettings: (agentId, input) =>
           directory.disconnectIntegrationFromSettings(agentId, input),
+        listActionPresentations: (agentId, actor) =>
+          directory.listActionPresentations(agentId, actor),
+        decideActionApproval: (agentId, input) => directory.decideActionApproval(agentId, input),
         changePersonalSkill: (agentId, input) => directory.changePersonalSkill(agentId, input),
         presentPersonalSkillDeletion: (agentId, input) =>
           directory.presentPersonalSkillDeletion(agentId, input),
