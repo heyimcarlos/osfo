@@ -250,6 +250,21 @@ it.effect(
   },
 );
 
+for (const safeFailureCode of ["deadline-exceeded", "account-deletion"] as const) {
+  it.effect(`returns the existing ${safeFailureCode} terminal outcome after cleanup`, () => {
+    const fixture = publicationFixture({ terminalWinner: safeFailureCode });
+    return Effect.gen(function* () {
+      const documents = yield* ResearchReportDocument.Service;
+      const settled = yield* documents.generate(fixture.report(), collection);
+
+      expect(settled.report).toMatchObject({ safeFailureCode, state: "canceled" });
+      expect(fixture.stored()).toBeNull();
+      expect(fixture.cleanupCompletions()).toBe(1);
+      expect(fixture.usageFacts()).toEqual([]);
+    }).pipe(Effect.provide(fixture.layer));
+  });
+}
+
 function claim(statement: string): ResearchSynthesis.MaterialClaim {
   return {
     evidence: [{ quote: "measured result improved", sourceId: "S1" }],
@@ -287,11 +302,13 @@ const publicationFixture = (options: {
   readonly accountFailures?: number;
   readonly cleanupFailures?: number;
   readonly successFailures?: number;
+  readonly terminalWinner?: "account-deletion" | "deadline-exceeded";
   readonly usageFailures?: number;
 }) => {
   let accountFailures = options.accountFailures ?? 0;
   let cleanupFailures = options.cleanupFailures ?? 0;
   let successFailures = options.successFailures ?? 0;
+  const terminalWinner = options.terminalWinner;
   let usageFailures = options.usageFailures ?? 0;
   let current = reportRecord();
   let retainedArtifact: StoredArtifactMetadata | null = null;
@@ -415,6 +432,15 @@ const publicationFixture = (options: {
             operation: "recordUsage",
             reason: "storageUnavailable",
           });
+        }
+        if (terminalWinner !== undefined) {
+          current = {
+            ...report,
+            safeFailureCode: terminalWinner,
+            state: "canceled",
+            terminalAt: terminalWinner === "deadline-exceeded" ? report.deadlineAt : reportNow,
+          };
+          return current;
         }
         usageFacts.add(`${report.workflowId}:${artifact.content.sha256}`);
         current = { ...report, state: "success", terminalAt: reportNow };

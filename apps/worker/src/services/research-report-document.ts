@@ -239,12 +239,7 @@ export const make = Effect.gen(function* () {
       );
       if (completed.state !== "success") {
         yield* discardArtifact(ports, existing);
-        return yield* unavailable(
-          "recordUsage",
-          "Research Report publication lost to its deadline or deletion fence",
-          completed.state,
-          "authorizationEnded",
-        );
+        return { artifact: existing.artifact, report: completed };
       }
       return { artifact: existing.artifact, report: completed };
     }
@@ -390,12 +385,7 @@ export const make = Effect.gen(function* () {
       );
       if (completed.state !== "success") {
         yield* discardArtifact(ports, retained);
-        return yield* unavailable(
-          "recordUsage",
-          "Research Report publication lost to its deadline or deletion fence",
-          completed.state,
-          "authorizationEnded",
-        );
+        return { artifact, report: completed };
       }
       return { artifact, report: completed };
     }).pipe(Effect.result);

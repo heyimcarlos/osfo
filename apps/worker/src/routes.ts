@@ -17,6 +17,7 @@ import { AgentDirectory } from "./services/agent-directory";
 import { UserId } from "./domain";
 import { ChannelLinks } from "./services/channel-links";
 import type { AccountDeletionComposition } from "./composition/account-deletion";
+import { ResearchReportComposition } from "./composition/research-report";
 import type { SkillsHandlers } from "./handlers/skills";
 import type { IntegrationHandlers } from "./handlers/integrations";
 
@@ -46,6 +47,9 @@ export interface Options {
 export const layer = (options: Options) => {
   const api = HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
     Layer.provide(Handlers.layer(options.runtime, options.config, options.env)),
+    Layer.provide(
+      ResearchReportComposition.followUpLayer.pipe(Layer.provide(options.authDependencies)),
+    ),
     Layer.provide(ChannelLinks.layerFromConfig(options.config)),
     Layer.provide(Registration.layerWithoutDependencies),
     Layer.provide(RegistrationCloudflare.layer(options.env)),

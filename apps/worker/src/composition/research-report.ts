@@ -284,6 +284,9 @@ export const followUpLayerFromDatabase = (database: Database) =>
     ),
   );
 
+/** Compose the request-scoped Research Report follow-up service from the shared database. */
+export const followUpLayer = Layer.unwrap(Db.database.pipe(Effect.map(followUpLayerFromDatabase)));
+
 /** Run one lightweight timer or notification operation with a fresh Hyperdrive connection. */
 export const followUpEffect = <Value>(
   env: Pick<Bindings, "DB">,

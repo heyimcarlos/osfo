@@ -1,7 +1,7 @@
 import { researchReports } from "@osfo/db/schema/research-reports";
 import { deletionCases } from "@osfo/db/schema/user-lifecycle";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 
 import type { Database } from "@osfo/db";
 import { BillingDb } from "../../db/billing";
@@ -19,6 +19,10 @@ export interface CompleteInput {
   readonly contentId: string;
   readonly report: ResearchReport.Record;
 }
+
+class PublicationDeadlineCrossed extends Data.TaggedError("PublicationDeadlineCrossed")<{
+  readonly deadlineAt: Date;
+}> {}
 
 /** Atomically retain useful User Usage and terminal Success against deadline and deletion. */
 export const complete = (database: Database, input: CompleteInput) =>
@@ -44,16 +48,16 @@ export const complete = (database: Database, input: CompleteInput) =>
           .where(eq(researchReports.workflow_id, input.report.workflowId))
           .for("update")
           .limit(1);
-        if (row === undefined) return "Missing" as const;
+        if (row === undefined) return { _tag: "Missing" as const };
         if (
           row.inputDigest !== input.report.inputDigest ||
           row.userId !== input.report.userId ||
           row.artifactContentId !== input.contentId
         ) {
-          return "Conflict" as const;
+          return { _tag: "Conflict" as const };
         }
-        if (row.state === "success") return "Success" as const;
-        if (row.state !== "publication_committed") return "Canceled" as const;
+        if (row.state === "success") return { _tag: "Success" as const };
+        if (row.state !== "publication_committed") return { _tag: "Canceled" as const };
 
         const [deletion] = await transaction
           .select({ deletionCaseId: deletionCases.deletion_case_id })
@@ -82,7 +86,7 @@ export const complete = (database: Database, input: CompleteInput) =>
                 eq(researchReports.state, "publication_committed"),
               ),
             );
-          return "Canceled" as const;
+          return { _tag: "Canceled" as const };
         }
 
         const billing = BillingDb.make(transaction);
@@ -113,24 +117,38 @@ export const complete = (database: Database, input: CompleteInput) =>
               eq(researchReports.input_digest, input.report.inputDigest),
               eq(researchReports.artifact_content_id, input.contentId),
               eq(researchReports.state, "publication_committed"),
+              sql`clock_timestamp() < ${researchReports.deadline_at}`,
             ),
           )
           .returning({ workflowId: researchReports.workflow_id });
-        return completed === undefined ? ("Conflict" as const) : ("Success" as const);
+        if (completed === undefined) {
+          throw new PublicationDeadlineCrossed({ deadlineAt: row.deadlineAt });
+        }
+        return { _tag: "Success" as const };
       }),
     catch: (cause) =>
-      new ResearchReport.Unavailable({
-        cause,
-        message: "Useful Research Report accounting and Success could not be committed",
-        operation: "publication.complete",
-      }),
+      cause instanceof PublicationDeadlineCrossed
+        ? cause
+        : new ResearchReport.Unavailable({
+            cause,
+            message: "Useful Research Report accounting and Success could not be committed",
+            operation: "publication.complete",
+          }),
   }).pipe(
+    Effect.catchIf(
+      (cause): cause is PublicationDeadlineCrossed => cause instanceof PublicationDeadlineCrossed,
+      (cause) =>
+        ResearchReportPostgres.make(database)
+          .enforceDeadline(input.report.workflowId, input.report.inputDigest, cause.deadlineAt)
+          .pipe(Effect.map((report) => ({ _tag: "Retained" as const, report }))),
+    ),
     Effect.flatMap((outcome) =>
       Effect.gen(function* () {
-        if (outcome === "Missing") {
+        if (outcome._tag === "Retained") return outcome.report;
+        if (outcome._tag === "Missing") {
           return yield* new ResearchReport.NotFound({ workflowId: input.report.workflowId });
         }
-        if (outcome === "Conflict") {
+        if (outcome._tag === "Conflict") {
           return yield* new ResearchReport.Conflict({
             message: "Useful publication named changed immutable Research Report facts",
             workflowId: input.report.workflowId,

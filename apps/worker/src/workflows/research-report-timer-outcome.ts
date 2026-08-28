@@ -3,11 +3,13 @@
 
 /** Keep deadline cleanup ahead of the first terminal User follow-up on every host replay. */
 export const settleDeadlineOutcome = async <A, D, R>(
-  deadline: { readonly _tag: string; readonly report: R },
+  deadline: { readonly _tag: string; readonly report: R & { readonly state: string } },
   discard: (report: R) => Promise<D>,
   claimTerminal: () => Promise<A>,
 ): Promise<A> => {
-  if (deadline._tag === "Canceled") await discard(deadline.report);
+  if (deadline._tag === "Canceled" || deadline.report.state === "canceled") {
+    await discard(deadline.report);
+  }
   return claimTerminal();
 };
 

@@ -284,18 +284,24 @@ it.effect("cancels publication at the deadline without retaining useful User Usa
       yield* Effect.promise(() => usageForWorkflow(fixture.database, committed.workflowId)),
     ).toEqual([]);
     const followUps = ResearchReportFollowUpPostgres.make(fixture.database);
+    const payload = ResearchReport.WorkflowPayload.make({
+      inputDigest: committed.inputDigest,
+      workflowId: committed.workflowId,
+    });
+    const first = yield* followUps.claimTerminal(payload, committed.deadlineAt);
+    const replay = yield* followUps.claimTerminal(payload, committed.deadlineAt);
+    expect(first).toMatchObject({ _tag: "Claimed" });
+    expect(replay).toMatchObject({ _tag: "AlreadyClaimed" });
+    expect(yield* Effect.promise(() => countRows(fixture.database))).toBe(1);
     const deadline = yield* followUps.enforceDeadline(
-      ResearchReport.WorkflowPayload.make({
-        inputDigest: committed.inputDigest,
-        workflowId: committed.workflowId,
-      }),
+      payload,
       new Date(committed.deadlineAt.getTime() + 1),
     );
     expect(deadline).toMatchObject({ _tag: "Terminal", report: { state: "canceled" } });
   }).pipe(Effect.scoped),
 );
 
-it.effect("rechecks the database clock after a publication lock wait crosses the deadline", () =>
+it.effect("rolls Usage back when final Success crosses the database deadline", () =>
   Effect.gen(function* () {
     const fixture = yield* makeTestDatabase;
     yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
@@ -311,13 +317,30 @@ it.effect("rechecks the database clock after a publication lock wait crosses the
       artifactStoredAt,
     );
     yield* Effect.promise(() =>
+      fixture.database.execute(sql`
+        create function delay_research_usage() returns trigger language plpgsql as $$
+        begin
+          perform pg_sleep(0.8);
+          return new;
+        end
+        $$
+      `),
+    );
+    yield* Effect.promise(() =>
+      fixture.database.execute(sql`
+        create trigger delay_research_usage
+        before insert on allowance_usage
+        for each row execute function delay_research_usage()
+      `),
+    );
+    yield* Effect.promise(() =>
       fixture.database
         .update(researchReports)
         .set({
           accepted_at: sql`clock_timestamp() - interval '1 minute'`,
           admitted_at: sql`clock_timestamp() - interval '1 hour'`,
           artifact_stored_at: sql`clock_timestamp() - interval '1 minute'`,
-          deadline_at: sql`clock_timestamp() + interval '200 milliseconds'`,
+          deadline_at: sql`clock_timestamp() + interval '500 milliseconds'`,
           publication_committed_at: sql`clock_timestamp() - interval '1 minute'`,
           sources_committed_at: sql`clock_timestamp() - interval '1 minute'`,
           started_at: sql`clock_timestamp() - interval '1 minute'`,
@@ -325,28 +348,12 @@ it.effect("rechecks the database clock after a publication lock wait crosses the
         })
         .where(eq(researchReports.workflow_id, committed.workflowId)),
     );
-    const locked = deferred();
-    const crossDeadline = deferred();
-    const blocker = fixture.database.transaction(async (transaction) => {
-      await transaction.execute(
-        sql`select pg_advisory_xact_lock(hashtextextended(${`research-report:user:${userId}`}, 0))`,
-      );
-      locked.resolve();
-      await crossDeadline.promise;
-      await transaction.execute(sql`select pg_sleep(0.4)`);
+    const completed = yield* ResearchReportPublicationPostgres.complete(fixture.database, {
+      accounting: usefulAccounting(committed),
+      completedAt: artifactStoredAt,
+      contentId,
+      report: committed,
     });
-    yield* Effect.promise(() => locked.promise);
-    const completion = Effect.runPromise(
-      ResearchReportPublicationPostgres.complete(fixture.database, {
-        accounting: usefulAccounting(committed),
-        completedAt: artifactStoredAt,
-        contentId,
-        report: committed,
-      }),
-    );
-    crossDeadline.resolve();
-    yield* Effect.promise(() => blocker);
-    const completed = yield* Effect.promise(() => completion);
 
     expect(completed).toMatchObject({ safeFailureCode: "deadline-exceeded", state: "canceled" });
     expect(
@@ -410,6 +417,15 @@ it.effect("serializes useful Usage behind the deletion fence and leaves no late 
     expect(
       yield* Effect.promise(() => usageForWorkflow(fixture.database, committed.workflowId)),
     ).toEqual([]);
+    const followUps = ResearchReportFollowUpPostgres.make(fixture.database);
+    const payload = ResearchReport.WorkflowPayload.make({
+      inputDigest: committed.inputDigest,
+      workflowId: committed.workflowId,
+    });
+    expect(yield* followUps.claimTerminal(payload, deletionCompletedAt)).toEqual({
+      _tag: "Suppressed",
+    });
+    expect(yield* Effect.promise(() => countRows(fixture.database))).toBe(0);
   }).pipe(Effect.scoped),
 );
 
