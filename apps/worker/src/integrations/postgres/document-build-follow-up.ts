@@ -48,6 +48,7 @@ const notificationSelection = {
   buildState: documentBuilds.state,
   capabilityCatalogVersion: documentBuilds.capability_catalog_version,
   claimedAt: documentBuildNotifications.claimed_at,
+  deliverySessionId: documentBuildNotifications.delivery_session_id,
   format: sql<string>`${documentBuilds.request_json}::jsonb ->> 'format'`,
   inputDigest: documentBuilds.input_digest,
   kind: documentBuildNotifications.kind,
@@ -81,6 +82,7 @@ const EncodedNotification = Schema.Struct({
   buildState: DocumentBuild.State,
   capabilityCatalogVersion: CapabilityCatalogVersion,
   claimedAt: Schema.Date,
+  deliverySessionId: Schema.NullOr(SessionId),
   format: Schema.Literals(["pdf", "docx"]),
   inputDigest: DocumentBuild.InputDigest,
   kind: DocumentBuildFollowUp.NotificationKind,
@@ -418,6 +420,40 @@ export const make = (database: Database): DocumentBuildFollowUp.PortInterface =>
       Effect.gen(function* () {
         const result = yield* attempt("markAccepted", () =>
           database.transaction(async (transaction) => {
+            const [identity] = await transaction
+              .select({
+                userId: documentBuilds.user_id,
+                workflowId: documentBuildNotifications.workflow_id,
+              })
+              .from(documentBuildNotifications)
+              .innerJoin(
+                documentBuilds,
+                eq(documentBuilds.workflow_id, documentBuildNotifications.workflow_id),
+              )
+              .where(eq(documentBuildNotifications.notification_id, notificationId))
+              .limit(1);
+            if (identity === undefined) return { _tag: "Missing" as const };
+            if (!(await lockWorkflowUser(transaction, identity.userId))) {
+              return { _tag: "Missing" as const };
+            }
+            const [build] = await transaction
+              .select({ state: documentBuilds.state })
+              .from(documentBuilds)
+              .where(eq(documentBuilds.workflow_id, identity.workflowId))
+              .for("update")
+              .limit(1);
+            if (build === undefined) return { _tag: "Missing" as const };
+            const [deletion] = await transaction
+              .select({ id: deletionCases.deletion_case_id })
+              .from(deletionCases)
+              .where(
+                and(
+                  eq(deletionCases.user_id, identity.userId),
+                  isNotNull(deletionCases.access_fenced_at),
+                ),
+              )
+              .limit(1);
+            if (deletion !== undefined) return { _tag: "Missing" as const };
             const [row] = await transaction
               .select({
                 deliveredAt: documentBuildNotifications.delivered_at,
@@ -465,6 +501,69 @@ export const make = (database: Database): DocumentBuildFollowUp.PortInterface =>
           return yield* unavailable("markAccepted.inspect", notificationId);
         }
         return notification;
+      }),
+    selectDeliverySession: (notificationId, sessionId) =>
+      Effect.gen(function* () {
+        const result = yield* attempt("selectDeliverySession", () =>
+          database.transaction(async (transaction) => {
+            const [identity] = await transaction
+              .select({
+                userId: documentBuilds.user_id,
+                workflowId: documentBuildNotifications.workflow_id,
+              })
+              .from(documentBuildNotifications)
+              .innerJoin(
+                documentBuilds,
+                eq(documentBuilds.workflow_id, documentBuildNotifications.workflow_id),
+              )
+              .where(eq(documentBuildNotifications.notification_id, notificationId))
+              .limit(1);
+            if (identity === undefined) return { _tag: "Missing" as const };
+            if (!(await lockWorkflowUser(transaction, identity.userId))) {
+              return { _tag: "Missing" as const };
+            }
+            const [build] = await transaction
+              .select({ workflowId: documentBuilds.workflow_id })
+              .from(documentBuilds)
+              .where(eq(documentBuilds.workflow_id, identity.workflowId))
+              .for("update")
+              .limit(1);
+            if (build === undefined) return { _tag: "Missing" as const };
+            const [deletion] = await transaction
+              .select({ id: deletionCases.deletion_case_id })
+              .from(deletionCases)
+              .where(
+                and(
+                  eq(deletionCases.user_id, identity.userId),
+                  isNotNull(deletionCases.access_fenced_at),
+                ),
+              )
+              .limit(1);
+            if (deletion !== undefined) return { _tag: "Missing" as const };
+            const [notification] = await transaction
+              .select({ deliverySessionId: documentBuildNotifications.delivery_session_id })
+              .from(documentBuildNotifications)
+              .where(eq(documentBuildNotifications.notification_id, notificationId))
+              .for("update")
+              .limit(1);
+            if (notification === undefined) return { _tag: "Missing" as const };
+            if (notification.deliverySessionId === null) {
+              await transaction
+                .update(documentBuildNotifications)
+                .set({ delivery_session_id: sessionId })
+                .where(eq(documentBuildNotifications.notification_id, notificationId));
+            }
+            return { _tag: "Selected" as const };
+          }),
+        );
+        if (result._tag === "Missing") {
+          return yield* unavailable("selectDeliverySession.missing", notificationId);
+        }
+        const selected = yield* inspect(notificationId);
+        if (selected === null) {
+          return yield* unavailable("selectDeliverySession.inspect", notificationId);
+        }
+        return selected;
       }),
   };
 };

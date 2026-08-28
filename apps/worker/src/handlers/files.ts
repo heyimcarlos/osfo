@@ -66,17 +66,35 @@ export const statusResponseFor = (
   );
 };
 
-export const decodeUploadResult = (untrusted: unknown) =>
+export const decodeUploadResult = (
+  untrusted: unknown,
+  expected: Pick<WebFileUpload.Request, "fileId" | "fileName">,
+) =>
   Schema.decodeUnknownEffect(WebFileUpload.Result)(untrusted).pipe(
     Effect.mapError(
       () => new FileUploadUnavailable({ message: "File upload is temporarily unavailable" }),
     ),
+    Effect.flatMap((result) =>
+      result._tag !== "Uploaded" ||
+      (result.fileId === expected.fileId && result.fileName === expected.fileName)
+        ? Effect.succeed(result)
+        : Effect.fail(
+            new FileUploadUnavailable({ message: "File upload is temporarily unavailable" }),
+          ),
+    ),
   );
 
-export const decodeStatusResult = (untrusted: unknown) =>
+export const decodeStatusResult = (untrusted: unknown, expectedFileId: FileId) =>
   Schema.decodeUnknownEffect(WebFileUpload.StatusResult)(untrusted).pipe(
     Effect.mapError(
       () => new FileUploadUnavailable({ message: "File status is temporarily unavailable" }),
+    ),
+    Effect.flatMap((result) =>
+      result._tag !== "Found" || result.fileId === expectedFileId
+        ? Effect.succeed(result)
+        : Effect.fail(
+            new FileUploadUnavailable({ message: "File status is temporarily unavailable" }),
+          ),
     ),
   );
 
@@ -120,33 +138,33 @@ export const layer = (bindings: Bindings) =>
       .handle("uploadText", ({ payload, query }) =>
         Effect.gen(function* () {
           const currentUser = yield* CurrentUser;
+          const request = uploadRequestFor(currentUser, payload, query);
           const untrusted = yield* Effect.tryPromise({
             try: () =>
-              bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).uploadUserTextFile(
-                uploadRequestFor(currentUser, payload, query),
-              ),
+              bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).uploadUserTextFile(request),
             catch: () =>
               new FileUploadUnavailable({ message: "File upload is temporarily unavailable" }),
           });
-          const result = yield* decodeUploadResult(untrusted);
+          const result = yield* decodeUploadResult(untrusted, request);
           return yield* uploadResponseFor(result);
         }),
       )
       .handle("status", ({ params }) =>
         Effect.gen(function* () {
           const currentUser = yield* CurrentUser;
+          const fileId = FileId.make(params.fileId);
           const untrusted = yield* Effect.tryPromise({
             try: () =>
               bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).inspectUserFile(
                 WebFileUpload.StatusRequest.make({
-                  fileId: FileId.make(params.fileId),
+                  fileId,
                   userId: UserId.make(currentUser.userId),
                 }),
               ),
             catch: () =>
               new FileUploadUnavailable({ message: "File status is temporarily unavailable" }),
           });
-          const result = yield* decodeStatusResult(untrusted);
+          const result = yield* decodeStatusResult(untrusted, fileId);
           return yield* statusResponseFor(result);
         }),
       ),

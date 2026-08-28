@@ -6,6 +6,7 @@ import { App } from "./app";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/directory";
 import { loadConfig, WorkerConfigurationError, type CloudflareEnv } from "./config";
 import { DocumentCostReconciliation } from "./document-cost-reconciliation";
+import { DocumentBuildHostReconciliation } from "./document-build-host-reconciliation";
 import { makeWhatsAppAdapter } from "./integrations/whatsapp";
 import { WhatsAppWakeUpComposition } from "./composition/whatsapp-wakeups";
 
@@ -78,6 +79,7 @@ const worker = {
         Promise.all([
           App.expireChannelLinkInvites(env),
           App.reconcileAccountDeletions(env),
+          DocumentBuildHostReconciliation.run(env),
           DocumentCostReconciliation.run(env),
           WhatsAppWakeUpComposition.drainScheduled(env, config),
         ]).then(() => undefined),

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
+import { AgentId, ConversationRouteId, SessionId } from "../domain";
 import { DocumentBuildFollowUp } from "./document-build-follow-up";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-date -- The Promise queue models Agent serialization and uses one fixed product timestamp. */
@@ -19,5 +20,43 @@ describe("DocumentBuildFollowUp submission disposition", () => {
     };
 
     await expect(Promise.all([submit(), submit()])).resolves.toEqual(["Accepted", "Replayed"]);
+  });
+});
+
+describe("DocumentBuildFollowUp delivery Session selection", () => {
+  const agentId = AgentId.make("document-build-agent");
+  const routeId = ConversationRouteId.make("document-build-route");
+  const origin = SessionId.make("deleted-origin-session");
+  const current = SessionId.make("current-delivery-session");
+  const notification = {
+    agentId,
+    deliverySessionId: null,
+    routeId,
+    sessionId: origin,
+  };
+
+  it("retargets a deleted origin to the owning route's current Session", () => {
+    expect(
+      DocumentBuildFollowUp.deliverySessionFor(notification, agentId, {
+        currentSessionId: current,
+        historicalSessionIds: [],
+        routeId,
+      }),
+    ).toBe(current);
+  });
+
+  it("keeps a retained delivery Session stable and rejects another Agent or route", () => {
+    const selected = { ...notification, deliverySessionId: current };
+    const route = { currentSessionId: current, historicalSessionIds: [], routeId };
+    expect(DocumentBuildFollowUp.deliverySessionFor(selected, agentId, route)).toBe(current);
+    expect(
+      DocumentBuildFollowUp.deliverySessionFor(selected, AgentId.make("another-agent"), route),
+    ).toBeNull();
+    expect(
+      DocumentBuildFollowUp.deliverySessionFor(selected, agentId, {
+        ...route,
+        routeId: ConversationRouteId.make("another-route"),
+      }),
+    ).toBeNull();
   });
 });

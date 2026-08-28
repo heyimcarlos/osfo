@@ -20,7 +20,7 @@ import type { StoredArtifactMetadata } from "../services/document-generation";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle, osfo/no-unknown-returns, typescript/consistent-return -- This module is the Document Build application composition root. Cloudflare RPC returns are untrusted and decoded immediately after the Promise boundary. */
 
-type WorkflowInstanceHandle = Pick<WorkflowInstance, "status" | "terminate">;
+type WorkflowInstanceHandle = Pick<WorkflowInstance, "restart" | "status" | "terminate">;
 
 export interface WorkflowBinding {
   readonly create: (options: {
@@ -59,18 +59,14 @@ export const bindingsFromEnv = (env: Env): Bindings => ({
   OSFO_DIRECTORY: env.OSFO_DIRECTORY,
 });
 
-/** Create both stable instances and reconcile every ambiguous acknowledgement by identity. */
+/** Give the timer deadline ownership before the main instance can begin provider work. */
 export const makeWorkflowPort = (
   main: WorkflowBinding,
   timer: WorkflowBinding,
 ): DocumentBuild.PortInterface["workflow"] => ({
   create: (mainId, timerId, payload) =>
-    Effect.all(
-      [
-        createWorkflowInstance(main, mainId, payload),
-        createWorkflowInstance(timer, timerId, payload),
-      ],
-      { concurrency: 2, discard: true },
+    createWorkflowInstance(timer, timerId, payload).pipe(
+      Effect.andThen(createWorkflowInstance(main, mainId, payload)),
     ),
   terminate: (mainId, timerId) =>
     Effect.all(
@@ -402,14 +398,16 @@ const makePendingArtifactDiscarder = (
       () => import("../integrations/cloudflare/document-compute"),
     );
     yield* discardPendingArtifact(build, {
-      deleteArtifact: (retained) =>
-        artifacts
-          .delete(retained)
-          .pipe(
-            Effect.mapError((cause) => documentBuildUnavailable("artifact.discard.delete", cause)),
-          ),
-      discardAttempt: () =>
-        DocumentCompute.discardAttemptEvidence(bucket, contentId, build.userId).pipe(
+      deleteArtifactBytes: (retained) =>
+        DocumentArtifacts.deletePendingBytes(bucket, retained.artifact.content.contentId).pipe(
+          Effect.mapError((cause) => documentBuildUnavailable("artifact.discard.delete", cause)),
+        ),
+      settleAttempt: () =>
+        DocumentCompute.settleAttemptEvidenceForTerminalCleanup(
+          bucket,
+          contentId,
+          build.userId,
+        ).pipe(
           Effect.mapError((cause) => documentBuildUnavailable("artifact.discard.attempt", cause)),
         ),
       dispose: () =>
@@ -428,10 +426,10 @@ const makePendingArtifactDiscarder = (
   });
 
 interface PendingArtifactCleanupPorts {
-  readonly deleteArtifact: (
+  readonly deleteArtifactBytes: (
     artifact: StoredArtifactMetadata,
   ) => Effect.Effect<void, DocumentBuild.Unavailable>;
-  readonly discardAttempt: () => Effect.Effect<void, DocumentBuild.Unavailable>;
+  readonly settleAttempt: () => Effect.Effect<"discarded" | "preserved", DocumentBuild.Unavailable>;
   readonly dispose: () => Effect.Effect<void, DocumentBuild.Unavailable>;
   readonly inspectArtifact: () => Effect.Effect<
     StoredArtifactMetadata | null,
@@ -457,8 +455,9 @@ export const discardPendingArtifact = Effect.fn(
   ) {
     return yield* documentBuildUnavailable("artifact.discard.identity", retained.owner);
   }
-  yield* retained === null ? ports.discardAttempt() : ports.deleteArtifact(retained);
   yield* ports.dispose();
+  yield* ports.settleAttempt();
+  if (retained !== null) yield* ports.deleteArtifactBytes(retained);
 });
 
 const createWorkflowInstance = (
@@ -472,12 +471,26 @@ const createWorkflowInstance = (
   }).pipe(
     Effect.catchTag("DocumentBuildUnavailable", (failure) =>
       Effect.tryPromise({
-        try: async () => (await binding.get(instanceId)).status(),
+        try: async () => {
+          const instance = await binding.get(instanceId);
+          return { instance, status: await instance.status() };
+        },
         catch: (cause) => documentBuildUnavailable("workflow.reconcileCreate", cause),
       }).pipe(
-        Effect.flatMap((status) =>
-          status.status === "unknown" ? Effect.fail(failure) : Effect.void,
-        ),
+        Effect.flatMap(({ instance, status }) => {
+          if (status.status === "unknown") return Effect.fail(failure);
+          if (
+            status.status !== "errored" &&
+            status.status !== "terminated" &&
+            status.status !== "complete"
+          ) {
+            return Effect.void;
+          }
+          return Effect.tryPromise({
+            try: () => instance.restart(),
+            catch: (cause) => documentBuildUnavailable("workflow.restart", cause),
+          });
+        }),
       ),
     ),
   );

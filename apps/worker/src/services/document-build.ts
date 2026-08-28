@@ -925,18 +925,19 @@ export const make = Effect.gen(function* () {
       cancelRequestedAt: null,
       terminalAt: null,
     };
+    const currentResourceLimits =
+      currentCapabilityCatalog.planResourceLimits[input.authorization.subscription.plan];
     const activeWorkflowLimit = freeParityAdmission
       ? BigInt(
-          currentCapabilityCatalog.planResourceLimits[input.authorization.subscription.plan]
-            .activeWorkflows,
+          Math.min(
+            currentResourceLimits.activeWorkflows,
+            currentResourceLimits.concurrentCostlyJobs,
+          ),
         )
       : isLaunchPolicy(admittedPolicy)
         ? policyFor(admittedPolicy, input.authorization.subscription.plan).liveLimits
             .concurrentWorkflows
-        : BigInt(
-            currentCapabilityCatalog.planResourceLimits[input.authorization.subscription.plan]
-              .activeWorkflows,
-          );
+        : BigInt(currentResourceLimits.activeWorkflows);
     const persisted = yield* ports.persistence.admit(build, activeWorkflowLimit);
     if (
       persisted.build.inputDigest !== build.inputDigest ||

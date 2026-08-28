@@ -62,6 +62,7 @@ export interface Notification {
   readonly safeFailureCode: string | null;
   readonly artifactContentId: string | null;
   readonly claimedAt: Date;
+  readonly deliverySessionId: SessionId | null;
   readonly acceptedAt: Date | null;
   readonly format: "pdf" | "docx";
   readonly whatsAppChannelLinkId: ChannelLinkId | null;
@@ -130,6 +131,10 @@ export interface PortInterface {
     submissionId: ThinkSubmissionId,
     acceptedAt: Date,
   ) => Effect.Effect<Notification, Conflict | Unavailable>;
+  readonly selectDeliverySession: (
+    notificationId: NotificationId,
+    sessionId: SessionId,
+  ) => Effect.Effect<Notification, Conflict | Unavailable>;
 }
 
 export class Port extends Context.Service<Port, PortInterface>()(
@@ -153,6 +158,7 @@ export interface Interface {
     notificationId: NotificationId,
     submissionId: ThinkSubmissionId,
   ) => Effect.Effect<Notification, Conflict | Unavailable>;
+  readonly selectDeliverySession: PortInterface["selectDeliverySession"];
 }
 
 export class Service extends Context.Service<Service, Interface>()("@osfo/DocumentBuildFollowUp") {}
@@ -176,6 +182,9 @@ export const make = Effect.gen(function* () {
     markAccepted: Effect.fn("DocumentBuildFollowUp.markAccepted")((notificationId, submissionId) =>
       now.pipe(Effect.flatMap((time) => port.markAccepted(notificationId, submissionId, time))),
     ),
+    selectDeliverySession: Effect.fn("DocumentBuildFollowUp.selectDeliverySession")(
+      port.selectDeliverySession,
+    ),
   });
 });
 
@@ -193,5 +202,24 @@ export const previewSubmissionDisposition = (notification: Notification) =>
 /** Decide replay truth from the notification refreshed inside the serialized Agent operation. */
 export const submissionDisposition = (notification: Pick<Notification, "acceptedAt">) =>
   notification.acceptedAt === null ? ("Accepted" as const) : ("Replayed" as const);
+
+/** Choose a route-owned delivery Session only until PostgreSQL has retained one. */
+export const deliverySessionFor = (
+  notification: Pick<Notification, "agentId" | "deliverySessionId" | "routeId" | "sessionId">,
+  agentId: AgentId,
+  route: {
+    readonly currentSessionId: SessionId;
+    readonly historicalSessionIds: ReadonlyArray<SessionId>;
+    readonly routeId: ConversationRouteId;
+  },
+) => {
+  if (agentId !== notification.agentId || route.routeId !== notification.routeId) return null;
+  const routeOwns = (sessionId: SessionId) =>
+    route.currentSessionId === sessionId || route.historicalSessionIds.includes(sessionId);
+  if (notification.deliverySessionId !== null) {
+    return routeOwns(notification.deliverySessionId) ? notification.deliverySessionId : null;
+  }
+  return routeOwns(notification.sessionId) ? notification.sessionId : route.currentSessionId;
+};
 
 export * as DocumentBuildFollowUp from "./document-build-follow-up";

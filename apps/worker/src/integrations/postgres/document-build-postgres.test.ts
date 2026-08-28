@@ -24,6 +24,7 @@ import {
   PlanPolicyVersion,
   ResourcePriceVersion,
   SessionId,
+  ThinkSubmissionId,
   UserId,
 } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
@@ -255,6 +256,35 @@ it.effect("serializes concurrent cross-type admission and deletion fencing", () 
     ]);
 
     yield* Effect.promise(() => fixture.database.delete(researchReports));
+    yield* Effect.promise(() => fixture.database.delete(documentBuilds));
+    const freeBuildAdmissions = yield* Effect.all(
+      [
+        builds.admit(record("c", "free-concurrent-one"), 1n).pipe(Effect.result),
+        builds.admit(record("d", "free-concurrent-two"), 1n).pipe(Effect.result),
+      ],
+      { concurrency: "unbounded" },
+    );
+    expect(freeBuildAdmissions.filter((outcome) => outcome._tag === "Success")).toHaveLength(1);
+    expect(freeBuildAdmissions.filter((outcome) => outcome._tag === "Failure")).toMatchObject([
+      { failure: { _tag: "Denied", reason: "liveResourceLimitReached" } },
+    ]);
+
+    yield* Effect.promise(() => fixture.database.delete(documentBuilds));
+    const overdue = {
+      ...record("e", "overdue-host-recovery"),
+      admittedAt: new Date("2098-08-28T12:00:00.000Z"),
+      deadlineAt: new Date("2098-08-28T13:00:00.000Z"),
+    };
+    yield* builds.admit(overdue, 1n);
+    expect(yield* DocumentBuildPostgres.hostRecoveryBatch(fixture.database, 1)).toEqual([
+      {
+        inputDigest: overdue.inputDigest,
+        mainInstanceId: overdue.cloudflareInstanceId,
+        timerInstanceId: overdue.cloudflareTimerInstanceId,
+        workflowId: overdue.workflowId,
+      },
+    ]);
+
     yield* Effect.promise(() => fixture.database.delete(documentBuilds));
     const acquired = deferred();
     const release = deferred();
@@ -493,6 +523,38 @@ it.effect("claims preview and terminal follow-ups exactly once and suppresses la
       _tag: "AlreadyClaimed",
       notification: { notificationId: `${build.workflowId}-terminal` },
     });
+    const terminalNotificationId = DocumentBuildFollowUp.notificationIdFor(
+      build.workflowId,
+      "terminal",
+    );
+    const replacementSessionId = SessionId.make("document-build-replacement-session");
+    const stableSelection = yield* followUps.selectDeliverySession(
+      terminalNotificationId,
+      replacementSessionId,
+    );
+    const replayedSelection = yield* followUps.selectDeliverySession(
+      terminalNotificationId,
+      SessionId.make("document-build-later-session"),
+    );
+    expect(stableSelection.deliverySessionId).toBe(replacementSessionId);
+    expect(replayedSelection.deliverySessionId).toBe(replacementSessionId);
+    yield* followUps.markAccepted(
+      terminalNotificationId,
+      ThinkSubmissionId.make("document-build-terminal-submission"),
+      terminalAt,
+    );
+    expect(
+      yield* followUps
+        .markAccepted(
+          terminalNotificationId,
+          ThinkSubmissionId.make("document-build-conflicting-submission"),
+          terminalAt,
+        )
+        .pipe(Effect.result),
+    ).toMatchObject({ failure: { _tag: "DocumentBuildFollowUpConflict" } });
+    expect((yield* followUps.inspect(terminalNotificationId))?.deliverySessionId).toBe(
+      replacementSessionId,
+    );
     const delayedPreview = yield* followUps.inspect(
       DocumentBuildFollowUp.notificationIdFor(build.workflowId, "previewReady"),
     );
@@ -698,6 +760,79 @@ it.effect("serializes a milestone claim behind deletion fencing without deadlock
     release.resolve();
     yield* Effect.promise(() => fence);
     expect(yield* Effect.promise(() => claim)).toEqual({ _tag: "Suppressed" });
+  }).pipe(Effect.scoped),
+);
+
+it.effect("serializes follow-up delivery and acceptance behind deletion fencing", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedUser(fixture.database);
+    const builds = DocumentBuildPostgres.make(fixture.database);
+    const followUps = DocumentBuildFollowUpPostgres.make(fixture.database);
+    const dueAt = new Date("2099-08-28T12:16:00.000Z");
+    const build = record("f", "follow-up-deletion-race");
+    yield* builds.admit(build, 10n);
+    yield* builds.markAccepted(build.workflowId, build.inputDigest, admittedAt);
+    yield* builds.beginExecution(build.workflowId, build.inputDigest, admittedAt);
+    yield* builds.markPreviewStored(
+      build.workflowId,
+      build.inputDigest,
+      `document:workflow:${build.workflowId}`,
+      dueAt,
+    );
+    yield* followUps.claimPreview(payloadFor(build), dueAt);
+    const notificationId = DocumentBuildFollowUp.notificationIdFor(
+      build.workflowId,
+      "previewReady",
+    );
+
+    const acquired = deferred();
+    const release = deferred();
+    const fence = fixture.database.transaction(async (transaction) => {
+      await lockWorkflowUser(transaction, userId);
+      acquired.resolve();
+      await release.promise;
+      await transaction.insert(deletionCases).values({
+        access_fenced_at: dueAt,
+        approval_action_id: "follow-up-race-delete-action",
+        approval_presentation: "Delete Account",
+        deletion_case_id: "follow-up-race-delete-case",
+        reason: "User requested account deletion",
+        requested_by_user_id: userId,
+        user_id: userId,
+      });
+    });
+    yield* Effect.promise(() => acquired.promise);
+    const writes = Promise.all([
+      Effect.runPromise(
+        followUps
+          .selectDeliverySession(notificationId, SessionId.make("replacement-session"))
+          .pipe(Effect.result),
+      ),
+      Effect.runPromise(
+        followUps
+          .markAccepted(notificationId, ThinkSubmissionId.make("follow-up-submission"), dueAt)
+          .pipe(Effect.result),
+      ),
+    ]);
+    release.resolve();
+    yield* Effect.promise(() => fence);
+    expect(yield* Effect.promise(() => writes)).toMatchObject([
+      { failure: { _tag: "DocumentBuildFollowUpUnavailable" } },
+      { failure: { _tag: "DocumentBuildFollowUpUnavailable" } },
+    ]);
+    const [row] = yield* Effect.promise(() =>
+      fixture.database
+        .select({
+          deliveredAt: documentBuildNotifications.delivered_at,
+          deliverySessionId: documentBuildNotifications.delivery_session_id,
+        })
+        .from(documentBuildNotifications)
+        .where(eq(documentBuildNotifications.notification_id, notificationId)),
+    );
+    expect(row).toEqual({ deliveredAt: null, deliverySessionId: null });
   }).pipe(Effect.scoped),
 );
 

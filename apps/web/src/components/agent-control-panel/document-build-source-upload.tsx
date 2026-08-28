@@ -12,7 +12,14 @@ type UploadState =
   | { readonly _tag: "Uploading"; readonly fileName: string }
   | { readonly _tag: "Uploaded"; readonly result: FileUploadResponse }
   | { readonly _tag: "StatusUnavailable"; readonly result: FileUploadResponse }
+  | { readonly _tag: "UploadUnavailable"; readonly pending: PendingUpload }
   | { readonly _tag: "Failed" };
+
+interface PendingUpload {
+  readonly bytes: Uint8Array;
+  readonly fileName: string;
+  readonly uploadId: string;
+}
 
 const inspectUploadedFile = (fileId: string) => Effect.runPromise(inspectFileStatus(fileId));
 const makeBrowserUploadId = () => crypto.randomUUID();
@@ -64,6 +71,19 @@ export function DocumentBuildSourceUpload({
     }, pollDelayMilliseconds);
     return () => clearTimeout(timeout);
   }, [inspect, pollDelayMilliseconds, state]);
+  const send = (pending: PendingUpload, generation: number) => {
+    setState({ _tag: "Uploading", fileName: pending.fileName });
+    return void uploadFile(pending.bytes, pending.fileName, pending.uploadId).then(
+      (result) => {
+        if (requestGeneration.current === generation) setState({ _tag: "Uploaded", result });
+      },
+      () => {
+        if (requestGeneration.current === generation) {
+          setState({ _tag: "UploadUnavailable", pending });
+        }
+      },
+    );
+  };
   const upload = (file: File) => {
     const generation = requestGeneration.current + 1;
     requestGeneration.current = generation;
@@ -71,11 +91,12 @@ export function DocumentBuildSourceUpload({
     setState({ _tag: "Uploading", fileName: file.name });
     return void file
       .arrayBuffer()
-      .then((buffer) => uploadFile(new Uint8Array(buffer), file.name, uploadId))
+      .then((buffer) => {
+        if (requestGeneration.current !== generation) return;
+        send({ bytes: new Uint8Array(buffer), fileName: file.name, uploadId }, generation);
+      })
       .then(
-        (result) => {
-          if (requestGeneration.current === generation) setState({ _tag: "Uploaded", result });
-        },
+        () => undefined,
         () => {
           if (requestGeneration.current === generation) setState({ _tag: "Failed" });
         },
@@ -121,6 +142,21 @@ export function DocumentBuildSourceUpload({
         <p className="mt-3 text-xs text-[#b24a55]" role="alert">
           The source could not be uploaded. Try again with a smaller UTF-8 text file.
         </p>
+      ) : state._tag === "UploadUnavailable" ? (
+        <div className="mt-3 text-xs text-[#8a6a21]" role="alert">
+          <p>The upload result is temporarily unavailable.</p>
+          <button
+            className="mt-2 font-semibold text-[#2568ca] hover:underline"
+            type="button"
+            onClick={() => {
+              const generation = requestGeneration.current + 1;
+              requestGeneration.current = generation;
+              send(state.pending, generation);
+            }}
+          >
+            Retry upload
+          </button>
+        </div>
       ) : state._tag === "StatusUnavailable" ? (
         <div className="mt-3 text-xs text-[#8a6a21]" role="alert">
           <p>

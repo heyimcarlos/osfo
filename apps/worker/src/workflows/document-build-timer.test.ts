@@ -7,6 +7,7 @@ import { DocumentBuild } from "../services/document-build";
 import { deadlineDisposition } from "../integrations/postgres/document-build-follow-up";
 import { DocumentBuildFollowUp } from "../services/document-build-follow-up";
 import { matchesInstanceIdentity } from "./document-build-host-outcome";
+import { recoverableDocumentBuildStepConfig } from "./document-build-step";
 import {
   postPreviewDisposition,
   previewFollowUpDisposition,
@@ -68,6 +69,13 @@ describe("DocumentBuildTimerWorkflow deadline", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  it("pins recoverable step retries beyond the operation deadline", () => {
+    expect(recoverableDocumentBuildStepConfig).toEqual({
+      retries: { backoff: "constant", delay: "1 minute", limit: 70 },
+      timeout: "2 minutes",
+    });
   });
 
   it.effect("rejects a payload delivered to a different timer identity", () =>

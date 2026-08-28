@@ -79,7 +79,7 @@ describe("DocumentBuildSourceUpload", () => {
     );
   });
 
-  it("shows a safe failure when upload is rejected", async () => {
+  it("shows a safe retry after an ambiguous upload failure", async () => {
     uploadTextFile.mockRejectedValue({ _tag: "TestUploadFailure", detail: "private failure" });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(
@@ -96,9 +96,39 @@ describe("DocumentBuildSourceUpload", () => {
     );
 
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "The source could not be uploaded. Try again with a smaller UTF-8 text file.",
+      "The upload result is temporarily unavailable.Retry upload",
     );
     expect(document.body.textContent).not.toContain("private failure");
+  });
+
+  it("retries a response-lost upload with the exact same identity and bytes", async () => {
+    uploadTextFile
+      .mockRejectedValueOnce(new Error("response lost after commit"))
+      .mockResolvedValueOnce(readyUpload("web:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "source.txt"));
+    const makeUploadId = vi.fn<() => string>(() => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(
+      <DocumentBuildSourceUpload
+        inspect={inspectFileStatus}
+        makeUploadId={makeUploadId}
+        uploadFile={uploadTextFile}
+      />,
+    );
+
+    await user.upload(
+      screen.getByLabelText("Choose text file"),
+      new File(["Document Build source"], "source.txt", { type: "text/plain" }),
+    );
+    await screen.findByRole("button", { name: "Retry upload" });
+    await user.click(screen.getByRole("button", { name: "Retry upload" }));
+    await screen.findByText(/web:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/u);
+
+    expect(makeUploadId).toHaveBeenCalledTimes(1);
+    expect(uploadTextFile).toHaveBeenCalledTimes(2);
+    const first = uploadTextFile.mock.calls[0];
+    const second = uploadTextFile.mock.calls[1];
+    expect(second?.[0]).toEqual(first?.[0]);
+    expect(second?.slice(1)).toEqual(first?.slice(1));
   });
 
   it("keeps the newest file when two uploads complete out of order", async () => {

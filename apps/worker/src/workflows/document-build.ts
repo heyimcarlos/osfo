@@ -9,7 +9,10 @@ import type { Denied } from "../services/authorization";
 import { DocumentBuild } from "../services/document-build";
 import { DocumentBuildDocument } from "../services/document-build-document";
 import { matchesInstanceIdentity } from "./document-build-host-outcome";
-import { runRecoverableMainOperation } from "./document-build-step";
+import {
+  recoverableDocumentBuildStepConfig,
+  runRecoverableMainOperation,
+} from "./document-build-step";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare WorkflowEntrypoint and WorkflowStep are Promise-only host APIs. */
 /* oxlint-disable eslint/no-underscore-dangle -- Product outcomes use Effect's standard tag. */
@@ -51,6 +54,7 @@ export class DocumentBuildWorkflow extends WorkflowEntrypoint<Env, DocumentBuild
     if (stage._tag === "None") return { failure: "invalidEnvironment" };
     const result: ExecutionResult = await step.do(
       "authorize, render, validate, and publish document",
+      recoverableDocumentBuildStepConfig,
       () =>
         runRecoverableMainOperation(async () => {
           const decoded = Schema.decodeResult(DocumentBuild.WorkflowPayload)(event.payload);
@@ -88,21 +92,25 @@ export class DocumentBuildWorkflow extends WorkflowEntrypoint<Env, DocumentBuild
     );
     const settled = result;
     if (!("failure" in settled) && DocumentBuild.terminalStates.has(settled.state)) {
-      await step.do("stop document timer after terminal product truth", async () => {
-        const timer = await this.env.DOCUMENT_BUILD_TIMER_WORKFLOW.get(
-          DocumentBuild.CloudflareInstanceId.make(`${event.instanceId}-timer`),
-        );
-        const status = await timer.status();
-        if (
-          status.status !== "complete" &&
-          status.status !== "errored" &&
-          status.status !== "terminated" &&
-          status.status !== "unknown"
-        ) {
-          await timer.terminate();
-        }
-        return { status: status.status };
-      });
+      await step.do(
+        "stop document timer after terminal product truth",
+        recoverableDocumentBuildStepConfig,
+        async () => {
+          const timer = await this.env.DOCUMENT_BUILD_TIMER_WORKFLOW.get(
+            DocumentBuild.CloudflareInstanceId.make(`${event.instanceId}-timer`),
+          );
+          const status = await timer.status();
+          if (
+            status.status !== "complete" &&
+            status.status !== "errored" &&
+            status.status !== "terminated" &&
+            status.status !== "unknown"
+          ) {
+            await timer.terminate();
+          }
+          return { status: status.status };
+        },
+      );
     }
     return settled;
   }

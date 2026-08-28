@@ -29,6 +29,7 @@ it.effect("reconciles ambiguous acceptance for both stable Workflow instances", 
     get: (id) => {
       calls.push(`${kind}:get:${id}`);
       return Promise.resolve({
+        restart: () => Promise.resolve(),
         status: () => Promise.resolve({ status: "queued" as const }),
         terminate: () => Promise.resolve(),
       });
@@ -41,14 +42,130 @@ it.effect("reconciles ambiguous acceptance for both stable Workflow instances", 
       timerId,
       payload,
     );
-    expect(calls).toEqual(
-      expect.arrayContaining([
-        `main:create:${mainId}`,
-        `main:get:${mainId}`,
-        `timer:create:${timerId}`,
-        `timer:get:${timerId}`,
-      ]),
-    );
+    expect(calls).toEqual([
+      `timer:create:${timerId}`,
+      `timer:get:${timerId}`,
+      `main:create:${mainId}`,
+      `main:get:${mainId}`,
+    ]);
+  });
+});
+
+it.effect("retains timer ownership when main creation fails", () => {
+  const calls = new Array<string>();
+  const timer: DocumentBuildComposition.WorkflowBinding = {
+    create: () => {
+      calls.push("timer");
+      return Promise.resolve({
+        restart: () => Promise.resolve(),
+        status: () => Promise.resolve({ status: "queued" as const }),
+        terminate: () => Promise.resolve(),
+      });
+    },
+    get: () => Promise.reject(new Error("unexpected timer reconciliation")),
+  };
+  const main: DocumentBuildComposition.WorkflowBinding = {
+    create: () => {
+      calls.push("main");
+      return Promise.reject(new Error("main unavailable"));
+    },
+    get: () =>
+      Promise.resolve({
+        restart: () => Promise.resolve(),
+        status: () => Promise.resolve({ status: "unknown" as const }),
+        terminate: () => Promise.resolve(),
+      }),
+  };
+
+  return Effect.gen(function* () {
+    const result = yield* DocumentBuildComposition.makeWorkflowPort(main, timer)
+      .create(mainId, timerId, payload)
+      .pipe(Effect.result);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(calls).toEqual(["timer", "main"]);
+  });
+});
+
+it.effect("does not attempt main creation when timer creation is unresolved", () => {
+  const calls = new Array<string>();
+  const missing = (kind: string): DocumentBuildComposition.WorkflowBinding => ({
+    create: () => {
+      calls.push(kind);
+      return Promise.reject(new Error(`${kind} unavailable`));
+    },
+    get: () =>
+      Promise.resolve({
+        restart: () => Promise.resolve(),
+        status: () => Promise.resolve({ status: "unknown" as const }),
+        terminate: () => Promise.resolve(),
+      }),
+  });
+
+  return Effect.gen(function* () {
+    yield* DocumentBuildComposition.makeWorkflowPort(missing("main"), missing("timer"))
+      .create(mainId, timerId, payload)
+      .pipe(Effect.result);
+    expect(calls).toEqual(["timer"]);
+  });
+});
+
+it.effect("restarts errored and terminated active Workflow owners", () => {
+  const restarted = new Array<string>();
+  const binding = (
+    kind: string,
+    status: "errored" | "terminated",
+  ): DocumentBuildComposition.WorkflowBinding => ({
+    create: () => Promise.reject(new Error("existing instance")),
+    get: () =>
+      Promise.resolve({
+        restart: () => {
+          restarted.push(kind);
+          return Promise.resolve();
+        },
+        status: () => Promise.resolve({ status }),
+        terminate: () => Promise.resolve(),
+      }),
+  });
+
+  return Effect.gen(function* () {
+    yield* DocumentBuildComposition.makeWorkflowPort(
+      binding("main", "errored"),
+      binding("timer", "terminated"),
+    ).create(mainId, timerId, payload);
+    expect(restarted).toEqual(["timer", "main"]);
+  });
+});
+
+it.effect("accepts every healthy existing Workflow status without restart", () => {
+  const restarted = new Array<string>();
+  const statuses = ["queued", "running", "paused", "waiting", "waitingForPause"] as const;
+  let index = 0;
+  const binding: DocumentBuildComposition.WorkflowBinding = {
+    create: () => Promise.reject(new Error("existing instance")),
+    get: () => {
+      const status = statuses[index] ?? "queued";
+      index += 1;
+      return Promise.resolve({
+        restart: () => {
+          restarted.push(status);
+          return Promise.resolve();
+        },
+        status: () => Promise.resolve({ status }),
+        terminate: () => Promise.resolve(),
+      });
+    },
+  };
+
+  return Effect.gen(function* () {
+    for (const status of statuses) {
+      index = statuses.indexOf(status);
+      yield* DocumentBuildComposition.makeWorkflowPort(binding, binding).create(
+        mainId,
+        timerId,
+        payload,
+      );
+    }
+    expect(restarted).toEqual([]);
   });
 });
 
@@ -57,6 +174,7 @@ it.effect("retains create uncertainty when either stable identity is unknown", (
     create: () => Promise.reject(new Error("acknowledgement lost")),
     get: () =>
       Promise.resolve({
+        restart: () => Promise.resolve(),
         status: () => Promise.resolve({ status }),
         terminate: () => Promise.resolve(),
       }),
@@ -85,6 +203,7 @@ it.effect("terminates only executable main and timer instances", () => {
     create: () => Promise.reject(new Error("unexpected create")),
     get: (id) =>
       Promise.resolve({
+        restart: () => Promise.resolve(),
         status: () => Promise.resolve({ status }),
         terminate: () => {
           terminated.push(id);
@@ -262,7 +381,7 @@ it.effect("keeps an explicit resolver outage retryable at the composition bounda
   }),
 );
 
-it.effect("cleans attempt evidence and Sandbox after a crash before the preview marker", () => {
+it.effect("disposes compute before settling attempt evidence after a pre-preview crash", () => {
   const events = new Array<string>();
   return Effect.gen(function* () {
     yield* DocumentBuildComposition.discardPendingArtifact(
@@ -271,13 +390,41 @@ it.effect("cleans attempt evidence and Sandbox after a crash before the preview 
         workflowId: DocumentBuild.WorkflowId.make("document-build:crash-cleanup"),
       },
       {
-        deleteArtifact: () => Effect.sync(() => void events.push("artifact")),
-        discardAttempt: () => Effect.sync(() => void events.push("attempt")),
+        deleteArtifactBytes: () => Effect.sync(() => void events.push("artifact")),
         dispose: () => Effect.sync(() => void events.push("sandbox")),
         inspectArtifact: () => Effect.succeed(null),
+        settleAttempt: () => Effect.sync(() => (events.push("attempt"), "discarded" as const)),
       },
     );
-    expect(events).toEqual(["attempt", "sandbox"]);
+    expect(events).toEqual(["sandbox", "attempt"]);
+  });
+});
+
+it.effect("preserves attempt evidence when Sandbox disposal has not completed", () => {
+  const events = new Array<string>();
+  return Effect.gen(function* () {
+    const result = yield* DocumentBuildComposition.discardPendingArtifact(
+      {
+        userId: UserId.make("document-build-user"),
+        workflowId: DocumentBuild.WorkflowId.make("document-build:delayed-disposal"),
+      },
+      {
+        deleteArtifactBytes: () => Effect.sync(() => void events.push("artifact")),
+        dispose: () =>
+          Effect.fail(
+            new DocumentBuild.Unavailable({
+              cause: "delayed",
+              message: "Sandbox disposal is delayed",
+              operation: "test.dispose",
+            }),
+          ),
+        inspectArtifact: () => Effect.succeed(null),
+        settleAttempt: () => Effect.sync(() => (events.push("attempt"), "preserved" as const)),
+      },
+    ).pipe(Effect.result);
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(events).toEqual([]);
   });
 });
 
@@ -311,8 +458,7 @@ it.effect("does not delete or dispose compute for a foreign pending artifact", (
     const result = yield* DocumentBuildComposition.discardPendingArtifact(
       { userId: UserId.make("document-build-user"), workflowId },
       {
-        deleteArtifact: () => Effect.sync(() => void events.push("artifact")),
-        discardAttempt: () => Effect.sync(() => void events.push("attempt")),
+        deleteArtifactBytes: () => Effect.sync(() => void events.push("artifact")),
         dispose: () => Effect.sync(() => void events.push("sandbox")),
         inspectArtifact: () =>
           Effect.succeed({
@@ -328,6 +474,7 @@ it.effect("does not delete or dispose compute for a foreign pending artifact", (
             retention: "pending",
             userId: UserId.make("other-user"),
           }),
+        settleAttempt: () => Effect.sync(() => (events.push("attempt"), "discarded" as const)),
       },
     ).pipe(Effect.result);
 

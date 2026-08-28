@@ -3805,9 +3805,9 @@ export class OsfoAgent extends Think<Env> {
     const submissionId = await documentBuildFollowUpSubmissionId(notificationId);
     const store = this.#store;
     const databaseBinding = this.env.DB;
-    const activateSession = () => this.#activateSession(notification.sessionId);
     const requestWakeUp = (accepted: DocumentBuildFollowUp.Notification) =>
       this.#requestDocumentBuildWakeUp(accepted);
+    const activateDeliverySession = (sessionId: SessionId) => this.#activateSession(sessionId);
     const submit = (current: DocumentBuildFollowUp.Notification) =>
       this.runTurn({
         idempotencyKey: `document-build-follow-up-${submissionId}`,
@@ -3824,22 +3824,53 @@ export class OsfoAgent extends Think<Env> {
     const operation = Effect.gen(function* () {
       const agent = yield* store.inspect();
       const route = yield* store.readRoute(notification.routeId);
-      const ownsSession =
-        route.currentSessionId === notification.sessionId ||
-        route.historicalSessionIds.includes(notification.sessionId);
-      if (
-        agent.agentId !== notification.agentId ||
-        route.routeId !== notification.routeId ||
-        !ownsSession
-      ) {
+      const deliveryCandidate = DocumentBuildFollowUp.deliverySessionFor(
+        notification,
+        agent.agentId,
+        route,
+      );
+      if (deliveryCandidate === null) {
         return yield* new ThinkSubmissionUnavailable({
           cause: notificationId,
           message: "Document Build follow-up Agent correlation no longer matches",
           operation: "submitDocumentBuildFollowUp.authority",
         });
       }
+      const selected = yield* Effect.tryPromise({
+        try: () =>
+          // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- The Agent RPC crosses into the separately scoped PostgreSQL composition.
+          Effect.runPromise(
+            DocumentBuildComposition.followUpEffect(
+              { DB: databaseBinding },
+              DocumentBuildFollowUp.Service.pipe(
+                Effect.flatMap((followUps) =>
+                  followUps.selectDeliverySession(notificationId, deliveryCandidate),
+                ),
+                Effect.orDie,
+              ),
+            ),
+          ),
+        catch: (cause) =>
+          new ThinkSubmissionUnavailable({
+            cause,
+            message: "Document Build follow-up delivery Session could not be retained",
+            operation: "submitDocumentBuildFollowUp.selectSession",
+          }),
+      });
+      const deliverySessionId = DocumentBuildFollowUp.deliverySessionFor(
+        selected,
+        agent.agentId,
+        route,
+      );
+      if (deliverySessionId === null || selected.deliverySessionId === null) {
+        return yield* new ThinkSubmissionUnavailable({
+          cause: notificationId,
+          message: "Document Build follow-up delivery Session no longer matches its route",
+          operation: "submitDocumentBuildFollowUp.selectSession",
+        });
+      }
       yield* Effect.tryPromise({
-        try: activateSession,
+        try: () => activateDeliverySession(deliverySessionId),
         catch: (cause) =>
           new ThinkSubmissionUnavailable({
             cause,
@@ -3856,7 +3887,11 @@ export class OsfoAgent extends Think<Env> {
             operation: "submitDocumentBuildFollowUp.refresh",
           }),
       });
-      if (current === null || current.agentId !== notification.agentId) {
+      if (
+        current === null ||
+        current.agentId !== notification.agentId ||
+        current.deliverySessionId !== deliverySessionId
+      ) {
         return yield* new ThinkSubmissionUnavailable({
           cause: notificationId,
           message: "Document Build follow-up truth no longer matches its Agent",
@@ -6859,7 +6894,18 @@ export const researchReportFollowUpMetadata = (
   });
 };
 
-export const documentBuildFollowUpMetadata = researchReportFollowUpMetadata;
+export const documentBuildFollowUpMetadata = (
+  notification: DocumentBuildFollowUp.Notification,
+  submissionId: ThinkSubmissionId,
+) => {
+  return researchReportFollowUpMetadata(
+    {
+      ...notification,
+      sessionId: notification.deliverySessionId ?? notification.sessionId,
+    },
+    submissionId,
+  );
+};
 
 export const companyContinuityCostFact = (evidence: ModelCallEvidence) => {
   if (evidence._tag === "Observed") {

@@ -1,4 +1,4 @@
-/* oxlint-disable effecttsgo/global-date, eslint/no-underscore-dangle, vitest/no-standalone-expect -- Fixed middleware timestamps and Effect test callbacks make ingress evidence deterministic. */
+/* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect, eslint/no-underscore-dangle, vitest/no-standalone-expect -- Fixed middleware timestamps and Effect test callbacks make ingress evidence deterministic. */
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 
@@ -95,12 +95,60 @@ describe("authenticated text-file ingress", () => {
 
   it.effect("rejects malformed Directory upload and status responses as transient", () =>
     Effect.gen(function* () {
-      expect(yield* decodeUploadResult({ _tag: "Uploaded" }).pipe(Effect.result)).toMatchObject({
+      const request = uploadRequestFor(
+        {
+          authSessionExpiresAt: new Date("2026-08-28T13:00:00.000Z"),
+          authSessionId: "session-from-middleware",
+          userId: "user-from-middleware",
+        },
+        new TextEncoder().encode("source"),
+        { fileName: "source.txt", uploadId: "58453ab2-6d53-45b6-96b7-d4411059e63d" },
+      );
+      expect(
+        yield* decodeUploadResult({ _tag: "Uploaded" }, request).pipe(Effect.result),
+      ).toMatchObject({
         failure: { _tag: "FileUploadUnavailable" },
       });
-      expect(yield* decodeStatusResult({ _tag: "Unknown" }).pipe(Effect.result)).toMatchObject({
+      expect(
+        yield* decodeStatusResult({ _tag: "Unknown" }, request.fileId).pipe(Effect.result),
+      ).toMatchObject({
         failure: { _tag: "FileUploadUnavailable" },
       });
+    }),
+  );
+
+  it.effect("rejects schema-valid upload and status results with mismatched identities", () =>
+    Effect.gen(function* () {
+      const request = uploadRequestFor(
+        {
+          authSessionExpiresAt: new Date("2026-08-28T13:00:00.000Z"),
+          authSessionId: "session-from-middleware",
+          userId: "user-from-middleware",
+        },
+        new TextEncoder().encode("source"),
+        { fileName: "source.txt", uploadId: "58453ab2-6d53-45b6-96b7-d4411059e63d" },
+      );
+      const wrongUpload = {
+        _tag: "Uploaded" as const,
+        fileId: "web:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        fileName: "other.txt",
+        mediaType: "text/plain" as const,
+        state: "ready" as const,
+      };
+      const wrongStatus = {
+        _tag: "Found" as const,
+        fileId: "web:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        fileName: "source.txt",
+        mediaType: "text/plain" as const,
+        state: "ready" as const,
+      };
+
+      expect(yield* decodeUploadResult(wrongUpload, request).pipe(Effect.result)).toMatchObject({
+        failure: { _tag: "FileUploadUnavailable" },
+      });
+      expect(
+        yield* decodeStatusResult(wrongStatus, request.fileId).pipe(Effect.result),
+      ).toMatchObject({ failure: { _tag: "FileUploadUnavailable" } });
     }),
   );
 

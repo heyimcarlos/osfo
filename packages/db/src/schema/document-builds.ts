@@ -152,6 +152,7 @@ export const documentBuildNotifications = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     kind: text({ enum: ["previewReady", "terminal"] }).notNull(),
     claimed_at: timestamp({ withTimezone: true }).notNull(),
+    delivery_session_id: text(),
     think_submission_id: text(),
     delivered_at: timestamp({ withTimezone: true }),
   },
@@ -165,6 +166,7 @@ export const documentBuildNotifications = pgTable(
       "document_build_notifications_identity_check",
       sql`length(btrim(${table.notification_id})) > 0
         and ${table.kind} in ('previewReady', 'terminal')
+        and (${table.delivery_session_id} is null or length(btrim(${table.delivery_session_id})) > 0)
         and ((${table.think_submission_id} is null) = (${table.delivered_at} is null))
         and (${table.think_submission_id} is null or (length(${table.think_submission_id}) between 1 and 160 and position(':' in ${table.think_submission_id}) = 0))
         and (${table.delivered_at} is null or ${table.delivered_at} >= ${table.claimed_at})`,

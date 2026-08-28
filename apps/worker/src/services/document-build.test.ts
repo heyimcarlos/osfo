@@ -51,6 +51,7 @@ it.effect("admits Free Document Build despite the superseded zero Workflow count
   Effect.gen(function* () {
     let retained: DocumentBuild.Record | null = null;
     let hostsCreated = 0;
+    let retainedActiveWorkflowLimit: bigint | null = null;
     const port = DocumentBuild.Port.of({
       commitPreviewReadyFollowUp: () => Effect.void,
       commitTerminalFollowUp: () => Effect.void,
@@ -58,9 +59,10 @@ it.effect("admits Free Document Build despite the superseded zero Workflow count
       discardPendingArtifact: () => Effect.void,
       files: { resolve: () => Effect.succeed([resolvedFile("source text")]) },
       persistence: {
-        admit: (build) =>
+        admit: (build, activeWorkflowLimit) =>
           Effect.sync(() => {
             retained = build;
+            retainedActiveWorkflowLimit = activeWorkflowLimit;
             return { _tag: "Created" as const, build };
           }),
         beginExecution: () => Effect.die(new Error("Unexpected execution")),
@@ -105,6 +107,7 @@ it.effect("admits Free Document Build despite the superseded zero Workflow count
 
     expect(result).toMatchObject({ _tag: "Started", build: { state: "accepted" } });
     expect(hostsCreated).toBe(1);
+    expect(retainedActiveWorkflowLimit).toBe(1n);
   }),
 );
 

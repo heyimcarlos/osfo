@@ -6,7 +6,7 @@ import { channelLinks } from "@osfo/db/schema/channel-links";
 import { documentBuilds } from "@osfo/db/schema/document-builds";
 import { researchReports } from "@osfo/db/schema/research-reports";
 import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
-import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { DateTime, Effect, Predicate, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -166,6 +166,7 @@ const activeStates = [
   "publication_committed",
   "cancel_requested",
 ] as const;
+const activeStateSet = new Set<string>(activeStates);
 
 export const make = (database: Database): DocumentBuild.PortInterface["persistence"] => ({
   admit: (record, activeWorkflowLimit) =>
@@ -952,6 +953,46 @@ export const countActiveForUser = (database: Database, userId: UserId) =>
         ),
     ]),
   ).pipe(Effect.map(([builds, reports]) => BigInt(builds.length + reports.length)));
+
+const HostRecoveryCandidate = Schema.Struct({
+  inputDigest: DocumentBuild.InputDigest,
+  mainInstanceId: DocumentBuild.CloudflareInstanceId,
+  timerInstanceId: DocumentBuild.CloudflareInstanceId,
+  workflowId: DocumentBuild.WorkflowId,
+});
+
+/** Read a bounded, serialized batch whose durable nonterminal truth still needs host ownership. */
+export const hostRecoveryBatch = (database: Database, limit: number) =>
+  attempt("hostRecoveryBatch", async () => {
+    const candidates = await database
+      .select({ userId: documentBuilds.user_id, workflowId: documentBuilds.workflow_id })
+      .from(documentBuilds)
+      .where(inArray(documentBuilds.state, activeStates))
+      .orderBy(asc(documentBuilds.deadline_at), asc(documentBuilds.workflow_id))
+      .limit(limit);
+    const recovered = new Array<typeof HostRecoveryCandidate.Type>();
+    for (const candidate of candidates) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each bounded candidate owns one independent User-ordered transaction.
+      const row = await database.transaction(async (transaction) => {
+        if (!(await lockWorkflowUser(transaction, candidate.userId))) return null;
+        const [current] = await transaction
+          .select({
+            inputDigest: documentBuilds.input_digest,
+            mainInstanceId: documentBuilds.cloudflare_instance_id,
+            state: documentBuilds.state,
+            timerInstanceId: documentBuilds.cloudflare_timer_instance_id,
+            workflowId: documentBuilds.workflow_id,
+          })
+          .from(documentBuilds)
+          .where(eq(documentBuilds.workflow_id, candidate.workflowId))
+          .for("update")
+          .limit(1);
+        return current === undefined || !activeStateSet.has(current.state) ? null : current;
+      });
+      if (row !== null) recovered.push(Schema.decodeSync(HostRecoveryCandidate)(row));
+    }
+    return recovered;
+  });
 
 const transition = (
   database: Database,

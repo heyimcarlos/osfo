@@ -1,5 +1,6 @@
 /* oxlint-disable effecttsgo/async-function, vitest/no-standalone-expect -- Cloudflare host stubs use the platform's Promise-only callback shape. */
 import { describe, expect, it } from "@effect/vitest";
+import type { WorkflowStepConfig } from "cloudflare:workers";
 import { Effect } from "effect";
 
 import { DocumentBuild } from "../services/document-build";
@@ -8,7 +9,10 @@ import {
   requireRetryForRecoverableResult,
 } from "./document-build-host-outcome";
 import type { ExecutionResult } from "./document-build";
-import { runRecoverableMainOperation } from "./document-build-step";
+import {
+  recoverableDocumentBuildStepConfig,
+  runRecoverableMainOperation,
+} from "./document-build-step";
 
 describe("DocumentBuildWorkflow host outcomes", () => {
   it("retries ambiguous and interrupted compute instead of terminalizing", () => {
@@ -32,9 +36,15 @@ describe("DocumentBuildWorkflow host outcomes", () => {
 
   it("does not cache a recoverable step result and reruns the callback after it throws", async () => {
     const cache = new Map<string, ExecutionResult>();
+    const configs = new Array<WorkflowStepConfig>();
     let callbacks = 0;
     const step = {
-      do: async (name: string, callback: () => Promise<ExecutionResult>) => {
+      do: async (
+        name: string,
+        config: WorkflowStepConfig,
+        callback: () => Promise<ExecutionResult>,
+      ) => {
+        configs.push(config);
         const cached = cache.get(name);
         if (cached !== undefined) return cached;
         callbacks += 1;
@@ -58,8 +68,10 @@ describe("DocumentBuildWorkflow host outcomes", () => {
     };
 
     const runStep = () =>
-      step.do("authorize, render, validate, and publish document", () =>
-        runRecoverableMainOperation(operation),
+      step.do(
+        "authorize, render, validate, and publish document",
+        recoverableDocumentBuildStepConfig,
+        () => runRecoverableMainOperation(operation),
       );
 
     await expect(runStep()).rejects.toThrow("temporarily unavailable");
@@ -67,6 +79,11 @@ describe("DocumentBuildWorkflow host outcomes", () => {
     expect(await runStep()).toMatchObject({ state: "success" });
     expect(callbacks).toBe(2);
     expect(attempts).toBe(2);
+    expect(configs).toEqual([
+      recoverableDocumentBuildStepConfig,
+      recoverableDocumentBuildStepConfig,
+      recoverableDocumentBuildStepConfig,
+    ]);
   });
 
   it.effect("rejects a payload delivered to a different main instance before product effects", () =>

@@ -591,19 +591,29 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
   },
 });
 
-/** Remove an unretained attempt only after proving its durable User ownership. */
-export const discardAttemptEvidence = (bucket: R2Bucket, contentId: ContentId, userId: UserId) =>
+/**
+ * Remove only proven no-use evidence after terminal cleanup. Started and completed attempts remain
+ * durable until the scheduled allowance reconciler has consumed their incurred cost.
+ */
+export const settleAttemptEvidenceForTerminalCleanup = (
+  bucket: R2Bucket,
+  contentId: ContentId,
+  userId: UserId,
+) =>
   Effect.tryPromise({
     // oxlint-disable-next-line effecttsgo/async-function -- R2 ownership checks and deletion share one Promise boundary.
     try: async () => {
       const attemptKey = attemptKeyFor(contentId);
       const ownerKey = ownerKeyFor(userId, contentId);
       const [attempt, owner] = await Promise.all([bucket.head(attemptKey), bucket.head(ownerKey)]);
+      let attemptStatus: AttemptEvidence["status"] | null = null;
       if (attempt !== null) {
         const encoded = attempt.customMetadata?.osfo;
-        if (encoded === undefined || decodeAttemptEvidence(encoded).userId !== userId) {
+        const evidence = encoded === undefined ? null : decodeAttemptEvidence(encoded);
+        if (evidence === null || evidence.userId !== userId) {
           throw new Error("Document attempt ownership does not match the canceled Workflow");
         }
+        attemptStatus = evidence.status;
       }
       if (owner !== null) {
         const ownership = DocumentOwnershipIndex.decode(owner);
@@ -615,12 +625,16 @@ export const discardAttemptEvidence = (bucket: R2Bucket, contentId: ContentId, u
           throw new Error("Document ownership marker does not match the canceled Workflow");
         }
       }
+      if (attemptStatus === "started" || attemptStatus === "completed") {
+        return "preserved" as const;
+      }
       await bucket.delete([attemptKey, ownerKey]);
+      return "discarded" as const;
     },
     catch: (cause) =>
       new DocumentAttemptEvidenceUnavailable({
         cause,
-        message: "R2 document attempt cleanup could not prove and remove owned evidence",
+        message: "R2 document attempt cleanup could not prove and settle owned evidence",
       }),
   });
 
