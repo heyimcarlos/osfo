@@ -54,6 +54,7 @@ const rowSelection = {
   resourcePriceVersion: researchReports.resource_price_version,
   routeId: researchReports.route_id,
   sessionId: researchReports.session_id,
+  sourceManifestKey: researchReports.source_manifest_key,
   state: researchReports.state,
   terminalAt: researchReports.terminal_at,
   userId: researchReports.user_id,
@@ -81,6 +82,7 @@ type Row = {
   readonly resourcePriceVersion: string;
   readonly routeId: string;
   readonly sessionId: string;
+  readonly sourceManifestKey: string | null;
   readonly state: string;
   readonly terminalAt: Date | null;
   readonly userId: string;
@@ -108,6 +110,7 @@ const EncodedRecord = Schema.Struct({
   resourcePriceVersion: ResourcePriceVersion,
   routeId: ConversationRouteId,
   sessionId: SessionId,
+  sourceManifestKey: Schema.NullOr(Schema.String.check(Schema.isMinLength(1))),
   state: ResearchReport.State,
   terminalAt: Schema.NullOr(Schema.Date),
   userId: UserId,
@@ -150,6 +153,7 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           resource_price_version: record.resourcePriceVersion,
           route_id: record.routeId,
           session_id: record.sessionId,
+          source_manifest_key: record.sourceManifestKey,
           state: record.state,
           terminal_at: record.terminalAt,
           user_id: record.userId,
@@ -231,6 +235,62 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           if (outcome._tag === "Conflict") {
             return yield* new ResearchReport.Conflict({
               message: "Cloudflare acceptance named a changed Research Report input digest",
+              workflowId,
+            });
+          }
+          return yield* decodeRow(outcome.row);
+        }),
+      ),
+    ),
+  markSourcesCommitted: (workflowId, inputDigest, sourceManifestKey, committedAt) =>
+    attempt("markSourcesCommitted", () =>
+      database.transaction(async (transaction) => {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${workflowId}, 0))`,
+        );
+        const [row] = await transaction
+          .select(rowSelection)
+          .from(researchReports)
+          .where(eq(researchReports.workflow_id, workflowId))
+          .limit(1)
+          .for("update");
+        if (row === undefined) return { _tag: "Missing" as const };
+        if (row.inputDigest !== inputDigest) return { _tag: "Conflict" as const };
+        if (row.sourceManifestKey !== null) {
+          return row.sourceManifestKey === sourceManifestKey
+            ? { _tag: "Found" as const, row }
+            : { _tag: "Conflict" as const };
+        }
+        if (row.state !== "accepted" && row.state !== "running") {
+          return { _tag: "Conflict" as const };
+        }
+        const [updated] = await transaction
+          .update(researchReports)
+          .set({
+            source_manifest_key: sourceManifestKey,
+            sources_committed_at: committedAt,
+            state: "sources_committed",
+            updated_at: committedAt,
+          })
+          .where(
+            and(
+              eq(researchReports.workflow_id, workflowId),
+              eq(researchReports.input_digest, inputDigest),
+              inArray(researchReports.state, ["accepted", "running"]),
+            ),
+          )
+          .returning(rowSelection);
+        return updated === undefined
+          ? { _tag: "Conflict" as const }
+          : { _tag: "Found" as const, row: updated };
+      }),
+    ).pipe(
+      Effect.flatMap((outcome) =>
+        Effect.gen(function* () {
+          if (outcome._tag === "Missing") return yield* new ResearchReport.NotFound({ workflowId });
+          if (outcome._tag === "Conflict") {
+            return yield* new ResearchReport.Conflict({
+              message: "The source manifest cannot replace or outlive current product authority",
               workflowId,
             });
           }

@@ -102,6 +102,7 @@ export interface Record {
   readonly modelRoute: ManagedModelRoute;
   readonly resourcePriceVersion: ResourcePriceVersion;
   readonly manifestVersion: string | null;
+  readonly sourceManifestKey: string | null;
   readonly cloudflareInstanceId: CloudflareInstanceId;
   readonly admittedAt: Date;
   readonly deadlineAt: Date;
@@ -163,6 +164,12 @@ export interface PortInterface {
       inputDigest: InputDigest,
       acceptedAt: Date,
     ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+    readonly markSourcesCommitted: (
+      workflowId: WorkflowId,
+      inputDigest: InputDigest,
+      sourceManifestKey: string,
+      committedAt: Date,
+    ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
     readonly requestCancel: (
       workflowId: WorkflowId,
       userId: UserId,
@@ -188,6 +195,10 @@ export interface Interface {
     workflowId: WorkflowId,
     userId: UserId,
   ) => Effect.Effect<CancelResult, NotFound | Unavailable>;
+  readonly commitSources: (
+    payload: WorkflowPayload,
+    sourceManifestKey: string,
+  ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
   readonly inspect: (
     workflowId: WorkflowId,
     userId: UserId,
@@ -316,6 +327,20 @@ export const make = Effect.gen(function* () {
     return report;
   });
 
+  const commitSources = Effect.fn("ResearchReport.commitSources")(function* (
+    payload: WorkflowPayload,
+    sourceManifestKey: string,
+  ) {
+    const report = yield* authorizeExecution(payload);
+    const committedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    return yield* ports.persistence.markSourcesCommitted(
+      report.workflowId,
+      report.inputDigest,
+      sourceManifestKey,
+      committedAt,
+    );
+  });
+
   const start = Effect.fn("ResearchReport.start")(function* (input: StartInput) {
     const workflowId = yield* workflowIdFor(input.authorization.user.userId, input.actionId);
     const cloudflareInstanceId = CloudflareInstanceId.make(workflowId);
@@ -403,6 +428,7 @@ export const make = Effect.gen(function* () {
       modelRoute: route.route,
       resourcePriceVersion: currentResourcePriceVersion,
       manifestVersion: admission.manifestVersion,
+      sourceManifestKey: null,
       cloudflareInstanceId,
       admittedAt,
       deadlineAt: deadlineAfter(admittedAt),
@@ -443,7 +469,14 @@ export const make = Effect.gen(function* () {
     return { _tag: "CancelRequested" as const, report: requested };
   });
 
-  return Service.of({ authorizeExecution, cancel, inspect, reconcileAcceptance, start });
+  return Service.of({
+    authorizeExecution,
+    cancel,
+    commitSources,
+    inspect,
+    reconcileAcceptance,
+    start,
+  });
 });
 
 export const layerWithoutDependencies = Layer.effect(Service, make);

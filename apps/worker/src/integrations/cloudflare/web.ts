@@ -40,6 +40,7 @@ export class WebProviderUnavailable extends Schema.TaggedError<WebProviderUnavai
   {
     message: Schema.String,
     operation: Schema.Literals(["discover", "fetch", "readBody", "redirect"]),
+    retry: Schema.Literals(["ambiguous", "never", "transient"]),
   },
 ) {}
 
@@ -48,7 +49,12 @@ export const makeDiscovery = (binding: SearchBinding) =>
   Effect.fn("CloudflareWeb.discover")(function* (query: string, limit: number) {
     const response = yield* Effect.tryPromise({
       try: () => binding.search({ limit, query }),
-      catch: () => providerUnavailable("discover", "Public-web discovery is unavailable."),
+      catch: () =>
+        providerUnavailable(
+          "discover",
+          "Public-web discovery acceptance is ambiguous.",
+          "ambiguous",
+        ),
     });
     const decoded = yield* Schema.decodeEffect(DiscoveryResponse)(response).pipe(
       Effect.mapError(() =>
@@ -90,7 +96,8 @@ export const makePageFetch = (fetcher: Fetcher = fetch) =>
             redirect: "manual",
             signal: AbortSignal.timeout(limits.providerDeadlineMilliseconds),
           }),
-        catch: () => providerUnavailable("fetch", "The public page could not be fetched."),
+        catch: () =>
+          providerUnavailable("fetch", "The public page could not be fetched.", "transient"),
       });
       if (!redirectStatus(response.status)) break;
       const location = response.headers.get("location");
@@ -166,7 +173,8 @@ const readBoundedBody = (response: Response) =>
       }
       return { bytes, oversized: false };
     },
-    catch: () => providerUnavailable("readBody", "The public page body could not be read."),
+    catch: () =>
+      providerUnavailable("readBody", "The public page body could not be read.", "transient"),
   });
 
 const normalizePage = (source: string, contentType: string) => {
@@ -242,5 +250,8 @@ const oversizedPage = (
 const redirectStatus = (status: number) =>
   status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 
-const providerUnavailable = (operation: WebProviderUnavailable["operation"], message: string) =>
-  new WebProviderUnavailable({ message, operation });
+const providerUnavailable = (
+  operation: WebProviderUnavailable["operation"],
+  message: string,
+  retry: WebProviderUnavailable["retry"] = "never",
+) => new WebProviderUnavailable({ message, operation, retry });

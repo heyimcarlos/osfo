@@ -266,6 +266,35 @@ it.effect("records cancellation before best-effort interruption and converges du
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
+it.effect(
+  "commits one exact source manifest only while current execution authority remains",
+  () => {
+    const fixture = makeFixture();
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const reports = yield* ResearchReport.Service;
+      const started = yield* reports.start(startInput());
+      const payload = ResearchReport.WorkflowPayload.make({
+        inputDigest: started.report.inputDigest,
+        workflowId: started.report.workflowId,
+      });
+      const committed = yield* reports.commitSources(
+        payload,
+        `users/${userId}/research-report/manifests/${started.report.workflowId}.json`,
+      );
+      expect(committed).toMatchObject({
+        sourceManifestKey: `users/${userId}/research-report/manifests/${started.report.workflowId}.json`,
+        state: "sources_committed",
+      });
+
+      const changed = yield* reports
+        .commitSources(payload, "users/changed-manifest.json")
+        .pipe(Effect.result);
+      expect(changed).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
+    }).pipe(Effect.provide(layer(fixture.port)));
+  },
+);
+
 it.effect("keeps retained launch-v1 Free admission fail closed", () => {
   const fixture = makeFixture();
 
@@ -365,6 +394,18 @@ const makeFixture = (
             return yield* new ResearchReport.Conflict({ message: "changed digest", workflowId });
           }
           stored = { ...stored, acceptedAt, state: "accepted" };
+          return stored;
+        }),
+      markSourcesCommitted: (workflowId, inputDigest, sourceManifestKey) =>
+        Effect.gen(function* () {
+          if (stored === null) return yield* new ResearchReport.NotFound({ workflowId });
+          if (stored.inputDigest !== inputDigest) {
+            return yield* new ResearchReport.Conflict({ message: "changed digest", workflowId });
+          }
+          if (stored.sourceManifestKey !== null && stored.sourceManifestKey !== sourceManifestKey) {
+            return yield* new ResearchReport.Conflict({ message: "changed manifest", workflowId });
+          }
+          stored = { ...stored, sourceManifestKey, state: "sources_committed" };
           return stored;
         }),
       requestCancel: (workflowId, requestedUserId, requestedAt) =>
