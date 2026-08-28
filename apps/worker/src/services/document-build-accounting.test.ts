@@ -70,14 +70,13 @@ it.effect("builds one final shared Usage Event from pinned publication evidence"
   }),
 );
 
-it.effect("records no User accounting for failed provider work or shared Workflow start", () =>
+it.effect("records no User accounting for a shared Workflow start", () =>
   Effect.gen(function* () {
     let writes = 0;
     const accounting = DocumentBuildAccounting.make({
       recordLegacy: () => Effect.sync(() => void (writes += 1)),
       recordUsageEvent: () => Effect.sync(() => void (writes += 1)),
     });
-    yield* accounting.recordProviderCost(buildRecord("shared-usage-v1"), renderCost);
     yield* accounting.recordWorkflowStart(buildRecord("shared-usage-v1"));
 
     expect(writes).toBe(0);

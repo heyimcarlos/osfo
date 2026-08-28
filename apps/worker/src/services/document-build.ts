@@ -23,6 +23,7 @@ import {
   sharedUsageModelAccessPolicy,
 } from "../domain/model-access-policy";
 import {
+  currentLaunchPolicy,
   isLaunchPolicy,
   policyFor,
   policyForVersion,
@@ -350,6 +351,11 @@ export interface Interface {
     payload: WorkflowPayload,
     contentId: string,
   ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
+  readonly recordProviderCost: (
+    payload: WorkflowPayload,
+    contentId: string,
+    cost: CostEvidence,
+  ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
   readonly reconcileAcceptance: (
     workflowId: WorkflowId,
     inputDigest: InputDigest,
@@ -357,6 +363,7 @@ export interface Interface {
   readonly resumePublication: (
     payload: WorkflowPayload,
   ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+  readonly settleTerminal: (build: Record) => Effect.Effect<Record, Conflict | Unavailable>;
   readonly start: (
     input: StartInput,
   ) => Effect.Effect<StartResult, Conflict | Denied | NotFound | Unavailable>;
@@ -367,6 +374,18 @@ export class Service extends Context.Service<Service, Interface>()("@osfo/Docume
 export const make = Effect.gen(function* () {
   const ports = yield* Port;
   const authorization = Authorization.make(retainedCatalog);
+
+  const settleTerminal = Effect.fn("DocumentBuild.settleTerminal")(function* (build: Record) {
+    if (!terminalStates.has(build.state)) {
+      return yield* new Conflict({
+        message: "Only terminal Document Build truth can be settled",
+        workflowId: build.workflowId,
+      });
+    }
+    if (build.state !== "success") yield* ports.discardPendingArtifact(build);
+    yield* ports.commitTerminalFollowUp(build);
+    return build;
+  });
 
   const authorizeControl = Effect.fn("DocumentBuild.authorizeControl")(function* (
     build: Record,
@@ -480,13 +499,14 @@ export const make = Effect.gen(function* () {
     }
     if (build.state === "cancel_requested") {
       const terminalAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-      yield* ports.persistence.finishTerminal(
+      const canceled = yield* ports.persistence.finishTerminal(
         build.workflowId,
         build.inputDigest,
         "canceled",
         "cancel-requested",
         terminalAt,
       );
+      yield* settleTerminal(canceled);
       return yield* new Conflict({
         message: "The Document Build was canceled before further execution",
         workflowId: build.workflowId,
@@ -505,6 +525,7 @@ export const make = Effect.gen(function* () {
       current.now,
     );
     if (deadlineChecked.state === "canceled") {
+      yield* settleTerminal(deadlineChecked);
       return yield* new Conflict({
         message: "The Document Build deadline ended execution",
         workflowId: build.workflowId,
@@ -521,7 +542,7 @@ export const make = Effect.gen(function* () {
               "authority-ended",
               current.now,
             )
-            .pipe(Effect.andThen(Effect.fail(denied))),
+            .pipe(Effect.flatMap(settleTerminal), Effect.andThen(Effect.fail(denied))),
         ),
       );
       yield* revalidateFiles(deadlineChecked).pipe(
@@ -534,7 +555,7 @@ export const make = Effect.gen(function* () {
               "source-changed",
               current.now,
             )
-            .pipe(Effect.andThen(Effect.fail(failure))),
+            .pipe(Effect.flatMap(settleTerminal), Effect.andThen(Effect.fail(failure))),
         ),
       );
     }
@@ -563,9 +584,13 @@ export const make = Effect.gen(function* () {
   const beginExecution = Effect.fn("DocumentBuild.beginExecution")(function* (
     payload: WorkflowPayload,
   ) {
+    const retained = yield* inspectExecution(payload);
+    if (retained.state === "admitted") {
+      yield* reconcileAcceptance(retained.workflowId, retained.inputDigest);
+    }
     const build = yield* authorizeExecution(payload);
     if (["running", "preview_stored", "publication_committed"].includes(build.state)) return build;
-    if (build.state !== "admitted" && build.state !== "accepted") {
+    if (build.state !== "accepted") {
       return yield* new Conflict({
         message: "The Document Build cannot start from its current state",
         workflowId: build.workflowId,
@@ -638,6 +663,22 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  const recordProviderCost = Effect.fn("DocumentBuild.recordProviderCost")(function* (
+    payload: WorkflowPayload,
+    contentId: string,
+    cost: CostEvidence,
+  ) {
+    const build = yield* inspectExecution(payload);
+    const committedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    return yield* ports.persistence.markAccountingCommitted(
+      build.workflowId,
+      build.inputDigest,
+      contentId,
+      cost,
+      committedAt,
+    );
+  });
+
   const commitPublication = Effect.fn("DocumentBuild.commitPublication")(function* (
     payload: WorkflowPayload,
     contentId: string,
@@ -679,8 +720,7 @@ export const make = Effect.gen(function* () {
           terminalAt,
         ),
       ),
-      Effect.tap((build) => ports.discardPendingArtifact(build)),
-      Effect.tap((build) => ports.commitTerminalFollowUp(build)),
+      Effect.flatMap(settleTerminal),
     );
 
   const start = Effect.fn("DocumentBuild.start")(function* (input: StartInput) {
@@ -719,8 +759,7 @@ export const make = Effect.gen(function* () {
     const freeParityAdmission =
       input.authorization.subscription.plan === "free" &&
       Predicate.isTagged(initialAdmission, "Denied") &&
-      (initialAdmission.reason === "missingEntitlement" ||
-        initialAdmission.reason === "allowanceExhausted");
+      initialAdmission.reason === "missingEntitlement";
     const admission = freeParityAdmission
       ? supersedingFreeDocumentBuildAdmission(authorization, input.authorization, input.actionId)
       : initialAdmission;
@@ -843,7 +882,9 @@ export const make = Effect.gen(function* () {
     yield* authorizeControl(retained, "workflow.cancel");
     const requestedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     const requested = yield* ports.persistence.requestCancel(workflowId, userId, requestedAt);
-    if (terminalStates.has(requested.state)) return { _tag: "Terminal" as const, build: requested };
+    if (terminalStates.has(requested.state)) {
+      return { _tag: "Terminal" as const, build: yield* settleTerminal(requested) };
+    }
     if (requested.state === "publication_committed")
       return { _tag: "PublicationCommitted" as const, build: requested };
     const canceled = yield* ports.persistence.finishTerminal(
@@ -853,16 +894,13 @@ export const make = Effect.gen(function* () {
       "cancel-requested",
       requestedAt,
     );
-    yield* ports
-      .discardPendingArtifact(canceled)
-      .pipe(
-        Effect.andThen(ports.commitTerminalFollowUp(canceled)),
-        Effect.ensuring(
-          ports.workflow
-            .terminate(canceled.cloudflareInstanceId, canceled.cloudflareTimerInstanceId)
-            .pipe(Effect.ignore),
-        ),
-      );
+    yield* settleTerminal(canceled).pipe(
+      Effect.ensuring(
+        ports.workflow
+          .terminate(canceled.cloudflareInstanceId, canceled.cloudflareTimerInstanceId)
+          .pipe(Effect.ignore),
+      ),
+    );
     return { _tag: "CancelRequested" as const, build: canceled };
   });
 
@@ -902,8 +940,10 @@ export const make = Effect.gen(function* () {
     inspect,
     inspectExecution,
     markPreviewStored,
+    recordProviderCost,
     reconcileAcceptance,
     resumePublication,
+    settleTerminal,
     start,
   });
 });
@@ -1022,14 +1062,26 @@ const supersedingFreeDocumentBuildAdmission = (
 ) => {
   const control = authorization.recheck(context, { actionId, kind: "workflow.inspect" });
   if (Predicate.isTagged(control, "Denied")) return control;
-  if (!Predicate.isTagged(context.allowance, "Metered")) {
+  const allowance = context.allowance;
+  if (!Predicate.isTagged(allowance, "Metered")) {
     return { _tag: "Denied", reason: "allowancePeriodUnavailable", resetAt: null } as const;
+  }
+  const vendorCostRecorded =
+    allowance.usage.find((usage) => usage.allowanceKind === "vendorUsdMicros")?.quantity ?? 0n;
+  if (
+    vendorCostRecorded >= policyFor(currentLaunchPolicy, "free").allowanceLimits.vendorUsdMicros
+  ) {
+    return {
+      _tag: "Denied",
+      reason: "allowanceExhausted",
+      resetAt: allowance.endsAt,
+    } as const;
   }
   return {
     _tag: "Admitted",
     allowancePeriod: {
       _tag: "Metered",
-      allowancePeriodId: context.allowance.allowancePeriodId,
+      allowancePeriodId: allowance.allowancePeriodId,
       grantSource: null,
     },
     capabilityCatalogVersion: currentCapabilityCatalog.version,

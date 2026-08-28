@@ -21,8 +21,11 @@ export const FileUploadQuery = Schema.Struct({
 });
 
 /** Minimal safe result after the owning Agent has normalized the source. */
+export const BrowserFileId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(160));
+
+/** Minimal safe result after the owning Agent has normalized the source. */
 export const FileUploadResponse = Schema.Struct({
-  fileId: Schema.String,
+  fileId: BrowserFileId,
   fileName: BrowserFileName,
   mediaType: Schema.Literal("text/plain"),
   state: Schema.Literals(["processing", "ready"]),
@@ -31,7 +34,7 @@ export type FileUploadResponse = typeof FileUploadResponse.Type;
 
 /** Safe current lifecycle for one authenticated User-owned source. */
 export const FileStatusResponse = Schema.Struct({
-  fileId: Schema.String,
+  fileId: BrowserFileId,
   fileName: BrowserFileName,
   mediaType: Schema.Literal("text/plain"),
   state: Schema.Literals(["failed", "processing", "ready"]),
@@ -92,7 +95,7 @@ export const FilesGroup = HttpApiGroup.make("files")
   .add(
     HttpApiEndpoint.get("status", "/v1/files/:fileId", {
       error: [FileUploadDenied, FileUploadUnavailable],
-      params: { fileId: Schema.String },
+      params: { fileId: BrowserFileId },
       success: FileStatusResponse,
     })
       .middleware(Auth)

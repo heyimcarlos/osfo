@@ -43,6 +43,7 @@ export const StatusResult = Schema.Union([
     mediaType: Schema.Literal("text/plain"),
     state: Schema.Literals(["failed", "processing", "ready"]),
   }),
+  Schema.TaggedStruct("Denied", {}),
   Schema.TaggedStruct("Unavailable", {}),
 ]);
 export type StatusResult = typeof StatusResult.Type;

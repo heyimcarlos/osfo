@@ -75,6 +75,18 @@ it.effect("stops before provider work when current durable authority is lost", (
   }).pipe(Effect.provide(fixture.layer));
 });
 
+it.effect("retains incurred provider cost before failed artifact validation", () => {
+  const fixture = publicationFixture({ invalidValidation: true });
+  return Effect.gen(function* () {
+    const documents = yield* DocumentBuildDocument.Service;
+    const result = yield* documents.generate(fixture.build()).pipe(Effect.result);
+
+    expect(result).toMatchObject({ failure: { reason: "invalidArtifact" } });
+    expect(fixture.events()).toContain("provider-cost");
+    expect(fixture.events()).not.toContain("generated-document");
+  }).pipe(Effect.provide(fixture.layer));
+});
+
 it.effect("resumes pending publication without starting a second compute attempt", () => {
   const fixture = publicationFixture({ accountFailures: 1 });
   return Effect.gen(function* () {
@@ -122,6 +134,7 @@ const publicationFixture = (
     readonly accountFailures?: number;
     readonly cancelAtPublication?: "after" | "before";
     readonly denyAuthorization?: boolean;
+    readonly invalidValidation?: boolean;
   } = {},
 ) => {
   let current = buildRecord();
@@ -260,7 +273,21 @@ const publicationFixture = (
     recordProviderCost: () => Effect.sync(() => void events.push("provider-cost")),
     validator: {
       validate: (retainedContentId, format, bytes, pages) =>
-        DocumentArtifact.make(retainedContentId, format, bytes.byteLength, pages, "f".repeat(64)),
+        options.invalidValidation === true
+          ? Effect.fail(
+              new DocumentArtifact.InvalidGeneratedArtifact({
+                contentId: retainedContentId,
+                message: "invalid generated document",
+                reason: "invalidDocument",
+              }),
+            )
+          : DocumentArtifact.make(
+              retainedContentId,
+              format,
+              bytes.byteLength,
+              pages,
+              "f".repeat(64),
+            ),
     },
   });
   return {

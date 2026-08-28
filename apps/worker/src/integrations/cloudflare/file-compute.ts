@@ -1,4 +1,6 @@
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { Effect, Schema } from "effect";
 
 import type { FileMediaType } from "../../domain/file-content";
@@ -64,8 +66,12 @@ interface NormalizationTaskInput {
 /** Create disposable, bounded Python file compute from the Cloudflare Sandbox binding. */
 export const makeCloudflareFileCompute = (binding: DurableObjectNamespace<Sandbox>): FileCompute =>
   makeFileCompute((taskId) =>
-    getSandbox(binding, taskId, { enableDefaultSession: false, sleepAfter: "1m" }),
+    getSandbox(binding, sandboxIdFor(taskId), { enableDefaultSession: false, sleepAfter: "1m" }),
   );
+
+/** Bound one durable logical File operation to Cloudflare's Sandbox identifier contract. */
+export const sandboxIdFor = (taskScope: string) =>
+  `file-${bytesToHex(sha256(new TextEncoder().encode(taskScope))).slice(0, 58)}`;
 
 /** Create the narrow file task adapter over one isolated-sandbox resolver. */
 export const makeFileCompute = (sandboxFor: (taskId: string) => FileTaskSandbox): FileCompute => ({

@@ -40,6 +40,7 @@ import { ResearchReportFollowUp } from "../../services/research-report-follow-up
 import { ResearchReportFollowUpPostgres } from "./research-report-follow-up";
 import { ResearchReportPostgres } from "./research-report";
 import { ResearchReportPublicationPostgres } from "./research-report-publication";
+import { lockWorkflowUser } from "./workflow-serialization";
 
 const admittedAt = new Date("2026-08-28T12:00:00.000Z");
 const periodEndsAt = new Date("2026-09-28T12:00:00.000Z");
@@ -390,9 +391,7 @@ it.effect("serializes useful Usage behind the deletion fence and leaves no late 
     const locked = deferred();
     const writeFence = deferred();
     const fencing = fixture.database.transaction(async (transaction) => {
-      await transaction.execute(
-        sql`select pg_advisory_xact_lock(hashtextextended(${`research-report:user:${userId}`}, 0))`,
-      );
+      await lockWorkflowUser(transaction, userId);
       locked.resolve();
       await writeFence.promise;
       await transaction

@@ -1,9 +1,9 @@
 import { Workflow } from "alchemy/Cloudflare";
 
-import type { DocumentBuild } from "../../apps/worker/src/services/document-build";
+import type { DocumentBuildWorkflowPayload } from "@osfo/worker/workflow-contracts";
 
 /** Dedicated Cloudflare Workflow for one governed Document Build execution. */
-export const DocumentBuildWorkflow = Workflow<DocumentBuild.WorkflowPayload>(
+export const DocumentBuildWorkflow = Workflow<DocumentBuildWorkflowPayload>(
   "DocumentBuildWorkflow",
   { className: "DocumentBuildWorkflow" },
 );

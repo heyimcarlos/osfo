@@ -91,6 +91,7 @@ export interface PortInterface {
   ) => Effect.Effect<void, Unavailable>;
   readonly recordProviderCost: (
     build: DocumentBuild.Record,
+    contentId: ContentId,
     cost: CostEvidence,
   ) => Effect.Effect<void, Unavailable>;
   readonly validator: ArtifactValidator;
@@ -206,7 +207,7 @@ export const make = Effect.gen(function* () {
         supportingVisuals: [],
         userId: admitted.userId,
       });
-      yield* ports.recordProviderCost(admitted, computed.cost);
+      yield* ports.recordProviderCost(admitted, contentId, computed.cost);
       if (Predicate.isTagged(computed, "AuthorizationFailure")) {
         return yield* unavailable(
           "authorize",
@@ -329,7 +330,7 @@ const publishRetained = Effect.fn("DocumentBuildDocument.publishRetained")(funct
         unavailable("preview", "Preview retention lost its state race", cause),
       ),
     );
-  yield* ports.recordProviderCost(preview, retained.cost);
+  yield* ports.recordProviderCost(preview, contentId, retained.cost);
   const accounted = yield* ports
     .commitAccounting(preview, contentId, retained.cost)
     .pipe(

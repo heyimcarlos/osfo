@@ -40,11 +40,6 @@ export interface Interface {
     artifact: DocumentArtifact.ArtifactRef,
     renderCost: CostEvidence,
   ) => Effect.Effect<void, Unavailable>;
-  /** Provider attempt evidence remains Company Cost until useful publication wins. */
-  readonly recordProviderCost: (
-    build: DocumentBuild.Record,
-    cost: CostEvidence,
-  ) => Effect.Effect<void, Unavailable>;
   readonly recordWorkflowStart: (build: DocumentBuild.Record) => Effect.Effect<void, Unavailable>;
 }
 
@@ -74,7 +69,6 @@ export const make = (port: Port): Interface => ({
         unavailable("usefulDocument", "Useful Document Build accounting is unavailable", cause),
       ),
     ),
-  recordProviderCost: () => Effect.void,
   recordWorkflowStart: (build) =>
     build.planPolicyVersion !== "launch-v1"
       ? Effect.void

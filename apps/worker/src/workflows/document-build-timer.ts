@@ -7,7 +7,6 @@ import { DocumentBuildComposition } from "../composition/document-build";
 import { decodeOsfoStage, type OsfoStage } from "../config";
 import { makeWorkflowRuntime } from "../layers";
 import { DocumentBuild } from "../services/document-build";
-import { DocumentBuildDocument } from "../services/document-build-document";
 import { DocumentBuildFollowUp } from "../services/document-build-follow-up";
 import { matchesInstanceIdentity } from "./document-build-host-outcome";
 
@@ -142,9 +141,7 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
         DocumentBuildComposition.makeTerminalFollowUpCommitter(bindings),
         Effect.gen(function* () {
           const builds = yield* DocumentBuild.Service;
-          const documents = yield* DocumentBuildDocument.Service;
           const canceled = yield* builds.finishCanceled(payload, "deadline-exceeded");
-          yield* documents.discard(canceled);
           return { state: canceled.state };
         }).pipe(Effect.orDie),
       ),

@@ -51,6 +51,22 @@ export const uploadRequestFor = (
   });
 };
 
+/** Preserve caller denial separately from retryable Agent/file-store outages. */
+export const statusResponseFor = (
+  result: WebFileUpload.StatusResult,
+): Effect.Effect<
+  Extract<WebFileUpload.StatusResult, { readonly _tag: "Found" }>,
+  FileUploadDenied | FileUploadUnavailable
+> => {
+  if (result._tag === "Found") return Effect.succeed(result);
+  if (result._tag === "Denied") {
+    return Effect.fail(new FileUploadDenied({ message: "File status is not authorized" }));
+  }
+  return Effect.fail(
+    new FileUploadUnavailable({ message: "File status is temporarily unavailable" }),
+  );
+};
+
 /** Upload a bounded source through the authenticated User's stable Agent route. */
 export const layer = (bindings: Bindings) =>
   HttpApiBuilder.group(Api, "files", (handlers) =>
@@ -97,8 +113,7 @@ export const layer = (bindings: Bindings) =>
             catch: () =>
               new FileUploadUnavailable({ message: "File status is temporarily unavailable" }),
           });
-          if (result._tag === "Found") return result;
-          return yield* new FileUploadDenied({ message: "File status is not authorized" });
+          return yield* statusResponseFor(result);
         }),
       ),
   );

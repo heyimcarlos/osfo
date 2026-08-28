@@ -3,6 +3,7 @@ import { expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 
 import { DocumentBuild } from "../services/document-build";
+import { DocumentBuildFollowUp } from "../services/document-build-follow-up";
 import { DocumentBuildComposition } from "./document-build";
 
 const mainId = DocumentBuild.CloudflareInstanceId.make("document-build-main");
@@ -94,3 +95,23 @@ it.effect("terminates only executable main and timer instances", () => {
     expect(terminated).toEqual([mainId]);
   });
 });
+
+it.effect("keeps Directory follow-up outages in the typed retryable channel", () =>
+  Effect.gen(function* () {
+    const result = yield* DocumentBuildComposition.submitFollowUp(
+      {
+        OSFO_DIRECTORY: {
+          getByName: () => ({
+            resolveDocumentBuildFiles: () => Promise.reject(new Error("unexpected resolver")),
+            submitDocumentBuildFollowUp: () => Promise.reject(new Error("Directory unavailable")),
+          }),
+        },
+      },
+      DocumentBuildFollowUp.NotificationId.make("document-build-follow-up-id"),
+    ).pipe(Effect.result);
+
+    expect(result).toMatchObject({
+      failure: { _tag: "DocumentBuildUnavailable", operation: "followUp.directory" },
+    });
+  }),
+);

@@ -3809,16 +3809,16 @@ export class OsfoAgent extends Think<Env> {
     const activateSession = () => this.#activateSession(notification.sessionId);
     const requestWakeUp = (accepted: DocumentBuildFollowUp.Notification) =>
       this.#requestDocumentBuildWakeUp(accepted);
-    const submit = () =>
+    const submit = (current: DocumentBuildFollowUp.Notification) =>
       this.runTurn({
         idempotencyKey: `document-build-follow-up-${submissionId}`,
         input: {
           id: submissionId,
-          metadata: { turnMetadata: documentBuildFollowUpMetadata(notification, submissionId) },
-          parts: [{ text: documentBuildFollowUpMessage(notification), type: "text" }],
+          metadata: { turnMetadata: documentBuildFollowUpMetadata(current, submissionId) },
+          parts: [{ text: documentBuildFollowUpMessage(current), type: "text" }],
           role: "user",
         },
-        metadata: documentBuildFollowUpMetadata(notification, submissionId),
+        metadata: documentBuildFollowUpMetadata(current, submissionId),
         mode: "submit",
         submissionId,
       });
@@ -3848,7 +3848,30 @@ export class OsfoAgent extends Think<Env> {
             operation: "submitDocumentBuildFollowUp.activateSession",
           }),
       });
-      yield* callThinkSubmission("submitDocumentBuildFollowUp.runTurn", submit);
+      const current = yield* Effect.tryPromise({
+        try: readNotification,
+        catch: (cause) =>
+          new ThinkSubmissionUnavailable({
+            cause,
+            message: "Document Build follow-up truth could not be refreshed",
+            operation: "submitDocumentBuildFollowUp.refresh",
+          }),
+      });
+      if (current === null || current.agentId !== notification.agentId) {
+        return yield* new ThinkSubmissionUnavailable({
+          cause: notificationId,
+          message: "Document Build follow-up truth no longer matches its Agent",
+          operation: "submitDocumentBuildFollowUp.refresh",
+        });
+      }
+      if (DocumentBuildFollowUp.previewSubmissionDisposition(current) === "PromoteTerminal") {
+        return {
+          _tag: "TerminalSuperseded" as const,
+          notificationId,
+          submissionId,
+        };
+      }
+      yield* callThinkSubmission("submitDocumentBuildFollowUp.runTurn", () => submit(current));
       const accepted = yield* Effect.tryPromise({
         try: () =>
           // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- The Agent RPC crosses into the separately scoped PostgreSQL composition.
@@ -4168,7 +4191,7 @@ export class OsfoAgent extends Think<Env> {
     const inspect = this.#fileStore.find(request.fileId).pipe(
       Effect.map((file): WebFileUpload.StatusResult => {
         if (file.userId !== request.userId || file.mediaType !== "text/plain") {
-          return { _tag: "Unavailable" };
+          return { _tag: "Denied" };
         }
         return {
           _tag: "Found",
@@ -4183,10 +4206,11 @@ export class OsfoAgent extends Think<Env> {
                 : "processing",
         };
       }),
+      Effect.catchTag("FileNotFound", () => Effect.succeed({ _tag: "Denied" as const })),
       Effect.orElseSucceed(() => ({ _tag: "Unavailable" as const })),
     );
     return Effect.runPromise(
-      this.#accountDeletionFence.run(inspect, () => ({ _tag: "Unavailable" as const })),
+      this.#accountDeletionFence.run(inspect, () => ({ _tag: "Denied" as const })),
     );
   }
 

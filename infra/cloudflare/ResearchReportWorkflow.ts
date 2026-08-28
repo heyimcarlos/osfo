@@ -1,9 +1,9 @@
 import { Workflow } from "alchemy/Cloudflare";
 
-import type { ResearchReport } from "../../apps/worker/src/services/research-report";
+import type { ResearchReportWorkflowPayload } from "@osfo/worker/workflow-contracts";
 
 /** Dedicated Cloudflare Workflow for one governed Research Report execution. */
-export const ResearchReportWorkflow = Workflow<ResearchReport.WorkflowPayload>(
+export const ResearchReportWorkflow = Workflow<ResearchReportWorkflowPayload>(
   "ResearchReportWorkflow",
   { className: "ResearchReportWorkflow" },
 );

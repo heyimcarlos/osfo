@@ -50,6 +50,66 @@ it.effect("rejects source content that requires more than twenty pages", () =>
   }),
 );
 
+it.effect("admits Free Document Build despite the superseded zero Workflow counter", () =>
+  Effect.gen(function* () {
+    let retained: DocumentBuild.Record | null = null;
+    let hostsCreated = 0;
+    const port = DocumentBuild.Port.of({
+      commitPreviewReadyFollowUp: () => Effect.void,
+      commitTerminalFollowUp: () => Effect.void,
+      currentAuthorization: () => Effect.succeed(exhaustedAuthorization("free", false)),
+      discardPendingArtifact: () => Effect.void,
+      files: { resolve: () => Effect.succeed([resolvedFile("source text")]) },
+      persistence: {
+        admit: (build) =>
+          Effect.sync(() => {
+            retained = build;
+            return { _tag: "Created" as const, build };
+          }),
+        beginExecution: () => Effect.die(new Error("Unexpected execution")),
+        commitPublication: () => Effect.die(new Error("Unexpected publication")),
+        enforceDeadline: () => Effect.die(new Error("Unexpected deadline")),
+        finishSuccess: () => Effect.die(new Error("Unexpected success")),
+        finishTerminal: () => Effect.die(new Error("Unexpected terminal transition")),
+        inspect: () => Effect.succeed(retained),
+        markAccepted: (_workflowId, _inputDigest, acceptedAt) =>
+          Effect.gen(function* () {
+            if (retained === null) return yield* Effect.die(new Error("Missing admitted build"));
+            retained = { ...retained, acceptedAt, state: "accepted" };
+            return retained;
+          }),
+        markAccountingCommitted: () => Effect.die(new Error("Unexpected accounting")),
+        markPreviewStored: () => Effect.die(new Error("Unexpected preview")),
+        requestCancel: () => Effect.die(new Error("Unexpected cancel")),
+      },
+      recordWorkflowStart: () => Effect.void,
+      workflow: {
+        create: () => Effect.sync(() => void (hostsCreated += 1)),
+        terminate: () => Effect.void,
+      },
+    });
+    const layer = DocumentBuild.layerWithoutDependencies.pipe(
+      Layer.provide(Layer.succeed(DocumentBuild.Port, port)),
+    );
+    const result = yield* DocumentBuild.Service.pipe(
+      Effect.flatMap((builds) =>
+        builds.start({
+          actionId: ActionId.make("free-document-build-action"),
+          agentId: AgentId.make("free-document-build-agent"),
+          authorization: exhaustedAuthorization("free", false),
+          request: { fileIds: [FileId.make("document-build-source")], format: "pdf" },
+          routeId: ConversationRouteId.make("free-document-build-route"),
+          sessionId: SessionId.make("free-document-build-session"),
+        }),
+      ),
+      Effect.provide(layer),
+    );
+
+    expect(result).toMatchObject({ _tag: "Started", build: { state: "accepted" } });
+    expect(hostsCreated).toBe(1);
+  }),
+);
+
 it.effect("continues admitted work after allowance exhaustion while denying a new Workflow", () =>
   Effect.gen(function* () {
     const request = yield* DocumentBuild.storedRequestFor("pdf", [resolvedFile("source text")]);
@@ -61,7 +121,7 @@ it.effect("continues admitted work after allowance exhaustion while denying a ne
     const port = DocumentBuild.Port.of({
       commitPreviewReadyFollowUp: () => Effect.void,
       commitTerminalFollowUp: () => Effect.void,
-      currentAuthorization: () => Effect.succeed(exhaustedAuthorization()),
+      currentAuthorization: () => Effect.succeed(exhaustedAuthorization("free")),
       discardPendingArtifact: () => Effect.void,
       files: { resolve: () => Effect.succeed([resolvedFile("source text")]) },
       persistence: {
@@ -102,7 +162,7 @@ it.effect("continues admitted work after allowance exhaustion while denying a ne
         .start({
           actionId: ActionId.make("new-document-build-action"),
           agentId: build.agentId,
-          authorization: exhaustedAuthorization(),
+          authorization: exhaustedAuthorization("free"),
           request: { fileIds: [FileId.make("document-build-source")], format: "pdf" },
           routeId: build.routeId,
           sessionId: build.sessionId,
@@ -113,6 +173,194 @@ it.effect("continues admitted work after allowance exhaustion while denying a ne
       expect(providerStarts).toBe(0);
     });
     yield* program.pipe(Effect.provide(layer));
+  }),
+);
+
+it.effect("reconciles both Workflow hosts and start accounting before callback execution", () =>
+  Effect.gen(function* () {
+    const request = yield* DocumentBuild.storedRequestFor("pdf", [resolvedFile("source text")]);
+    const workflowId = DocumentBuild.WorkflowId.make("document-build:callback-acceptance");
+    const instances = yield* DocumentBuild.cloudflareInstanceIdsFor(workflowId);
+    let current: DocumentBuild.Record = {
+      ...buildRecord(workflowId, instances, request),
+      acceptedAt: null,
+      startedAt: null,
+      state: "admitted" as const,
+    };
+    const events: Array<string> = [];
+    const port = DocumentBuild.Port.of({
+      commitPreviewReadyFollowUp: () => Effect.void,
+      commitTerminalFollowUp: () => Effect.void,
+      currentAuthorization: () => Effect.succeed(availableAuthorization()),
+      discardPendingArtifact: () => Effect.void,
+      files: { resolve: () => Effect.succeed([resolvedFile("source text")]) },
+      persistence: {
+        admit: () => Effect.succeed({ _tag: "Existing" as const, build: current }),
+        beginExecution: () =>
+          Effect.sync(() => {
+            events.push(`begin:${current.state}`);
+            current = { ...current, startedAt: productNow, state: "running" };
+            return current;
+          }),
+        commitPublication: () => Effect.succeed(current),
+        enforceDeadline: () => Effect.succeed(current),
+        finishSuccess: () => Effect.succeed(current),
+        finishTerminal: () => Effect.succeed(current),
+        inspect: () => Effect.succeed(current),
+        markAccepted: () =>
+          Effect.sync(() => {
+            events.push("accepted");
+            current = { ...current, acceptedAt: productNow, state: "accepted" };
+            return current;
+          }),
+        markAccountingCommitted: () => Effect.succeed(current),
+        markPreviewStored: () => Effect.succeed(current),
+        requestCancel: () => Effect.succeed(current),
+      },
+      recordWorkflowStart: () => Effect.sync(() => void events.push("workflow-start")),
+      workflow: {
+        create: () => Effect.sync(() => void events.push("hosts-created")),
+        terminate: () => Effect.void,
+      },
+    });
+    const layer = DocumentBuild.layerWithoutDependencies.pipe(
+      Layer.provide(Layer.succeed(DocumentBuild.Port, port)),
+    );
+    yield* DocumentBuild.Service.pipe(
+      Effect.flatMap((builds) =>
+        builds.beginExecution({ inputDigest: current.inputDigest, workflowId }),
+      ),
+      Effect.provide(layer),
+    );
+
+    expect(events).toEqual(["hosts-created", "accepted", "workflow-start", "begin:accepted"]);
+    expect(current.state).toBe("running");
+  }),
+);
+
+it.effect("retries terminal cleanup and follow-up after canceled truth is already durable", () =>
+  Effect.gen(function* () {
+    const request = yield* DocumentBuild.storedRequestFor("pdf", [resolvedFile("source text")]);
+    const workflowId = DocumentBuild.WorkflowId.make("document-build:cancel-settlement");
+    const instances = yield* DocumentBuild.cloudflareInstanceIdsFor(workflowId);
+    const canceled = {
+      ...buildRecord(workflowId, instances, request),
+      safeFailureCode: "cancel-requested",
+      state: "canceled" as const,
+      terminalAt: productNow,
+    };
+    let discardAttempts = 0;
+    let followUps = 0;
+    const port = DocumentBuild.Port.of({
+      commitPreviewReadyFollowUp: () => Effect.void,
+      commitTerminalFollowUp: () => Effect.sync(() => void (followUps += 1)),
+      currentAuthorization: () => Effect.succeed(availableAuthorization()),
+      discardPendingArtifact: () =>
+        Effect.gen(function* () {
+          discardAttempts += 1;
+          if (discardAttempts === 1) {
+            return yield* new DocumentBuild.Unavailable({
+              cause: "transient R2 failure",
+              message: "Pending artifact cleanup is unavailable",
+              operation: "artifact.discard",
+            });
+          }
+          return undefined;
+        }),
+      files: { resolve: () => Effect.succeed([resolvedFile("source text")]) },
+      persistence: {
+        admit: () => Effect.succeed({ _tag: "Existing" as const, build: canceled }),
+        beginExecution: () => Effect.succeed(canceled),
+        commitPublication: () => Effect.succeed(canceled),
+        enforceDeadline: () => Effect.succeed(canceled),
+        finishSuccess: () => Effect.succeed(canceled),
+        finishTerminal: () => Effect.succeed(canceled),
+        inspect: () => Effect.succeed(canceled),
+        markAccepted: () => Effect.succeed(canceled),
+        markAccountingCommitted: () => Effect.succeed(canceled),
+        markPreviewStored: () => Effect.succeed(canceled),
+        requestCancel: () => Effect.succeed(canceled),
+      },
+      recordWorkflowStart: () => Effect.void,
+      workflow: { create: () => Effect.void, terminate: () => Effect.void },
+    });
+    const layer = DocumentBuild.layerWithoutDependencies.pipe(
+      Layer.provide(Layer.succeed(DocumentBuild.Port, port)),
+    );
+    const cancel = DocumentBuild.Service.pipe(
+      Effect.flatMap((builds) => builds.cancel(workflowId, canceled.userId)),
+      Effect.provide(layer),
+    );
+
+    expect(yield* cancel.pipe(Effect.result)).toMatchObject({
+      failure: { _tag: "DocumentBuildUnavailable" },
+    });
+    expect(yield* cancel).toMatchObject({ _tag: "Terminal", build: { state: "canceled" } });
+    expect(discardAttempts).toBe(2);
+    expect(followUps).toBe(1);
+  }),
+);
+
+it.effect("replays idempotent cleanup after a transient terminal follow-up failure", () =>
+  Effect.gen(function* () {
+    const request = yield* DocumentBuild.storedRequestFor("pdf", [resolvedFile("source text")]);
+    const workflowId = DocumentBuild.WorkflowId.make("document-build:follow-up-settlement");
+    const instances = yield* DocumentBuild.cloudflareInstanceIdsFor(workflowId);
+    const canceled = {
+      ...buildRecord(workflowId, instances, request),
+      safeFailureCode: "cancel-requested",
+      state: "canceled" as const,
+      terminalAt: productNow,
+    };
+    let cleanups = 0;
+    let followUpAttempts = 0;
+    const port = DocumentBuild.Port.of({
+      commitPreviewReadyFollowUp: () => Effect.void,
+      commitTerminalFollowUp: () =>
+        Effect.gen(function* () {
+          followUpAttempts += 1;
+          if (followUpAttempts === 1) {
+            return yield* new DocumentBuild.Unavailable({
+              cause: "transient Agent RPC failure",
+              message: "Terminal follow-up is unavailable",
+              operation: "followUp.submit",
+            });
+          }
+          return undefined;
+        }),
+      currentAuthorization: () => Effect.succeed(availableAuthorization()),
+      discardPendingArtifact: () => Effect.sync(() => void (cleanups += 1)),
+      files: { resolve: () => Effect.succeed([resolvedFile("source text")]) },
+      persistence: {
+        admit: () => Effect.succeed({ _tag: "Existing" as const, build: canceled }),
+        beginExecution: () => Effect.succeed(canceled),
+        commitPublication: () => Effect.succeed(canceled),
+        enforceDeadline: () => Effect.succeed(canceled),
+        finishSuccess: () => Effect.succeed(canceled),
+        finishTerminal: () => Effect.succeed(canceled),
+        inspect: () => Effect.succeed(canceled),
+        markAccepted: () => Effect.succeed(canceled),
+        markAccountingCommitted: () => Effect.succeed(canceled),
+        markPreviewStored: () => Effect.succeed(canceled),
+        requestCancel: () => Effect.succeed(canceled),
+      },
+      recordWorkflowStart: () => Effect.void,
+      workflow: { create: () => Effect.void, terminate: () => Effect.void },
+    });
+    const layer = DocumentBuild.layerWithoutDependencies.pipe(
+      Layer.provide(Layer.succeed(DocumentBuild.Port, port)),
+    );
+    const cancel = DocumentBuild.Service.pipe(
+      Effect.flatMap((builds) => builds.cancel(workflowId, canceled.userId)),
+      Effect.provide(layer),
+    );
+
+    expect(yield* cancel.pipe(Effect.result)).toMatchObject({
+      failure: { _tag: "DocumentBuildUnavailable", operation: "followUp.submit" },
+    });
+    expect(yield* cancel).toMatchObject({ _tag: "Terminal", build: { state: "canceled" } });
+    expect(cleanups).toBe(2);
+    expect(followUpAttempts).toBe(2);
   }),
 );
 
@@ -129,20 +377,25 @@ const productNow = new Date("2026-08-28T12:00:00.000Z");
 const userId = UserId.make("document-build-user");
 const allowancePeriodId = AllowancePeriodId.make("document-build-period");
 
-const exhaustedAuthorization = (): AuthorizationContext => ({
+const exhaustedAuthorization = (
+  plan: "adventurer" | "free" = "adventurer",
+  exhausted = true,
+): AuthorizationContext => ({
   allowance: {
     _tag: "Metered",
     allowancePeriodId,
     endsAt: new Date("2026-09-28T12:00:00.000Z"),
-    plan: "adventurer",
+    plan,
     planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
     startsAt: productNow,
-    usage: [
-      {
-        allowanceKind: "workflowStarts",
-        quantity: policyFor(currentLaunchPolicy, "adventurer").allowanceLimits.workflowStarts,
-      },
-    ],
+    usage: exhausted
+      ? [
+          {
+            allowanceKind: "vendorUsdMicros",
+            quantity: policyFor(currentLaunchPolicy, plan).allowanceLimits.vendorUsdMicros,
+          },
+        ]
+      : [],
   },
   approval: null,
   authority: {
@@ -162,9 +415,12 @@ const exhaustedAuthorization = (): AuthorizationContext => ({
   },
   requestVendorUsdMicros: 0n,
   resourceOwnerUserId: userId,
-  subscription: { plan: "adventurer", planPolicyVersion: PlanPolicyVersion.make("launch-v1") },
+  subscription: { plan, planPolicyVersion: PlanPolicyVersion.make("launch-v1") },
   user: { _tag: "ActiveUser", userId },
 });
+
+const availableAuthorization = (): AuthorizationContext =>
+  exhaustedAuthorization("adventurer", false);
 
 const buildRecord = (
   workflowId: DocumentBuild.WorkflowId,

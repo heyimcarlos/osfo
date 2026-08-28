@@ -163,4 +163,10 @@ export const layerWithoutDependencies = Layer.effect(Service, make);
 export const notificationIdFor = (workflowId: DocumentBuild.WorkflowId, kind: NotificationKind) =>
   NotificationId.make(`${workflowId}-${kind === "previewReady" ? "preview" : "terminal"}`);
 
+/** A delayed preview never submits progress after terminal product truth exists. */
+export const previewSubmissionDisposition = (notification: Notification) =>
+  notification.kind === "previewReady" && DocumentBuild.terminalStates.has(notification.buildState)
+    ? ("PromoteTerminal" as const)
+    : ("Submit" as const);
+
 export * as DocumentBuildFollowUp from "./document-build-follow-up";

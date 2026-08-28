@@ -1,7 +1,7 @@
 import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { researchReportNotifications, researchReports } from "@osfo/db/schema/research-reports";
 import { deletionCases } from "@osfo/db/schema/user-lifecycle";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, notExists, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, notExists, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -22,6 +22,7 @@ import { ManagedModelRoute } from "../../domain/model-access-policy";
 import { ResearchReport } from "../../services/research-report";
 import { ResearchReportFollowUp } from "../../services/research-report-follow-up";
 import { ResearchReportPostgres } from "./research-report";
+import { countWorkflowMilestones, lockWorkflowUser } from "./workflow-serialization";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transactions own PostgreSQL serialization. */
 /* oxlint-disable eslint/no-underscore-dangle, osfo/no-unknown-parameters -- Effect result tags and the schema-decoded Drizzle row are owned by this adapter. */
@@ -186,7 +187,7 @@ export const make = (database: Database): ResearchReportFollowUp.PortInterface =
       Effect.gen(function* () {
         const result = yield* attempt("claimMilestone", () =>
           database.transaction(async (transaction) => {
-            if (!(await lockWorkflowUser(transaction, payload))) {
+            if (!(await lockNotificationWorkflowUser(transaction, payload))) {
               return { _tag: "Conflict" as const };
             }
             const [row] = await transaction
@@ -244,27 +245,16 @@ export const make = (database: Database): ResearchReportFollowUp.PortInterface =
             if (now.getTime() < row.admittedAt.getTime() + milestoneDelayMilliseconds) {
               return { _tag: "NotDue" as const };
             }
-            await transaction.execute(
-              sql`select pg_advisory_xact_lock(hashtextextended(${row.userId}, 0))`,
-            );
             await transaction
               .update(researchReports)
               .set({ milestone_claimed_at: now, updated_at: now })
               .where(eq(researchReports.workflow_id, payload.workflowId));
-            const [countRow] = await transaction
-              .select({ count: sql<number>`count(*)::integer` })
-              .from(researchReportNotifications)
-              .where(
-                and(
-                  eq(researchReportNotifications.user_id, row.userId),
-                  eq(researchReportNotifications.kind, "sourcesCollected"),
-                  gt(
-                    researchReportNotifications.claimed_at,
-                    new Date(now.getTime() - notificationWindowMilliseconds),
-                  ),
-                ),
-              );
-            if ((countRow?.count ?? 0) >= milestoneLimit) {
+            const milestoneCount = await countWorkflowMilestones(
+              transaction,
+              row.userId,
+              new Date(now.getTime() - notificationWindowMilliseconds),
+            );
+            if (milestoneCount >= milestoneLimit) {
               return { _tag: "Suppressed" as const };
             }
             await transaction.insert(researchReportNotifications).values({
@@ -298,7 +288,7 @@ export const make = (database: Database): ResearchReportFollowUp.PortInterface =
       Effect.gen(function* () {
         const result = yield* attempt("claimTerminal", () =>
           database.transaction(async (transaction) => {
-            if (!(await lockWorkflowUser(transaction, payload))) {
+            if (!(await lockNotificationWorkflowUser(transaction, payload))) {
               return { _tag: "Conflict" as const };
             }
             const [row] = await transaction
@@ -544,7 +534,7 @@ const conflict = (
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
-const lockWorkflowUser = async (
+const lockNotificationWorkflowUser = async (
   transaction: Transaction,
   payload: ResearchReport.WorkflowPayload,
 ) => {
@@ -557,9 +547,7 @@ const lockWorkflowUser = async (
     .where(eq(researchReports.workflow_id, payload.workflowId))
     .limit(1);
   if (identity === undefined || identity.inputDigest !== payload.inputDigest) return false;
-  await transaction.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`research-report:user:${identity.userId}`}, 0))`,
-  );
+  await lockWorkflowUser(transaction, identity.userId);
   return true;
 };
 

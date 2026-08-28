@@ -1,6 +1,8 @@
 /* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect -- Fixed timestamps make persistence evidence deterministic. */
 /* oxlint-disable effecttsgo/strict-effect-provide -- This test owns its isolated PostgreSQL database. */
-/* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect test callback. */
+/* oxlint-disable vitest/no-standalone-expect, eslint/no-underscore-dangle -- Assertions execute inside Effect callbacks and inspect canonical Effect tags. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/new-promise, effecttsgo/run-effect-inside-effect -- This test coordinates real concurrent Drizzle transactions around PostgreSQL advisory locks. */
+/* oxlint-disable unicorn/consistent-function-scoping -- Each deferred resolver belongs to one isolated database race. */
 import { expect, it } from "@effect/vitest";
 import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { users } from "@osfo/db/schema/auth";
@@ -9,6 +11,7 @@ import { documentBuildNotifications, documentBuilds } from "@osfo/db/schema/docu
 import { researchReportNotifications, researchReports } from "@osfo/db/schema/research-reports";
 import { deletionCases } from "@osfo/db/schema/user-lifecycle";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
+import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -29,10 +32,15 @@ import { FileDigest } from "../../domain/file-content";
 import { FileId } from "../../domain/file";
 import { ManagedModelRoute } from "../../domain/model-access-policy";
 import { DocumentBuild } from "../../services/document-build";
+import { DocumentBuildFollowUp } from "../../services/document-build-follow-up";
+import { ResearchReport } from "../../services/research-report";
 import { DocumentBuildFollowUpPostgres } from "./document-build-follow-up";
 import { DocumentBuildPostgres } from "./document-build";
+import { ResearchReportPostgres } from "./research-report";
+import { ResearchReportFollowUpPostgres } from "./research-report-follow-up";
+import { lockWorkflowUser } from "./workflow-serialization";
 
-const admittedAt = new Date("2026-08-28T12:00:00.000Z");
+const admittedAt = new Date("2099-08-28T12:00:00.000Z");
 const userId = UserId.make("document-build-user");
 const allowancePeriodId = AllowancePeriodId.make("document-build-period");
 
@@ -61,7 +69,7 @@ it.effect("retains one exact request and serializes preview publication against 
       fixture.database.insert(allowancePeriods).values({
         allowance_period_id: allowancePeriodId,
         billing_subscription_id: "document-build-subscription",
-        ends_at: new Date("2026-09-28T12:00:00.000Z"),
+        ends_at: new Date("2099-09-28T12:00:00.000Z"),
         plan: "free",
         plan_policy_version: "launch-v1",
         starts_at: admittedAt,
@@ -80,6 +88,11 @@ it.effect("retains one exact request and serializes preview publication against 
       .admit({ ...exact, inputDigest: DocumentBuild.InputDigest.make("b".repeat(64)) }, 3n)
       .pipe(Effect.result);
     expect(changed).toMatchObject({ failure: { _tag: "DocumentBuildConflict" } });
+    expect(
+      yield* persistence
+        .beginExecution(exact.workflowId, exact.inputDigest, admittedAt)
+        .pipe(Effect.result),
+    ).toMatchObject({ failure: { _tag: "DocumentBuildConflict" } });
 
     const accepted = yield* persistence.markAccepted(
       exact.workflowId,
@@ -153,7 +166,191 @@ it.effect("retains one exact request and serializes preview publication against 
     );
     expect(published.state).toBe("publication_committed");
     expect(losingCancel.state).toBe("publication_committed");
+    expect(
+      yield* persistence.enforceDeadline(
+        publicationWinner.workflowId,
+        publicationWinner.inputDigest,
+        new Date("2099-08-28T14:00:00.000Z"),
+      ),
+    ).toMatchObject({ state: "publication_committed" });
   }).pipe(Effect.scoped),
+);
+
+it.effect("serializes concurrent cross-type admission and deletion fencing", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedUser(fixture.database);
+    const builds = DocumentBuildPostgres.make(fixture.database);
+    const reports = ResearchReportPostgres.make(fixture.database);
+
+    const admissions = yield* Effect.all(
+      [
+        builds.admit(record("9", "concurrent-build"), 1n).pipe(Effect.result),
+        reports.admit(researchRecord("concurrent-report"), 1n).pipe(Effect.result),
+      ],
+      { concurrency: "unbounded" },
+    );
+    expect(admissions.filter((outcome) => outcome._tag === "Success")).toHaveLength(1);
+    expect(admissions.filter((outcome) => outcome._tag === "Failure")).toMatchObject([
+      { failure: { _tag: "Denied", reason: "liveResourceLimitReached" } },
+    ]);
+
+    yield* Effect.promise(() => fixture.database.delete(researchReports));
+    yield* Effect.promise(() => fixture.database.delete(documentBuilds));
+    const acquired = deferred();
+    const release = deferred();
+    const fence = fixture.database.transaction(async (transaction) => {
+      await lockWorkflowUser(transaction, userId);
+      acquired.resolve();
+      await release.promise;
+      await transaction.insert(deletionCases).values({
+        access_fenced_at: admittedAt,
+        approval_action_id: "document-build-race-delete-action",
+        approval_presentation: "Delete Account",
+        deletion_case_id: "document-build-race-delete-case",
+        reason: "User requested account deletion",
+        requested_by_user_id: userId,
+        user_id: userId,
+      });
+    });
+    yield* Effect.promise(() => acquired.promise);
+    const lateAdmission = Effect.runPromise(
+      builds.admit(record("a", "after-deletion-race"), 1n).pipe(Effect.result),
+    );
+    release.resolve();
+    yield* Effect.promise(() => fence);
+    expect(yield* Effect.promise(() => lateAdmission)).toMatchObject({
+      failure: { _tag: "Denied", reason: "deletionAccessRevoked" },
+    });
+  }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "retains provider cost before validation and cancels publication at the fenced claim",
+  () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeTestDatabase;
+      yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+      yield* applyMigrations(fixture.client);
+      yield* seedUser(fixture.database);
+      const persistence = DocumentBuildPostgres.make(fixture.database);
+      const cost = {
+        _tag: "Incurred" as const,
+        allowancePeriodId,
+        basis: "observed" as const,
+        providerOperationId: "document-build-failed-provider-operation",
+        usdMicros: 41n,
+      };
+
+      const failed = record("c", "failed-after-compute");
+      yield* persistence.admit(failed, 10n);
+      yield* persistence.markAccepted(failed.workflowId, failed.inputDigest, admittedAt);
+      yield* persistence.beginExecution(failed.workflowId, failed.inputDigest, admittedAt);
+      const failedContentId = `document:workflow:${failed.workflowId}`;
+      const costCommitted = yield* persistence.markAccountingCommitted(
+        failed.workflowId,
+        failed.inputDigest,
+        failedContentId,
+        cost,
+        admittedAt,
+      );
+      const costReplay = yield* persistence.markAccountingCommitted(
+        failed.workflowId,
+        failed.inputDigest,
+        failedContentId,
+        cost,
+        admittedAt,
+      );
+      expect(costCommitted.costEvidence).toEqual(cost);
+      expect(costReplay.costEvidence).toEqual(cost);
+      const terminal = yield* persistence.finishTerminal(
+        failed.workflowId,
+        failed.inputDigest,
+        "failure",
+        "document-invalidArtifact",
+        admittedAt,
+      );
+      expect(terminal).toMatchObject({ costEvidence: cost, state: "failure" });
+
+      const deadline = {
+        ...record("e", "publication-deadline"),
+        deadlineAt: new Date("2099-08-28T12:30:00.000Z"),
+      };
+      yield* persistence.admit(deadline, 10n);
+      yield* persistence.markAccepted(deadline.workflowId, deadline.inputDigest, admittedAt);
+      yield* persistence.beginExecution(deadline.workflowId, deadline.inputDigest, admittedAt);
+      const deadlineContentId = `document:workflow:${deadline.workflowId}`;
+      yield* persistence.markAccountingCommitted(
+        deadline.workflowId,
+        deadline.inputDigest,
+        deadlineContentId,
+        { ...cost, providerOperationId: "document-build-deadline-provider-operation" },
+        admittedAt,
+      );
+      yield* persistence.markPreviewStored(
+        deadline.workflowId,
+        deadline.inputDigest,
+        deadlineContentId,
+        admittedAt,
+      );
+      expect(
+        yield* persistence
+          .commitPublication(
+            deadline.workflowId,
+            deadline.inputDigest,
+            deadlineContentId,
+            deadline.deadlineAt,
+          )
+          .pipe(Effect.result),
+      ).toMatchObject({ failure: { _tag: "DocumentBuildConflict" } });
+      expect(yield* persistence.inspect(deadline.workflowId)).toMatchObject({
+        publicationCommittedAt: null,
+        safeFailureCode: "deadline-exceeded",
+        state: "canceled",
+      });
+
+      const fenced = record("d", "publication-fenced");
+      yield* persistence.admit(fenced, 10n);
+      yield* persistence.markAccepted(fenced.workflowId, fenced.inputDigest, admittedAt);
+      yield* persistence.beginExecution(fenced.workflowId, fenced.inputDigest, admittedAt);
+      const fencedContentId = `document:workflow:${fenced.workflowId}`;
+      yield* persistence.markAccountingCommitted(
+        fenced.workflowId,
+        fenced.inputDigest,
+        fencedContentId,
+        { ...cost, providerOperationId: "document-build-fenced-provider-operation" },
+        admittedAt,
+      );
+      yield* persistence.markPreviewStored(
+        fenced.workflowId,
+        fenced.inputDigest,
+        fencedContentId,
+        admittedAt,
+      );
+      yield* Effect.promise(() =>
+        fixture.database.insert(deletionCases).values({
+          access_fenced_at: admittedAt,
+          approval_action_id: "document-build-publication-delete-action",
+          approval_presentation: "Delete Account",
+          deletion_case_id: "document-build-publication-delete-case",
+          reason: "User requested account deletion",
+          requested_by_user_id: userId,
+          user_id: userId,
+        }),
+      );
+      expect(
+        yield* persistence
+          .commitPublication(fenced.workflowId, fenced.inputDigest, fencedContentId, admittedAt)
+          .pipe(Effect.result),
+      ).toMatchObject({ failure: { _tag: "DocumentBuildConflict" } });
+      expect(yield* persistence.inspect(fenced.workflowId)).toMatchObject({
+        publicationCommittedAt: null,
+        safeFailureCode: "account-deletion",
+        state: "canceled",
+      });
+    }).pipe(Effect.scoped),
 );
 
 it.effect("claims preview and terminal follow-ups exactly once and suppresses late previews", () =>
@@ -164,8 +361,8 @@ it.effect("claims preview and terminal follow-ups exactly once and suppresses la
     yield* seedUser(fixture.database);
     const persistence = DocumentBuildPostgres.make(fixture.database);
     const followUps = DocumentBuildFollowUpPostgres.make(fixture.database);
-    const previewAt = new Date("2026-08-28T12:16:00.000Z");
-    const terminalAt = new Date("2026-08-28T12:17:00.000Z");
+    const previewAt = new Date("2099-08-28T12:16:00.000Z");
+    const terminalAt = new Date("2099-08-28T12:17:00.000Z");
     const build = record("e", "follow-up");
     yield* persistence.admit(build, 10n);
     yield* persistence.markAccepted(build.workflowId, build.inputDigest, admittedAt);
@@ -209,6 +406,15 @@ it.effect("claims preview and terminal follow-ups exactly once and suppresses la
       _tag: "AlreadyClaimed",
       notification: { notificationId: `${build.workflowId}-terminal` },
     });
+    const delayedPreview = yield* followUps.inspect(
+      DocumentBuildFollowUp.notificationIdFor(build.workflowId, "previewReady"),
+    );
+    expect(delayedPreview).not.toBeNull();
+    if (delayedPreview !== null) {
+      expect(DocumentBuildFollowUp.previewSubmissionDisposition(delayedPreview)).toBe(
+        "PromoteTerminal",
+      );
+    }
 
     const late = record("f", "late-preview");
     yield* persistence.admit(late, 10n);
@@ -235,7 +441,7 @@ it.effect("shares the three-per-day milestone cap with Research Reports", () =>
     yield* seedUser(fixture.database);
     const persistence = DocumentBuildPostgres.make(fixture.database);
     const followUps = DocumentBuildFollowUpPostgres.make(fixture.database);
-    const previewAt = new Date("2026-08-28T12:16:00.000Z");
+    const previewAt = new Date("2099-08-28T12:16:00.000Z");
     const build = record("7", "shared-milestone-limit");
     yield* persistence.admit(build, 10n);
     yield* persistence.markAccepted(build.workflowId, build.inputDigest, admittedAt);
@@ -253,7 +459,7 @@ it.effect("shares the three-per-day milestone cap with Research Reports", () =>
       allowance_period_id: allowancePeriodId,
       capability_catalog_version: "governed-capabilities-v1",
       cloudflare_instance_id: `research-shared-cap-${index}`,
-      deadline_at: new Date("2026-08-28T13:00:00.000Z"),
+      deadline_at: new Date("2099-08-28T13:00:00.000Z"),
       input_digest: `${index + 1}`.repeat(64),
       model_access_policy_version: "launch-v1",
       model_route: "@cf/deepseek-ai/deepseek-v4-flash-0731",
@@ -290,6 +496,80 @@ it.effect("shares the three-per-day milestone cap with Research Reports", () =>
   }).pipe(Effect.scoped),
 );
 
+it.effect("serializes concurrent cross-type milestone claims at the global cap", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedUser(fixture.database);
+    const builds = DocumentBuildPostgres.make(fixture.database);
+    const reports = ResearchReportPostgres.make(fixture.database);
+    const buildFollowUps = DocumentBuildFollowUpPostgres.make(fixture.database);
+    const reportFollowUps = ResearchReportFollowUpPostgres.make(fixture.database);
+    const dueAt = new Date("2099-08-28T12:16:00.000Z");
+
+    const historical = [
+      researchRecord("milestone-history-1"),
+      researchRecord("milestone-history-2"),
+    ];
+    for (const report of historical) yield* reports.admit(report, 10n);
+    yield* Effect.promise(() =>
+      fixture.database.insert(researchReportNotifications).values(
+        historical.map((report, index) => ({
+          claimed_at: new Date(dueAt.getTime() - (index + 1) * 60_000),
+          kind: "sourcesCollected" as const,
+          notification_id: `historical-milestone-${index}`,
+          user_id: userId,
+          workflow_id: report.workflowId,
+        })),
+      ),
+    );
+
+    const build = record("f", "concurrent-milestone-build");
+    yield* builds.admit(build, 10n);
+    yield* builds.markAccepted(build.workflowId, build.inputDigest, admittedAt);
+    yield* builds.beginExecution(build.workflowId, build.inputDigest, admittedAt);
+    yield* builds.markPreviewStored(
+      build.workflowId,
+      build.inputDigest,
+      `document:workflow:${build.workflowId}`,
+      dueAt,
+    );
+
+    const report = researchRecord("concurrent-milestone-report");
+    yield* reports.admit(report, 10n);
+    yield* Effect.promise(() =>
+      fixture.database
+        .update(researchReports)
+        .set({
+          accepted_at: admittedAt,
+          manifest_version: "research-manifest-v1",
+          source_manifest_digest: "d".repeat(64),
+          source_manifest_key: "users/document-build-user/research/concurrent/manifest.json",
+          started_at: admittedAt,
+          state: "sources_committed",
+        })
+        .where(eq(researchReports.workflow_id, report.workflowId)),
+    );
+
+    const outcomes = yield* Effect.all(
+      [
+        buildFollowUps.claimPreview(payloadFor(build), dueAt),
+        reportFollowUps.claimMilestone(
+          ResearchReport.WorkflowPayload.make({
+            inputDigest: report.inputDigest,
+            workflowId: report.workflowId,
+          }),
+          dueAt,
+        ),
+      ],
+      { concurrency: "unbounded" },
+    );
+    expect(outcomes.filter((outcome) => outcome._tag === "Claimed")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome._tag === "Suppressed")).toHaveLength(1);
+  }).pipe(Effect.scoped),
+);
+
 it.effect("quiesces deletion-fenced builds and cascades private follow-up truth", () =>
   Effect.gen(function* () {
     const fixture = yield* makeTestDatabase;
@@ -298,7 +578,7 @@ it.effect("quiesces deletion-fenced builds and cascades private follow-up truth"
     yield* seedUser(fixture.database);
     const persistence = DocumentBuildPostgres.make(fixture.database);
     const followUps = DocumentBuildFollowUpPostgres.make(fixture.database);
-    const previewAt = new Date("2026-08-28T12:16:00.000Z");
+    const previewAt = new Date("2099-08-28T12:16:00.000Z");
     const build = record("8", "deletion");
     yield* persistence.admit(build, 10n);
     yield* persistence.markAccepted(build.workflowId, build.inputDigest, admittedAt);
@@ -373,7 +653,7 @@ const seedUser = (database: Database) =>
       database.insert(allowancePeriods).values({
         allowance_period_id: allowancePeriodId,
         billing_subscription_id: "document-build-subscription",
-        ends_at: new Date("2026-09-28T12:00:00.000Z"),
+        ends_at: new Date("2099-09-28T12:00:00.000Z"),
         plan: "free",
         plan_policy_version: "launch-v1",
         starts_at: admittedAt,
@@ -387,6 +667,59 @@ const payloadFor = (build: DocumentBuild.Record) =>
     inputDigest: build.inputDigest,
     workflowId: build.workflowId,
   });
+
+const deferred = () => {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((complete) => {
+    resolve = () => complete();
+  });
+  return { promise, resolve };
+};
+
+const researchRecord = (identity: string): ResearchReport.Record => {
+  const workflowId = ResearchReport.WorkflowId.make(`research:${identity}`);
+  return {
+    acceptedAt: null,
+    actionId: ActionId.make(`research-action-${identity}`),
+    admittedAt,
+    agentId: AgentId.make("document-build-agent"),
+    allowancePeriodId,
+    approval: null,
+    artifactContentId: null,
+    artifactStoredAt: null,
+    publicationCommittedAt: null,
+    cancelRequestedAt: null,
+    capabilityCatalogVersion: CapabilityCatalogVersion.make("governed-capabilities-v1"),
+    cloudflareInstanceId: ResearchReport.CloudflareInstanceId.make(`research-${identity}`),
+    deadlineAt: new Date("2099-08-28T13:00:00.000Z"),
+    inputDigest: ResearchReport.InputDigest.make("b".repeat(64)),
+    manifestVersion: null,
+    modelAccessPolicyVersion: ModelAccessPolicyVersion.make("launch-v1"),
+    modelRoute: ManagedModelRoute.make("@cf/deepseek-ai/deepseek-v4-flash-0731"),
+    originatingAuthority: {
+      _tag: "AuthSession",
+      authSessionId: AuthSessionId.make("document-build-auth-session"),
+    },
+    planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+    request: ResearchReport.Request.make({
+      consequences: [],
+      format: "pdf",
+      queries: [`query-${identity}`],
+      topic: `topic-${identity}`,
+    }),
+    resourcePriceVersion: ResourcePriceVersion.make("resource-prices-2026-08-22"),
+    routeId: ConversationRouteId.make("document-build-route"),
+    safeFailureCode: null,
+    sessionId: SessionId.make("document-build-session"),
+    sourceManifestDigest: null,
+    sourceManifestKey: null,
+    startedAt: null,
+    state: "admitted",
+    terminalAt: null,
+    userId,
+    workflowId,
+  };
+};
 
 const record = (digest: string, identity = "test"): DocumentBuild.Record => {
   const workflowId = DocumentBuild.WorkflowId.make(`document-build:${identity}`);
@@ -406,7 +739,7 @@ const record = (digest: string, identity = "test"): DocumentBuild.Record => {
       `document-build-${identity}-timer`,
     ),
     costEvidence: null,
-    deadlineAt: new Date("2026-08-28T13:00:00.000Z"),
+    deadlineAt: new Date("2099-08-28T13:00:00.000Z"),
     inputDigest: DocumentBuild.InputDigest.make(digest.repeat(64)),
     manifestVersion: null,
     modelAccessPolicyVersion: ModelAccessPolicyVersion.make("launch-v1"),

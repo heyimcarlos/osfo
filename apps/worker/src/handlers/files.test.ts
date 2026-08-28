@@ -1,10 +1,10 @@
-/* oxlint-disable effecttsgo/global-date, eslint/no-underscore-dangle -- Fixed middleware timestamps and standard Effect discriminators make ingress evidence deterministic. */
+/* oxlint-disable effecttsgo/global-date, eslint/no-underscore-dangle, vitest/no-standalone-expect -- Fixed middleware timestamps and Effect test callbacks make ingress evidence deterministic. */
 import { describe, expect, it } from "@effect/vitest";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
-import { FileUploadQuery } from "@osfo/api";
+import { BrowserFileId, FileUploadQuery } from "@osfo/api";
 import { WebFileUpload } from "../agents/osfo/web-file-upload";
-import { uploadRequestFor } from "./files";
+import { statusResponseFor, uploadRequestFor } from "./files";
 
 describe("authenticated text-file ingress", () => {
   it("derives the owner, authority, and stable identities from server and retry facts", () => {
@@ -46,4 +46,16 @@ describe("authenticated text-file ingress", () => {
       })._tag,
     ).toBe("Failure");
   });
+
+  it.effect("rejects overlong File IDs and preserves retryable status outages", () =>
+    Effect.gen(function* () {
+      expect(Schema.decodeResult(BrowserFileId)("x".repeat(161))._tag).toBe("Failure");
+      expect(yield* statusResponseFor({ _tag: "Denied" }).pipe(Effect.result)).toMatchObject({
+        failure: { _tag: "FileUploadDenied" },
+      });
+      expect(yield* statusResponseFor({ _tag: "Unavailable" }).pipe(Effect.result)).toMatchObject({
+        failure: { _tag: "FileUploadUnavailable" },
+      });
+    }),
+  );
 });

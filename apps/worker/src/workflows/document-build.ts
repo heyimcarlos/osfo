@@ -131,11 +131,16 @@ const settleTerminalOutcome = (payload: DocumentBuild.WorkflowPayload) =>
       }
       if (Schema.is(DocumentBuild.Conflict)(failure)) {
         return DocumentBuild.Service.pipe(
-          Effect.flatMap((builds) => builds.inspectExecution(payload)),
-          Effect.flatMap((build) =>
-            DocumentBuild.terminalStates.has(build.state)
-              ? Effect.succeed(projection(build))
-              : Effect.fail(failure),
+          Effect.flatMap((builds) =>
+            builds
+              .inspectExecution(payload)
+              .pipe(
+                Effect.flatMap((build) =>
+                  DocumentBuild.terminalStates.has(build.state)
+                    ? builds.settleTerminal(build).pipe(Effect.map(projection))
+                    : Effect.fail(failure),
+                ),
+              ),
           ),
         );
       }

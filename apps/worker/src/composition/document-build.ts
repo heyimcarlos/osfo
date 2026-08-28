@@ -161,10 +161,10 @@ export const executionEffect = <Value>(
                     makeAccounting(database)
                       .recordGeneratedDocument(build, artifact, cost)
                       .pipe(Effect.mapError(documentAccountingUnavailable)),
-                  recordProviderCost: (build, cost) =>
-                    makeAccounting(database)
-                      .recordProviderCost(build, cost)
-                      .pipe(Effect.mapError(documentAccountingUnavailable)),
+                  recordProviderCost: (build, contentId, cost) =>
+                    builds
+                      .recordProviderCost(payloadFor(build), contentId, cost)
+                      .pipe(Effect.asVoid, Effect.mapError(documentAccountingUnavailable)),
                   validator: DocumentArtifactValidation,
                 });
                 const documentLayer = DocumentBuildDocument.layerWithoutDependencies.pipe(
@@ -218,9 +218,9 @@ export const controlEffect = <Value, Failure>(
   );
 
 /** Run PostgreSQL notification claims with the same product clock as the Workflow host. */
-export const followUpEffect = <Value>(
+export const followUpEffect = <Value, Error>(
   env: Pick<Bindings, "DB">,
-  effect: Effect.Effect<Value, never, DocumentBuildFollowUp.Service>,
+  effect: Effect.Effect<Value, Error, DocumentBuildFollowUp.Service>,
 ) =>
   Effect.scoped(
     Db.database.pipe(
@@ -262,15 +262,10 @@ export const makeTerminalFollowUpCommitter = (
       env,
       DocumentBuildFollowUp.Service.pipe(
         Effect.flatMap((followUps) => followUps.claimTerminal(payload)),
-        Effect.orDie,
       ),
-    );
+    ).pipe(Effect.mapError((cause) => documentBuildUnavailable("followUp.claimTerminal", cause)));
     if (claimed._tag === "NotTerminal" || claimed._tag === "Suppressed") return;
-    const result = yield* Effect.promise(() =>
-      env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).submitDocumentBuildFollowUp(
-        claimed.notification.notificationId,
-      ),
-    );
+    const result = yield* submitFollowUp(env, claimed.notification.notificationId);
     if (result._tag !== "Accepted" && result._tag !== "Replayed") {
       return yield* documentBuildUnavailable("followUp.submit", result._tag);
     }
@@ -285,20 +280,43 @@ export const makePreviewReadyFollowUpCommitter = (
       env,
       DocumentBuildFollowUp.Service.pipe(
         Effect.flatMap((followUps) => followUps.claimPreview(payloadFor(build))),
-        Effect.orDie,
       ),
-    );
+    ).pipe(Effect.mapError((cause) => documentBuildUnavailable("followUp.claimPreview", cause)));
     if (claimed._tag !== "Claimed" && claimed._tag !== "AlreadyClaimed") return;
     if (claimed.notification === null) return;
-    const notification = claimed.notification;
-    const result = yield* Effect.promise(() =>
-      env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).submitDocumentBuildFollowUp(
-        notification.notificationId,
+    const claimedNotification = claimed.notification;
+    const notification = yield* followUpEffect(
+      env,
+      DocumentBuildFollowUp.Service.pipe(
+        Effect.flatMap((followUps) => followUps.inspect(claimedNotification.notificationId)),
       ),
-    );
+    ).pipe(Effect.mapError((cause) => documentBuildUnavailable("followUp.inspectPreview", cause)));
+    if (notification === null) {
+      return yield* documentBuildUnavailable(
+        "followUp.inspectPreview",
+        claimedNotification.notificationId,
+      );
+    }
+    if (DocumentBuildFollowUp.previewSubmissionDisposition(notification) === "PromoteTerminal") {
+      return yield* makeTerminalFollowUpCommitter(env)(build);
+    }
+    const result = yield* submitFollowUp(env, notification.notificationId);
+    if (result._tag === "TerminalSuperseded") {
+      return yield* makeTerminalFollowUpCommitter(env)(build);
+    }
     if (result._tag !== "Accepted" && result._tag !== "Replayed") {
       return yield* documentBuildUnavailable("followUp.submitPreview", result._tag);
     }
+  });
+
+export const submitFollowUp = (
+  env: Pick<Bindings, "OSFO_DIRECTORY">,
+  notificationId: DocumentBuildFollowUp.NotificationId,
+) =>
+  Effect.tryPromise({
+    try: () =>
+      env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).submitDocumentBuildFollowUp(notificationId),
+    catch: (cause) => documentBuildUnavailable("followUp.directory", cause),
   });
 
 const makeFileResolver = (directory: DirectoryBinding): DocumentBuild.PortInterface["files"] => ({

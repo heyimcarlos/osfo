@@ -1,9 +1,9 @@
 import { Workflow } from "alchemy/Cloudflare";
 
-import type { DocumentBuild } from "../../apps/worker/src/services/document-build";
+import type { DocumentBuildWorkflowPayload } from "@osfo/worker/workflow-contracts";
 
 /** Parent-derived durable timer for Document Build preview and deadline guards. */
-export const DocumentBuildTimerWorkflow = Workflow<DocumentBuild.WorkflowPayload>(
+export const DocumentBuildTimerWorkflow = Workflow<DocumentBuildWorkflowPayload>(
   "DocumentBuildTimerWorkflow",
   { className: "DocumentBuildTimerWorkflow" },
 );

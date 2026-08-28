@@ -1,8 +1,7 @@
 import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { documentBuildNotifications, documentBuilds } from "@osfo/db/schema/document-builds";
-import { researchReportNotifications } from "@osfo/db/schema/research-reports";
 import { deletionCases } from "@osfo/db/schema/user-lifecycle";
-import { and, desc, eq, gt, isNotNull, notExists, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, notExists, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -23,6 +22,7 @@ import { ManagedModelRoute } from "../../domain/model-access-policy";
 import { DocumentBuild } from "../../services/document-build";
 import { DocumentBuildFollowUp } from "../../services/document-build-follow-up";
 import { DocumentBuildPostgres } from "./document-build";
+import { countWorkflowMilestones, lockWorkflowUser } from "./workflow-serialization";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transactions own PostgreSQL serialization. */
 /* oxlint-disable eslint/no-underscore-dangle, osfo/no-unknown-parameters -- Effect result tags and decoded rows are owned here. */
@@ -189,7 +189,7 @@ export const make = (database: Database): DocumentBuildFollowUp.PortInterface =>
       Effect.gen(function* () {
         const result = yield* attempt("claimPreview", () =>
           database.transaction(async (transaction) => {
-            const identity = await lockWorkflowUser(transaction, payload);
+            const identity = await lockNotificationWorkflowUser(transaction, payload);
             if (identity === null) return { _tag: "Conflict" as const };
             const [row] = await transaction
               .select({
@@ -243,33 +243,16 @@ export const make = (database: Database): DocumentBuildFollowUp.PortInterface =>
               return { _tag: "NotDue" as const };
             }
             const windowStart = new Date(now.getTime() - notificationWindowMilliseconds);
-            const [documentCount, researchCount] = await Promise.all([
-              transaction
-                .select({ count: sql<number>`count(*)::integer` })
-                .from(documentBuildNotifications)
-                .where(
-                  and(
-                    eq(documentBuildNotifications.user_id, row.userId),
-                    eq(documentBuildNotifications.kind, "previewReady"),
-                    gt(documentBuildNotifications.claimed_at, windowStart),
-                  ),
-                ),
-              transaction
-                .select({ count: sql<number>`count(*)::integer` })
-                .from(researchReportNotifications)
-                .where(
-                  and(
-                    eq(researchReportNotifications.user_id, row.userId),
-                    eq(researchReportNotifications.kind, "sourcesCollected"),
-                    gt(researchReportNotifications.claimed_at, windowStart),
-                  ),
-                ),
-            ]);
+            const milestoneCount = await countWorkflowMilestones(
+              transaction,
+              row.userId,
+              windowStart,
+            );
             await transaction
               .update(documentBuilds)
               .set({ milestone_claimed_at: now, updated_at: now })
               .where(eq(documentBuilds.workflow_id, payload.workflowId));
-            if ((documentCount[0]?.count ?? 0) + (researchCount[0]?.count ?? 0) >= milestoneLimit) {
+            if (milestoneCount >= milestoneLimit) {
               return { _tag: "Suppressed" as const };
             }
             await transaction.insert(documentBuildNotifications).values({
@@ -303,7 +286,7 @@ export const make = (database: Database): DocumentBuildFollowUp.PortInterface =>
       Effect.gen(function* () {
         const result = yield* attempt("claimTerminal", () =>
           database.transaction(async (transaction) => {
-            if ((await lockWorkflowUser(transaction, payload)) === null) {
+            if ((await lockNotificationWorkflowUser(transaction, payload)) === null) {
               return { _tag: "Conflict" as const };
             }
             const [row] = await transaction
@@ -499,7 +482,7 @@ const conflict = (
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
-const lockWorkflowUser = async (
+const lockNotificationWorkflowUser = async (
   transaction: Transaction,
   payload: DocumentBuild.WorkflowPayload,
 ) => {
@@ -509,9 +492,7 @@ const lockWorkflowUser = async (
     .where(eq(documentBuilds.workflow_id, payload.workflowId))
     .limit(1);
   if (identity === undefined || identity.inputDigest !== payload.inputDigest) return null;
-  await transaction.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`document-build:user:${identity.userId}`}, 0))`,
-  );
+  await lockWorkflowUser(transaction, identity.userId);
   return identity;
 };
 

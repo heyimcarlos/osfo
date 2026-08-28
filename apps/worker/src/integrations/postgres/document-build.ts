@@ -33,6 +33,7 @@ import {
 } from "../../services/authorization";
 import type { Denied } from "../../services/authorization";
 import type { CostEvidence } from "../../services/document-generation";
+import { countActiveWorkflows, lockWorkflowUser } from "./workflow-serialization";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transactions serialize Document Build truth. */
 /* oxlint-disable eslint/no-underscore-dangle -- Persistence outcomes use the standard Effect discriminator. */
@@ -160,13 +161,14 @@ const activeStates = [
   "running",
   "preview_stored",
   "publication_committed",
+  "cancel_requested",
 ] as const;
 
 export const make = (database: Database): DocumentBuild.PortInterface["persistence"] => ({
   admit: (record, activeWorkflowLimit) =>
     attempt("admit", () =>
       database.transaction(async (transaction) => {
-        await lock(transaction, `document-build:user:${record.userId}`);
+        await lockWorkflowUser(transaction, record.userId);
         const [existing] = await transaction
           .select(rowSelection)
           .from(documentBuilds)
@@ -185,34 +187,7 @@ export const make = (database: Database): DocumentBuild.PortInterface["persisten
           )
           .limit(1);
         if (deletion !== undefined) return { _tag: "AccessFenced" as const };
-        const [builds, reports] = await Promise.all([
-          transaction
-            .select({ id: documentBuilds.workflow_id })
-            .from(documentBuilds)
-            .where(
-              and(
-                eq(documentBuilds.user_id, record.userId),
-                inArray(documentBuilds.state, activeStates),
-              ),
-            ),
-          transaction
-            .select({ id: researchReports.workflow_id })
-            .from(researchReports)
-            .where(
-              and(
-                eq(researchReports.user_id, record.userId),
-                inArray(researchReports.state, [
-                  "admitted",
-                  "accepted",
-                  "running",
-                  "sources_committed",
-                  "artifact_stored",
-                  "publication_committed",
-                ]),
-              ),
-            ),
-        ]);
-        if (BigInt(builds.length + reports.length) >= activeWorkflowLimit) {
+        if (BigInt(await countActiveWorkflows(transaction, record.userId)) >= activeWorkflowLimit) {
           return { _tag: "CapacityExceeded" as const };
         }
         await transaction.insert(documentBuilds).values({
@@ -329,11 +304,10 @@ export const make = (database: Database): DocumentBuild.PortInterface["persisten
       if (["running", "preview_stored", "publication_committed", "success"].includes(row.state)) {
         return row.startedAt === null ? changed() : found(row);
       }
-      if (row.state !== "admitted" && row.state !== "accepted") return changed();
+      if (row.state !== "accepted" || row.acceptedAt === null) return changed();
       const [updated] = await transaction
         .update(documentBuilds)
         .set({
-          accepted_at: row.acceptedAt ?? startedAt,
           started_at: startedAt,
           state: "running",
           updated_at: startedAt,
@@ -342,7 +316,8 @@ export const make = (database: Database): DocumentBuild.PortInterface["persisten
           and(
             eq(documentBuilds.workflow_id, workflowId),
             eq(documentBuilds.input_digest, inputDigest),
-            inArray(documentBuilds.state, ["admitted", "accepted"]),
+            eq(documentBuilds.state, "accepted"),
+            isNotNull(documentBuilds.accepted_at),
           ),
         )
         .returning(rowSelection);
@@ -383,11 +358,17 @@ export const make = (database: Database): DocumentBuild.PortInterface["persisten
       async (transaction, row) => {
         const encoded = encodeCost(cost);
         if (row.accountingCommittedAt !== null || row.costEvidenceJson !== null) {
-          return row.artifactContentId === contentId && row.costEvidenceJson === encoded
+          return (row.artifactContentId === null || row.artifactContentId === contentId) &&
+            row.costEvidenceJson === encoded
             ? found(row)
             : changed();
         }
-        if (row.state !== "preview_stored" || row.artifactContentId !== contentId) return changed();
+        if (
+          row.state === "publication_committed" ||
+          row.state === "success" ||
+          (row.artifactContentId !== null && row.artifactContentId !== contentId)
+        )
+          return changed();
         const [updated] = await transaction
           .update(documentBuilds)
           .set({
@@ -399,8 +380,13 @@ export const make = (database: Database): DocumentBuild.PortInterface["persisten
             and(
               eq(documentBuilds.workflow_id, workflowId),
               eq(documentBuilds.input_digest, inputDigest),
-              eq(documentBuilds.artifact_content_id, contentId),
-              eq(documentBuilds.state, "preview_stored"),
+              inArray(documentBuilds.state, [
+                "running",
+                "preview_stored",
+                "cancel_requested",
+                "failure",
+                "canceled",
+              ]),
             ),
           )
           .returning(rowSelection);
@@ -408,36 +394,86 @@ export const make = (database: Database): DocumentBuild.PortInterface["persisten
       },
     ),
   commitPublication: (workflowId, inputDigest, contentId, committedAt) =>
-    transition(database, workflowId, inputDigest, "commitPublication", async (transaction, row) => {
-      if (row.state === "publication_committed" || row.state === "success") {
-        return row.artifactContentId === contentId ? found(row) : changed();
-      }
-      if (
-        row.state !== "preview_stored" ||
-        row.artifactContentId !== contentId ||
-        row.accountingCommittedAt === null ||
-        row.costEvidenceJson === null
-      )
-        return changed();
-      const [updated] = await transaction
-        .update(documentBuilds)
-        .set({
-          publication_committed_at: committedAt,
-          state: "publication_committed",
-          updated_at: committedAt,
-        })
-        .where(
-          and(
-            eq(documentBuilds.workflow_id, workflowId),
-            eq(documentBuilds.input_digest, inputDigest),
-            eq(documentBuilds.artifact_content_id, contentId),
-            eq(documentBuilds.state, "preview_stored"),
-            isNotNull(documentBuilds.accounting_committed_at),
-          ),
+    attempt("commitPublication", () =>
+      database.transaction(async (transaction) => {
+        const [identity] = await transaction
+          .select({ inputDigest: documentBuilds.input_digest, userId: documentBuilds.user_id })
+          .from(documentBuilds)
+          .where(eq(documentBuilds.workflow_id, workflowId))
+          .limit(1);
+        if (identity === undefined) return { _tag: "Missing" as const };
+        if (identity.inputDigest !== inputDigest) return changed();
+        await lockWorkflowUser(transaction, identity.userId);
+        await lock(transaction, workflowId);
+        const [row] = await transaction
+          .select({
+            ...rowSelection,
+            deadlineExpired: sql<boolean>`clock_timestamp() >= ${documentBuilds.deadline_at}`,
+          })
+          .from(documentBuilds)
+          .where(eq(documentBuilds.workflow_id, workflowId))
+          .for("update")
+          .limit(1);
+        if (row === undefined) return { _tag: "Missing" as const };
+        if (row.inputDigest !== inputDigest) return changed();
+        if (row.state === "publication_committed" || row.state === "success") {
+          return row.artifactContentId === contentId ? found(row) : changed();
+        }
+        if (
+          row.state !== "preview_stored" ||
+          row.artifactContentId !== contentId ||
+          row.accountingCommittedAt === null ||
+          row.costEvidenceJson === null
         )
-        .returning(rowSelection);
-      return updated === undefined ? changed() : found(updated);
-    }),
+          return changed();
+        const [deletion] = await transaction
+          .select({ id: deletionCases.deletion_case_id })
+          .from(deletionCases)
+          .where(
+            and(eq(deletionCases.user_id, row.userId), isNotNull(deletionCases.access_fenced_at)),
+          )
+          .limit(1);
+        const deadlineExpired =
+          row.deadlineExpired || committedAt.getTime() >= row.deadlineAt.getTime();
+        if (deletion !== undefined || deadlineExpired) {
+          await transaction
+            .update(documentBuilds)
+            .set({
+              safe_failure_code: deletion === undefined ? "deadline-exceeded" : "account-deletion",
+              state: "canceled",
+              terminal_at: deletion === undefined ? row.deadlineAt : committedAt,
+              updated_at: committedAt,
+            })
+            .where(
+              and(
+                eq(documentBuilds.workflow_id, workflowId),
+                eq(documentBuilds.input_digest, inputDigest),
+                eq(documentBuilds.state, "preview_stored"),
+              ),
+            );
+          return changed();
+        }
+        const [updated] = await transaction
+          .update(documentBuilds)
+          .set({
+            publication_committed_at: committedAt,
+            state: "publication_committed",
+            updated_at: committedAt,
+          })
+          .where(
+            and(
+              eq(documentBuilds.workflow_id, workflowId),
+              eq(documentBuilds.input_digest, inputDigest),
+              eq(documentBuilds.artifact_content_id, contentId),
+              eq(documentBuilds.state, "preview_stored"),
+              isNotNull(documentBuilds.accounting_committed_at),
+              sql`clock_timestamp() < ${documentBuilds.deadline_at}`,
+            ),
+          )
+          .returning(rowSelection);
+        return updated === undefined ? changed() : found(updated);
+      }),
+    ).pipe(Effect.flatMap((outcome) => decodeTransition(workflowId, "commitPublication", outcome))),
   finishSuccess: (workflowId, inputDigest, contentId, accountedAt) =>
     transition(database, workflowId, inputDigest, "finishSuccess", async (transaction, row) => {
       if (row.state === "success")
@@ -750,7 +786,7 @@ export const makeCurrentAuthorization = (
 export const quiesceForAccountDeletion = (database: Database, userId: UserId, terminalAt: Date) =>
   attempt("quiesceForAccountDeletion", () =>
     database.transaction(async (transaction) => {
-      await lock(transaction, `document-build:user:${userId}`);
+      await lockWorkflowUser(transaction, userId);
       const rows = await transaction
         .select({
           main: documentBuilds.cloudflare_instance_id,
@@ -775,7 +811,6 @@ export const quiesceForAccountDeletion = (database: Database, userId: UserId, te
               "accepted",
               "running",
               "preview_stored",
-              "publication_committed",
               "cancel_requested",
             ]),
           ),
@@ -855,27 +890,7 @@ const transition = (
       if (row.inputDigest !== inputDigest) return changed();
       return apply(transaction, row);
     }),
-  ).pipe(
-    Effect.flatMap(
-      (
-        outcome,
-      ): Effect.Effect<
-        DocumentBuild.Record,
-        DocumentBuild.Conflict | DocumentBuild.NotFound | DocumentBuild.Unavailable
-      > => {
-        if (outcome._tag === "Missing")
-          return Effect.fail(new DocumentBuild.NotFound({ workflowId }));
-        if (outcome._tag === "Conflict")
-          return Effect.fail(
-            conflict(
-              workflowId,
-              `${operation} lost to cancellation, terminal state, or changed facts`,
-            ),
-          );
-        return decodeRow(outcome.row);
-      },
-    ),
-  );
+  ).pipe(Effect.flatMap((outcome) => decodeTransition(workflowId, operation, outcome)));
 
 type Transition =
   | { readonly _tag: "Found"; readonly row: Row }
@@ -884,6 +899,23 @@ type Transition =
 
 const found = (row: Row): Transition => ({ _tag: "Found", row });
 const changed = (): Transition => ({ _tag: "Conflict" });
+
+const decodeTransition = (
+  workflowId: DocumentBuild.WorkflowId,
+  operation: string,
+  outcome: Transition,
+): Effect.Effect<
+  DocumentBuild.Record,
+  DocumentBuild.Conflict | DocumentBuild.NotFound | DocumentBuild.Unavailable
+> => {
+  if (outcome._tag === "Missing") return Effect.fail(new DocumentBuild.NotFound({ workflowId }));
+  if (outcome._tag === "Conflict") {
+    return Effect.fail(
+      conflict(workflowId, `${operation} lost to cancellation, terminal state, or changed facts`),
+    );
+  }
+  return decodeRow(outcome.row);
+};
 
 const inspectAuthority = (database: Database, build: DocumentBuild.Record, now: Date) => {
   const origin = build.originatingAuthority;
