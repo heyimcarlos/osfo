@@ -119,6 +119,9 @@ it.effect("never fetches or manifests credential-bearing discovery URLs", () => 
     discoveryUrls: [
       "https://example.com/report?access_token=private",
       "https://example.com/report?%58-Amz-Signature=private",
+      "https://example.com/report?auth_token=private",
+      "https://example.com/report?api-token=private",
+      "https://example.com/report?private_key=private",
     ],
   });
   return Effect.gen(function* () {
@@ -130,8 +133,9 @@ it.effect("never fetches or manifests credential-bearing discovery URLs", () => 
     expect(fixture.evidenceBodies).toEqual([]);
     expect(fixture.manifestWrites).toBe(0);
     const persistedSearch = fixture.resultJson.get(`${workflowId}:provider:0`) ?? "";
+    expect(persistedSearch).toContain('"results":[]');
     expect(persistedSearch).not.toContain("private");
-    expect(persistedSearch).not.toMatch(/access_token|signature/iu);
+    expect(persistedSearch).not.toMatch(/access|auth|api|private|signature|token/iu);
     expect(Array.from(fixture.operations.values()).some(({ input }) => input._tag === "Page")).toBe(
       false,
     );

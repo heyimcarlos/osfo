@@ -663,40 +663,38 @@ export const isSafePublicUrl = (value: string): boolean => {
   return !isUnsafeIpLiteral(hostname);
 };
 
-const credentialQueryKeys = new Set([
-  "accesstoken",
-  "apikey",
-  "auth",
-  "authorization",
-  "awsaccesskeyid",
-  "bearertoken",
-  "clientsecret",
-  "credential",
-  "idtoken",
-  "jwt",
-  "oauthtoken",
-  "password",
-  "refreshtoken",
-  "secret",
-  "securitytoken",
-  "sessiontoken",
-  "sig",
-  "signature",
-  "token",
-  "xamzcredential",
-  "xamzsecuritytoken",
-  "xamzsignature",
-  "xgoogcredential",
-  "xgoogsignature",
-]);
+const exactCredentialQueryKeys = new Set(["auth", "authorization", "jwt", "oauth", "sig"]);
 
-const isCredentialQueryKey = (value: string) =>
-  credentialQueryKeys.has(
-    value
-      .normalize("NFKC")
-      .toLowerCase()
-      .replaceAll(/[^a-z0-9]/gu, ""),
+const strongCredentialQueryMarkers = [
+  "token",
+  "credential",
+  "password",
+  "secret",
+  "signature",
+] as const;
+
+const credentialKeyFamilies = ["apikey", "privatekey", "accesskey", "signingkey"] as const;
+const structuredAuthQueryKeys = [
+  "authcode",
+  "authheader",
+  "authkey",
+  "authnonce",
+  "authparam",
+  "oauth",
+] as const;
+
+const isCredentialQueryKey = (value: string) => {
+  const normalized = value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]/gu, "");
+  return (
+    exactCredentialQueryKeys.has(normalized) ||
+    strongCredentialQueryMarkers.some((marker) => normalized.includes(marker)) ||
+    credentialKeyFamilies.some((family) => normalized.includes(family)) ||
+    structuredAuthQueryKeys.some((family) => normalized.startsWith(family))
   );
+};
 
 const isUnsafeIpLiteral = (hostname: string) => {
   const normalized =

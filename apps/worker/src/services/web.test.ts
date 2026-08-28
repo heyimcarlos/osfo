@@ -23,6 +23,14 @@ describe("Web", () => {
     const credentialKeys = [
       "access_token",
       "%61ccess_token",
+      "auth_token",
+      "auth_code",
+      "%61uth_token",
+      "api-token",
+      "private_key",
+      "PrIvAtE_KeY",
+      "signing-key",
+      "access_key_id",
       "TOKEN",
       "api_key",
       "apikey",
@@ -43,7 +51,9 @@ describe("Web", () => {
     for (const key of credentialKeys) {
       expect(isSafePublicUrl(`https://example.com/report?${key}=retained-secret`)).toBe(false);
     }
-    expect(isSafePublicUrl("https://example.com/report?topic=public+policy&page=2")).toBe(true);
+    for (const key of ["topic", "page", "query", "sort", "filter", "locale"]) {
+      expect(isSafePublicUrl(`https://example.com/report?${key}=public`)).toBe(true);
+    }
   });
 
   it.effect("keeps ranked result identities stable and grounds search in fetched pages", () =>
