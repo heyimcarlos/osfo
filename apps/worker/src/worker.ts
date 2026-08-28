@@ -9,6 +9,7 @@ import { DocumentCostReconciliation } from "./document-cost-reconciliation";
 import { DocumentBuildHostReconciliation } from "./document-build-host-reconciliation";
 import { makeWhatsAppAdapter } from "./integrations/whatsapp";
 import { WhatsAppWakeUpComposition } from "./composition/whatsapp-wakeups";
+import { settleScheduledBranches } from "./scheduled-lifecycle";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Cloudflare RPC tags and adapter boundaries require these forms. */
 
@@ -76,13 +77,13 @@ const worker = {
     try {
       const config = loadConfig(env);
       context.waitUntil(
-        Promise.all([
-          App.expireChannelLinkInvites(env),
-          App.reconcileAccountDeletions(env),
-          DocumentBuildHostReconciliation.run(env),
-          DocumentCostReconciliation.run(env),
-          WhatsAppWakeUpComposition.drainScheduled(env, config),
-        ]).then(() => undefined),
+        settleScheduledBranches([
+          () => App.expireChannelLinkInvites(env).then(() => undefined),
+          () => App.reconcileAccountDeletions(env).then(() => undefined),
+          () => DocumentBuildHostReconciliation.run(env).then(() => undefined),
+          () => DocumentCostReconciliation.run(env).then(() => undefined),
+          () => WhatsAppWakeUpComposition.drainScheduled(env, config).then(() => undefined),
+        ]),
       );
     } catch (error) {
       if (Schema.is(WorkerConfigurationError)(error)) logConfigurationError(error);

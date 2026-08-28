@@ -71,7 +71,7 @@ it.effect("preserves completed incurred evidence and its ownership marker", () =
   });
 });
 
-it.effect("removes claimed no-use evidence and its ownership marker", () => {
+it.effect("retains a discarded tombstone and removes the claimed owner marker", () => {
   const fixture = bucketFixture();
   const store = makeAttemptEvidenceStore(fixture.bucket);
   return Effect.gen(function* () {
@@ -82,7 +82,12 @@ it.effect("removes claimed no-use evidence and its ownership marker", () => {
     expect(yield* settleAttemptEvidenceForTerminalCleanup(fixture.bucket, contentId, userId)).toBe(
       "discarded",
     );
-    expect(fixture.objects.has(attemptKeyFor(contentId))).toBe(false);
+    expect((yield* Effect.promise(() => store.inspect(contentId)))?.status).toBe("discarded");
+    expect(
+      yield* Effect.promise(() =>
+        store.claim(contentId, intentDigest, cost, Date.now() + 60_000, userId),
+      ),
+    ).toEqual({ _tag: "Discarded" });
     expect(fixture.objects.has(ownerKeyFor(userId, contentId))).toBe(false);
   });
 });
@@ -123,11 +128,11 @@ it.effect("prevents provider start after cleanup wins the claimed revision", () 
         store.start(contentId, { ...claimed.evidence, status: "started" }, claimed.revision),
       ),
     ).toBeNull();
-    expect(fixture.objects.has(attemptKeyFor(contentId))).toBe(false);
+    expect((yield* Effect.promise(() => store.inspect(contentId)))?.status).toBe("discarded");
   });
 });
 
-it.effect("removes an orphan ownership marker created before an attempt claim", () => {
+it.effect("creates a durable tombstone when cleanup finds only an orphan owner", () => {
   const fixture = bucketFixture();
   return Effect.gen(function* () {
     yield* Effect.promise(() => DocumentOwnershipIndex.ensure(fixture.bucket, userId, contentId));
@@ -135,6 +140,27 @@ it.effect("removes an orphan ownership marker created before an attempt claim", 
     expect(yield* settleAttemptEvidenceForTerminalCleanup(fixture.bucket, contentId, userId)).toBe(
       "discarded",
     );
+    expect(
+      (yield* Effect.promise(() => makeAttemptEvidenceStore(fixture.bucket).inspect(contentId)))
+        ?.status,
+    ).toBe("discarded");
+    expect(fixture.objects.has(ownerKeyFor(userId, contentId))).toBe(false);
+  });
+});
+
+it.effect("keeps an absent-at-cleanup tombstone across a late fresh claim", () => {
+  const fixture = bucketFixture();
+  const store = makeAttemptEvidenceStore(fixture.bucket);
+  return Effect.gen(function* () {
+    expect(yield* settleAttemptEvidenceForTerminalCleanup(fixture.bucket, contentId, userId)).toBe(
+      "discarded",
+    );
+    expect(
+      yield* Effect.promise(() =>
+        store.claim(contentId, intentDigest, cost, Date.now() + 60_000, userId),
+      ),
+    ).toEqual({ _tag: "Discarded" });
+    expect((yield* Effect.promise(() => store.inspect(contentId)))?.status).toBe("discarded");
     expect(fixture.objects.has(ownerKeyFor(userId, contentId))).toBe(false);
   });
 });

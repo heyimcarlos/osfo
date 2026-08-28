@@ -21,15 +21,23 @@ import {
 import { attemptKeyFor, ownerKeyFor } from "./document-storage-keys";
 import { DocumentOwnershipIndex } from "./document-ownership-index";
 
-export interface AttemptEvidence {
+export interface ActiveAttemptEvidence {
   readonly cost: Extract<CostEvidence, { _tag: "Incurred" }>;
   readonly executionLeaseExpiresAt: number;
   /** Digest of the immutable document intent that owns this attempt. */
   readonly intentDigest: DocumentIntentDigest;
   readonly renderedPageCount: number | null;
-  readonly status: "claimed" | "started" | "completed" | "discarded";
+  readonly status: "claimed" | "started" | "completed";
   readonly userId?: UserId;
 }
+
+export interface DiscardedAttemptEvidence {
+  readonly cost: Extract<CostEvidence, { _tag: "ProvenNoUse" }>;
+  readonly status: "discarded";
+  readonly userId: UserId;
+}
+
+export type AttemptEvidence = ActiveAttemptEvidence | DiscardedAttemptEvidence;
 
 /** Expected failure when durable attempt evidence cannot be reconciled. */
 export class DocumentAttemptEvidenceUnavailable extends Schema.TaggedError<DocumentAttemptEvidenceUnavailable>()(
@@ -42,14 +50,14 @@ export interface AttemptEvidenceStore {
   readonly claim: (
     contentId: ContentId,
     intentDigest: DocumentIntentDigest,
-    cost: AttemptEvidence["cost"],
+    cost: ActiveAttemptEvidence["cost"],
     executionLeaseExpiresAt: number,
     userId: UserId,
   ) => Promise<
     | {
         readonly _tag: "Claimed";
         readonly created: boolean;
-        readonly evidence: AttemptEvidence;
+        readonly evidence: ActiveAttemptEvidence;
         readonly revision: string;
       }
     | { readonly _tag: "Discarded" }
@@ -57,7 +65,7 @@ export interface AttemptEvidenceStore {
   >;
   readonly complete: (
     contentId: ContentId,
-    evidence: AttemptEvidence & {
+    evidence: ActiveAttemptEvidence & {
       readonly renderedPageCount: number;
       readonly status: "completed";
     },
@@ -66,12 +74,12 @@ export interface AttemptEvidenceStore {
   readonly inspect: (contentId: ContentId) => Promise<AttemptEvidence | null>;
   readonly reclaim: (
     contentId: ContentId,
-    evidence: AttemptEvidence & { readonly status: "claimed" },
+    evidence: ActiveAttemptEvidence & { readonly status: "claimed" },
     revision: string,
   ) => Promise<string | null>;
   readonly start: (
     contentId: ContentId,
-    evidence: AttemptEvidence & { readonly status: "started" },
+    evidence: ActiveAttemptEvidence & { readonly status: "started" },
     revision: string,
   ) => Promise<string | null>;
 }
@@ -184,6 +192,7 @@ export const makeWithSandbox = (
     }).pipe(
       Effect.flatMap((evidence) => {
         if (evidence === null) return Effect.succeed(null);
+        if (evidence.status === "discarded") return Effect.succeed(null);
         if (evidence.intentDigest !== intentDigest) {
           return Effect.fail(
             new DocumentIntentConflict({
@@ -320,7 +329,11 @@ const render = async (
     if (evidence.status === "claimed") {
       const startAuthorizationFailure = await authorizeWrite();
       if (startAuthorizationFailure !== null) {
-        return { _tag: "AuthorizationFailure", cost, failure: startAuthorizationFailure };
+        return {
+          _tag: "AuthorizationFailure",
+          cost: { _tag: "ProvenNoUse" },
+          failure: startAuthorizationFailure,
+        };
       }
       const started = await attempts.start(
         input.contentId,
@@ -330,7 +343,7 @@ const render = async (
       if (started === null) {
         return {
           _tag: "AttemptPending",
-          cost,
+          cost: { _tag: "ProvenNoUse" },
           evidence: "Another caller owns the atomic Sandbox execution transition",
         };
       }
@@ -444,21 +457,28 @@ const adaptSandbox = (sandbox: Sandbox): SandboxClient => ({
 });
 
 const AttemptEvidenceMetadata = Schema.fromJsonString(
-  Schema.Struct({
-    cost: Schema.TaggedStruct("Incurred", {
-      allowancePeriodId: AllowancePeriodId,
-      basis: Schema.Literals(["conservative", "observed"]),
-      providerOperationId: Schema.String.check(Schema.isMinLength(1)),
-      usdMicros: Schema.BigIntFromString,
+  Schema.Union([
+    Schema.Struct({
+      cost: Schema.TaggedStruct("ProvenNoUse", {}),
+      status: Schema.Literal("discarded"),
+      userId: UserId,
     }),
-    executionLeaseExpiresAt: Schema.Int,
-    intentDigest: DocumentIntentDigest,
-    renderedPageCount: Schema.NullOr(
-      Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(20)),
-    ),
-    status: Schema.Literals(["claimed", "started", "completed", "discarded"]),
-    userId: Schema.optionalKey(UserId),
-  }),
+    Schema.Struct({
+      cost: Schema.TaggedStruct("Incurred", {
+        allowancePeriodId: AllowancePeriodId,
+        basis: Schema.Literals(["conservative", "observed"]),
+        providerOperationId: Schema.String.check(Schema.isMinLength(1)),
+        usdMicros: Schema.BigIntFromString,
+      }),
+      executionLeaseExpiresAt: Schema.Int,
+      intentDigest: DocumentIntentDigest,
+      renderedPageCount: Schema.NullOr(
+        Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(20)),
+      ),
+      status: Schema.Literals(["claimed", "started", "completed"]),
+      userId: Schema.optionalKey(UserId),
+    }),
+  ]),
 );
 
 const DocumentRendererInput = Schema.fromJsonString(
@@ -518,7 +538,7 @@ const incurred = (
   usdMicros: conservativeVendorUsdMicros,
 });
 
-const interrupted = (cost: AttemptEvidence["cost"], evidence: string): ComputeResult => ({
+const interrupted = (cost: ActiveAttemptEvidence["cost"], evidence: string): ComputeResult => ({
   _tag: "Interrupted",
   cost,
   evidence,
@@ -556,10 +576,13 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
       throw new Error("Durable document attempt evidence is missing");
     }
     const evidence = decodeAttemptEvidence(encoded);
+    if (evidence.status === "discarded") {
+      await bucket.delete(ownerKeyFor(userId, contentId));
+      return evidence.userId === userId ? { _tag: "Discarded" } : { _tag: "IntentConflict" };
+    }
     if (evidence.intentDigest !== intentDigest) {
       return { _tag: "IntentConflict" };
     }
-    if (evidence.status === "discarded") return { _tag: "Discarded" };
     return {
       _tag: "Claimed",
       created: false,
@@ -632,6 +655,17 @@ export const settleAttemptEvidenceForTerminalCleanup = (
           }
         }
         if (attempt === null) {
+          const discarded = await bucket.put(attemptKey, new Uint8Array(), {
+            customMetadata: {
+              osfo: encodeAttemptEvidence({
+                cost: { _tag: "ProvenNoUse" },
+                status: "discarded",
+                userId,
+              }),
+            },
+            onlyIf: { etagDoesNotMatch: "*" },
+          });
+          if (discarded === null) continue;
           await bucket.delete(ownerKey);
           return "discarded" as const;
         }
@@ -644,17 +678,21 @@ export const settleAttemptEvidenceForTerminalCleanup = (
           return "preserved" as const;
         }
         if (evidence.status === "discarded") {
-          await bucket.delete([attemptKey, ownerKey]);
+          await bucket.delete(ownerKey);
           return "discarded" as const;
         }
         const discarded = await bucket.put(attemptKey, new Uint8Array(), {
           customMetadata: {
-            osfo: encodeAttemptEvidence({ ...evidence, status: "discarded" }),
+            osfo: encodeAttemptEvidence({
+              cost: { _tag: "ProvenNoUse" },
+              status: "discarded",
+              userId,
+            }),
           },
           onlyIf: { etagMatches: attempt.etag },
         });
         if (discarded !== null) {
-          await bucket.delete([attemptKey, ownerKey]);
+          await bucket.delete(ownerKey);
           return "discarded" as const;
         }
         // A compute claimant won the revision race. Re-read before deciding whether evidence is

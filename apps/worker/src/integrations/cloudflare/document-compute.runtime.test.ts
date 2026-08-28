@@ -12,7 +12,7 @@ import {
 import {
   makeWithSandbox,
   sandboxIdFor,
-  type AttemptEvidence,
+  type ActiveAttemptEvidence,
   type AttemptEvidenceStore,
   type SandboxClient,
 } from "./document-compute";
@@ -99,10 +99,79 @@ it.effect("rechecks protected-effect authority before every attempt-evidence R2 
         Effect.sync(() => {
           expect(result).toMatchObject({
             _tag: "AuthorizationFailure",
+            cost: { _tag: "Incurred" },
             failure: { _tag: "Denied", reason: "authorityRevoked" },
           });
           expect(events).toEqual(["authorize:1", "claim", "authorize:2", "start", "authorize:3"]);
           expect(events).not.toContain("complete");
+        }),
+      ),
+    );
+});
+
+it.effect("reports proven no use when authority ends before the atomic start transition", () => {
+  const events: Array<string> = [];
+  let authorizationChecks = 0;
+  const evidence = attemptEvidence({
+    executionLeaseExpiresAt: Number.MAX_SAFE_INTEGER,
+    status: "claimed",
+  });
+  const attempts: AttemptEvidenceStore = {
+    claim: async () => {
+      events.push("claim");
+      return { _tag: "Claimed", created: true, evidence, revision: "revision-1" };
+    },
+    complete: async () => true,
+    inspect: async () => null,
+    reclaim: async () => null,
+    start: async () => {
+      events.push("start");
+      return "revision-2";
+    },
+  };
+  let providerExecutions = 0;
+  const sandbox: SandboxClient = {
+    destroy: async () => undefined,
+    exec: async () => {
+      providerExecutions += 1;
+      return { exitCode: 0, stdout: '{"renderedPageCount":1}', success: true };
+    },
+    exists: async () => ({ exists: false }),
+    readStream: async () => ({ content: new ReadableStream<Uint8Array>(), size: 0 }),
+    readText: async () => "",
+    writeFile: async () => undefined,
+  };
+  const compute = makeWithSandbox(() => sandbox, attempts, 50_000n);
+
+  return compute
+    .generate({
+      allowancePeriodId: testAllowancePeriodId,
+      authorizeWrite: Effect.suspend(() => {
+        authorizationChecks += 1;
+        return authorizationChecks === 1
+          ? Effect.void
+          : Effect.fail({
+              _tag: "Denied" as const,
+              reason: "authorityRevoked" as const,
+              resetAt: null,
+            });
+      }),
+      contentId: testContentId,
+      format: "pdf",
+      intentDigest: testIntentDigest,
+      source: DocumentSource.make({ pages: [{ lines: ["hello"], title: "Title" }] }),
+      supportingVisuals: [],
+      userId: testUserId,
+    })
+    .pipe(
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          expect(result).toMatchObject({
+            _tag: "AuthorizationFailure",
+            cost: { _tag: "ProvenNoUse" },
+          });
+          expect(events).toEqual(["claim"]);
+          expect(providerExecutions).toBe(0);
         }),
       ),
     );
@@ -200,8 +269,8 @@ const testIntentDigest = DocumentIntentDigest.make("a".repeat(64));
 const testUserId = UserId.make("user-1");
 
 const attemptEvidence = (
-  input: Pick<AttemptEvidence, "executionLeaseExpiresAt" | "status">,
-): AttemptEvidence => ({
+  input: Pick<ActiveAttemptEvidence, "executionLeaseExpiresAt" | "status">,
+): ActiveAttemptEvidence => ({
   cost: {
     _tag: "Incurred",
     allowancePeriodId: testAllowancePeriodId,
@@ -217,7 +286,7 @@ const attemptEvidence = (
 });
 
 const recoveryFixture = (
-  initialEvidence: AttemptEvidence | null,
+  initialEvidence: ActiveAttemptEvidence | null,
   options: {
     readonly completeFailures?: number;
     readonly completeLoses?: boolean;
