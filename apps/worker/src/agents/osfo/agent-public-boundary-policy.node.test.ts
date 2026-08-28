@@ -37,6 +37,7 @@ const publicBoundaryPolicy = {
   deliverReminder: ["cancellationReconciliationDeletion", "accountDeletionFence"],
   exposeReminderWakeUpSources: ["cancellationReconciliationDeletion", "none"],
   getActions: ["read", "none"],
+  getAIBinding: ["read", "none"],
   getModel: ["read", "none"],
   getSystemPrompt: ["read", "none"],
   getTools: ["read", "none"],
