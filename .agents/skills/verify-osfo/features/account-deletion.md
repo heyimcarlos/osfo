@@ -9,6 +9,7 @@ Account deletion permanently removes the authenticated User's account and User-s
 - User-scoped Supermemory container deletion;
 - whole Agent registry and facet deletion, observed through the production Directory RPC;
 - R2 deletion of a run-owned trusted-evidence object under the User prefix;
+- deletion of any Research Report product, provider-operation, notification, source, synthesis, and artifact obligations completed earlier in the same run;
 - PostgreSQL deletion of the User, session, Agent route, Channel Link, billing, allowance, and pending Deletion Case;
 - survival of unrelated provider and R2 sentinels.
 

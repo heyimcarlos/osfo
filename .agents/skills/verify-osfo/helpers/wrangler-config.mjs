@@ -46,6 +46,7 @@ config.vars = {
   BETTER_AUTH_SECRET: "test-only-better-auth-secret-32-characters",
   BETTER_AUTH_TRUSTED_ORIGINS: JSON.stringify([webOrigin]),
   OSFO_STAGE: "test",
+  RESEARCH_REPORT_PROVIDER_BASE_URL: providerOrigin,
   STRIPE_ADVENTURER_PRICE_ID: "price_adventurer",
   STRIPE_ADVENTURER_PRODUCT_ID: "prod_adventurer",
   STRIPE_API_BASE_URL: providerOrigin,

@@ -11,6 +11,34 @@ it("rejects a malformed nonempty Company Conversation daily limit", () => {
   );
 });
 
+it("admits only an explicit loopback Research provider in test or development", () => {
+  expect(
+    loadConfig({
+      ...env,
+      OSFO_STAGE: "test",
+      RESEARCH_REPORT_PROVIDER_BASE_URL: "http://127.0.0.1:43123",
+    }).researchReportProvider,
+  ).toEqual({ _tag: "LocalVerification", baseURL: "http://127.0.0.1:43123/" });
+  expect(() =>
+    loadConfig({
+      ...env,
+      OSFO_STAGE: "production",
+      RESEARCH_REPORT_PROVIDER_BASE_URL: "http://127.0.0.1:43123",
+    }),
+  ).toThrowError(
+    "Worker configuration is invalid: RESEARCH_REPORT_PROVIDER_BASE_URL is restricted to local verification",
+  );
+  expect(() =>
+    loadConfig({
+      ...env,
+      OSFO_STAGE: "test",
+      RESEARCH_REPORT_PROVIDER_BASE_URL: "https://provider.example.com",
+    }),
+  ).toThrowError(
+    "Worker configuration is invalid: RESEARCH_REPORT_PROVIDER_BASE_URL must use a loopback host",
+  );
+});
+
 it("keeps WhatsApp Wake-up inactive unless the exact policy attestation is present", () => {
   const configuredEnv: CloudflareEnv = env;
   const {

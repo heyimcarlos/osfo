@@ -1,9 +1,11 @@
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
+/* oxlint-disable effecttsgo/global-fetch-in-effect, effecttsgo/prefer-schema-over-json -- The composed journey intentionally drives raw hosted-browser and Worker HTTP boundaries. */
+
 import { spawnApp } from "../support/spawn-app";
 
-it.effect("starts Adventurer Checkout for a newly registered User", () =>
+it.effect("activates Adventurer through hosted Checkout return reconciliation", () =>
   Effect.gen(function* () {
     const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
       Effect.promise(client.dispose),
@@ -20,7 +22,11 @@ it.effect("starts Adventurer Checkout for a newly registered User", () =>
 
     const checkout = yield* Effect.promise(app.billing.checkout);
     expect(checkout.response.status).toBe(200);
-    expect(checkout.body).toEqual({ url: "https://checkout.stripe.test/cs_test_emulated" });
+    expect(checkout.body).toEqual({
+      url: expect.stringMatching(
+        /^http:\/\/127\.0\.0\.1:\d+\/_local\/stripe\/checkout\/cs_test_emulated$/u,
+      ),
+    });
 
     const stored = yield* Effect.promise(() => app.database.billingCheckout(identity.userId));
     expect(stored).toMatchObject({
@@ -52,6 +58,37 @@ it.effect("starts Adventurer Checkout for a newly registered User", () =>
         "metadata[userId]": identity.userId,
         mode: "subscription",
       },
+    });
+    if (checkout.body === undefined) throw new Error("Checkout did not return its hosted URL");
+    const checkoutUrl = checkout.body.url;
+
+    const hosted = yield* Effect.promise(() => fetch(checkoutUrl));
+    expect(hosted.status).toBe(200);
+    expect(yield* Effect.promise(() => hosted.text())).toContain("Complete verification checkout");
+
+    const completed = yield* Effect.promise(() =>
+      fetch(checkoutUrl, { method: "POST", redirect: "manual" }),
+    );
+    expect(completed.status).toBe(303);
+    expect(completed.headers.get("location")).toContain(
+      "/settings/billing?source=checkout&session_id=cs_test_emulated",
+    );
+
+    const reconciliation = yield* Effect.promise(() =>
+      app.fetch("/v1/billing/reconcile", {
+        body: JSON.stringify({
+          reason: "checkoutReturn",
+          stripeCheckoutSessionId: "cs_test_emulated",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
+    expect(reconciliation.status).toBe(200);
+    expect(yield* Effect.promise(() => reconciliation.json())).toEqual({ result: "activated" });
+    expect(yield* Effect.promise(() => app.database.registration(identity.userId))).toMatchObject({
+      allowance_plan: "adventurer",
+      billing_plan: "adventurer",
     });
   }),
 );

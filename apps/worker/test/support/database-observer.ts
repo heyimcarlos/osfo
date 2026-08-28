@@ -185,7 +185,13 @@ const findRegistration = async (options: DatabaseObserverOptions, userId: string
       from users
       join agents on agents.user_id = users.id
       join billing_subscriptions on billing_subscriptions.user_id = users.id
-      join allowance_periods on allowance_periods.user_id = users.id
+      join lateral (
+        select allowance_periods.plan
+        from allowance_periods
+        where allowance_periods.user_id = users.id
+        order by allowance_periods.starts_at desc
+        limit 1
+      ) allowance_periods on true
       where users.id = ${userId}
     `;
     return row;

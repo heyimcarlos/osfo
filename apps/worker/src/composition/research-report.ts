@@ -1,7 +1,7 @@
 import { DateTime, Effect, Layer } from "effect";
 
 import type { Database } from "@osfo/db";
-import type { CloudflareEnv } from "../config";
+import { loadConfig, type CloudflareEnv, type ResearchReportProviderConfig } from "../config";
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { Db } from "../db";
 import { BillingDb } from "../db/billing";
@@ -10,12 +10,7 @@ import { DocumentArtifactValidation } from "../integrations/cloudflare/document-
 import { DocumentArtifacts } from "../integrations/cloudflare/document-artifacts";
 import { ResearchSourceEvidence } from "../integrations/cloudflare/research-source-evidence";
 import { ResearchSynthesisEvidence } from "../integrations/cloudflare/research-synthesis-evidence";
-import { ResearchSynthesisProvider } from "../integrations/cloudflare/research-synthesis-provider";
-import {
-  hasRecognizedWebSearchPrice,
-  makeDiscovery,
-  makePageFetch,
-} from "../integrations/cloudflare/web";
+import { ResearchVerificationProvider } from "../integrations/cloudflare/research-verification-provider";
 import { ResearchCollectorPostgres } from "../integrations/postgres/research-collector";
 import { ResearchReportPostgres } from "../integrations/postgres/research-report";
 import { ResearchReportFollowUpPostgres } from "../integrations/postgres/research-report-follow-up";
@@ -53,6 +48,7 @@ export interface Bindings {
   readonly OSFO_DIRECTORY: Env["OSFO_DIRECTORY"];
   readonly RESEARCH_REPORT_WORKFLOW: WorkflowBinding;
   readonly RESEARCH_REPORT_TIMER_WORKFLOW: WorkflowBinding;
+  readonly researchReportProvider: ResearchReportProviderConfig;
   readonly WEBSEARCH: Pick<WebSearch, "search">;
 }
 
@@ -143,6 +139,7 @@ export const serviceLayer = (
   binding: WorkflowBinding,
   timerBinding: WorkflowBinding,
   commitTerminalFollowUp: ResearchReport.PortInterface["commitTerminalFollowUp"],
+  providerAvailable = false,
 ) => {
   const portLayer = Layer.effect(
     ResearchReport.Port,
@@ -152,7 +149,7 @@ export const serviceLayer = (
           currentAuthorization: ResearchReportPostgres.makeCurrentAuthorization(database),
           commitTerminalFollowUp,
           persistence: ResearchReportPostgres.make(database),
-          providerAvailable: Effect.succeed(hasRecognizedWebSearchPrice),
+          providerAvailable: Effect.succeed(providerAvailable),
           recordWorkflowStart: makeWorkflowStartRecorder(database),
           workflow: makeWorkflowPort(binding, timerBinding),
         }),
@@ -187,6 +184,7 @@ export const executionEffect = <Value>(
           );
         return result._tag;
       }),
+      ResearchVerificationProvider.isAvailable(env.researchReportProvider),
     );
     return yield* Effect.gen(function* () {
       const reports = yield* ResearchReport.Service;
@@ -200,8 +198,11 @@ export const executionEffect = <Value>(
           ),
         persistence: ResearchCollectorPostgres.make(database),
         provider: {
-          discover: makeDiscovery(env.WEBSEARCH),
-          fetchPage: makePageFetch(),
+          discover: ResearchVerificationProvider.selectDiscovery(
+            env.researchReportProvider,
+            env.WEBSEARCH,
+          ),
+          fetchPage: ResearchVerificationProvider.selectPageFetch(env.researchReportProvider),
         },
         sourceEvidence: ResearchSourceEvidence.make(env.FILES),
       });
@@ -212,7 +213,7 @@ export const executionEffect = <Value>(
         authorize: collectorPort.authorize,
         evidence: ResearchSynthesisEvidence.make(env.FILES),
         persistence: ResearchSynthesisPostgres.make(database),
-        provider: ResearchSynthesisProvider.make(env.AI),
+        provider: ResearchVerificationProvider.selectSynthesis(env.researchReportProvider, env.AI),
         recordCompanyCost: makeSynthesisCostRecorder(database),
       });
       const synthesisLayer = ResearchSynthesis.layerWithoutDependencies.pipe(
@@ -262,8 +263,9 @@ export const serviceLayerFromDatabase = (
   database: Database,
   timerBinding: WorkflowBinding,
   commitTerminalFollowUp: ResearchReport.PortInterface["commitTerminalFollowUp"],
+  providerAvailable = false,
 ) =>
-  serviceLayer(binding, timerBinding, commitTerminalFollowUp).pipe(
+  serviceLayer(binding, timerBinding, commitTerminalFollowUp, providerAvailable).pipe(
     Layer.provide(Db.layerFromDatabase(database)),
   );
 
@@ -305,6 +307,7 @@ export const controlEffect = <Value, Failure>(
               database,
               env.RESEARCH_REPORT_TIMER_WORKFLOW,
               makeTerminalFollowUpCommitter(database, submit),
+              ResearchVerificationProvider.isAvailable(env.researchReportProvider),
             ),
           ),
         ),
@@ -323,6 +326,7 @@ export const bindingsFromEnv = (env: CloudflareEnv): Bindings => ({
   OSFO_DIRECTORY: env.OSFO_DIRECTORY,
   RESEARCH_REPORT_WORKFLOW: env.RESEARCH_REPORT_WORKFLOW,
   RESEARCH_REPORT_TIMER_WORKFLOW: env.RESEARCH_REPORT_TIMER_WORKFLOW,
+  researchReportProvider: loadConfig(env).researchReportProvider,
   WEBSEARCH: env.WEBSEARCH,
 });
 

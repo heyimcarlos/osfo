@@ -75,11 +75,7 @@ import { IntegrationComposition } from "../../composition/integrations";
 import { Db } from "../../db";
 import { BillingDb } from "../../db/billing";
 import { decodeOsfoStage, loadConfig } from "../../config";
-import {
-  hasRecognizedWebSearchPrice,
-  makeDiscovery,
-  makePageFetch,
-} from "../../integrations/cloudflare/web";
+import { ResearchVerificationProvider } from "../../integrations/cloudflare/research-verification-provider";
 import { ChannelLinkAuthorizationPostgres } from "../../integrations/postgres/channel-link-authorization";
 import { SessionRecallAuthorizationPostgres } from "../../integrations/postgres/session-recall-authorization";
 import { ResearchReportPostgres } from "../../integrations/postgres/research-report";
@@ -904,11 +900,15 @@ export class OsfoAgent extends Think<Env> {
   };
   #activeCapabilityMetadata: ManagedTurnMetadata | undefined;
   #activeRequestText = "";
+  readonly #researchReportProvider = loadConfig(this.env).researchReportProvider;
   readonly #webState = makeWebState(this.#db);
   readonly #web = Web.make({
     authorize: (request) => this.#authorizeWeb(request),
-    discover: makeDiscovery(this.env.WEBSEARCH),
-    fetchPage: makePageFetch(),
+    discover: ResearchVerificationProvider.selectDiscovery(
+      this.#researchReportProvider,
+      this.env.WEBSEARCH,
+    ),
+    fetchPage: ResearchVerificationProvider.selectPageFetch(this.#researchReportProvider),
     // oxlint-disable-next-line effecttsgo/crypto-random-uuid -- Durable opaque result identities cross the Effect-free AI Tool boundary.
     makeId: () => crypto.randomUUID(),
     now: Effect.sync(() => new Date()),
@@ -1174,6 +1174,13 @@ export class OsfoAgent extends Think<Env> {
   /** Resolve a safe model before trusted per-turn metadata selects the exact managed route. */
   override getModel() {
     return launchModelAccessPolicy.plans.free.route;
+  }
+
+  /** Keep the verification model boundary local without weakening production AI bindings. */
+  override getAIBinding() {
+    return this.#researchReportProvider._tag === "LocalVerification"
+      ? ResearchVerificationProvider.makeAiBinding(this.#researchReportProvider)
+      : super.getAIBinding();
   }
 
   /** Speak with the shared Osfo persona from the registered personal partition. */
@@ -1528,7 +1535,9 @@ export class OsfoAgent extends Think<Env> {
         "session-history",
         "skill-store",
         "workflow-store",
-        ...(hasRecognizedWebSearchPrice ? (["web-provider"] as const) : []),
+        ...(ResearchVerificationProvider.isAvailable(this.#researchReportProvider)
+          ? (["web-provider"] as const)
+          : []),
       ],
       availableToolNames: Object.keys(tools),
     } as const;
@@ -1770,7 +1779,7 @@ export class OsfoAgent extends Think<Env> {
   }
 
   #authorizeWeb(request: AuthorizationRequest) {
-    if (!hasRecognizedWebSearchPrice) {
+    if (!ResearchVerificationProvider.isAvailable(this.#researchReportProvider)) {
       return Effect.fail(
         new WebUnavailable({
           message: "Public-web provider pricing is not yet recognized for Plan Usage.",
