@@ -101,16 +101,15 @@ export const makeFileCompute = (sandboxFor: (taskId: string) => FileTaskSandbox)
               failure.kind === "task_rejected"
                 ? failure
                 : readResult(sandbox).pipe(
-                    Effect.mapError((reconciliationFailure) =>
-                      reconciliationFailure.kind === "task_rejected"
-                        ? reconciliationFailure
-                        : new FileComputeFailed({
-                            basis: "conservative",
-                            kind: "dependency_unavailable",
-                            message: "Sandbox normalization outcome could not be reconciled",
-                            reason: "parser_failure",
-                            vendorUsdMicros: input.conservativeVendorUsdMicros,
-                          }),
+                    Effect.mapError(
+                      () =>
+                        new FileComputeFailed({
+                          basis: "conservative",
+                          kind: "dependency_unavailable",
+                          message: "Sandbox normalization outcome could not be reconciled",
+                          reason: "parser_failure",
+                          vendorUsdMicros: input.conservativeVendorUsdMicros,
+                        }),
                     ),
                   ),
             ),

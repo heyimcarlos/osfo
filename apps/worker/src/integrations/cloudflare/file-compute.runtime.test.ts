@@ -146,3 +146,34 @@ it.effect("keeps malformed normalization output as a non-retryable task rejectio
     });
   }),
 );
+
+it.effect("keeps malformed reconciliation after an exec rejection retryable", () =>
+  Effect.gen(function* () {
+    const compute = makeFileCompute(() => ({
+      destroy: async () => undefined,
+      exec: async () => Promise.reject(new Error("Sandbox execution acknowledgement was lost")),
+      readFile: async () => ({ content: "truncated task JSON" }),
+      writeFile: async () => undefined,
+    }));
+
+    expect(
+      yield* compute
+        .normalize({
+          bytes: new TextEncoder().encode("valid UTF-8 source"),
+          conservativeVendorUsdMicros: 30_000n,
+          limits: launchFileComputeLimits,
+          mediaType: "text/plain",
+          sha256: FileDigest.make(`sha256:${"a".repeat(64)}`),
+          taskScope: "ambiguous-malformed-reconciliation",
+        })
+        .pipe(Effect.result),
+    ).toMatchObject({
+      failure: {
+        basis: "conservative",
+        kind: "dependency_unavailable",
+        reason: "parser_failure",
+        vendorUsdMicros: 30_000n,
+      },
+    });
+  }),
+);
