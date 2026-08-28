@@ -156,6 +156,7 @@ export interface PortInterface {
   ) => Effect.Effect<AuthorizationContext, Unavailable>;
   readonly providerAvailable: Effect.Effect<boolean>;
   readonly recordWorkflowStart: (report: Record) => Effect.Effect<void, Unavailable>;
+  readonly commitTerminalFollowUp: (report: Record) => Effect.Effect<void, Unavailable>;
   readonly persistence: {
     readonly admit: (record: Record) => Effect.Effect<
       | { readonly _tag: "Created"; readonly report: Record }
@@ -252,7 +253,7 @@ export interface Interface {
   readonly cancel: (
     workflowId: WorkflowId,
     userId: UserId,
-  ) => Effect.Effect<CancelResult, NotFound | Unavailable>;
+  ) => Effect.Effect<CancelResult, Conflict | NotFound | Unavailable>;
   readonly commitSources: (
     payload: WorkflowPayload,
     sourceManifestKey: string,
@@ -266,6 +267,9 @@ export interface Interface {
     workflowId: WorkflowId,
     inputDigest: InputDigest,
   ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
+  readonly resumePublication: (
+    payload: WorkflowPayload,
+  ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
   readonly start: (
     input: StartInput,
   ) => Effect.Effect<StartResult, Conflict | Denied | NotFound | Unavailable>;
@@ -704,13 +708,55 @@ export const make = Effect.gen(function* () {
     const requestedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     const requested = yield* ports.persistence.requestCancel(workflowId, userId, requestedAt);
     if (terminalStates.has(requested.state)) {
+      if (requested.state === "canceled" && requested.safeFailureCode === "cancel-requested") {
+        yield* ports
+          .commitTerminalFollowUp(requested)
+          .pipe(
+            Effect.ensuring(
+              ports.workflow.terminate(requested.cloudflareInstanceId).pipe(Effect.ignore),
+            ),
+          );
+      }
       return { _tag: "Terminal" as const, report: requested };
     }
     if (requested.state === "artifact_stored") {
       return { _tag: "PublicationCommitted" as const, report: requested };
     }
-    yield* ports.workflow.terminate(requested.cloudflareInstanceId).pipe(Effect.ignore);
-    return { _tag: "CancelRequested" as const, report: requested };
+    const canceled = yield* ports.persistence.finishTerminal(
+      requested.workflowId,
+      requested.inputDigest,
+      "canceled",
+      "cancel-requested",
+      requestedAt,
+    );
+    yield* ports
+      .commitTerminalFollowUp(canceled)
+      .pipe(
+        Effect.ensuring(
+          ports.workflow.terminate(requested.cloudflareInstanceId).pipe(Effect.ignore),
+        ),
+      );
+    return { _tag: "CancelRequested" as const, report: canceled };
+  });
+
+  const resumePublication = Effect.fn("ResearchReport.resumePublication")(function* (
+    payload: WorkflowPayload,
+  ) {
+    const report = yield* ports.persistence.inspect(payload.workflowId);
+    if (report === null) return yield* new NotFound({ workflowId: payload.workflowId });
+    if (report.inputDigest !== payload.inputDigest) {
+      return yield* new Conflict({
+        message: "Publication recovery named a changed Research Report input",
+        workflowId: payload.workflowId,
+      });
+    }
+    if (report.state !== "artifact_stored" && report.state !== "success") {
+      return yield* new Conflict({
+        message: "Only a claimed publication can enter company-continuity recovery",
+        workflowId: payload.workflowId,
+      });
+    }
+    return report;
   });
 
   return Service.of({
@@ -727,6 +773,7 @@ export const make = Effect.gen(function* () {
     finishFailure: (payload, safeFailureCode) =>
       finishTerminal(payload, "failure", safeFailureCode),
     reconcileAcceptance,
+    resumePublication,
     start,
   });
 });

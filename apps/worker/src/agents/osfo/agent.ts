@@ -30,7 +30,6 @@ import {
   DateTime,
   Effect,
   Exit,
-  Layer,
   Option,
   Predicate,
   Result,
@@ -69,6 +68,7 @@ import {
 import { DocumentArtifact } from "../../domain/document-artifact";
 import { ArtifactGenerationComposition } from "../../composition/artifact-generation";
 import { DocumentGenerationComposition } from "../../composition/document-generation";
+import { ResearchReportComposition } from "../../composition/research-report";
 import { WhatsAppWakeUpComposition } from "../../composition/whatsapp-wakeups";
 import { ArtifactGeneration } from "../../services/artifact-generation";
 import { IntegrationComposition } from "../../composition/integrations";
@@ -86,8 +86,8 @@ import { SupermemoryMemoryProvider } from "../../integrations/supermemory/memory
 import {
   CancelManagedConversationInput,
   type ManagedCapabilityTurnState,
-  ManagedTurnMetadata,
   type ManagedTurnAuthorityIdentity,
+  ManagedTurnMetadata,
 } from "../../domain/managed-conversation";
 import {
   ModelCallUsageDispatchUnavailable,
@@ -117,6 +117,7 @@ import {
 import {
   CommittedTurnTerminal,
   persistThinkTerminalBeforeCapture,
+  shouldProjectCommittedConversation,
   withCommittedTurnTerminal,
 } from "./committed-turn-terminal";
 import {
@@ -213,6 +214,7 @@ import {
 import { makeSessionRecallAuthorization } from "../../services/session-recall-authorization";
 import { PromptAssembly } from "../../services/prompt-assembly";
 import { PromptUtilization } from "../../services/prompt-utilization";
+import { ResearchReportFollowUp } from "../../services/research-report-follow-up";
 import { Capabilities } from "../../services/capabilities";
 import { CapabilityTurn } from "./capability-turn";
 import { CapabilityContext } from "./capability-context";
@@ -747,40 +749,41 @@ export class OsfoAgent extends Think<Env> {
     inspect: (input, actionId) => this.#inspectReminder(input, actionId),
     manage: (input, actionId) => this.#manageReminder(input, actionId),
   });
-  readonly #reminderSourceAuthorityLayer = Layer.succeed(
-    WhatsAppWakeUps.SourceAuthority,
-    WhatsAppWakeUps.SourceAuthority.of({
-      inspect: (userId, source) => {
-        if (source._tag !== "Reminder") return Effect.succeed(null);
-        return this.#reminders.inspectSource(userId, source.identity).pipe(
-          Effect.map((committed) =>
-            committed === null ? null : { committedAt: committed.committedAt, source },
-          ),
-          Effect.mapError(reminderWakeUpUnavailable),
-        );
-      },
-      pendingForUser: (userId) =>
-        this.#reminders.pendingSources(userId).pipe(
-          Effect.map((pending) =>
-            pending.map(({ committedAt, sourceIdentity }) => ({
-              committedAt,
-              source: WhatsAppWakeUps.Source.cases.Reminder.make({
-                identity: WhatsAppWakeUps.SourceIdentity.make(sourceIdentity),
-              }),
-            })),
-          ),
-          Effect.mapError(reminderWakeUpUnavailable),
+  readonly #reminderSourceAuthority = WhatsAppWakeUps.SourceAuthority.of({
+    inspect: (userId, source) => {
+      if (source._tag !== "Reminder") return Effect.succeed(null);
+      return this.#reminders.inspectSource(userId, source.identity).pipe(
+        Effect.map((committed) =>
+          committed === null ? null : { committedAt: committed.committedAt, source },
         ),
-      exposePending: (userId, committed) =>
-        this.#reminders
-          .exposeSources(
-            userId,
-            committed.flatMap(({ committedAt, source }) =>
-              source._tag === "Reminder" ? [{ committedAt, sourceIdentity: source.identity }] : [],
-            ),
-          )
-          .pipe(Effect.mapError(reminderWakeUpUnavailable)),
-    }),
+        Effect.mapError(reminderWakeUpUnavailable),
+      );
+    },
+    pendingForUser: (userId) =>
+      this.#reminders.pendingSources(userId).pipe(
+        Effect.map((pending) =>
+          pending.map(({ committedAt, sourceIdentity }) => ({
+            committedAt,
+            source: WhatsAppWakeUps.Source.cases.Reminder.make({
+              identity: WhatsAppWakeUps.SourceIdentity.make(sourceIdentity),
+            }),
+          })),
+        ),
+        Effect.mapError(reminderWakeUpUnavailable),
+      ),
+    exposePending: (userId, committed) =>
+      this.#reminders
+        .exposeSources(
+          userId,
+          committed.flatMap(({ committedAt, source }) =>
+            source._tag === "Reminder" ? [{ committedAt, sourceIdentity: source.identity }] : [],
+          ),
+        )
+        .pipe(Effect.mapError(reminderWakeUpUnavailable)),
+  });
+  readonly #wakeUpSourceAuthorityLayer = WhatsAppWakeUpComposition.combinedSourceAuthorityLayer(
+    this.#reminderSourceAuthority,
+    this.env.DB,
   );
   readonly #accountDeletionFence = makeAccountDeletionFence();
   readonly #fileStore = makeFileStore(this.#db);
@@ -1497,6 +1500,22 @@ export class OsfoAgent extends Think<Env> {
     } as const;
     const promptPolicy = PromptAssembly.policyForManagedExecution(metadata.executionMode);
     const prompt = await this.#assemblePrompt(context, metadata, system, promptPolicy.recallMode);
+    if (metadata.executionMode === "companyContinuity") {
+      this.#activeRequestText = "Research Report follow-up";
+      this.#activeCapabilityTurn = undefined;
+      this.#completedModelSteps.clear();
+      return {
+        activeTools: [],
+        instructions: `${prompt.instructions}\n\nThis is a company-continuity Research Report update. State only the committed progress or terminal outcome supplied in the User message. Do not call tools, start work, request Approval, expose report contents, or claim facts not present there.`,
+        maxOutputTokens: metadata.maxOutputTokens,
+        maxRetries: 0,
+        maxSteps: 1,
+        messages: prompt.messages,
+        model: metadata.route,
+        sendReasoning: false,
+        tools: {},
+      };
+    }
     const capabilityContext = CapabilityContext.projectTurn(context.messages, {
       pendingFileAnalysis: capabilityTurnState.pendingFileAnalyses.length > 0,
     });
@@ -2079,8 +2098,24 @@ export class OsfoAgent extends Think<Env> {
       );
       return;
     }
-    if (metadata.value.executionMode === "exhaustedConversation") return;
+    if (metadata.value.executionMode === "exhaustedConversation") {
+      return;
+    }
     const attemptId = modelCallAttemptId(metadata.value.submissionId, stepNumber);
+    if (metadata.value.executionMode === "companyContinuity") {
+      const read =
+        step === undefined
+          ? {
+              _tag: "StepEvidenceReady" as const,
+              evidence: conservativeStepEvidence(metadata.value, stepNumber),
+            }
+          : await this.#readStepEvidence(metadata.value, stepNumber, step);
+      const evidence = Predicate.isTagged(read, "GatewayCostPending")
+        ? conservativeStepEvidence(metadata.value, stepNumber)
+        : read.evidence;
+      await this.#recordCompanyContinuityModelCost(metadata.value, attemptId, evidence);
+      return;
+    }
     if (step !== undefined) {
       const evidence = await this.#readStepEvidence(metadata.value, stepNumber, step);
       if (Predicate.isTagged(evidence, "GatewayCostPending")) {
@@ -2098,6 +2133,29 @@ export class OsfoAgent extends Think<Env> {
       metadata.value.allowancePeriodId,
       attemptId,
       conservativeStepEvidence(metadata.value, stepNumber),
+    );
+  }
+
+  async #recordCompanyContinuityModelCost(
+    metadata: ManagedTurnMetadata,
+    attemptId: ModelCallAttemptId,
+    evidence: ModelCallEvidence,
+  ): Promise<void> {
+    const cost = companyContinuityCostFact(evidence);
+    await Effect.runPromise(
+      Effect.logInfo("Research Report follow-up model attempt recorded").pipe(
+        Effect.annotateLogs({
+          attemptId,
+          basis: cost.basis,
+          companyCostContinuity: true,
+          planPolicyVersion: metadata.planPolicyVersion,
+          resourcePriceVersion:
+            metadata.companyCostResourcePriceVersion ?? "resource-price-version-missing",
+          route: metadata.route,
+          submissionId: metadata.submissionId,
+          vendorUsdMicros: String(cost.vendorUsdMicros),
+        }),
+      ),
     );
   }
 
@@ -3530,6 +3588,175 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  /** Accept one source-authorized mandatory Research Report follow-up by opaque identity. */
+  async submitResearchReportFollowUp(notificationIdentity: string) {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeResult(ResearchReportFollowUp.NotificationId)(
+      notificationIdentity,
+    );
+    if (Result.isFailure(decoded)) return invalidRequest("submitResearchReportFollowUp");
+    const notificationId = decoded.success;
+    const readNotification = () =>
+      Effect.runPromise(
+        ResearchReportComposition.followUpEffect(
+          { DB: this.env.DB },
+          ResearchReportFollowUp.Service.pipe(
+            Effect.flatMap((followUps) => followUps.inspect(notificationId)),
+            Effect.orDie,
+          ),
+        ),
+      );
+    const notification = await readNotification();
+    if (notification === null || notification.agentId !== this.name) {
+      return invalidRequest("submitResearchReportFollowUp");
+    }
+    const submissionId = await researchReportFollowUpSubmissionId(notificationId);
+    const replay = notification.acceptedAt !== null;
+    const store = this.#store;
+    const databaseBinding = this.env.DB;
+    const activateSession = () => this.#activateSession(notification.sessionId);
+    const requestWakeUp = (accepted: ResearchReportFollowUp.Notification) =>
+      this.#requestResearchReportWakeUp(accepted);
+    const submit = () =>
+      this.runTurn({
+        idempotencyKey: `research-report-follow-up-${submissionId}`,
+        input: {
+          id: submissionId,
+          metadata: {
+            turnMetadata: researchReportFollowUpMetadata(notification, submissionId),
+          },
+          parts: [{ text: researchReportFollowUpMessage(notification), type: "text" }],
+          role: "user",
+        },
+        metadata: researchReportFollowUpMetadata(notification, submissionId),
+        mode: "submit",
+        submissionId,
+      });
+    const operation = Effect.gen(function* () {
+      const agent = yield* store.inspect();
+      const route = yield* store.readRoute(notification.routeId);
+      const ownsSession =
+        route.currentSessionId === notification.sessionId ||
+        route.historicalSessionIds.includes(notification.sessionId);
+      if (
+        agent.agentId !== notification.agentId ||
+        route.routeId !== notification.routeId ||
+        !ownsSession
+      ) {
+        return yield* new ThinkSubmissionUnavailable({
+          cause: notificationId,
+          message: "Research Report follow-up Agent correlation no longer matches",
+          operation: "submitResearchReportFollowUp.authority",
+        });
+      }
+      yield* Effect.tryPromise({
+        try: activateSession,
+        catch: (cause) =>
+          new ThinkSubmissionUnavailable({
+            cause,
+            message: "Research Report follow-up Session could not be activated",
+            operation: "submitResearchReportFollowUp.activateSession",
+          }),
+      });
+      yield* callThinkSubmission("submitResearchReportFollowUp.runTurn", submit);
+      const accepted = yield* Effect.tryPromise({
+        try: () =>
+          // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- The public Agent RPC crosses into the separately scoped PostgreSQL composition.
+          Effect.runPromise(
+            ResearchReportComposition.followUpEffect(
+              { DB: databaseBinding },
+              ResearchReportFollowUp.Service.pipe(
+                Effect.flatMap((followUps) => followUps.markAccepted(notificationId, submissionId)),
+                Effect.orDie,
+              ),
+            ),
+          ),
+        catch: (cause) =>
+          new ThinkSubmissionUnavailable({
+            cause,
+            message: "Research Report follow-up acceptance could not be retained",
+            operation: "submitResearchReportFollowUp.markAccepted",
+          }),
+      });
+      yield* requestWakeUp(accepted);
+      return {
+        _tag: replay ? ("Replayed" as const) : ("Accepted" as const),
+        notificationId,
+        submissionId,
+      };
+    }).pipe(
+      Effect.mapError((cause) =>
+        Predicate.isTagged(cause, "ThinkSubmissionUnavailable")
+          ? cause
+          : new ThinkSubmissionUnavailable({
+              cause,
+              message: "Research Report follow-up Agent state is unavailable",
+              operation: "submitResearchReportFollowUp.agentState",
+            }),
+      ),
+    );
+    return runRpc(
+      this.#accountDeletionFencedSessionExecution.run(
+        operation,
+        () =>
+          new ThinkSubmissionUnavailable({
+            cause: notificationId,
+            message: "Account deletion fenced the Research Report follow-up",
+            operation: "submitResearchReportFollowUp",
+          }),
+      ),
+    );
+  }
+
+  #requestResearchReportWakeUp(notification: ResearchReportFollowUp.Notification) {
+    if (notification.whatsAppChannelLinkId === null) return Effect.void;
+    const channelLinkId = notification.whatsAppChannelLinkId;
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        new ThinkSubmissionUnavailable({
+          cause: invalidOsfoEnvironment,
+          message: "Research Report WhatsApp Wake-up runtime is unavailable",
+          operation: "submitResearchReportFollowUp.wakeUp",
+        }),
+      );
+    }
+    const source = WhatsAppWakeUps.Source.cases.ResearchReport.make({
+      identity: WhatsAppWakeUps.SourceIdentity.make(notification.notificationId),
+    });
+    return Effect.tryPromise({
+      try: () =>
+        runtime.runPromise(
+          Effect.scoped(
+            WhatsAppWakeUps.Service.pipe(
+              Effect.flatMap((wakeUps) =>
+                wakeUps.request({
+                  channelLinkId,
+                  source,
+                  traceId: WhatsAppWakeUps.TraceId.make(notification.notificationId),
+                  userId: notification.userId,
+                  wakeUpId: WhatsAppWakeUps.WakeUpId.make(notification.notificationId),
+                }),
+              ),
+              // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The public Agent RPC is the application entry point for this complete Wake-up composition.
+              Effect.provide(
+                WhatsAppWakeUpComposition.layer(
+                  loadConfig(this.env),
+                  this.#wakeUpSourceAuthorityLayer,
+                ),
+              ),
+            ),
+          ),
+        ),
+      catch: (cause) =>
+        new ThinkSubmissionUnavailable({
+          cause,
+          message: "Research Report WhatsApp Wake-up could not be retained",
+          operation: "submitResearchReportFollowUp.wakeUp",
+        }),
+    }).pipe(Effect.asVoid);
+  }
+
   /** Authorize and durably enqueue one server-routed managed conversation turn. */
   async submitManagedConversation(
     input: SubmitManagedConversationRequest,
@@ -4512,7 +4739,7 @@ export class OsfoAgent extends Think<Env> {
               Effect.provide(
                 WhatsAppWakeUpComposition.layer(
                   loadConfig(this.env),
-                  this.#reminderSourceAuthorityLayer,
+                  this.#wakeUpSourceAuthorityLayer,
                 ),
               ),
             ),
@@ -4540,7 +4767,7 @@ export class OsfoAgent extends Think<Env> {
               ),
               // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This scheduled callback is the application entry point for the complete Wake-up Layer.
               Effect.provide(
-                WhatsAppWakeUpComposition.layer(config, this.#reminderSourceAuthorityLayer),
+                WhatsAppWakeUpComposition.layer(config, this.#wakeUpSourceAuthorityLayer),
               ),
             ),
           ),
@@ -4575,7 +4802,7 @@ export class OsfoAgent extends Think<Env> {
               Effect.provide(
                 WhatsAppWakeUpComposition.layer(
                   loadConfig(this.env),
-                  this.#reminderSourceAuthorityLayer,
+                  this.#wakeUpSourceAuthorityLayer,
                 ),
               ),
             ),
@@ -5106,11 +5333,10 @@ export class OsfoAgent extends Think<Env> {
                     source: "hook",
                     thinkRequestId,
                   },
-                  result.status === "completed" &&
-                    !(
-                      Option.isSome(activeTurn) &&
-                      activeTurn.value.executionMode === "exhaustedConversation"
-                    )
+                  shouldProjectCommittedConversation(
+                    result.status,
+                    Option.map(activeTurn, ({ executionMode }) => executionMode),
+                  )
                     ? Option.getOrUndefined(
                         projectCommittedConversationSnapshot(
                           history,
@@ -5526,7 +5752,7 @@ export class OsfoAgent extends Think<Env> {
       WhatsAppWakeUpComposition.consumeInbound(
         loadConfig(this.env),
         link,
-        this.#reminderSourceAuthorityLayer,
+        this.#wakeUpSourceAuthorityLayer,
       ),
     );
     if (Exit.isFailure(result)) {
@@ -5839,6 +6065,102 @@ export const messengerSubmissionId = async (
     "",
   );
   return ThinkSubmissionId.make(`messenger-${hex}`);
+};
+
+/** Stable Think identity derived only from the opaque PostgreSQL notification capability. */
+export const researchReportFollowUpSubmissionId = async (
+  notificationId: ResearchReportFollowUp.NotificationId,
+): Promise<ThinkSubmissionId> => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(notificationId));
+  const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+  return ThinkSubmissionId.make(`research-report-${hex}`);
+};
+
+export const researchReportFollowUpMetadata = (
+  notification: ResearchReportFollowUp.Notification,
+  submissionId: ThinkSubmissionId,
+) => {
+  const limits = currentCapabilityCatalog.exhaustedConversation;
+  const originatingAuthority = {
+    _tag: "DurableTrigger" as const,
+    triggerId: notification.workflowId,
+    triggerType: "workflow" as const,
+  };
+  const authorityIdentity = {
+    ...originatingAuthority,
+    userId: notification.userId,
+  } satisfies ManagedTurnAuthorityIdentity;
+  const coreMemoryAuthorization = Schema.encodeSync(CoreMemoryAuthorizationSnapshot)({
+    authority: authorityIdentity,
+    deletionAccess: { _tag: "DeletionAccessAvailable" },
+    now: notification.claimedAt,
+    originatingAuthority,
+    resourceOwnerUserId: notification.userId,
+    subscription: {
+      plan: notification.plan,
+      planPolicyVersion: notification.planPolicyVersion,
+    },
+    user: { _tag: "ActiveUser", userId: notification.userId },
+  });
+  return ManagedTurnMetadata.make({
+    _tag: "OsfoManagedTurn",
+    allowancePeriodId: notification.allowancePeriodId,
+    authorityIdentity,
+    capabilityCatalogVersion: notification.capabilityCatalogVersion,
+    capabilityTurnState: {
+      eligiblePersonalSkills: [],
+      initialized: true,
+      loadedSkillReceipts: [],
+      pendingFileAnalyses: [],
+      skillLearningDraft: null,
+    },
+    conservativeVendorUsdMicros: Number(
+      currentLaunchPolicy.plans[notification.plan].operationLimits.vendorUsdMicrosPerRequest,
+    ),
+    companyCostResourcePriceVersion: notification.resourcePriceVersion,
+    coreMemoryAuthorization,
+    executionMode: "companyContinuity",
+    maxInputTokens: limits.inputTokens,
+    maxOutputTokens: limits.outputTokens,
+    maxRetries: 0,
+    maxSteps: 1,
+    originatingAuthority,
+    plan: notification.plan,
+    planPolicyVersion: notification.planPolicyVersion,
+    route: notification.modelRoute,
+    routeId: notification.routeId,
+    sessionId: notification.sessionId,
+    submissionId,
+    targetInputTokens: Math.min(4_000, limits.inputTokens - 1),
+  });
+};
+
+export const companyContinuityCostFact = (evidence: ModelCallEvidence) => {
+  if (evidence._tag === "Observed") {
+    return { basis: "observed" as const, vendorUsdMicros: evidence.vendorUsdMicros ?? 0n };
+  }
+  if (evidence._tag === "Ambiguous") {
+    return {
+      basis: "conservative" as const,
+      vendorUsdMicros: evidence.conservativeVendorUsdMicros,
+    };
+  }
+  return { basis: "notContacted" as const, vendorUsdMicros: 0n };
+};
+
+const researchReportFollowUpMessage = (notification: ResearchReportFollowUp.Notification) => {
+  if (notification.kind === "sourcesCollected") {
+    return "The Research Report has committed its public source set and is still running. Give the User one concise progress update without report content.";
+  }
+  if (notification.reportState === "success") {
+    return "The Research Report finished successfully and its cited artifact is ready. Give the User one concise completion update without quoting report content.";
+  }
+  if (notification.reportState === "canceled") {
+    return "The Research Report ended as Canceled. Give the User one concise outcome update without report content or private provider details.";
+  }
+  return "The Research Report ended as Failure. Give the User one concise outcome update without report content or private provider details.";
 };
 
 const modelCallUsageDispatchUnavailable = (usage: PendingModelCallUsage) =>

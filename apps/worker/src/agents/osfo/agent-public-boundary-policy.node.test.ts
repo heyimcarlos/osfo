@@ -67,6 +67,7 @@ const publicBoundaryPolicy = {
   reconcileModelCallUsage: ["cancellationReconciliationDeletion", "none"],
   settleGatewayModelUsage: ["cancellationReconciliationDeletion", "none"],
   submitManagedConversation: ["ordinaryMutation", "fencedSessionExecution"],
+  submitResearchReportFollowUp: ["ordinaryMutation", "fencedSessionExecution"],
   uploadFile: ["ordinaryMutation", "accountDeletionFence"],
 } as const satisfies Record<string, readonly [BoundaryClass, Protection]>;
 
@@ -92,6 +93,7 @@ const directoryBoundaryPolicy = {
   pendingReminderWakeUpSources: ["read", "directoryGate"],
   probeAgent: ["read", "none"],
   presentPersonalSkillDeletion: ["read", "directoryGate"],
+  submitResearchReportFollowUp: ["ordinaryMutation", "directoryGate"],
   quiesceAgentAccountDeletion: ["cancellationReconciliationDeletion", "deletionOrchestration"],
 } as const satisfies Record<string, readonly [BoundaryClass, Protection]>;
 

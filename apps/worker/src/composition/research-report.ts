@@ -2,6 +2,7 @@ import { DateTime, Effect, Layer } from "effect";
 
 import type { Database } from "@osfo/db";
 import type { CloudflareEnv } from "../config";
+import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { Db } from "../db";
 import { BillingDb } from "../db/billing";
 import { retainedCatalog } from "../domain/plan-policy";
@@ -17,16 +18,19 @@ import {
 } from "../integrations/cloudflare/web";
 import { ResearchCollectorPostgres } from "../integrations/postgres/research-collector";
 import { ResearchReportPostgres } from "../integrations/postgres/research-report";
+import { ResearchReportFollowUpPostgres } from "../integrations/postgres/research-report-follow-up";
 import { ResearchSynthesisPostgres } from "../integrations/postgres/research-synthesis";
 import { ResearchCollector } from "../services/research-collector";
 import { Allowances } from "../services/allowances";
 import { ResearchReportDocument } from "../services/research-report-document";
 import { ResearchReport } from "../services/research-report";
+import { ResearchReportFollowUp } from "../services/research-report-follow-up";
 import { ResearchReportAccounting } from "../services/research-report-accounting";
 import { ResearchSynthesis } from "../services/research-synthesis";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare Workflow bindings expose Promise-only handles. */
 /* oxlint-disable effecttsgo/strict-effect-provide -- executionEffect is the Cloudflare Workflow invocation entry point. */
+/* oxlint-disable eslint/no-underscore-dangle -- Agent RPC and product outcomes use the canonical _tag discriminator. */
 
 type WorkflowInstanceHandle = Pick<WorkflowInstance, "status" | "terminate">;
 
@@ -46,72 +50,104 @@ export interface Bindings {
   readonly DB: Pick<Hyperdrive, "connectionString">;
   readonly DOCUMENT_SANDBOX: Env["DOCUMENT_SANDBOX"];
   readonly FILES: R2Bucket;
+  readonly OSFO_DIRECTORY: Env["OSFO_DIRECTORY"];
   readonly RESEARCH_REPORT_WORKFLOW: WorkflowBinding;
+  readonly RESEARCH_REPORT_TIMER_WORKFLOW: WorkflowBinding;
   readonly WEBSEARCH: Pick<WebSearch, "search">;
 }
 
 /** Cloudflare instance adapter that reconciles a lost create acknowledgement by stable ID. */
 export const makeWorkflowPort = (
   binding: WorkflowBinding,
+  timerBinding: WorkflowBinding = binding,
 ): ResearchReport.PortInterface["workflow"] => ({
   create: (instanceId, payload) =>
-    Effect.tryPromise({
-      try: () => binding.create({ id: instanceId, params: payload }).then(() => undefined),
-      catch: (cause) =>
-        new ResearchReport.Unavailable({
-          cause,
-          message: "Cloudflare did not acknowledge the Research Report Workflow instance",
-          operation: "workflow.create",
-        }),
-    }).pipe(
-      Effect.catchTag("ResearchReportUnavailable", (failure) =>
-        Effect.tryPromise({
-          try: async () => {
-            const instance = await binding.get(instanceId);
-            return instance.status();
-          },
-          catch: (cause) =>
-            new ResearchReport.Unavailable({
-              cause,
-              message: "Cloudflare could not reconcile the Research Report Workflow instance",
-              operation: "workflow.reconcileCreate",
-            }),
-        }).pipe(
-          Effect.flatMap((status) =>
-            status.status === "unknown" ? Effect.fail(failure) : Effect.void,
-          ),
+    Effect.all(
+      [
+        createWorkflowInstance(binding, instanceId, payload),
+        createWorkflowInstance(timerBinding, timerInstanceId(instanceId), payload),
+      ],
+      { concurrency: 2, discard: true },
+    ),
+  terminate: (instanceId) =>
+    Effect.all(
+      [
+        terminateWorkflowInstance(binding, instanceId),
+        terminateWorkflowInstance(timerBinding, timerInstanceId(instanceId)),
+      ],
+      { concurrency: 2, discard: true },
+    ),
+});
+
+const createWorkflowInstance = (
+  binding: WorkflowBinding,
+  instanceId: string,
+  payload: ResearchReport.WorkflowPayload,
+) =>
+  Effect.tryPromise({
+    try: () => binding.create({ id: instanceId, params: payload }).then(() => undefined),
+    catch: (cause) =>
+      new ResearchReport.Unavailable({
+        cause,
+        message: "Cloudflare did not acknowledge the Research Report Workflow instance",
+        operation: "workflow.create",
+      }),
+  }).pipe(
+    Effect.catchTag("ResearchReportUnavailable", (failure) =>
+      Effect.tryPromise({
+        try: async () => {
+          const instance = await binding.get(instanceId);
+          return instance.status();
+        },
+        catch: (cause) =>
+          new ResearchReport.Unavailable({
+            cause,
+            message: "Cloudflare could not reconcile the Research Report Workflow instance",
+            operation: "workflow.reconcileCreate",
+          }),
+      }).pipe(
+        Effect.flatMap((status) =>
+          status.status === "unknown" ? Effect.fail(failure) : Effect.void,
         ),
       ),
     ),
-  terminate: (instanceId) =>
-    Effect.tryPromise({
-      try: async () => {
-        const instance = await binding.get(instanceId);
-        const status = await instance.status();
-        if (status.status === "unknown" || status.status === "terminated") return;
-        await instance.terminate();
-      },
-      catch: (cause) =>
-        new ResearchReport.Unavailable({
-          cause,
-          message: "Cloudflare could not interrupt the Research Report Workflow instance",
-          operation: "workflow.terminate",
-        }),
-    }),
-});
+  );
+
+const terminateWorkflowInstance = (binding: WorkflowBinding, instanceId: string) =>
+  Effect.tryPromise({
+    try: async () => {
+      const instance = await binding.get(instanceId);
+      const status = await instance.status();
+      if (status.status === "unknown" || status.status === "terminated") return;
+      await instance.terminate();
+    },
+    catch: (cause) =>
+      new ResearchReport.Unavailable({
+        cause,
+        message: "Cloudflare could not interrupt the Research Report Workflow instance",
+        operation: "workflow.terminate",
+      }),
+  });
+
+const timerInstanceId = (instanceId: ResearchReport.CloudflareInstanceId) => `${instanceId}-timer`;
 
 /** Compose one Research Report service with its dedicated persistence and Workflow ports. */
-export const serviceLayer = (binding: WorkflowBinding) => {
+export const serviceLayer = (
+  binding: WorkflowBinding,
+  timerBinding: WorkflowBinding,
+  commitTerminalFollowUp: ResearchReport.PortInterface["commitTerminalFollowUp"],
+) => {
   const portLayer = Layer.effect(
     ResearchReport.Port,
     Db.database.pipe(
       Effect.map((database) =>
         ResearchReport.Port.of({
           currentAuthorization: ResearchReportPostgres.makeCurrentAuthorization(database),
+          commitTerminalFollowUp,
           persistence: ResearchReportPostgres.make(database),
           providerAvailable: Effect.succeed(hasRecognizedWebSearchPrice),
           recordWorkflowStart: makeWorkflowStartRecorder(database),
-          workflow: makeWorkflowPort(binding),
+          workflow: makeWorkflowPort(binding, timerBinding),
         }),
       ),
     ),
@@ -133,7 +169,18 @@ export const executionEffect = <Value>(
 ) => {
   const program = Effect.gen(function* () {
     const database = yield* Db.database;
-    const reportLayer = serviceLayerFromDatabase(env.RESEARCH_REPORT_WORKFLOW, database);
+    const reportLayer = serviceLayerFromDatabase(
+      env.RESEARCH_REPORT_WORKFLOW,
+      database,
+      env.RESEARCH_REPORT_TIMER_WORKFLOW,
+      makeTerminalFollowUpCommitter(database, async (notificationId) => {
+        const result =
+          await env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).submitResearchReportFollowUp(
+            notificationId,
+          );
+        return result._tag;
+      }),
+    );
     return yield* Effect.gen(function* () {
       const reports = yield* ResearchReport.Service;
       const collectorPort = ResearchCollector.Port.of({
@@ -203,8 +250,37 @@ export const executionEffect = <Value>(
 };
 
 /** Narrow helper for tests that already own a Drizzle database. */
-export const serviceLayerFromDatabase = (binding: WorkflowBinding, database: Database) =>
-  serviceLayer(binding).pipe(Layer.provide(Db.layerFromDatabase(database)));
+export const serviceLayerFromDatabase = (
+  binding: WorkflowBinding,
+  database: Database,
+  timerBinding: WorkflowBinding,
+  commitTerminalFollowUp: ResearchReport.PortInterface["commitTerminalFollowUp"],
+) =>
+  serviceLayer(binding, timerBinding, commitTerminalFollowUp).pipe(
+    Layer.provide(Db.layerFromDatabase(database)),
+  );
+
+/** Compose PostgreSQL milestone, deadline, and follow-up claims for either Workflow host. */
+export const followUpLayerFromDatabase = (database: Database) =>
+  ResearchReportFollowUp.layerWithoutDependencies.pipe(
+    Layer.provide(
+      Layer.succeed(ResearchReportFollowUp.Port, ResearchReportFollowUpPostgres.make(database)),
+    ),
+  );
+
+/** Run one lightweight timer or notification operation with a fresh Hyperdrive connection. */
+export const followUpEffect = <Value>(
+  env: Pick<Bindings, "DB">,
+  effect: Effect.Effect<Value, never, ResearchReportFollowUp.Service>,
+) =>
+  Effect.scoped(
+    Db.database.pipe(
+      Effect.flatMap((database) =>
+        effect.pipe(Effect.provide(followUpLayerFromDatabase(database))),
+      ),
+      Effect.provide(Db.layer({ db: env.DB })),
+    ),
+  );
 
 /** Cloudflare bindings are structurally narrowed before product composition. */
 export const bindingsFromEnv = (env: CloudflareEnv): Bindings => ({
@@ -213,7 +289,9 @@ export const bindingsFromEnv = (env: CloudflareEnv): Bindings => ({
   DB: env.DB,
   DOCUMENT_SANDBOX: env.DOCUMENT_SANDBOX,
   FILES: env.FILES,
+  OSFO_DIRECTORY: env.OSFO_DIRECTORY,
   RESEARCH_REPORT_WORKFLOW: env.RESEARCH_REPORT_WORKFLOW,
+  RESEARCH_REPORT_TIMER_WORKFLOW: env.RESEARCH_REPORT_TIMER_WORKFLOW,
   WEBSEARCH: env.WEBSEARCH,
 });
 
@@ -222,6 +300,53 @@ const payloadFor = (report: ResearchReport.Record) =>
     inputDigest: report.inputDigest,
     workflowId: report.workflowId,
   });
+
+const makeTerminalFollowUpCommitter =
+  (
+    database: Database,
+    submit: (notificationId: ResearchReportFollowUp.NotificationId) => Promise<string>,
+  ): ResearchReport.PortInterface["commitTerminalFollowUp"] =>
+  (report) =>
+    Effect.gen(function* () {
+      const payload = payloadFor(report);
+      const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+      const claimed = yield* ResearchReportFollowUpPostgres.make(database)
+        .claimTerminal(payload, now)
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ResearchReport.Unavailable({
+                cause,
+                message: "The terminal Research Report follow-up could not be claimed",
+                operation: "followUp.claimTerminal",
+              }),
+          ),
+        );
+      if (claimed._tag === "NotTerminal") {
+        return yield* new ResearchReport.Unavailable({
+          cause: report.state,
+          message: "The terminal Research Report follow-up lost its product outcome",
+          operation: "followUp.claimTerminal",
+        });
+      }
+      const result = yield* Effect.tryPromise({
+        try: () => submit(claimed.notification.notificationId),
+        catch: (cause) =>
+          new ResearchReport.Unavailable({
+            cause,
+            message: "The terminal Research Report follow-up could not reach its Agent",
+            operation: "followUp.submit",
+          }),
+      });
+      if (result !== "Accepted" && result !== "Replayed") {
+        return yield* new ResearchReport.Unavailable({
+          cause: result,
+          message: "The terminal Research Report follow-up was not accepted by its Agent",
+          operation: "followUp.submit",
+        });
+      }
+      return undefined;
+    }).pipe(Effect.asVoid);
 
 const makeUsageRecorder =
   (database: Database): ResearchReportDocument.PortInterface["recordUsage"] =>

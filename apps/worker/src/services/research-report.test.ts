@@ -285,16 +285,47 @@ it.effect("records cancellation before best-effort interruption and converges du
     const canceled = yield* reports.cancel(started.report.workflowId, userId);
     expect(canceled).toMatchObject({
       _tag: "CancelRequested",
-      report: { cancelRequestedAt: now, state: "cancel_requested" },
+      report: { cancelRequestedAt: now, safeFailureCode: "cancel-requested", state: "canceled" },
     });
-    expect(fixture.calls).toEqual(["persist.cancel", "workflow.terminate"]);
+    expect(fixture.calls).toEqual(["persist.cancel", "followUp.terminal", "workflow.terminate"]);
 
     const duplicate = yield* reports.cancel(started.report.workflowId, userId);
     expect(duplicate).toMatchObject({
-      _tag: "CancelRequested",
-      report: { cancelRequestedAt: now, state: "cancel_requested" },
+      _tag: "Terminal",
+      report: { cancelRequestedAt: now, state: "canceled" },
     });
     expect(fixture.instances).toEqual([]);
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
+it.effect("terminates both hosts even when the mandatory terminal follow-up needs retry", () => {
+  const fixture = makeFixture({ failTerminalFollowUps: 1 });
+
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(now.getTime());
+    const reports = yield* ResearchReport.Service;
+    const started = yield* reports.start(startInput());
+    fixture.calls.length = 0;
+
+    const first = yield* reports.cancel(started.report.workflowId, userId).pipe(Effect.result);
+    expect(first).toMatchObject({ failure: { operation: "followUp.submit" } });
+    expect(fixture.stored).toMatchObject({
+      safeFailureCode: "cancel-requested",
+      state: "canceled",
+    });
+    expect(fixture.calls).toEqual(["persist.cancel", "followUp.terminal", "workflow.terminate"]);
+    expect(fixture.instances).toEqual([]);
+
+    const replay = yield* reports.cancel(started.report.workflowId, userId);
+    expect(replay).toMatchObject({ _tag: "Terminal", report: { state: "canceled" } });
+    expect(fixture.calls).toEqual([
+      "persist.cancel",
+      "followUp.terminal",
+      "workflow.terminate",
+      "persist.cancel",
+      "followUp.terminal",
+      "workflow.terminate",
+    ]);
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
@@ -316,6 +347,7 @@ it.effect("publication wins the cancellation race and terminal reasons replay ex
     );
     const claimed = yield* reports.claimArtifactPublication(payload, "document:workflow:race");
     expect(claimed).toMatchObject({ state: "artifact_stored" });
+    expect(yield* reports.resumePublication(payload)).toMatchObject({ state: "artifact_stored" });
     const canceled = yield* reports.cancel(started.report.workflowId, userId);
     expect(canceled).toMatchObject({
       _tag: "PublicationCommitted",
@@ -328,6 +360,32 @@ it.effect("publication wins the cancellation race and terminal reasons replay ex
       .finishFailure(payload, "changed-after-publication")
       .pipe(Effect.result);
     expect(terminalConflict).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
+it.effect("cancels committed-source work while the timer host is sleeping", () => {
+  const fixture = makeFixture();
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(now.getTime());
+    const reports = yield* ResearchReport.Service;
+    const started = yield* reports.start(startInput());
+    const payload = ResearchReport.WorkflowPayload.make({
+      inputDigest: started.report.inputDigest,
+      workflowId: started.report.workflowId,
+    });
+    yield* reports.beginExecution(payload);
+    yield* reports.commitSources(
+      payload,
+      "users/research-user/research-report/manifests/sleep.json",
+      ResearchReport.InputDigest.make("c".repeat(64)),
+    );
+
+    const canceled = yield* reports.cancel(started.report.workflowId, userId);
+    expect(canceled).toMatchObject({
+      _tag: "CancelRequested",
+      report: { safeFailureCode: "cancel-requested", state: "canceled" },
+    });
+    expect(fixture.instances).toEqual([]);
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
@@ -450,10 +508,12 @@ const makeFixture = (
     readonly acceptFailure?: "conflict" | "notFound";
     readonly currentPlan?: "adventurer" | "free";
     readonly failCreates?: number;
+    readonly failTerminalFollowUps?: number;
   } = {},
 ) => {
   let stored: ResearchReport.Record | null = null;
   let remainingCreateFailures = options.failCreates ?? 0;
+  let remainingFollowUpFailures = options.failTerminalFollowUps ?? 0;
   const calls = new Array<string>();
   const instances = new Array<ResearchReport.CloudflareInstanceId>();
   const port = ResearchReport.Port.of({
@@ -463,6 +523,19 @@ const makeFixture = (
         approval: report.approval,
       }),
     providerAvailable: Effect.succeed(true),
+    commitTerminalFollowUp: () =>
+      Effect.gen(function* () {
+        calls.push("followUp.terminal");
+        if (remainingFollowUpFailures > 0) {
+          remainingFollowUpFailures -= 1;
+          return yield* new ResearchReport.Unavailable({
+            cause: "Agent unavailable",
+            message: "Agent unavailable",
+            operation: "followUp.submit",
+          });
+        }
+        return undefined;
+      }),
     recordWorkflowStart: () =>
       Effect.sync(() => {
         calls.push("account.workflowStart");
@@ -606,7 +679,7 @@ const makeFixture = (
       terminate: (instanceId) =>
         Effect.sync(() => {
           calls.push("workflow.terminate");
-          expect(stored?.state).toBe("cancel_requested");
+          expect(stored?.state).toBe("canceled");
           const index = instances.indexOf(instanceId);
           if (index >= 0) instances.splice(index, 1);
         }),

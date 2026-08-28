@@ -240,7 +240,9 @@ export const researchReportNotifications = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     kind: text({ enum: ["sourcesCollected", "terminal"] }).notNull(),
     claimed_at: timestamp({ withTimezone: true }).notNull(),
+    think_submission_id: text(),
     delivered_at: timestamp({ withTimezone: true }),
+    source_exposed_at: timestamp({ withTimezone: true }),
   },
   (table) => [
     uniqueIndex("research_report_notifications_workflow_kind_unique").on(
@@ -252,7 +254,10 @@ export const researchReportNotifications = pgTable(
       "research_report_notifications_identity_check",
       sql`length(btrim(${table.notification_id})) > 0
         and ${table.kind} in ('sourcesCollected', 'terminal')
-        and (${table.delivered_at} is null or ${table.delivered_at} >= ${table.claimed_at})`,
+        and ((${table.think_submission_id} is null) = (${table.delivered_at} is null))
+        and (${table.think_submission_id} is null or (length(${table.think_submission_id}) between 1 and 160 and position(':' in ${table.think_submission_id}) = 0))
+        and (${table.delivered_at} is null or ${table.delivered_at} >= ${table.claimed_at})
+        and (${table.source_exposed_at} is null or (${table.delivered_at} is not null and ${table.source_exposed_at} >= ${table.delivered_at}))`,
     ),
   ],
 );

@@ -164,7 +164,7 @@ export const make = Effect.gen(function* () {
       workflowId: admitted.workflowId,
     });
     const intentDigest = yield* digestIntent(admitted.request.format, source);
-    yield* authorize(admitted);
+    if (admitted.state !== "artifact_stored") yield* authorize(admitted);
     const existing = yield* ports.artifacts
       .inspect(contentId)
       .pipe(

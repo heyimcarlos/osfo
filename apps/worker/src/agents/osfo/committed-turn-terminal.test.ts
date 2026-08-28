@@ -7,6 +7,7 @@ import {
   CommittedTurnTerminal,
   persistThinkTerminalBeforeCapture,
   readCommittedTurnTerminal,
+  shouldProjectCommittedConversation,
   ThinkTerminalPersistenceUnavailable,
   withCommittedTurnTerminal,
 } from "./committed-turn-terminal";
@@ -32,6 +33,17 @@ describe("committed turn terminal metadata", () => {
         osfoCommittedTurn: { requestId: "request-1", status: "streaming" },
       }),
     ).toEqual(Option.none());
+  });
+
+  it("projects a completed turn with no active metadata without dereferencing an absent value", () => {
+    expect(shouldProjectCommittedConversation("completed", Option.none())).toBe(true);
+    expect(shouldProjectCommittedConversation("error", Option.none())).toBe(false);
+  });
+
+  it("excludes company-continuity turns from User conversation projection", () => {
+    expect(shouldProjectCommittedConversation("completed", Option.some("companyContinuity"))).toBe(
+      false,
+    );
   });
 
   it.effect("keeps the committed Think terminal when provider capture fails", () =>

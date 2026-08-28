@@ -226,6 +226,9 @@ export interface Interface {
     report: ResearchReport.Record,
     collection: Collection,
   ) => Effect.Effect<ReadonlyArray<RetainedSource>, Unavailable>;
+  readonly resumeCommitted: (
+    report: ResearchReport.Record,
+  ) => Effect.Effect<Collection, Unavailable>;
 }
 
 export class Service extends Context.Service<Service, Interface>()("@osfo/ResearchCollector") {}
@@ -389,7 +392,7 @@ export const make = Effect.gen(function* () {
     report: ResearchReport.Record,
     collection: Collection,
   ) {
-    yield* authorize(report);
+    if (report.state !== "artifact_stored") yield* authorize(report);
     if (report.sourceManifestKey === null || report.sourceManifestDigest === null) {
       return yield* new Unavailable({
         cause: report.state,
@@ -448,11 +451,53 @@ export const make = Effect.gen(function* () {
         }),
       { concurrency: 1 },
     );
-    yield* authorize(report);
+    if (report.state !== "artifact_stored") yield* authorize(report);
     return sources;
   });
 
-  return Service.of({ collect, discard, read });
+  const resumeCommitted = Effect.fn("ResearchCollector.resumeCommitted")(function* (
+    report: ResearchReport.Record,
+  ) {
+    if (report.sourceManifestKey === null || report.sourceManifestDigest === null) {
+      return yield* new Unavailable({
+        cause: report.state,
+        message: "Publication recovery has no committed source-manifest identity",
+        reason: "insufficientEvidence",
+      });
+    }
+    const manifest = yield* ports.sourceEvidence.readManifest(
+      report.userId,
+      report.sourceManifestKey,
+      report.sourceManifestDigest,
+    );
+    if (manifest.workflowId !== report.workflowId) {
+      return yield* new Unavailable({
+        cause: manifest.workflowId,
+        message: "Publication recovery found a cross-Workflow source manifest",
+        reason: "insufficientEvidence",
+      });
+    }
+    const pages = manifest.sources.map(
+      (source) =>
+        ({
+          _tag: "Page",
+          contentDigest: source.contentDigest,
+          contentKey: source.contentKey,
+          contentType: "text/plain",
+          fetchedAt: source.fetchedAt,
+          finalUrl: source.url,
+          title: source.title,
+        }) satisfies Extract<OperationResult, { readonly _tag: "Page" }>,
+    );
+    return {
+      manifest,
+      manifestDigest: report.sourceManifestDigest,
+      manifestKey: report.sourceManifestKey,
+      pages,
+    };
+  });
+
+  return Service.of({ collect, discard, read, resumeCommitted });
 });
 
 export const layerWithoutDependencies = Layer.effect(Service, make);

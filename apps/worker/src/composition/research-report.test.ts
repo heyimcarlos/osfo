@@ -29,7 +29,7 @@ it.effect("treats a failed create as accepted only when the stable instance exis
 
   return Effect.gen(function* () {
     yield* port.create(instanceId, payload);
-    expect(calls).toEqual(["create", `get:${instanceId}`]);
+    expect(calls).toEqual(["create", "create", `get:${instanceId}`, `get:${instanceId}-timer`]);
   });
 });
 
@@ -56,20 +56,20 @@ it.effect("retains create uncertainty when the stable instance is unknown", () =
 });
 
 it.effect("makes termination an idempotent best-effort interruption", () => {
-  let terminations = 0;
-  let status: "running" | "terminated" = "running";
+  const terminations = new Array<string>();
+  const statuses = new Map<string, "running" | "terminated">();
   const port = ResearchReportComposition.makeWorkflowPort({
     create: () =>
       Promise.resolve({
         status: () => Promise.resolve({ status: "queued" as const }),
         terminate: () => Promise.resolve(),
       }),
-    get: () =>
+    get: (id) =>
       Promise.resolve({
-        status: () => Promise.resolve({ status }),
+        status: () => Promise.resolve({ status: statuses.get(id) ?? ("running" as const) }),
         terminate: () => {
-          terminations += 1;
-          status = "terminated";
+          terminations.push(id);
+          statuses.set(id, "terminated");
           return Promise.resolve();
         },
       }),
@@ -78,6 +78,6 @@ it.effect("makes termination an idempotent best-effort interruption", () => {
   return Effect.gen(function* () {
     yield* port.terminate(instanceId);
     yield* port.terminate(instanceId);
-    expect(terminations).toBe(1);
+    expect(terminations).toEqual([instanceId, `${instanceId}-timer`]);
   });
 });

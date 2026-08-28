@@ -2,14 +2,17 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import { Effect, Predicate, Result, Schema } from "effect";
 
 import { runInvocationEffect } from "../adapters/host";
+import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { ResearchReportComposition } from "../composition/research-report";
-import { decodeOsfoStage } from "../config";
+import { decodeOsfoStage, type OsfoStage } from "../config";
 import { makeWorkflowRuntime } from "../layers";
 import { ResearchCollector } from "../services/research-collector";
 import type { Denied } from "../services/authorization";
 import { ResearchReport } from "../services/research-report";
 import { ResearchReportDocument } from "../services/research-report-document";
+import { ResearchReportFollowUp } from "../services/research-report-follow-up";
 import { ResearchSynthesis } from "../services/research-synthesis";
+import { requireRetryForRecoverableResult } from "./research-report-host-outcome";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare WorkflowEntrypoint and WorkflowStep are Promise-only host APIs. */
 /* oxlint-disable eslint/no-underscore-dangle -- Option uses the standard Effect _tag discriminator. */
@@ -73,15 +76,27 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
             }) as const,
         }),
       );
-      return runInvocationEffect(
+      const result = await runInvocationEffect(
         makeWorkflowRuntime(event.instanceId, stage.value),
         ResearchReportComposition.executionEffect(
           ResearchReportComposition.bindingsFromEnv(this.env),
           serviceEffect,
         ),
       );
+      return requireRetryForRecoverableResult(result);
     });
-    if ("failure" in admission) return admission;
+    if ("failure" in admission) {
+      if (admission.failure === "unauthorized") {
+        await this.#claimAndSubmitTerminalFollowUp(
+          step,
+          event.instanceId,
+          stage.value,
+          event.payload,
+          "after admission cancellation",
+        );
+      }
+      return admission;
+    }
     const collected = await step.do("collect and commit public evidence", async () => {
       const payload = Schema.decodeResult(ResearchReport.WorkflowPayload)(event.payload);
       if (Result.isFailure(payload)) return { failure: "invalidPayload" } as const;
@@ -132,13 +147,20 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
           serviceEffect,
         ),
       );
-      if ("failure" in result && result.failure === "recovery") {
-        throw new Error("Research Report provider reconciliation is pending");
-      }
-      return result;
+      return requireRetryForRecoverableResult(result);
     });
     if ("failure" in collected) return collected;
-    return step.do("synthesize and publish cited report", async () => {
+    if (ResearchReport.terminalStates.has(collected.state)) {
+      await this.#claimAndSubmitTerminalFollowUp(
+        step,
+        event.instanceId,
+        stage.value,
+        event.payload,
+        "after source collection",
+      );
+      return collected;
+    }
+    const published = await step.do("synthesize and publish cited report", async () => {
       const payload = Schema.decodeResult(ResearchReport.WorkflowPayload)(event.payload);
       if (Result.isFailure(payload)) return { failure: "invalidPayload" } as const;
       const serviceEffect = Effect.gen(function* () {
@@ -174,10 +196,62 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
           serviceEffect,
         ),
       );
-      if ("failure" in result && result.failure === "recovery") {
-        throw new Error("Research Report provider reconciliation is pending");
+      return requireRetryForRecoverableResult(result);
+    });
+    if (!("failure" in published) && ResearchReport.terminalStates.has(published.state)) {
+      await this.#claimAndSubmitTerminalFollowUp(
+        step,
+        event.instanceId,
+        stage.value,
+        event.payload,
+        "after report publication",
+      );
+    }
+    return published;
+  }
+
+  async #claimAndSubmitTerminalFollowUp(
+    step: WorkflowStep,
+    instanceId: string,
+    stage: OsfoStage,
+    encodedPayload: ResearchReport.WorkflowPayload,
+    phase: string,
+  ) {
+    const payload = Schema.decodeResult(ResearchReport.WorkflowPayload)(encodedPayload);
+    if (Result.isFailure(payload)) return;
+    const terminal = await step.do(`claim terminal follow-up ${phase}`, () =>
+      runInvocationEffect(
+        makeWorkflowRuntime(instanceId, stage),
+        ResearchReportComposition.followUpEffect(
+          { DB: this.env.DB },
+          ResearchReportFollowUp.Service.pipe(
+            Effect.flatMap((followUps) => followUps.claimTerminal(payload.success)),
+            Effect.orDie,
+          ),
+        ),
+      ),
+    );
+    if (terminal._tag === "NotTerminal") return;
+    await step.do(`submit terminal Agent follow-up ${phase}`, async () => {
+      const directory = this.env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
+      const result = await directory.submitResearchReportFollowUp(
+        terminal.notification.notificationId,
+      );
+      if (result._tag !== "Accepted" && result._tag !== "Replayed") {
+        throw new Error(`Research Report follow-up was not accepted: ${result._tag}`);
       }
-      return result;
+      return {
+        notificationId: terminal.notification.notificationId,
+        submissionId: result.submissionId,
+      };
+    });
+    await step.do(`stop report timer ${phase}`, async () => {
+      const timer = await this.env.RESEARCH_REPORT_TIMER_WORKFLOW.get(`${instanceId}-timer`);
+      const status = await timer.status();
+      if (status.status !== "unknown" && status.status !== "terminated") {
+        await timer.terminate();
+      }
+      return { status: status.status };
     });
   }
 }
@@ -211,7 +285,13 @@ const commitTerminalOutcome = (payload: ResearchReport.WorkflowPayload) =>
           ? reports.finishCanceled(payload, disposition.safeFailureCode)
           : reports.finishFailure(payload, disposition.safeFailureCode),
       ),
-      Effect.andThen(Effect.fail(failure)),
+      Effect.map((report) => ({
+        artifactContentId: report.artifactContentId,
+        sourceCount: 0,
+        sourceManifestKey: report.sourceManifestKey,
+        state: report.state,
+        workflowId: report.workflowId,
+      })),
     );
   });
 

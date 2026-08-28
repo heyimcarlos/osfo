@@ -5,6 +5,7 @@ import { Config, Effect, Redacted } from "effect";
 import { DatabaseHyperdrive } from "./Db";
 import { ExecutionUnitWorkflow } from "./ExecutionUnitWorkflow";
 import { ResearchReportWorkflow } from "./ResearchReportWorkflow";
+import { ResearchReportTimerWorkflow } from "./ResearchReportTimerWorkflow";
 import { Files } from "./Files";
 import { Artifacts } from "./Artifacts";
 
@@ -45,6 +46,7 @@ const worker = Worker(
         }),
         EXECUTION_UNIT_WORKFLOW: ExecutionUnitWorkflow,
         RESEARCH_REPORT_WORKFLOW: ResearchReportWorkflow,
+        RESEARCH_REPORT_TIMER_WORKFLOW: ResearchReportTimerWorkflow,
         FILES: Files,
         OSFO_DIRECTORY: DurableObject("OsfoDirectory", {
           className: "OsfoDirectory",
