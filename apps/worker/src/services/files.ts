@@ -465,17 +465,17 @@ export const makeFiles = <AllowanceError, ContextError, ObjectError, Persistence
         .pipe(
           Effect.catchTag("FileComputeFailed", (failure) =>
             Effect.gen(function* () {
+              if (failure.kind === "dependency_unavailable") {
+                yield* options.store.releaseNormalization(input.fileId, acceptedAt);
+              } else {
+                yield* options.store.failNormalization(input.fileId, acceptedAt, failure.reason);
+              }
               yield* recordCost(
                 options.allowances,
                 allowancePeriodId,
                 { sourceId: input.fileId, sourceType: "file" },
                 costFromFailure(failure),
               );
-              if (failure.kind === "dependency_unavailable") {
-                yield* options.store.releaseNormalization(input.fileId, acceptedAt);
-                return yield* failure;
-              }
-              yield* options.store.failNormalization(input.fileId, acceptedAt, failure.reason);
               return yield* failure;
             }),
           ),
