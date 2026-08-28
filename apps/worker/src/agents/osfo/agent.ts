@@ -2987,7 +2987,7 @@ export class OsfoAgent extends Think<Env> {
   async deliverReminder(payload: unknown): Promise<void> {
     await this.#migrationsReady;
     await Effect.runPromise(
-      this.#accountDeletionFencedSessionExecution
+      this.#accountDeletionFence
         .run(
           this.#reminders.deliver(payload),
           () =>

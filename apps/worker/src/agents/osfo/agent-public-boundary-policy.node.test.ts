@@ -34,7 +34,7 @@ const publicBoundaryPolicy = {
   deleteFile: ["ordinaryMutation", "accountDeletionFence"],
   deletePersonalSkillFromSettings: ["ordinaryMutation", "accountDeletionFence"],
   disconnectIntegrationFromSettings: ["ordinaryMutation", "accountDeletionFence"],
-  deliverReminder: ["cancellationReconciliationDeletion", "fencedSessionExecution"],
+  deliverReminder: ["cancellationReconciliationDeletion", "accountDeletionFence"],
   exposeReminderWakeUpSources: ["cancellationReconciliationDeletion", "none"],
   getActions: ["read", "none"],
   getModel: ["read", "none"],
