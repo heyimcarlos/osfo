@@ -1,6 +1,11 @@
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside Effects returned to it.effect. */
-/* oxlint-disable effecttsgo/global-date, effecttsgo/strict-effect-provide -- Fixed test evidence and owned Layers. */
+/* oxlint-disable effecttsgo/global-date, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- Fixed test evidence, owned Layers, and canonical Effect result tags. */
 import { expect, it } from "@effect/vitest";
+import { allowancePeriods } from "@osfo/db/schema/allowances";
+import { sessions, users } from "@osfo/db/schema/auth";
+import { billingSubscriptions } from "@osfo/db/schema/billing";
+import { deletionCases } from "@osfo/db/schema/user-lifecycle";
+import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { Effect, Layer, Result } from "effect";
 import { TestClock } from "effect/testing";
 
@@ -21,11 +26,13 @@ import { currentResourcePriceVersion } from "../domain/usage";
 import { ResearchCollector } from "./research-collector";
 import { ResearchReport } from "./research-report";
 import { ResearchSynthesis } from "./research-synthesis";
+import { ResearchReportPostgres } from "../integrations/postgres/research-report";
 
 const workflowId = ResearchReport.WorkflowId.make("synthesis-workflow");
 const userId = UserId.make("synthesis-user");
 const synthesisAttemptStartedAt = new Date("2026-08-27T12:00:00.000Z");
 const synthesisAttemptExpiredAtMilliseconds = new Date("2026-08-27T12:00:36.000Z").getTime();
+const deletionFenceAt = new Date("2026-08-27T12:06:00.000Z");
 const report: ResearchReport.Record = {
   acceptedAt: new Date("2026-08-27T12:00:00.000Z"),
   actionId: ActionId.make("synthesis-action"),
@@ -205,9 +212,63 @@ it.effect("expires a crashed synthesis attempt without a second model call", () 
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
+it.effect("removes late synthesis evidence after the committed PostgreSQL deletion fence", () =>
+  Effect.gen(function* () {
+    const databaseFixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(databaseFixture));
+    yield* applyMigrations(databaseFixture.client);
+    yield* seedAuthorization(databaseFixture.database);
+    const currentAuthorization = ResearchReportPostgres.makeCurrentAuthorization(
+      databaseFixture.database,
+    );
+    const fixture = makeFixture("completed", {
+      afterEvidencePut: () =>
+        Effect.promise(() =>
+          databaseFixture.database.insert(deletionCases).values({
+            access_fenced_at: deletionFenceAt,
+            approval_action_id: "delete-synthesis",
+            approval_presentation: "Delete Account",
+            deletion_case_id: "delete-synthesis-case",
+            reason: "User requested account deletion",
+            requested_by_user_id: userId,
+            user_id: userId,
+          }),
+        ).pipe(Effect.asVoid),
+      authorize: (current) =>
+        currentAuthorization(current).pipe(
+          Effect.flatMap((authorization) =>
+            authorization.deletionAccess._tag === "DeletionAccessRevoked"
+              ? Effect.fail(
+                  new ResearchReport.Unavailable({
+                    cause: "account deletion fenced",
+                    message: "Research Report authority ended",
+                    operation: "authorize",
+                  }),
+                )
+              : Effect.succeed(current),
+          ),
+        ),
+    });
+    const synthesis = yield* ResearchSynthesis.Service.pipe(Effect.provide(layer(fixture.port)));
+    const result = yield* synthesis.synthesize(report, sources).pipe(Effect.result);
+    expect(result).toMatchObject({ failure: { reason: "authorizationDenied" } });
+    expect(fixture.deletedKeys).toEqual(["users/synthesis/result.json"]);
+    expect(fixture.operation).toMatchObject({
+      safeFailureCode: "authority-ended-after-synthesis",
+      state: "canceled",
+    });
+    expect(fixture.costRecords).toEqual([20_000n]);
+  }).pipe(Effect.scoped),
+);
+
 const makeFixture = (
   outcome: "completed" | "invalid" | "unknown",
-  options: { readonly costFailures?: number; readonly initialPendingStartedAt?: Date } = {},
+  options: {
+    readonly afterEvidencePut?: () => Effect.Effect<void>;
+    readonly authorize?: ResearchSynthesis.PortInterface["authorize"];
+    readonly costFailures?: number;
+    readonly initialPendingStartedAt?: Date;
+  } = {},
 ) => {
   let operation: ResearchSynthesis.Operation | null = null;
   let retained: {
@@ -219,6 +280,7 @@ const makeFixture = (
   let providerCalls = 0;
   let remainingCostFailures = options.costFailures ?? 0;
   const costRecords = new Array<bigint>();
+  const deletedKeys = new Array<string>();
   const companyCost = ResearchSynthesis.CompanyCost.make({
     basis: "observed",
     inputTokens: 1_000n,
@@ -227,17 +289,18 @@ const makeFixture = (
     usdMicros: 20_000n,
   });
   const port = ResearchSynthesis.Port.of({
-    authorize: (current) => Effect.succeed(current),
+    authorize: options.authorize ?? ((current) => Effect.succeed(current)),
     evidence: {
-      delete: () => Effect.void,
+      delete: (_, resultKey) => Effect.sync(() => deletedKeys.push(resultKey)),
       put: (_, __, result, retainedCost) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           retained = {
             companyCost: retainedCost,
             result,
             resultDigest: ResearchReport.InputDigest.make("c".repeat(64)),
             resultKey: "users/synthesis/result.json",
           };
+          yield* options.afterEvidencePut?.() ?? Effect.void;
           return retained;
         }),
       read: () => Effect.sync(() => retained?.result ?? valid),
@@ -335,6 +398,7 @@ const makeFixture = (
   });
   return {
     costRecords,
+    deletedKeys,
     port,
     installLateEvidence: () => {
       retained = {
@@ -352,6 +416,46 @@ const makeFixture = (
     },
   };
 };
+
+const seedAuthorization = (database: Parameters<typeof ResearchReportPostgres.make>[0]) =>
+  Effect.gen(function* () {
+    yield* Effect.promise(() =>
+      database.insert(users).values({
+        email: "synthesis@example.test",
+        emailVerified: true,
+        id: userId,
+        name: "Synthesis",
+      }),
+    );
+    yield* Effect.promise(() =>
+      database.insert(billingSubscriptions).values({
+        billing_subscription_id: "synthesis-subscription",
+        plan: "free",
+        plan_policy_version: "launch-v1",
+        user_id: userId,
+      }),
+    );
+    yield* Effect.promise(() =>
+      database.insert(allowancePeriods).values({
+        allowance_period_id: report.allowancePeriodId,
+        billing_subscription_id: "synthesis-subscription",
+        ends_at: report.deadlineAt,
+        plan: "free",
+        plan_policy_version: "launch-v1",
+        starts_at: report.admittedAt,
+        user_id: userId,
+      }),
+    );
+    yield* Effect.promise(() =>
+      database.insert(sessions).values({
+        expiresAt: report.deadlineAt,
+        id: "synthesis-session-authority",
+        token: "synthesis-token",
+        updatedAt: report.admittedAt,
+        userId,
+      }),
+    );
+  });
 
 function claim(statement: string): ResearchSynthesis.MaterialClaim {
   return {

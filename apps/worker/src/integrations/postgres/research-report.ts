@@ -150,6 +150,17 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           .limit(1)
           .for("update");
         if (existing !== undefined) return { _tag: "Existing" as const, row: existing };
+        const [deletion] = await transaction
+          .select({ deletionCaseId: deletionCases.deletion_case_id })
+          .from(deletionCases)
+          .where(
+            and(
+              eq(deletionCases.user_id, record.userId),
+              isNotNull(deletionCases.access_fenced_at),
+            ),
+          )
+          .limit(1);
+        if (deletion !== undefined) return { _tag: "AccessFenced" as const };
         const active = await transaction
           .select({ workflowId: researchReports.workflow_id })
           .from(researchReports)
@@ -222,6 +233,13 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
             return Effect.fail({
               _tag: "Denied",
               reason: "liveResourceLimitReached",
+              resetAt: null,
+            } satisfies Denied);
+          }
+          if (outcome._tag === "AccessFenced") {
+            return Effect.fail({
+              _tag: "Denied",
+              reason: "deletionAccessRevoked",
               resetAt: null,
             } satisfies Denied);
           }
@@ -779,6 +797,58 @@ export const countActiveForUser = (database: Database, userId: UserId) =>
         ),
       ),
   ).pipe(Effect.map((rows) => BigInt(rows.length)));
+
+/** Fence every User-owned execution before account-owned object and row erasure. */
+export const quiesceForAccountDeletion = (database: Database, userId: UserId, terminalAt: Date) =>
+  attempt("quiesceForAccountDeletion", () =>
+    database.transaction(async (transaction) => {
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`research-report:user:${userId}`}, 0))`,
+      );
+      const rows = await transaction
+        .select({
+          cloudflareInstanceId: researchReports.cloudflare_instance_id,
+          state: researchReports.state,
+        })
+        .from(researchReports)
+        .where(eq(researchReports.user_id, userId))
+        .for("update");
+      await transaction
+        .update(researchReports)
+        .set({
+          safe_failure_code: "account-deletion",
+          state: "canceled",
+          terminal_at: terminalAt,
+          updated_at: terminalAt,
+        })
+        .where(
+          and(
+            eq(researchReports.user_id, userId),
+            // Account deletion erases the claimed artifact, so artifact_stored cannot recover publication.
+            inArray(researchReports.state, [
+              "admitted",
+              "accepted",
+              "running",
+              "sources_committed",
+              "artifact_stored",
+              "cancel_requested",
+            ]),
+          ),
+        );
+      return rows.map(({ cloudflareInstanceId }) => cloudflareInstanceId);
+    }),
+  ).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(ResearchReport.CloudflareInstanceId))),
+    Effect.mapError((cause) =>
+      Schema.is(ResearchReport.Unavailable)(cause)
+        ? cause
+        : unavailable(
+            "quiesceForAccountDeletion",
+            "PostgreSQL returned invalid Research Report execution identities",
+            cause,
+          ),
+    ),
+  );
 
 const inspectAuthority = (database: Database, report: ResearchReport.Record, now: Date) => {
   const origin = report.originatingAuthority;

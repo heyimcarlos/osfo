@@ -2,6 +2,11 @@
 /* oxlint-disable effecttsgo/strict-effect-provide, effecttsgo/global-date -- Each test owns its isolated collector Layer and fixed dates are immutable evidence. */
 /* oxlint-disable eslint/no-underscore-dangle -- Assertions inspect canonical tagged outcomes. */
 import { expect, it } from "@effect/vitest";
+import { allowancePeriods } from "@osfo/db/schema/allowances";
+import { sessions, users } from "@osfo/db/schema/auth";
+import { billingSubscriptions } from "@osfo/db/schema/billing";
+import { deletionCases } from "@osfo/db/schema/user-lifecycle";
+import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { Deferred, Effect, Fiber, Layer, Result } from "effect";
 import { TestClock } from "effect/testing";
 
@@ -21,11 +26,13 @@ import { launchModelAccessPolicy } from "../domain/model-access-policy";
 import { currentResourcePriceVersion } from "../domain/usage";
 import { ResearchCollector } from "./research-collector";
 import { ResearchReport } from "./research-report";
+import { ResearchReportPostgres } from "../integrations/postgres/research-report";
 
 const userId = UserId.make("collector-user");
 const workflowId = ResearchReport.WorkflowId.make("collector-workflow");
 const providerAttemptStartedAt = new Date("2026-08-27T12:00:00.000Z");
 const providerAttemptExpiredAtMilliseconds = new Date("2026-08-27T12:00:36.000Z").getTime();
+const deletionFenceAt = new Date("2026-08-27T12:06:00.000Z");
 const report: ResearchReport.Record = {
   acceptedAt: new Date("2026-08-27T12:00:00.000Z"),
   actionId: ActionId.make("collector-action"),
@@ -278,6 +285,52 @@ it.effect("removes uploaded page evidence when authority ends before PostgreSQL 
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
+it.effect("removes a late page write after the committed PostgreSQL deletion fence", () =>
+  Effect.gen(function* () {
+    const databaseFixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(databaseFixture));
+    yield* applyMigrations(databaseFixture.client);
+    yield* seedAuthorization(databaseFixture.database);
+    const currentAuthorization = ResearchReportPostgres.makeCurrentAuthorization(
+      databaseFixture.database,
+    );
+    const fixture = makeFixture({
+      afterPut: () =>
+        Effect.promise(() =>
+          databaseFixture.database.insert(deletionCases).values({
+            access_fenced_at: deletionFenceAt,
+            approval_action_id: "delete-collector",
+            approval_presentation: "Delete Account",
+            deletion_case_id: "delete-collector-case",
+            reason: "User requested account deletion",
+            requested_by_user_id: userId,
+            user_id: userId,
+          }),
+        ).pipe(Effect.asVoid),
+      authorize: (current) =>
+        currentAuthorization(current).pipe(
+          Effect.flatMap((authorization) =>
+            authorization.deletionAccess._tag === "DeletionAccessRevoked"
+              ? Effect.fail(
+                  new ResearchReport.Unavailable({
+                    cause: "account deletion fenced",
+                    message: "Research Report authority ended",
+                    operation: "authorize",
+                  }),
+                )
+              : Effect.succeed(current),
+          ),
+        ),
+    });
+
+    const collector = yield* ResearchCollector.Service.pipe(Effect.provide(layer(fixture.port)));
+    const result = yield* collector.collect(report).pipe(Effect.result);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(fixture.removedKeys).toEqual([`users/${userId}/research/source.json`]);
+    expect(fixture.operations.get(`${workflowId}:provider:1`)?.state).toBe("canceled");
+  }).pipe(Effect.scoped),
+);
+
 const makeFixture = (
   options: {
     readonly pendingAttemptCount?: number;
@@ -291,6 +344,8 @@ const makeFixture = (
     readonly duplicateUrlVariants?: boolean;
     readonly corruptManifestWorkflow?: boolean;
     readonly transientPageFailures?: number;
+    readonly afterPut?: () => Effect.Effect<void>;
+    readonly authorize?: ResearchCollector.PortInterface["authorize"];
   } = {},
 ) => {
   const operations = new Map<string, ResearchCollector.Operation>();
@@ -304,18 +359,20 @@ const makeFixture = (
   let ambiguousDiscoveryFailures = options.ambiguousDiscoveryFailures ?? 0;
   let transientPageFailures = options.transientPageFailures ?? 0;
   const port = ResearchCollector.Port.of({
-    authorize: (current) =>
-      Effect.gen(function* () {
-        authorizationCalls += 1;
-        if (authorizationCalls === options.failAuthorizationAt) {
-          return yield* new ResearchReport.Unavailable({
-            cause: "revoked",
-            message: "Authority revoked",
-            operation: "authorize",
-          });
-        }
-        return current;
-      }),
+    authorize:
+      options.authorize ??
+      ((current) =>
+        Effect.gen(function* () {
+          authorizationCalls += 1;
+          if (authorizationCalls === options.failAuthorizationAt) {
+            return yield* new ResearchReport.Unavailable({
+              cause: "revoked",
+              message: "Authority revoked",
+              operation: "authorize",
+            });
+          }
+          return current;
+        })),
     persistence: {
       claim: (operation) =>
         Effect.gen(function* () {
@@ -463,8 +520,9 @@ const makeFixture = (
               }),
             ),
       put: (input) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           evidenceBodies.push(input.content);
+          yield* options.afterPut?.() ?? Effect.void;
           return pageResult(`users/${input.userId}/research/source.json`, input);
         }),
       reconcile: (reconciledUserId) =>
@@ -501,6 +559,46 @@ const makeFixture = (
     },
   };
 };
+
+const seedAuthorization = (database: Parameters<typeof ResearchReportPostgres.make>[0]) =>
+  Effect.gen(function* () {
+    yield* Effect.promise(() =>
+      database.insert(users).values({
+        email: "collector@example.test",
+        emailVerified: true,
+        id: userId,
+        name: "Collector",
+      }),
+    );
+    yield* Effect.promise(() =>
+      database.insert(billingSubscriptions).values({
+        billing_subscription_id: "collector-subscription",
+        plan: "free",
+        plan_policy_version: "launch-v1",
+        user_id: userId,
+      }),
+    );
+    yield* Effect.promise(() =>
+      database.insert(allowancePeriods).values({
+        allowance_period_id: report.allowancePeriodId,
+        billing_subscription_id: "collector-subscription",
+        ends_at: report.deadlineAt,
+        plan: "free",
+        plan_policy_version: "launch-v1",
+        starts_at: report.admittedAt,
+        user_id: userId,
+      }),
+    );
+    yield* Effect.promise(() =>
+      database.insert(sessions).values({
+        expiresAt: report.deadlineAt,
+        id: "collector-auth-session",
+        token: "collector-token",
+        updatedAt: report.admittedAt,
+        userId,
+      }),
+    );
+  });
 
 const page = () => ({
   content: "FETCHED_BODY_TEXT",

@@ -5,7 +5,15 @@ import { expect, it } from "@effect/vitest";
 import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
+import {
+  researchReportNotifications,
+  researchReportProviderOperations,
+  researchReports,
+  researchReportSynthesisOperations,
+} from "@osfo/db/schema/research-reports";
+import { deletionCases } from "@osfo/db/schema/user-lifecycle";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
+import { eq } from "drizzle-orm";
 import { Effect, Result } from "effect";
 
 import {
@@ -23,10 +31,15 @@ import { ActionId } from "../../domain/action-execution";
 import { AuthSessionId } from "../../domain/auth-session";
 import { ManagedModelRoute } from "../../domain/model-access-policy";
 import { ResearchReport } from "../../services/research-report";
+import { ResearchReportFollowUp } from "../../services/research-report-follow-up";
+import { ResearchReportFollowUpPostgres } from "./research-report-follow-up";
 import { ResearchReportPostgres } from "./research-report";
 
 const admittedAt = new Date("2026-08-28T12:00:00.000Z");
 const periodEndsAt = new Date("2026-09-28T12:00:00.000Z");
+const executionStartedAt = new Date("2026-08-28T12:05:00.000Z");
+const artifactStoredAt = new Date("2026-08-28T12:10:00.000Z");
+const deletionCompletedAt = new Date("2026-08-28T12:15:00.000Z");
 const userId = UserId.make("concurrent-research-user");
 const allowancePeriodId = AllowancePeriodId.make("concurrent-research-period");
 
@@ -85,6 +98,210 @@ it.effect("serializes different Workflow identities against one User capacity", 
     });
   }).pipe(Effect.scoped),
 );
+
+it.effect("fences admission, terminalizes every private Workflow, and cascades child truth", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedUser(fixture.database);
+    const persistence = ResearchReportPostgres.make(fixture.database);
+    const admitted = yield* persistence.admit(record("deleting-admitted"), 10n);
+    const running = yield* persistence.admit(record("deleting-running"), 10n);
+    const artifact = yield* persistence.admit(record("deleting-artifact"), 10n);
+    const success = yield* persistence.admit(record("deleting-success"), 10n);
+    yield* Effect.promise(() =>
+      fixture.database
+        .update(researchReports)
+        .set({
+          accepted_at: executionStartedAt,
+          started_at: executionStartedAt,
+          state: "running",
+        })
+        .where(eq(researchReports.workflow_id, running.report.workflowId)),
+    );
+    yield* Effect.promise(() =>
+      fixture.database
+        .update(researchReports)
+        .set({
+          accepted_at: executionStartedAt,
+          artifact_content_id: "artifact:deleting",
+          artifact_stored_at: artifactStoredAt,
+          manifest_version: "research-manifest-v1",
+          source_manifest_digest: "c".repeat(64),
+          source_manifest_key: "users/concurrent-research-user/research/deleting/manifest.json",
+          started_at: executionStartedAt,
+          state: "artifact_stored",
+        })
+        .where(eq(researchReports.workflow_id, artifact.report.workflowId)),
+    );
+    yield* Effect.promise(() =>
+      fixture.database
+        .update(researchReports)
+        .set({
+          accepted_at: executionStartedAt,
+          artifact_content_id: "artifact:success",
+          artifact_stored_at: artifactStoredAt,
+          manifest_version: "research-manifest-v1",
+          source_manifest_digest: "d".repeat(64),
+          source_manifest_key: "users/concurrent-research-user/research/success/manifest.json",
+          started_at: executionStartedAt,
+          state: "success",
+          terminal_at: deletionCompletedAt,
+        })
+        .where(eq(researchReports.workflow_id, success.report.workflowId)),
+    );
+    yield* Effect.promise(() =>
+      fixture.database.insert(deletionCases).values({
+        access_fenced_at: deletionCompletedAt,
+        approval_action_id: "delete-action",
+        approval_presentation: "Delete Account",
+        deletion_case_id: "delete-case",
+        reason: "User requested account deletion",
+        requested_by_user_id: userId,
+        user_id: userId,
+      }),
+    );
+
+    const denied = yield* persistence.admit(record("late-after-fence"), 10n).pipe(Effect.result);
+    expect(denied).toMatchObject({
+      failure: { _tag: "Denied", reason: "deletionAccessRevoked" },
+    });
+
+    const instanceIds = yield* ResearchReportPostgres.quiesceForAccountDeletion(
+      fixture.database,
+      userId,
+      deletionCompletedAt,
+    );
+    expect(new Set(instanceIds)).toEqual(
+      new Set([
+        admitted.report.cloudflareInstanceId,
+        running.report.cloudflareInstanceId,
+        artifact.report.cloudflareInstanceId,
+        success.report.cloudflareInstanceId,
+      ]),
+    );
+    expect(yield* persistence.inspect(admitted.report.workflowId)).toMatchObject({
+      safeFailureCode: "account-deletion",
+      state: "canceled",
+    });
+    expect(yield* persistence.inspect(running.report.workflowId)).toMatchObject({
+      safeFailureCode: "account-deletion",
+      state: "canceled",
+    });
+    expect(yield* persistence.inspect(artifact.report.workflowId)).toMatchObject({
+      safeFailureCode: "account-deletion",
+      state: "canceled",
+    });
+    expect(yield* persistence.inspect(success.report.workflowId)).toMatchObject({
+      safeFailureCode: null,
+      state: "success",
+    });
+    expect(
+      yield* ResearchReportPostgres.quiesceForAccountDeletion(
+        fixture.database,
+        userId,
+        deletionCompletedAt,
+      ),
+    ).toEqual(instanceIds);
+
+    const followUps = ResearchReportFollowUpPostgres.make(fixture.database);
+    const payload = ResearchReport.WorkflowPayload.make({
+      inputDigest: admitted.report.inputDigest,
+      workflowId: admitted.report.workflowId,
+    });
+    expect(yield* followUps.claimMilestone(payload, deletionCompletedAt)).toEqual({
+      _tag: "Suppressed",
+    });
+    expect(yield* followUps.claimTerminal(payload, deletionCompletedAt)).toEqual({
+      _tag: "Suppressed",
+    });
+    expect(yield* Effect.promise(() => countRows(fixture.database))).toBe(0);
+
+    yield* Effect.promise(() =>
+      fixture.database.insert(researchReportProviderOperations).values({
+        input_digest: "e".repeat(64),
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This trusted test fixture proves row-cascade ownership, not JSON decoding.
+        input_json: JSON.stringify({ query: "private" }),
+        kind: "search",
+        operation_id: "provider-private",
+        sequence: 0,
+        state: "pending",
+        workflow_id: admitted.report.workflowId,
+      }),
+    );
+    yield* Effect.promise(() =>
+      fixture.database.insert(researchReportSynthesisOperations).values({
+        input_digest: "f".repeat(64),
+        model_access_policy_version: "launch-v1",
+        model_route: "@cf/deepseek-ai/deepseek-v4-flash-0731",
+        operation_id: "synthesis-private",
+        resource_price_version: "resource-prices-2026-08-22",
+        state: "pending",
+        workflow_id: admitted.report.workflowId,
+      }),
+    );
+    yield* Effect.promise(() =>
+      fixture.database.insert(researchReportNotifications).values({
+        claimed_at: deletionCompletedAt,
+        kind: "terminal",
+        notification_id: "notification-private",
+        user_id: userId,
+        workflow_id: admitted.report.workflowId,
+      }),
+    );
+    expect(
+      yield* followUps.inspect(ResearchReportFollowUp.NotificationId.make("notification-private")),
+    ).toBeNull();
+    yield* Effect.promise(() => fixture.database.delete(users).where(eq(users.id, userId)));
+    const privateRows = yield* Effect.promise(() =>
+      Promise.all([
+        fixture.database.select().from(researchReports),
+        fixture.database.select().from(researchReportProviderOperations),
+        fixture.database.select().from(researchReportSynthesisOperations),
+        fixture.database.select().from(researchReportNotifications),
+      ]),
+    );
+    expect(privateRows.every((rows) => rows.length === 0)).toBe(true);
+  }).pipe(Effect.scoped),
+);
+
+const seedUser = (database: Parameters<typeof ResearchReportPostgres.make>[0]) =>
+  Effect.gen(function* () {
+    yield* Effect.promise(() =>
+      database.insert(users).values({
+        email: "concurrent-research@example.test",
+        emailVerified: true,
+        id: userId,
+        name: "Concurrent Research",
+      }),
+    );
+    yield* Effect.promise(() =>
+      database.insert(billingSubscriptions).values({
+        billing_subscription_id: "concurrent-research-subscription",
+        plan: "free",
+        plan_policy_version: "launch-v1",
+        user_id: userId,
+      }),
+    );
+    yield* Effect.promise(() =>
+      database.insert(allowancePeriods).values({
+        allowance_period_id: allowancePeriodId,
+        billing_subscription_id: "concurrent-research-subscription",
+        ends_at: periodEndsAt,
+        plan: "free",
+        plan_policy_version: "launch-v1",
+        starts_at: admittedAt,
+        user_id: userId,
+      }),
+    );
+  });
+
+const countRows = (database: Parameters<typeof ResearchReportPostgres.make>[0]) =>
+  database
+    .select()
+    .from(researchReportNotifications)
+    .then((rows) => rows.length);
 
 const record = (identity: string): ResearchReport.Record => {
   const workflowId = ResearchReport.WorkflowId.make(`research:${identity}`);

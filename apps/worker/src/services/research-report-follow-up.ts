@@ -70,7 +70,8 @@ export type MilestoneResult =
 export type TerminalResult =
   | { readonly _tag: "Claimed"; readonly notification: Notification }
   | { readonly _tag: "AlreadyClaimed"; readonly notification: Notification }
-  | { readonly _tag: "NotTerminal" };
+  | { readonly _tag: "NotTerminal" }
+  | { readonly _tag: "Suppressed" };
 
 export type DeadlineResult =
   | { readonly _tag: "Canceled"; readonly report: ResearchReport.Record }

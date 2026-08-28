@@ -111,6 +111,10 @@ export interface PortInterface {
       target: IntegrationAuthorityTarget,
     ) => Effect.Effect<void, AccountDeletionUnavailable>;
   };
+  readonly workflows: {
+    /** Terminalize private Workflow truth and stop every execution host before object erasure. */
+    readonly quiesce: (userId: UserId) => Effect.Effect<void, AccountDeletionUnavailable>;
+  };
   readonly objects: {
     readonly remove: (
       userId: UserId,
@@ -239,6 +243,7 @@ export const make = Effect.gen(function* () {
     if (candidate.agentId !== null) {
       yield* dependencies.agents.quiesce(candidate.agentId, candidate.userId);
     }
+    yield* dependencies.workflows.quiesce(candidate.userId);
   });
 
   const quiesceCase = Effect.fn("AccountDeletion.quiesceCase")(function* (

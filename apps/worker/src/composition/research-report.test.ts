@@ -81,3 +81,36 @@ it.effect("makes termination an idempotent best-effort interruption", () => {
     expect(terminations).toEqual([instanceId, `${instanceId}-timer`]);
   });
 });
+
+it.effect("does not terminate Cloudflare instances that are already non-executable", () => {
+  const terminations = new Array<string>();
+  const statuses = ["complete", "errored", "terminated", "unknown"] as const;
+  const port = ResearchReportComposition.makeWorkflowPort(
+    bindingForTerminalStatuses(statuses, terminations),
+    bindingForTerminalStatuses(statuses, terminations),
+  );
+
+  return Effect.gen(function* () {
+    for (const status of statuses) {
+      yield* port.terminate(ResearchReport.CloudflareInstanceId.make(`research:${status}`));
+    }
+    expect(terminations).toEqual([]);
+  });
+});
+
+const bindingForTerminalStatuses = (
+  statuses: ReadonlyArray<"complete" | "errored" | "terminated" | "unknown">,
+  terminations: Array<string>,
+): ResearchReportComposition.WorkflowBinding => ({
+  create: () => Promise.reject(new Error("Unexpected create")),
+  get: (id) => {
+    const status = statuses.find((candidate) => id.includes(candidate)) ?? "unknown";
+    return Promise.resolve({
+      status: () => Promise.resolve({ status }),
+      terminate: () => {
+        terminations.push(id);
+        return Promise.resolve();
+      },
+    });
+  },
+});

@@ -1,14 +1,16 @@
 import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
 import { and, eq } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { DateTime, Effect, Layer } from "effect";
 
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { AllowancePeriodId, type AgentId } from "../domain";
 import { Db } from "../db";
 import { AccountDeletionCloudflare } from "../integrations/cloudflare/account-deletion";
 import { AccountDeletionPostgres } from "../integrations/postgres/account-deletion";
+import { ResearchReportPostgres } from "../integrations/postgres/research-report";
 import { AccountDeletion } from "../services/account-deletion";
 import { WhatsAppWakeUps } from "../services/whatsapp-wakeups";
+import { ResearchReportComposition } from "./research-report";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Closed capability variants use the canonical _tag discriminator, and the deletion preflight adapts one Promise transaction at its Effect boundary. */
 
@@ -38,6 +40,8 @@ export interface Bindings {
   readonly OSFO_DIRECTORY: {
     readonly getByName: (identity: string) => DirectoryDeletionStub;
   };
+  readonly RESEARCH_REPORT_TIMER_WORKFLOW?: ResearchReportComposition.WorkflowBinding;
+  readonly RESEARCH_REPORT_WORKFLOW?: ResearchReportComposition.WorkflowBinding;
 }
 
 /** Compose provider-independent local account erasure boundaries. */
@@ -49,6 +53,19 @@ const makePort = (bindings: Bindings) =>
       agents: {
         quiesce: (agentId: AgentId, userId) =>
           Effect.gen(function* () {
+            yield* Effect.tryPromise({
+              try: () =>
+                bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).quiesceAgentAccountDeletion(
+                  agentId,
+                  userId,
+                ),
+              catch: (cause) =>
+                new AccountDeletion.AccountDeletionUnavailable({
+                  cause,
+                  message: "Agent provider activity could not be quiesced",
+                  operation: "quiesceAgentAccountDeletion",
+                }),
+            });
             yield* Effect.tryPromise({
               try: async () => {
                 const deleted = await WhatsAppWakeUps.deleteUserRowsBeforeAgentTeardown(
@@ -64,19 +81,6 @@ const makePort = (bindings: Bindings) =>
                   operation: "deleteWhatsAppWakeUps",
                 }),
             });
-            yield* Effect.tryPromise({
-              try: () =>
-                bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).quiesceAgentAccountDeletion(
-                  agentId,
-                  userId,
-                ),
-              catch: (cause) =>
-                new AccountDeletion.AccountDeletionUnavailable({
-                  cause,
-                  message: "Agent provider activity could not be quiesced",
-                  operation: "quiesceAgentAccountDeletion",
-                }),
-            });
           }),
         remove: (agentId: AgentId) =>
           Effect.tryPromise({
@@ -90,6 +94,56 @@ const makePort = (bindings: Bindings) =>
           }),
       },
       integrations: integrationDeletionPort(bindings.integrationAuthorityDeletion),
+      workflows: {
+        quiesce: (userId) => {
+          if (
+            bindings.RESEARCH_REPORT_WORKFLOW === undefined ||
+            bindings.RESEARCH_REPORT_TIMER_WORKFLOW === undefined
+          ) {
+            return Effect.fail(
+              new AccountDeletion.AccountDeletionUnavailable({
+                cause: "missing Research Report Workflow bindings",
+                message: "Research Report account-deletion quiescence is unavailable",
+                operation: "quiesceResearchReports",
+              }),
+            );
+          }
+          const workflow = ResearchReportComposition.makeWorkflowPort(
+            bindings.RESEARCH_REPORT_WORKFLOW,
+            bindings.RESEARCH_REPORT_TIMER_WORKFLOW,
+          );
+          return Effect.gen(function* () {
+            const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+            const instanceIds = yield* ResearchReportPostgres.quiesceForAccountDeletion(
+              database,
+              userId,
+              now,
+            ).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new AccountDeletion.AccountDeletionUnavailable({
+                    cause,
+                    message: "Research Report product truth could not be terminalized",
+                    operation: "quiesceResearchReports",
+                  }),
+              ),
+            );
+            yield* Effect.forEach(instanceIds, workflow.terminate, {
+              concurrency: 2,
+              discard: true,
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new AccountDeletion.AccountDeletionUnavailable({
+                    cause,
+                    message: "Research Report execution hosts could not be terminated",
+                    operation: "quiesceResearchReports",
+                  }),
+              ),
+            );
+          });
+        },
+      },
       objects:
         bindings.FILES === undefined || bindings.ARTIFACTS === undefined
           ? {

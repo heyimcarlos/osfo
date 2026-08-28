@@ -36,7 +36,7 @@ type WorkflowInstanceHandle = Pick<WorkflowInstance, "status" | "terminate">;
 
 const researchReportDocumentSandboxUsdMicros = 50_000n;
 
-interface WorkflowBinding {
+export interface WorkflowBinding {
   readonly create: (options: {
     readonly id: string;
     readonly params: ResearchReport.WorkflowPayload;
@@ -118,7 +118,14 @@ const terminateWorkflowInstance = (binding: WorkflowBinding, instanceId: string)
     try: async () => {
       const instance = await binding.get(instanceId);
       const status = await instance.status();
-      if (status.status === "unknown" || status.status === "terminated") return;
+      if (
+        status.status === "complete" ||
+        status.status === "errored" ||
+        status.status === "terminated" ||
+        status.status === "unknown"
+      ) {
+        return;
+      }
       await instance.terminate();
     },
     catch: (cause) =>
@@ -346,6 +353,7 @@ const makeTerminalFollowUpCommitter =
               }),
           ),
         );
+      if (claimed._tag === "Suppressed") return undefined;
       if (claimed._tag === "NotTerminal") {
         return yield* new ResearchReport.Unavailable({
           cause: report.state,

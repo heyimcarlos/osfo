@@ -1,6 +1,7 @@
 import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { researchReportNotifications, researchReports } from "@osfo/db/schema/research-reports";
-import { and, eq, gt, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { deletionCases } from "@osfo/db/schema/user-lifecycle";
+import { and, eq, gt, inArray, isNotNull, isNull, notExists, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -114,7 +115,22 @@ export const make = (database: Database): ResearchReportFollowUp.PortInterface =
             eq(allowancePeriods.allowance_period_id, researchReports.allowance_period_id),
           ),
         )
-        .where(eq(researchReportNotifications.notification_id, notificationId))
+        .where(
+          and(
+            eq(researchReportNotifications.notification_id, notificationId),
+            notExists(
+              database
+                .select({ deletionCaseId: deletionCases.deletion_case_id })
+                .from(deletionCases)
+                .where(
+                  and(
+                    eq(deletionCases.user_id, researchReports.user_id),
+                    isNotNull(deletionCases.access_fenced_at),
+                  ),
+                ),
+            ),
+          ),
+        )
         .limit(1),
     ).pipe(Effect.flatMap(([row]) => (row === undefined ? Effect.succeed(null) : decode(row))));
 
@@ -146,6 +162,9 @@ export const make = (database: Database): ResearchReportFollowUp.PortInterface =
       Effect.gen(function* () {
         const result = yield* attempt("claimMilestone", () =>
           database.transaction(async (transaction) => {
+            if (!(await lockWorkflowUser(transaction, payload))) {
+              return { _tag: "Conflict" as const };
+            }
             const [row] = await transaction
               .select({
                 admittedAt: researchReports.admitted_at,
@@ -162,6 +181,17 @@ export const make = (database: Database): ResearchReportFollowUp.PortInterface =
             if (row === undefined || row.inputDigest !== payload.inputDigest) {
               return { _tag: "Conflict" as const };
             }
+            const [deletion] = await transaction
+              .select({ deletionCaseId: deletionCases.deletion_case_id })
+              .from(deletionCases)
+              .where(
+                and(
+                  eq(deletionCases.user_id, row.userId),
+                  isNotNull(deletionCases.access_fenced_at),
+                ),
+              )
+              .limit(1);
+            if (deletion !== undefined) return { _tag: "Suppressed" as const };
             const notificationId = ResearchReportFollowUp.notificationIdFor(
               payload.workflowId,
               "sourcesCollected",
@@ -240,6 +270,9 @@ export const make = (database: Database): ResearchReportFollowUp.PortInterface =
       Effect.gen(function* () {
         const result = yield* attempt("claimTerminal", () =>
           database.transaction(async (transaction) => {
+            if (!(await lockWorkflowUser(transaction, payload))) {
+              return { _tag: "Conflict" as const };
+            }
             const [row] = await transaction
               .select({
                 inputDigest: researchReports.input_digest,
@@ -258,6 +291,17 @@ export const make = (database: Database): ResearchReportFollowUp.PortInterface =
             if (!ResearchReport.terminalStates.has(ResearchReport.State.make(row.state))) {
               return { _tag: "NotTerminal" as const };
             }
+            const [deletion] = await transaction
+              .select({ deletionCaseId: deletionCases.deletion_case_id })
+              .from(deletionCases)
+              .where(
+                and(
+                  eq(deletionCases.user_id, row.userId),
+                  isNotNull(deletionCases.access_fenced_at),
+                ),
+              )
+              .limit(1);
+            if (deletion !== undefined) return { _tag: "Suppressed" as const };
             const notificationId = ResearchReportFollowUp.notificationIdFor(
               payload.workflowId,
               "terminal",
@@ -280,7 +324,7 @@ export const make = (database: Database): ResearchReportFollowUp.PortInterface =
           }),
         );
         if (result._tag === "Conflict") return yield* conflict(payload, null);
-        if (result._tag === "NotTerminal") return result;
+        if (result._tag === "NotTerminal" || result._tag === "Suppressed") return result;
         const notification = yield* inspect(result.notificationId);
         if (notification === null) return yield* conflict(payload, result.notificationId);
         return result._tag === "Claimed"
@@ -469,6 +513,27 @@ const conflict = (
       workflowId: payload.workflowId,
     }),
   );
+
+type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+const lockWorkflowUser = async (
+  transaction: Transaction,
+  payload: ResearchReport.WorkflowPayload,
+) => {
+  const [identity] = await transaction
+    .select({
+      inputDigest: researchReports.input_digest,
+      userId: researchReports.user_id,
+    })
+    .from(researchReports)
+    .where(eq(researchReports.workflow_id, payload.workflowId))
+    .limit(1);
+  if (identity === undefined || identity.inputDigest !== payload.inputDigest) return false;
+  await transaction.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`research-report:user:${identity.userId}`}, 0))`,
+  );
+  return true;
+};
 
 const attempt = <A>(operation: string, query: () => Promise<A>) =>
   Effect.tryPromise({

@@ -231,7 +231,7 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
         ),
       ),
     );
-    if (terminal._tag === "NotTerminal") return;
+    if (terminal._tag === "NotTerminal" || terminal._tag === "Suppressed") return;
     await step.do(`submit terminal Agent follow-up ${phase}`, async () => {
       const directory = this.env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
       const result = await directory.submitResearchReportFollowUp(

@@ -139,7 +139,7 @@ export class ResearchReportTimerWorkflow extends WorkflowEntrypoint<
     const terminal = await step.do("claim terminal report follow-up", () =>
       this.#run(instanceId, stage, (followUps) => followUps.claimTerminal(payload)),
     );
-    if (terminal._tag === "NotTerminal") return "notTerminal";
+    if (terminal._tag === "NotTerminal" || terminal._tag === "Suppressed") return "notTerminal";
     await step.do("submit terminal Agent follow-up", () =>
       this.#submitFollowUp(terminal.notification.notificationId),
     );

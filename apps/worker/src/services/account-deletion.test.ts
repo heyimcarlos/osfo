@@ -12,6 +12,15 @@ import { ApprovalPresentation } from "./authorization";
 import { MemoryProvider } from "./memory-provider";
 import { makeAccountDeletionFence } from "../agents/osfo/account-deletion-fence";
 
+const testPort = (
+  port: Omit<AccountDeletion.PortInterface, "workflows"> &
+    Partial<Pick<AccountDeletion.PortInterface, "workflows">>,
+) =>
+  AccountDeletion.Port.of({
+    workflows: { quiesce: () => Effect.void },
+    ...port,
+  });
+
 it.effect("acknowledges an exact fenced case only after admitted Agent work drains", () => {
   const candidate = {
     _tag: "SelfService" as const,
@@ -23,12 +32,15 @@ it.effect("acknowledges an exact fenced case only after admitted Agent work drai
   };
   const calls = new Array<string>();
   const fence = makeAccountDeletionFence();
-  const port = AccountDeletion.Port.of({
+  const port = testPort({
     inspectAuthorization: () =>
       Effect.sync(() => calls.push("recheck")).pipe(Effect.as(activeFacts(candidate.userId))),
     agents: {
       quiesce: () => Effect.sync(() => calls.push("quiesce")).pipe(Effect.andThen(fence.close)),
       remove: () => Effect.die(new Error("Unexpected Agent removal")),
+    },
+    workflows: {
+      quiesce: () => Effect.sync(() => calls.push("workflows")),
     },
     integrations: {
       pending: () => Effect.die(new Error("Unexpected discovery")),
@@ -72,6 +84,7 @@ it.effect("acknowledges an exact fenced case only after admitted Agent work drai
     yield* Deferred.succeed(releaseProvider, undefined);
     yield* Fiber.join(providerContinuation);
     yield* Fiber.join(acknowledgment);
+    expect(calls).toEqual(["recheck", "quiesce", "workflows"]);
     expect(mutations).toEqual([]);
 
     const lateMutation = yield* fence
@@ -98,7 +111,7 @@ it.effect(
       userId: UserId.make("user-1"),
     };
     let quiescenceAttempts = 0;
-    const port = AccountDeletion.Port.of({
+    const port = testPort({
       inspectAuthorization: () =>
         Effect.sync(() => calls.push("recheck")).pipe(Effect.as(activeFacts(candidate.userId))),
       agents: {
@@ -173,7 +186,7 @@ it.effect("acknowledges an exact fenced case with no Agent as terminally quiesce
     deletionCaseId: DeletionCaseId.make("deletion-case-1"),
     userId: UserId.make("user-1"),
   };
-  const port = AccountDeletion.Port.of({
+  const port = testPort({
     inspectAuthorization: () =>
       Effect.sync(() => calls.push("recheck")).pipe(Effect.as(activeFacts(candidate.userId))),
     agents: {
@@ -198,6 +211,61 @@ it.effect("acknowledges an exact fenced case with no Agent as terminally quiesce
   );
 });
 
+it.effect("orders the Agent fence before Workflow hosts and private-data erasure", () => {
+  const candidate = {
+    _tag: "SelfService" as const,
+    agentId: AgentId.make("agent-1"),
+    approvalActionId: ActionId.make("account-delete-1"),
+    approvalPresentation: ApprovalPresentation.make("Delete Account"),
+    deletionCaseId: DeletionCaseId.make("deletion-case-1"),
+    userId: UserId.make("user-1"),
+  };
+  const calls = new Array<string>();
+  const port = testPort({
+    inspectAuthorization: () => Effect.succeed(activeFacts(candidate.userId)),
+    agents: {
+      quiesce: () => Effect.sync(() => calls.push("directory-fence", "wakeup-cleanup")),
+      remove: () => Effect.sync(() => calls.push("agent-erase")),
+    },
+    integrations: { pending: () => Effect.succeed([]), revoke: () => Effect.void },
+    workflows: {
+      quiesce: () =>
+        Effect.sync(() => calls.push("workflow-terminal", "main-terminate", "timer-terminate")),
+    },
+    objects: {
+      remove: (_, authorizeDelete) =>
+        authorizeDelete.pipe(Effect.andThen(Effect.sync(() => calls.push("r2-erase")))),
+    },
+    persistence: {
+      ...passthroughIntegrationProgress,
+      ensureAccessFence: () => Effect.sync(() => calls.push("access-fence")),
+      pending: Effect.succeed([candidate]),
+      removeUser: () => Effect.sync(() => calls.push("postgres-erase")),
+    },
+  });
+
+  return AccountDeletion.Service.pipe(
+    Effect.flatMap((deletion) => deletion.reconcileOne(candidate)),
+    Effect.andThen(
+      Effect.sync(() =>
+        expect(calls).toEqual([
+          "access-fence",
+          "directory-fence",
+          "wakeup-cleanup",
+          "workflow-terminal",
+          "main-terminate",
+          "timer-terminate",
+          "provider",
+          "r2-erase",
+          "agent-erase",
+          "postgres-erase",
+        ]),
+      ),
+    ),
+    Effect.provide(accountDeletionLayer(port, calls, () => "deleted")),
+  );
+});
+
 it.effect("rejects quiescence for a nonexact retained Deletion Case", () => {
   const candidate = {
     _tag: "SelfService" as const,
@@ -208,7 +276,7 @@ it.effect("rejects quiescence for a nonexact retained Deletion Case", () => {
     userId: UserId.make("user-1"),
   };
   const calls = new Array<string>();
-  const port = AccountDeletion.Port.of({
+  const port = testPort({
     inspectAuthorization: () => Effect.die(new Error("Nonexact case must not be authorized")),
     agents: {
       quiesce: () => Effect.die(new Error("Nonexact case must not reach the Agent")),
@@ -247,7 +315,7 @@ it.effect("keeps local data pending until provider deletion confirms permanent a
     userId: UserId.make("user-1"),
   };
   let providerAttempts = 0;
-  const port = AccountDeletion.Port.of({
+  const port = testPort({
     inspectAuthorization: () =>
       Effect.sync(() => calls.push("recheck")).pipe(Effect.as(activeFacts(candidate.userId))),
     agents: {
@@ -314,7 +382,7 @@ it.effect(
       userId: UserId.make("user-1"),
     };
     let verificationAttempts = 0;
-    const port = AccountDeletion.Port.of({
+    const port = testPort({
       inspectAuthorization: () =>
         Effect.sync(() => calls.push("recheck")).pipe(Effect.as(activeFacts(candidate.userId))),
       agents: {
@@ -408,7 +476,7 @@ it.effect(
       userId: UserId.make("user-1"),
     };
     let fenceAttempts = 0;
-    const port = AccountDeletion.Port.of({
+    const port = testPort({
       inspectAuthorization: () =>
         Effect.sync(() => calls.push("recheck")).pipe(
           Effect.as({
@@ -493,7 +561,7 @@ it.effect("rechecks authority immediately before integration discovery", () => {
     deletionCaseId: DeletionCaseId.make("deletion-case-1"),
     userId: UserId.make("user-1"),
   };
-  const port = AccountDeletion.Port.of({
+  const port = testPort({
     inspectAuthorization: () =>
       Effect.sync(() => {
         calls.push("recheck");
@@ -545,7 +613,7 @@ it.effect("does not stage integration progress after authority drifts during dis
     connectionId: AccountDeletion.IntegrationAuthorityTargetId.make("connection-1"),
     userId: candidate.userId,
   };
-  const port = AccountDeletion.Port.of({
+  const port = testPort({
     inspectAuthorization: () => Effect.succeed(authorized ? activeFacts(candidate.userId) : null),
     agents: { quiesce: () => Effect.void, remove: () => Effect.die(new Error("unexpected")) },
     integrations: {
@@ -588,7 +656,7 @@ it.effect("does not confirm integration progress after authority drifts during r
     connectionId: AccountDeletion.IntegrationAuthorityTargetId.make("connection-1"),
     userId: candidate.userId,
   };
-  const port = AccountDeletion.Port.of({
+  const port = testPort({
     inspectAuthorization: () => Effect.succeed(authorized ? activeFacts(candidate.userId) : null),
     agents: { quiesce: () => Effect.void, remove: () => Effect.die(new Error("unexpected")) },
     integrations: {
@@ -641,7 +709,7 @@ it.effect("keeps the case pending and local data intact when R2 ownership is con
     deletionCaseId: DeletionCaseId.make("deletion-case-1"),
     userId: UserId.make("user-1"),
   };
-  const port = AccountDeletion.Port.of({
+  const port = testPort({
     inspectAuthorization: () =>
       Effect.sync(() => calls.push("recheck")).pipe(Effect.as(activeFacts(candidate.userId))),
     agents: {
@@ -724,7 +792,7 @@ const expectStopsWhenAuthorityChangesAfter = (
       calls.push(operation);
       if (changedAfter === operation) authorized = false;
     });
-  const port = AccountDeletion.Port.of({
+  const port = testPort({
     inspectAuthorization: () =>
       Effect.sync(() => {
         calls.push("recheck");
@@ -770,7 +838,7 @@ it.effect("does not delete provider knowledge when authority changes during quie
     deletionCaseId: DeletionCaseId.make("deletion-case-1"),
     userId: UserId.make("user-1"),
   };
-  const port = AccountDeletion.Port.of({
+  const port = testPort({
     inspectAuthorization: () =>
       Effect.sync(() => {
         calls.push("recheck");
@@ -810,7 +878,7 @@ it.effect("does not advance when Agent quiescence fails", () => {
     deletionCaseId: DeletionCaseId.make("deletion-case-1"),
     userId: UserId.make("user-1"),
   };
-  const port = AccountDeletion.Port.of({
+  const port = testPort({
     inspectAuthorization: () => Effect.succeed(activeFacts(candidate.userId)),
     agents: {
       quiesce: () =>
@@ -876,7 +944,7 @@ it.effect(
       AccountDeletion.IntegrationAuthorityTargetProgress
     >();
     let firstConfirmationAttempts = 0;
-    const port = AccountDeletion.Port.of({
+    const port = testPort({
       inspectAuthorization: () =>
         Effect.sync(() => calls.push("recheck")).pipe(Effect.as(activeFacts(candidate.userId))),
       agents: {
@@ -994,7 +1062,7 @@ it.effect("does not revoke a confirmed integration target after provider redisco
     AccountDeletion.IntegrationAuthorityTargetProgress
   >();
   let failSecondRevocation = true;
-  const port = AccountDeletion.Port.of({
+  const port = testPort({
     inspectAuthorization: () => Effect.succeed(activeFacts(candidate.userId)),
     agents: {
       quiesce: () => Effect.void,
@@ -1067,7 +1135,7 @@ it.effect("rechecks a retained administrative case through every protected stage
     reason: AdminReason.make("Required administrative erasure"),
     userId,
   };
-  const port = AccountDeletion.Port.of({
+  const port = testPort({
     inspectAuthorization: () =>
       Effect.sync(() => calls.push("recheck")).pipe(
         Effect.as({
@@ -1125,7 +1193,7 @@ it.effect("keeps an administrative case pending when its exact administrator is 
     userId,
   };
   let administratorActive = true;
-  const port = AccountDeletion.Port.of({
+  const port = testPort({
     inspectAuthorization: () =>
       Effect.sync(() => {
         calls.push("recheck");
