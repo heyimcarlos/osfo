@@ -316,7 +316,7 @@ const record = (identity: string): ResearchReport.Record => {
     artifactStoredAt: null,
     cancelRequestedAt: null,
     capabilityCatalogVersion: CapabilityCatalogVersion.make("governed-capabilities-v1"),
-    cloudflareInstanceId: ResearchReport.CloudflareInstanceId.make(workflowId),
+    cloudflareInstanceId: ResearchReport.CloudflareInstanceId.make(`research-${identity}`),
     deadlineAt: new Date("2026-08-28T13:00:00.000Z"),
     inputDigest: ResearchReport.InputDigest.make((identity === "one" ? "a" : "b").repeat(64)),
     manifestVersion: null,

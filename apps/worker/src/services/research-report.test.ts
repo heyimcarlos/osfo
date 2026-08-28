@@ -57,7 +57,13 @@ it.effect("starts an ordinary report without Approval and persists before Workfl
         userId,
       },
     });
-    expect(started.report.workflowId).toBe(started.report.cloudflareInstanceId);
+    expect(started.report.cloudflareInstanceId).toMatch(/^[a-zA-Z0-9_][a-zA-Z0-9-_]*$/u);
+    expect(started.report.cloudflareInstanceId).toHaveLength(73);
+    expect(started.report.workflowId).not.toBe(started.report.cloudflareInstanceId);
+    const otherHostId = yield* ResearchReport.cloudflareInstanceIdFor(
+      ResearchReport.WorkflowId.make(`${started.report.workflowId}-other`),
+    );
+    expect(otherHostId).not.toBe(started.report.cloudflareInstanceId);
     expect(started.report.deadlineAt).toEqual(deadline);
     expect(fixture.calls).toEqual([
       "persist.admit",

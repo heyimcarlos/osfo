@@ -5,7 +5,7 @@ import { Effect, Result } from "effect";
 import { ResearchReport } from "../services/research-report";
 import { ResearchReportComposition } from "./research-report";
 
-const instanceId = ResearchReport.CloudflareInstanceId.make("research:stable-instance");
+const instanceId = ResearchReport.CloudflareInstanceId.make("research-stable-instance");
 const payload = ResearchReport.WorkflowPayload.make({
   inputDigest: ResearchReport.InputDigest.make("a".repeat(64)),
   workflowId: ResearchReport.WorkflowId.make(instanceId),
@@ -92,7 +92,7 @@ it.effect("does not terminate Cloudflare instances that are already non-executab
 
   return Effect.gen(function* () {
     for (const status of statuses) {
-      yield* port.terminate(ResearchReport.CloudflareInstanceId.make(`research:${status}`));
+      yield* port.terminate(ResearchReport.CloudflareInstanceId.make(`research-${status}`));
     }
     expect(terminations).toEqual([]);
   });

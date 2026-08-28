@@ -39,9 +39,11 @@ export const WorkflowId = boundedIdentity.pipe(Schema.brand("ResearchReportWorkf
 export type WorkflowId = typeof WorkflowId.Type;
 
 /** Stable Cloudflare instance identity derived from one Research Report Workflow. */
-export const CloudflareInstanceId = boundedIdentity.pipe(
-  Schema.brand("ResearchReportCloudflareInstanceId"),
-);
+export const CloudflareInstanceId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(100),
+  Schema.isPattern(/^[a-zA-Z0-9_][a-zA-Z0-9-_]*$/u),
+).pipe(Schema.brand("ResearchReportCloudflareInstanceId"));
 export type CloudflareInstanceId = typeof CloudflareInstanceId.Type;
 
 /** Digest binding one Workflow identity to its immutable request. */
@@ -400,9 +402,10 @@ export const make = Effect.gen(function* () {
   ) {
     const report = yield* ports.persistence.inspect(payload.workflowId);
     if (report === null) return yield* new NotFound({ workflowId: payload.workflowId });
+    const cloudflareInstanceId = yield* cloudflareInstanceIdFor(payload.workflowId);
     if (
       report.inputDigest !== payload.inputDigest ||
-      String(report.cloudflareInstanceId) !== String(payload.workflowId)
+      report.cloudflareInstanceId !== cloudflareInstanceId
     ) {
       return yield* new Conflict({
         message: "Cloudflare execution does not match the admitted Research Report",
@@ -604,7 +607,7 @@ export const make = Effect.gen(function* () {
 
   const start = Effect.fn("ResearchReport.start")(function* (input: StartInput) {
     const workflowId = yield* workflowIdFor(input.authorization.user.userId, input.actionId);
-    const cloudflareInstanceId = CloudflareInstanceId.make(workflowId);
+    const cloudflareInstanceId = yield* cloudflareInstanceIdFor(workflowId);
     const inputDigest = yield* digestRequest(input.authorization.user.userId, input.request);
     const existing = yield* ports.persistence.inspect(workflowId);
     if (existing !== null) {
@@ -838,6 +841,10 @@ const workflowIdFor = (userId: UserId, actionId: ActionId) =>
   digest(`${userId}\0${actionId}`).pipe(
     Effect.map((value) => WorkflowId.make(`research:${value}`)),
   );
+
+/** Derive a collision-resistant host identity within Cloudflare's public instance-ID contract. */
+export const cloudflareInstanceIdFor = (workflowId: WorkflowId) =>
+  digest(workflowId).pipe(Effect.map((value) => CloudflareInstanceId.make(`research-${value}`)));
 
 const deadlineAfter = (admittedAt: Date) =>
   DateTime.toDateUtc(
