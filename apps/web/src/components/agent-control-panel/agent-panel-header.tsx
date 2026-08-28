@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { MoreHorizontal } from "lucide-react";
 
 import { ResearchReportNotificationCenter } from "./research-report-notification-center";
+import { DocumentBuildNotificationCenter } from "./document-build-notification-center";
 
 /** Logo, status, title, and accessible overflow actions for the Agent panel. */
 export function AgentPanelHeader({ status }: { readonly status: { readonly kind: "Active" } }) {
@@ -27,6 +28,7 @@ export function AgentPanelHeader({ status }: { readonly status: { readonly kind:
         </span>
       </div>
       <div className="flex items-center gap-2 justify-self-end md:col-start-3">
+        <DocumentBuildNotificationCenter />
         <ResearchReportNotificationCenter />
         <details className="group relative z-30">
           <summary

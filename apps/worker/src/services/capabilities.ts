@@ -226,6 +226,19 @@ export interface SkillPin {
 
 const systemSkills = [
   {
+    capabilityIds: ["document-build", "document-read"],
+    description:
+      "Build a bounded PDF or DOCX from already uploaded owned files, inspect it, then export it.",
+    instructions: [
+      "# Document Build Workflow",
+      "Use startDocumentBuild only when the User has supplied one or more existing owned FileIds and asks for a PDF or DOCX built from those files. Preserve the requested file order. Do not invent FileIds or caller-owned file metadata.",
+      "Use inspectDocumentBuild for safe progress and cancelDocumentBuild only when the User asks to stop it. A successful build returns one stable artifactContentId; use exportDocument only after success.",
+      "Document Build needs no Approval. Never create a second synthesis request or add content that was not supplied in the source files.",
+    ].join("\n\n"),
+    skillId: "document-build",
+    skillVersion: "system-document-build-v1",
+  },
+  {
     capabilityIds: ["web-search", "page-read"],
     description:
       "Search the ordinary public web, read selected pages, and answer with compact supporting citations.",

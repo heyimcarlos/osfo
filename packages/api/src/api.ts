@@ -5,6 +5,8 @@ import { BillingGroup } from "./groups/billing";
 import { ChannelLinksGroup } from "./groups/channel-links";
 import { RegistrationGroup } from "./groups/registration";
 import { ResearchReportsGroup } from "./groups/research-reports";
+import { DocumentBuildsGroup } from "./groups/document-builds";
+import { FilesGroup } from "./groups/files";
 import { AccountGroup } from "./groups/account";
 import { SkillsGroup } from "./groups/skills";
 import { IntegrationsGroup } from "./groups/integrations";
@@ -14,6 +16,8 @@ export const Api = HttpApi.make("osfo")
   .add(AccountGroup)
   .add(BillingGroup)
   .add(ChannelLinksGroup)
+  .add(DocumentBuildsGroup)
+  .add(FilesGroup)
   .add(HealthGroup)
   .add(IntegrationsGroup)
   .add(RegistrationGroup)
@@ -28,6 +32,24 @@ export const Api = HttpApi.make("osfo")
   );
 
 export { HealthGroup, HealthResponse } from "./groups/health";
+export {
+  BrowserFileName,
+  BrowserFileUploadId,
+  FileUploadConflict,
+  FileUploadDenied,
+  FileUploadQuery,
+  FileUploadRejected,
+  FileUploadResponse,
+  FileUploadUnavailable,
+  FileStatusResponse,
+  FilesGroup,
+} from "./groups/files";
+export {
+  DocumentBuildNotifications,
+  DocumentBuildNotificationSummary,
+  DocumentBuildNotificationsUnavailable,
+  DocumentBuildsGroup,
+} from "./groups/document-builds";
 export {
   IntegrationConnectionChanged,
   IntegrationConnectionSummary,

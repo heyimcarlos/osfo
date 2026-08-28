@@ -16,6 +16,8 @@ export { CompanyAgent } from "./agents/osfo/company-agent";
 export { OsfoDirectory } from "./agents/osfo/directory";
 export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 export { ExecutionUnitWorkflow } from "./workflows/runtime";
+export { DocumentBuildWorkflow } from "./workflows/document-build";
+export { DocumentBuildTimerWorkflow } from "./workflows/document-build-timer";
 export { ResearchReportWorkflow } from "./workflows/research-report";
 export { ResearchReportTimerWorkflow } from "./workflows/research-report-timer";
 /** Disposable artifact compute has no direct public-network path or injected credentials. */

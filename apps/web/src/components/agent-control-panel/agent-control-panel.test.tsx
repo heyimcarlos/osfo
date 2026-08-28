@@ -14,6 +14,7 @@ import {
 } from "./agent-control-preferences";
 import { OsfoAgentControlPanel } from "./osfo-agent-control-panel";
 import { ResearchReportNotificationCenterContent } from "./research-report-notification-center";
+import { DocumentBuildNotificationCenterContent } from "./document-build-notification-center";
 
 /* oxlint-disable effecttsgo/async-function -- Testing Library owns browser interaction Promises. */
 /* oxlint-disable effecttsgo/global-date -- Fixed delivered timestamps make notification presentation deterministic. */
@@ -153,5 +154,29 @@ describe("OsfoAgentControlPanel", () => {
     expect(screen.getByText("The cited report artifact is ready.")).toBeTruthy();
     expect(document.body.textContent).not.toContain("canonical public source evidence");
     await user.click(screen.getByRole("button", { name: "Close notification center" }));
+  });
+
+  it("keeps a delivered Document Build preview progress-only after later success", () => {
+    renderWithTestRouter(
+      <DocumentBuildNotificationCenterContent
+        items={[
+          {
+            artifactContentId: "document:workflow:document-build:verification",
+            deliveredAt: new Date("2026-08-28T12:00:00.000Z"),
+            format: "pdf",
+            kind: "previewReady",
+            safeFailureCode: null,
+            state: "success",
+            workflowId: "document-build:verification",
+          },
+        ]}
+        open
+        onClose={() => undefined}
+        onOpen={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText("Preview ready")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Download PDF" })).toBeNull();
   });
 });

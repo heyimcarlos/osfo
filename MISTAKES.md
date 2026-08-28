@@ -31,3 +31,6 @@ short, specific, and actionable.
   do not keep a finished capability ticket open on that activation gate. Verify
   that the capability retained its bounded evidence, then leave aggregation and
   activation with the named owner.
+- Never pipe an unchecked issue-body transform directly into `gh issue edit`.
+  Build and validate the complete replacement first, then write it; a failed
+  upstream transform can otherwise replace the issue body with empty input.

@@ -183,6 +183,7 @@ export const AgentRequestOperation = Schema.Literals([
   "readRoute",
   "readFile",
   "readSession",
+  "submitDocumentBuildFollowUp",
   "submitResearchReportFollowUp",
   "submitManagedConversation",
   "uploadFile",

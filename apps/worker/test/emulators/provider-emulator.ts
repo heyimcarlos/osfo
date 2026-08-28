@@ -49,8 +49,9 @@ export interface WhatsAppLedgerEntry {
 
 /** One observed deterministic Research Report provider operation. */
 export interface ResearchLedgerEntry {
-  readonly kind: "agent" | "discover" | "page" | "synthesize";
+  readonly kind: "agent" | "discover" | "page" | "synthesize" | "tool-selection";
   readonly operationId: string | null;
+  readonly selectedTool?: string;
   readonly subject: string;
 }
 
@@ -453,6 +454,49 @@ const handleResearch = (
           return;
         }
         const workflowId = /research[:\w-]{8,300}/iu.exec(lastMessage)?.[0];
+        const documentBuildWorkflowId = /document-build:[\w:-]{8,300}/iu.exec(lastMessage)?.[0];
+        const documentBuildFileId = /web:[0-9a-f-]{36}/iu.exec(lastMessage)?.[0];
+        if (
+          documentBuildWorkflowId !== undefined &&
+          toolNames.includes("inspectDocumentBuild") &&
+          lastMessageRole(input) === "user" &&
+          /(?:inspect|status|check)/iu.test(lastMessage)
+        ) {
+          ledger.push({
+            kind: "tool-selection",
+            operationId: null,
+            selectedTool: "inspectDocumentBuild",
+            subject: documentBuildWorkflowId,
+          });
+          respondJson(
+            response,
+            200,
+            toolResponse("inspectDocumentBuild", { workflowId: documentBuildWorkflowId }),
+          );
+          return;
+        }
+        if (
+          documentBuildFileId !== undefined &&
+          toolNames.includes("startDocumentBuild") &&
+          lastMessageRole(input) === "user" &&
+          /(?:build|document|pdf)/iu.test(lastMessage)
+        ) {
+          ledger.push({
+            kind: "tool-selection",
+            operationId: null,
+            selectedTool: "startDocumentBuild",
+            subject: documentBuildFileId,
+          });
+          respondJson(
+            response,
+            200,
+            toolResponse("startDocumentBuild", {
+              fileIds: [documentBuildFileId],
+              format: "pdf",
+            }),
+          );
+          return;
+        }
         if (
           workflowId !== undefined &&
           toolNames.includes("inspectResearchReport") &&

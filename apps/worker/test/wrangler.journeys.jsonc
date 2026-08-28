@@ -46,5 +46,15 @@
       "name": "osfo-test-research-report-timer",
       "class_name": "ResearchReportTimerWorkflow",
     },
+    {
+      "binding": "DOCUMENT_BUILD_WORKFLOW",
+      "name": "osfo-test-document-build",
+      "class_name": "DocumentBuildWorkflow",
+    },
+    {
+      "binding": "DOCUMENT_BUILD_TIMER_WORKFLOW",
+      "name": "osfo-test-document-build-timer",
+      "class_name": "DocumentBuildTimerWorkflow",
+    },
   ],
 }

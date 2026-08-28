@@ -6,6 +6,8 @@ import { ChannelLinksHandlers } from "./handlers/channel-links";
 import { HealthHandlers } from "./handlers/health";
 import { RegistrationHandlers } from "./handlers/registration";
 import { ResearchReportHandlers } from "./handlers/research-reports";
+import { DocumentBuildHandlers } from "./handlers/document-builds";
+import { FilesHandlers } from "./handlers/files";
 import { SkillsHandlers } from "./handlers/skills";
 import { IntegrationHandlers } from "./handlers/integrations";
 import type { ExecutionUnit } from "./layers";
@@ -19,7 +21,8 @@ export const layer = (
   config: CloudflareConfig,
   bindings: AccountDeletionComposition.Bindings &
     SkillsHandlers.Bindings &
-    IntegrationHandlers.Bindings,
+    IntegrationHandlers.Bindings &
+    FilesHandlers.Bindings,
 ) =>
   Layer.mergeAll(
     AccountHandlers.layer.pipe(
@@ -28,6 +31,8 @@ export const layer = (
     ),
     BillingHandlers.layer(config),
     ChannelLinksHandlers.layer,
+    DocumentBuildHandlers.layer,
+    FilesHandlers.layer(bindings),
     HealthHandlers.layer(runtime),
     IntegrationHandlers.layer(
       bindings,

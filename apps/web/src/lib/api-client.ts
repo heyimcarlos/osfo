@@ -71,6 +71,26 @@ export const inspectResearchReportNotifications = Effect.gen(function* () {
   return yield* client.researchReports.notifications();
 });
 
+/** Inspect delivered safe Document Build follow-ups for the authenticated User. */
+export const inspectDocumentBuildNotifications = Effect.gen(function* () {
+  const client = yield* apiClient;
+  return yield* client.documentBuilds.notifications();
+});
+
+/** Upload one UTF-8 text source through the authenticated User's owning Agent. */
+export const uploadTextFile = (bytes: Uint8Array, fileName: string, uploadId: string) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    return yield* client.files.uploadText({ payload: bytes, query: { fileName, uploadId } });
+  });
+
+/** Inspect one User-owned source while normalization is still in flight. */
+export const inspectFileStatus = (fileId: string) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    return yield* client.files.status({ params: { fileId } });
+  });
+
 /** Inspect the authenticated User's safe Integration Connection state. */
 export const inspectIntegrations = Effect.gen(function* () {
   const client = yield* apiClient;

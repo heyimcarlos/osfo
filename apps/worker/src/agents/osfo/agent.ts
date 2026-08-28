@@ -69,8 +69,11 @@ import { DocumentArtifact } from "../../domain/document-artifact";
 import { ArtifactGenerationComposition } from "../../composition/artifact-generation";
 import { DocumentGenerationComposition } from "../../composition/document-generation";
 import { ResearchReportComposition } from "../../composition/research-report";
+import { DocumentBuildComposition } from "../../composition/document-build";
 import { WhatsAppWakeUpComposition } from "../../composition/whatsapp-wakeups";
 import { ArtifactGeneration } from "../../services/artifact-generation";
+import { DocumentBuild } from "../../services/document-build";
+import { DocumentBuildFollowUp } from "../../services/document-build-follow-up";
 import { IntegrationComposition } from "../../composition/integrations";
 import { Db } from "../../db";
 import { BillingDb } from "../../db/billing";
@@ -79,6 +82,7 @@ import { ResearchVerificationProvider } from "../../integrations/cloudflare/rese
 import { ChannelLinkAuthorizationPostgres } from "../../integrations/postgres/channel-link-authorization";
 import { SessionRecallAuthorizationPostgres } from "../../integrations/postgres/session-recall-authorization";
 import { ResearchReportPostgres } from "../../integrations/postgres/research-report";
+import { DocumentBuildPostgres } from "../../integrations/postgres/document-build";
 import { SupermemoryMemoryProvider } from "../../integrations/supermemory/memory-provider";
 import {
   CancelManagedConversationInput,
@@ -159,6 +163,7 @@ import {
   type RetainedFileLimitExceeded,
 } from "./db/file-store";
 import { type FileStateTransitionConflict, makeFiles } from "../../services/files";
+import { WebFileUpload } from "./web-file-upload";
 import {
   BoundCoreMemoryInput,
   type BoundCoreMemoryEncoded,
@@ -266,6 +271,9 @@ import {
   artifactDeleteActionName,
   coreMemoryClearActionName,
   documentDeleteActionName,
+  documentBuildStartActionName,
+  DocumentBuildIdentityInput,
+  DocumentBuildStartInput,
   researchReportStartActionName,
   ResearchReportIdentityInput,
   researchReportRequiresApproval,
@@ -304,6 +312,7 @@ import {
 import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
 import { effectToolSchema } from "./effect-tool-schema";
 import { makeFileTools } from "./file-tools";
+import { DocumentBuildFileResolution } from "./document-build-file-resolution";
 import { FileAnalysisReconciliation } from "./file-analysis-reconciliation";
 import { ManagedCapabilityState } from "./managed-capability-turn-state";
 import {
@@ -387,7 +396,7 @@ import { WhatsAppWakeUps } from "../../services/whatsapp-wakeups";
 import { deleteAgentOwnedUserData } from "./agent-owned-data-deletion";
 import { activeReminderLimit } from "./reminder-policy";
 
-/* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries, and Effect results use _tag. */
+/* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle, osfo/no-unknown-parameters -- Cloudflare Agent RPC methods accept untrusted payloads and immediately schema-decode them; Effect results use _tag. */
 /* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect -- Agent hooks and Durable Object callbacks supply the wall-clock boundary for retained metadata. */
 
 const pendingSessionId = "__osfo_uninitialized__";
@@ -418,6 +427,7 @@ const capabilityActionNames = [
   "generateDocument",
   "generateImage",
   "generatePresentation",
+  documentBuildStartActionName,
   researchReportStartActionName,
   "revisePresentation",
   "osfoClearCoreMemory",
@@ -1115,6 +1125,11 @@ export class OsfoAgent extends Think<Env> {
       execute: (input) => this.#cancelResearchReport(input),
       inputSchema: effectToolSchema(ResearchReportIdentityInput),
     }),
+    cancelDocumentBuild: tool({
+      description: "Cancel one owned nonterminal Document Build Workflow.",
+      execute: (input) => this.#cancelDocumentBuild(input),
+      inputSchema: effectToolSchema(DocumentBuildIdentityInput),
+    }),
     exportDocument: tool({
       description: "Export one retained generated PDF or DOCX owned by the current User.",
       execute: (input, context) => this.#exportDocument(input, context.toolCallId),
@@ -1136,6 +1151,12 @@ export class OsfoAgent extends Think<Env> {
         "Inspect the safe current status of one owned Research Report Workflow without exposing provider state.",
       execute: (input) => this.#inspectResearchReport(input),
       inputSchema: effectToolSchema(ResearchReportIdentityInput),
+    }),
+    inspectDocumentBuild: tool({
+      description:
+        "Inspect the safe current status of one owned Document Build Workflow without exposing source or provider state.",
+      execute: (input) => this.#inspectDocumentBuild(input),
+      inputSchema: effectToolSchema(DocumentBuildIdentityInput),
     }),
     skillInspect: tool({
       description: "List active personal Skills or inspect one immutable Skill lineage.",
@@ -1432,6 +1453,16 @@ export class OsfoAgent extends Think<Env> {
         kind: "durable-pause",
         permissions: ["workflows:start"],
       }),
+      [documentBuildStartActionName]: action({
+        description:
+          "Build one bounded PDF or DOCX from ordered, already uploaded owned FileIds. This ordinary Workflow needs no Approval.",
+        execute: (input, context) =>
+          this.#startDocumentBuild(input, ActionId.make(context.toolCallId)),
+        idempotencyKey: ({ ctx }) => `document-build-start:${ctx.toolCallId}`,
+        inputSchema: effectToolSchema(DocumentBuildStartInput),
+        kind: "durable-pause",
+        permissions: ["workflows:start"],
+      }),
       generatePresentation: action({
         description: "Generate one validated PPTX with at most 20 slides and 20 MB.",
         execute: (input, context) =>
@@ -1544,12 +1575,12 @@ export class OsfoAgent extends Think<Env> {
     const promptPolicy = PromptAssembly.policyForManagedExecution(metadata.executionMode);
     const prompt = await this.#assemblePrompt(context, metadata, system, promptPolicy.recallMode);
     if (metadata.executionMode === "companyContinuity") {
-      this.#activeRequestText = "Research Report follow-up";
+      this.#activeRequestText = "Workflow follow-up";
       this.#activeCapabilityTurn = undefined;
       this.#completedModelSteps.clear();
       return {
         activeTools: [],
-        instructions: `${prompt.instructions}\n\nThis is a company-continuity Research Report update. State only the committed progress or terminal outcome supplied in the User message. Do not call tools, start work, request Approval, expose report contents, or claim facts not present there.`,
+        instructions: `${prompt.instructions}\n\nThis is a company-continuity Workflow update. State only the committed progress or terminal outcome supplied in the User message. Do not call tools, start work, request Approval, expose artifact contents, or claim facts not present there.`,
         maxOutputTokens: metadata.maxOutputTokens,
         maxRetries: 0,
         maxSteps: 1,
@@ -3751,6 +3782,171 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  /** Accept one source-authorized mandatory Document Build follow-up by opaque identity. */
+  async submitDocumentBuildFollowUp(notificationIdentity: string) {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeResult(DocumentBuildFollowUp.NotificationId)(notificationIdentity);
+    if (Result.isFailure(decoded)) return invalidRequest("submitDocumentBuildFollowUp");
+    const notificationId = decoded.success;
+    const readNotification = () =>
+      Effect.runPromise(
+        DocumentBuildComposition.followUpEffect(
+          { DB: this.env.DB },
+          DocumentBuildFollowUp.Service.pipe(
+            Effect.flatMap((followUps) => followUps.inspect(notificationId)),
+            Effect.orDie,
+          ),
+        ),
+      );
+    const notification = await readNotification();
+    if (notification === null || notification.agentId !== this.name) {
+      return invalidRequest("submitDocumentBuildFollowUp");
+    }
+    const submissionId = await documentBuildFollowUpSubmissionId(notificationId);
+    const replay = notification.acceptedAt !== null;
+    const store = this.#store;
+    const databaseBinding = this.env.DB;
+    const activateSession = () => this.#activateSession(notification.sessionId);
+    const requestWakeUp = (accepted: DocumentBuildFollowUp.Notification) =>
+      this.#requestDocumentBuildWakeUp(accepted);
+    const submit = () =>
+      this.runTurn({
+        idempotencyKey: `document-build-follow-up-${submissionId}`,
+        input: {
+          id: submissionId,
+          metadata: { turnMetadata: documentBuildFollowUpMetadata(notification, submissionId) },
+          parts: [{ text: documentBuildFollowUpMessage(notification), type: "text" }],
+          role: "user",
+        },
+        metadata: documentBuildFollowUpMetadata(notification, submissionId),
+        mode: "submit",
+        submissionId,
+      });
+    const operation = Effect.gen(function* () {
+      const agent = yield* store.inspect();
+      const route = yield* store.readRoute(notification.routeId);
+      const ownsSession =
+        route.currentSessionId === notification.sessionId ||
+        route.historicalSessionIds.includes(notification.sessionId);
+      if (
+        agent.agentId !== notification.agentId ||
+        route.routeId !== notification.routeId ||
+        !ownsSession
+      ) {
+        return yield* new ThinkSubmissionUnavailable({
+          cause: notificationId,
+          message: "Document Build follow-up Agent correlation no longer matches",
+          operation: "submitDocumentBuildFollowUp.authority",
+        });
+      }
+      yield* Effect.tryPromise({
+        try: activateSession,
+        catch: (cause) =>
+          new ThinkSubmissionUnavailable({
+            cause,
+            message: "Document Build follow-up Session could not be activated",
+            operation: "submitDocumentBuildFollowUp.activateSession",
+          }),
+      });
+      yield* callThinkSubmission("submitDocumentBuildFollowUp.runTurn", submit);
+      const accepted = yield* Effect.tryPromise({
+        try: () =>
+          // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- The Agent RPC crosses into the separately scoped PostgreSQL composition.
+          Effect.runPromise(
+            DocumentBuildComposition.followUpEffect(
+              { DB: databaseBinding },
+              DocumentBuildFollowUp.Service.pipe(
+                Effect.flatMap((followUps) => followUps.markAccepted(notificationId, submissionId)),
+                Effect.orDie,
+              ),
+            ),
+          ),
+        catch: (cause) =>
+          new ThinkSubmissionUnavailable({
+            cause,
+            message: "Document Build follow-up acceptance could not be retained",
+            operation: "submitDocumentBuildFollowUp.markAccepted",
+          }),
+      });
+      yield* requestWakeUp(accepted);
+      return {
+        _tag: replay ? ("Replayed" as const) : ("Accepted" as const),
+        notificationId,
+        submissionId,
+      };
+    }).pipe(
+      Effect.mapError((cause) =>
+        Predicate.isTagged(cause, "ThinkSubmissionUnavailable")
+          ? cause
+          : new ThinkSubmissionUnavailable({
+              cause,
+              message: "Document Build follow-up Agent state is unavailable",
+              operation: "submitDocumentBuildFollowUp.agentState",
+            }),
+      ),
+    );
+    return runRpc(
+      this.#accountDeletionFencedSessionExecution.run(
+        operation,
+        () =>
+          new ThinkSubmissionUnavailable({
+            cause: notificationId,
+            message: "Account deletion fenced the Document Build follow-up",
+            operation: "submitDocumentBuildFollowUp",
+          }),
+      ),
+    );
+  }
+
+  #requestDocumentBuildWakeUp(notification: DocumentBuildFollowUp.Notification) {
+    if (notification.whatsAppChannelLinkId === null) return Effect.void;
+    const channelLinkId = notification.whatsAppChannelLinkId;
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        new ThinkSubmissionUnavailable({
+          cause: invalidOsfoEnvironment,
+          message: "Document Build WhatsApp Wake-up runtime is unavailable",
+          operation: "submitDocumentBuildFollowUp.wakeUp",
+        }),
+      );
+    }
+    const source = WhatsAppWakeUps.Source.cases.DocumentBuild.make({
+      identity: WhatsAppWakeUps.SourceIdentity.make(notification.notificationId),
+    });
+    return Effect.tryPromise({
+      try: () =>
+        runtime.runPromise(
+          Effect.scoped(
+            WhatsAppWakeUps.Service.pipe(
+              Effect.flatMap((wakeUps) =>
+                wakeUps.request({
+                  channelLinkId,
+                  source,
+                  traceId: WhatsAppWakeUps.TraceId.make(notification.notificationId),
+                  userId: notification.userId,
+                  wakeUpId: WhatsAppWakeUps.WakeUpId.make(notification.notificationId),
+                }),
+              ),
+              // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The Agent RPC is the application entry point for this Wake-up composition.
+              Effect.provide(
+                WhatsAppWakeUpComposition.layer(
+                  loadConfig(this.env),
+                  this.#wakeUpSourceAuthorityLayer,
+                ),
+              ),
+            ),
+          ),
+        ),
+      catch: (cause) =>
+        new ThinkSubmissionUnavailable({
+          cause,
+          message: "Document Build WhatsApp Wake-up could not be retained",
+          operation: "submitDocumentBuildFollowUp.wakeUp",
+        }),
+    }).pipe(Effect.asVoid);
+  }
+
   #requestResearchReportWakeUp(notification: ResearchReportFollowUp.Notification) {
     if (notification.whatsAppChannelLinkId === null) return Effect.void;
     const channelLinkId = notification.whatsAppChannelLinkId;
@@ -3909,6 +4105,91 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  /** Ingest a browser-supplied text file under freshly reconstructed server authority. */
+  async uploadUserTextFile(encoded: unknown): Promise<WebFileUpload.Result> {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeUnknownResult(WebFileUpload.Request)(encoded);
+    if (Result.isFailure(decoded)) return { _tag: "Rejected", reason: "invalid" };
+    const input = decoded.success;
+    const upload = this.#currentWebFileUploadAuthorization(input.authority).pipe(
+      Effect.flatMap((context) =>
+        this.#files.upload({
+          actionId: input.actionId,
+          bytes: input.bytes,
+          context,
+          declaredMediaType: "text/plain",
+          fileId: input.fileId,
+          fileName: input.fileName,
+          uploadId: input.uploadId,
+        }),
+      ),
+      Effect.match({
+        onFailure: (failure): WebFileUpload.Result => ({
+          _tag: "Rejected",
+          reason:
+            Predicate.isTagged(failure, "FileUploadConflict") ||
+            Predicate.isTagged(failure, "FileStateTransitionConflict")
+              ? "conflict"
+              : Predicate.isTagged(failure, "InvalidFileContent") ||
+                  Predicate.isTagged(failure, "UnsupportedFileMedia") ||
+                  Predicate.isTagged(failure, "FileMediaMismatch") ||
+                  Predicate.isTagged(failure, "FileComputeFailed")
+                ? "invalid"
+                : "unavailable",
+        }),
+        onSuccess: (result): WebFileUpload.Result => {
+          if (result._tag !== "FileReady" && result._tag !== "FileNormalizationPending") {
+            return { _tag: "Rejected", reason: "denied" };
+          }
+          return {
+            _tag: "Uploaded",
+            fileId: result.file.fileId,
+            fileName: result.file.fileName,
+            mediaType: "text/plain",
+            state: result._tag === "FileReady" ? "ready" : "processing",
+          };
+        },
+      }),
+    );
+    return Effect.runPromise(
+      this.#accountDeletionFence.run(upload, () => ({
+        _tag: "Rejected" as const,
+        reason: "denied" as const,
+      })),
+    );
+  }
+
+  /** Inspect only the lifecycle needed by the authenticated browser upload flow. */
+  async inspectUserFile(encoded: unknown): Promise<WebFileUpload.StatusResult> {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeUnknownResult(WebFileUpload.StatusRequest)(encoded);
+    if (Result.isFailure(decoded)) return { _tag: "Unavailable" };
+    const request = decoded.success;
+    const inspect = this.#fileStore.find(request.fileId).pipe(
+      Effect.map((file): WebFileUpload.StatusResult => {
+        if (file.userId !== request.userId || file.mediaType !== "text/plain") {
+          return { _tag: "Unavailable" };
+        }
+        return {
+          _tag: "Found",
+          fileId: file.fileId,
+          fileName: file.fileName,
+          mediaType: "text/plain",
+          state:
+            file.state === "ready"
+              ? "ready"
+              : file.state === "normalization_failed" || file.state === "deleted"
+                ? "failed"
+                : "processing",
+        };
+      }),
+      Effect.orElseSucceed(() => ({ _tag: "Unavailable" as const })),
+    );
+    return Effect.runPromise(
+      this.#accountDeletionFence.run(inspect, () => ({ _tag: "Unavailable" as const })),
+    );
+  }
+
   /** Read one authenticated User-owned file through its Agent and R2 ownership boundary. */
   async readFile(input: ReadFileRequest) {
     await this.#migrationsReady;
@@ -3923,6 +4204,48 @@ export class OsfoAgent extends Think<Env> {
           }),
         ),
       ),
+    );
+  }
+
+  /** Resolve ready Document Build sources for the internal Directory boundary only. */
+  async resolveDocumentBuildFiles(encoded: unknown): Promise<DocumentBuild.FileResolutionResult> {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeUnknownResult(DocumentBuild.FileResolutionRequest)(encoded);
+    if (Result.isFailure(decoded)) return { _tag: "Unavailable", reason: "invalidRequest" };
+    const request = decoded.success;
+    const store = this.#fileStore;
+    const resolution = this.#accountDeletionFence.run(
+      DocumentBuildFileResolution.resolveFromFileStore(
+        request,
+        AgentId.make(this.name),
+        store.find,
+      ),
+      () => ({ _tag: "Unavailable", reason: "deletionFenced" }) as const,
+    );
+    return Effect.runPromise(
+      resolution.pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(DocumentBuild.FileResolutionResult)),
+        Effect.orElseSucceed(() => ({ _tag: "Unavailable", reason: "fileUnavailable" }) as const),
+      ),
+    );
+  }
+
+  /** Inspect immutable Document Build source facts for the read-only verification Worker. */
+  async inspectDocumentBuildSourceSnapshot(
+    encoded: unknown,
+  ): Promise<DocumentBuildFileResolution.VerificationResult> {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeUnknownResult(DocumentBuildFileResolution.VerificationRequest)(
+      encoded,
+    );
+    if (Result.isFailure(decoded)) return { _tag: "Unavailable" };
+    const inspect = DocumentBuildFileResolution.inspectVerificationSnapshot(
+      decoded.success,
+      AgentId.make(this.name),
+      (fileId) => this.#fileStore.find(fileId),
+    );
+    return Effect.runPromise(
+      this.#accountDeletionFence.run(inspect, () => ({ _tag: "Unavailable" as const })),
     );
   }
 
@@ -4595,6 +4918,129 @@ export class OsfoAgent extends Think<Env> {
     );
     return Effect.runPromise(
       this.#reminders.inspect(metadata.authorityIdentity.userId, input.reminderId),
+    );
+  }
+
+  async #startDocumentBuild(input: DocumentBuild.Request, actionId: ActionId) {
+    const metadata = await Effect.runPromise(
+      Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
+    );
+    const current = await Effect.runPromise(this.#currentDocumentBuildAuthorization(metadata));
+    const effect = DocumentBuild.Service.pipe(
+      Effect.flatMap((builds) =>
+        builds.start({
+          actionId,
+          agentId: AgentId.make(this.name),
+          authorization: current,
+          request: input,
+          routeId: metadata.routeId,
+          sessionId: metadata.sessionId,
+        }),
+      ),
+      Effect.map((result) => ({
+        _tag: result._tag,
+        build: projectDocumentBuildStatus(result.build),
+      })),
+    );
+    return Effect.runPromise(
+      this.#accountDeletionFence.runTracked(
+        () => this.#runDocumentBuildControl(effect),
+        () => documentBuildUnavailable("start.deletionFence"),
+      ),
+    );
+  }
+
+  async #inspectDocumentBuild(input: typeof DocumentBuildIdentityInput.Type) {
+    const metadata = await Effect.runPromise(
+      Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
+    );
+    const effect = DocumentBuild.Service.pipe(
+      Effect.flatMap((builds) =>
+        builds.inspect(input.workflowId, metadata.authorityIdentity.userId),
+      ),
+      Effect.map(projectDocumentBuildStatus),
+    );
+    return Effect.runPromise(
+      this.#accountDeletionFence.run(this.#runDocumentBuildControl(effect), () =>
+        documentBuildUnavailable("inspect.deletionFence"),
+      ),
+    );
+  }
+
+  async #cancelDocumentBuild(input: typeof DocumentBuildIdentityInput.Type) {
+    const metadata = await Effect.runPromise(
+      Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
+    );
+    const effect = DocumentBuild.Service.pipe(
+      Effect.flatMap((builds) =>
+        builds.cancel(input.workflowId, metadata.authorityIdentity.userId),
+      ),
+      Effect.map((result) => ({
+        _tag: result._tag,
+        build: projectDocumentBuildStatus(result.build),
+      })),
+    );
+    return Effect.runPromise(
+      this.#accountDeletionFence.runTracked(
+        () => this.#runDocumentBuildControl(effect),
+        () => documentBuildUnavailable("cancel.deletionFence"),
+      ),
+    );
+  }
+
+  #runDocumentBuildControl<Value, Failure>(
+    effect: Effect.Effect<Value, Failure, DocumentBuild.Service>,
+  ) {
+    const bindings = DocumentBuildComposition.bindingsFromEnv(this.env);
+    return DocumentBuildComposition.controlEffect(
+      bindings,
+      DocumentBuildComposition.makePreviewReadyFollowUpCommitter(bindings),
+      DocumentBuildComposition.makeTerminalFollowUpCommitter(bindings),
+      effect,
+    );
+  }
+
+  #currentDocumentBuildAuthorization(metadata: ManagedTurnMetadata) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) return Effect.fail(documentBuildUnavailable("start.runtime"));
+    return this.#inspectSessionRecallAuthorization(metadata.authorityIdentity).pipe(
+      Effect.flatMap((facts) =>
+        Effect.tryPromise({
+          try: () =>
+            runtime.runPromise(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const database = yield* Db.database;
+                  const [allowance, concurrentWorkflows] = yield* Effect.all([
+                    BillingDb.make(database).admit(facts.user.userId, facts.now),
+                    DocumentBuildPostgres.countActiveForUser(database, facts.user.userId),
+                  ]);
+                  const { userId: _userId, ...originatingAuthority } = metadata.authorityIdentity;
+                  return AuthorizationContext.make({
+                    allowance: { _tag: "Metered", ...allowance },
+                    approval: null,
+                    ...facts,
+                    gmailConnection: null,
+                    integrationConnections: [],
+                    liveFacts: {
+                      ...emptyLiveResourceFacts,
+                      concurrentCostlyJobs: concurrentWorkflows,
+                      concurrentWorkflows,
+                    },
+                    originatingAuthority,
+                    requestVendorUsdMicros: 0n,
+                  });
+                }),
+              ),
+            ),
+          catch: (cause) => documentBuildUnavailable("start.currentAuthorization", cause),
+        }),
+      ),
+      Effect.mapError((cause) =>
+        Schema.is(DocumentBuild.Unavailable)(cause)
+          ? cause
+          : documentBuildUnavailable("start.currentAuthorization", cause),
+      ),
     );
   }
 
@@ -5721,6 +6167,67 @@ export class OsfoAgent extends Think<Env> {
     });
   }
 
+  #currentWebFileUploadAuthorization(
+    authority: Extract<ManagedTurnAuthorityIdentity, { readonly _tag: "AuthSession" }>,
+  ): Effect.Effect<AuthorizationContext, FileCapabilityUnavailable> {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        new FileCapabilityUnavailable({
+          cause: invalidOsfoEnvironment,
+          message: "Authenticated file upload has no valid Worker runtime",
+          operation: "authorizeWebUpload",
+        }),
+      );
+    }
+    return this.#inspectSessionRecallAuthorization(authority).pipe(
+      Effect.flatMap((facts) =>
+        Effect.tryPromise({
+          try: () =>
+            runtime.runPromise(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const database = yield* Db.database;
+                  const allowance = yield* BillingDb.make(database).admit(
+                    facts.user.userId,
+                    facts.now,
+                  );
+                  return AuthorizationContext.make({
+                    allowance: { _tag: "Metered", ...allowance },
+                    approval: null,
+                    ...facts,
+                    gmailConnection: null,
+                    integrationConnections: [],
+                    liveFacts: emptyLiveResourceFacts,
+                    originatingAuthority: {
+                      _tag: "AuthSession",
+                      authSessionId: authority.authSessionId,
+                    },
+                    requestVendorUsdMicros: 0n,
+                  });
+                }),
+              ),
+            ),
+          catch: (cause) =>
+            new FileCapabilityUnavailable({
+              cause,
+              message: "Authenticated file upload allowance facts are unavailable",
+              operation: "authorizeWebUpload",
+            }),
+        }),
+      ),
+      Effect.mapError((cause) =>
+        Schema.is(FileCapabilityUnavailable)(cause)
+          ? cause
+          : new FileCapabilityUnavailable({
+              cause,
+              message: "Authenticated file upload authority is unavailable",
+              operation: "authorizeWebUpload",
+            }),
+      ),
+    );
+  }
+
   async #readStepEvidence(
     metadata: ManagedTurnMetadata,
     stepNumber: ModelStepNumber,
@@ -6265,8 +6772,19 @@ export const researchReportFollowUpSubmissionId = async (
   return ThinkSubmissionId.make(`research-report-${hex}`);
 };
 
+/** Stable Think identity derived only from the opaque Document Build notification capability. */
+export const documentBuildFollowUpSubmissionId = async (
+  notificationId: DocumentBuildFollowUp.NotificationId,
+): Promise<ThinkSubmissionId> => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(notificationId));
+  const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+  return ThinkSubmissionId.make(`document-build-${hex}`);
+};
+
 export const researchReportFollowUpMetadata = (
-  notification: ResearchReportFollowUp.Notification,
+  notification: ResearchReportFollowUp.Notification | DocumentBuildFollowUp.Notification,
   submissionId: ThinkSubmissionId,
 ) => {
   const limits = currentCapabilityCatalog.exhaustedConversation;
@@ -6324,6 +6842,8 @@ export const researchReportFollowUpMetadata = (
   });
 };
 
+export const documentBuildFollowUpMetadata = researchReportFollowUpMetadata;
+
 export const companyContinuityCostFact = (evidence: ModelCallEvidence) => {
   if (evidence._tag === "Observed") {
     return { basis: "observed" as const, vendorUsdMicros: evidence.vendorUsdMicros ?? 0n };
@@ -6348,6 +6868,19 @@ const researchReportFollowUpMessage = (notification: ResearchReportFollowUp.Noti
     return "The Research Report ended as Canceled. Give the User one concise outcome update without report content or private provider details.";
   }
   return "The Research Report ended as Failure. Give the User one concise outcome update without report content or private provider details.";
+};
+
+const documentBuildFollowUpMessage = (notification: DocumentBuildFollowUp.Notification) => {
+  if (notification.kind === "previewReady") {
+    return "The Document Build has a validated preview retained and is still running. Give the User one concise progress update without document content.";
+  }
+  if (notification.buildState === "success") {
+    return "The Document Build finished successfully and its artifact is ready. Give the User one concise completion update without quoting document content.";
+  }
+  if (notification.buildState === "canceled") {
+    return "The Document Build ended as Canceled. Give the User one concise outcome update without document content or private provider details.";
+  }
+  return "The Document Build ended as Failure. Give the User one concise outcome update without document content or private provider details.";
 };
 
 const modelCallUsageDispatchUnavailable = (usage: PendingModelCallUsage) =>
@@ -6486,6 +7019,23 @@ const projectResearchReportStatus = (report: ResearchReport.Record) => ({
   terminalAt: report.terminalAt?.toISOString() ?? null,
   workflowId: report.workflowId,
 });
+
+const projectDocumentBuildStatus = (build: DocumentBuild.Record) => ({
+  artifactContentId: build.state === "success" ? build.artifactContentId : null,
+  deadlineAt: build.deadlineAt.toISOString(),
+  format: build.request.format,
+  safeFailureCode: build.safeFailureCode,
+  state: build.state,
+  terminalAt: build.terminalAt?.toISOString() ?? null,
+  workflowId: build.workflowId,
+});
+
+const documentBuildUnavailable = (operation: string, cause: unknown = operation) =>
+  new DocumentBuild.Unavailable({
+    cause,
+    message: "The Document Build control is temporarily unavailable",
+    operation,
+  });
 
 const researchReportUnavailable = (operation: string, cause: unknown = operation) =>
   new ResearchReport.Unavailable({

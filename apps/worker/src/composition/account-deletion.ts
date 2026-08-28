@@ -1,5 +1,5 @@
 import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { DateTime, Effect, Layer } from "effect";
 
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
@@ -8,9 +8,11 @@ import { Db } from "../db";
 import { AccountDeletionCloudflare } from "../integrations/cloudflare/account-deletion";
 import { AccountDeletionPostgres } from "../integrations/postgres/account-deletion";
 import { ResearchReportPostgres } from "../integrations/postgres/research-report";
+import { DocumentBuildPostgres } from "../integrations/postgres/document-build";
 import { AccountDeletion } from "../services/account-deletion";
 import { WhatsAppWakeUps } from "../services/whatsapp-wakeups";
 import { ResearchReportComposition } from "./research-report";
+import { DocumentBuildComposition } from "./document-build";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Closed capability variants use the canonical _tag discriminator, and the deletion preflight adapts one Promise transaction at its Effect boundary. */
 
@@ -40,6 +42,8 @@ export interface Bindings {
   readonly OSFO_DIRECTORY: {
     readonly getByName: (identity: string) => DirectoryDeletionStub;
   };
+  readonly DOCUMENT_BUILD_TIMER_WORKFLOW?: DocumentBuildComposition.WorkflowBinding;
+  readonly DOCUMENT_BUILD_WORKFLOW?: DocumentBuildComposition.WorkflowBinding;
   readonly RESEARCH_REPORT_TIMER_WORKFLOW?: ResearchReportComposition.WorkflowBinding;
   readonly RESEARCH_REPORT_WORKFLOW?: ResearchReportComposition.WorkflowBinding;
 }
@@ -98,13 +102,15 @@ const makePort = (bindings: Bindings) =>
         quiesce: (userId) => {
           if (
             bindings.RESEARCH_REPORT_WORKFLOW === undefined ||
-            bindings.RESEARCH_REPORT_TIMER_WORKFLOW === undefined
+            bindings.RESEARCH_REPORT_TIMER_WORKFLOW === undefined ||
+            bindings.DOCUMENT_BUILD_WORKFLOW === undefined ||
+            bindings.DOCUMENT_BUILD_TIMER_WORKFLOW === undefined
           ) {
             return Effect.fail(
               new AccountDeletion.AccountDeletionUnavailable({
-                cause: "missing Research Report Workflow bindings",
-                message: "Research Report account-deletion quiescence is unavailable",
-                operation: "quiesceResearchReports",
+                cause: "missing Workflow bindings",
+                message: "Workflow account-deletion quiescence is unavailable",
+                operation: "quiesceWorkflows",
               }),
             );
           }
@@ -112,32 +118,45 @@ const makePort = (bindings: Bindings) =>
             bindings.RESEARCH_REPORT_WORKFLOW,
             bindings.RESEARCH_REPORT_TIMER_WORKFLOW,
           );
+          const documentWorkflow = DocumentBuildComposition.makeWorkflowPort(
+            bindings.DOCUMENT_BUILD_WORKFLOW,
+            bindings.DOCUMENT_BUILD_TIMER_WORKFLOW,
+          );
           return Effect.gen(function* () {
             const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-            const instanceIds = yield* ResearchReportPostgres.quiesceForAccountDeletion(
-              database,
-              userId,
-              now,
+            const [instanceIds, documentInstanceIds] = yield* Effect.all([
+              ResearchReportPostgres.quiesceForAccountDeletion(database, userId, now),
+              DocumentBuildPostgres.quiesceForAccountDeletion(database, userId, now),
+            ]).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new AccountDeletion.AccountDeletionUnavailable({
+                    cause,
+                    message: "Workflow product truth could not be terminalized",
+                    operation: "quiesceWorkflows",
+                  }),
+              ),
+            );
+            yield* Effect.all(
+              [
+                Effect.forEach(instanceIds, workflow.terminate, {
+                  concurrency: 2,
+                  discard: true,
+                }),
+                Effect.forEach(
+                  documentInstanceIds,
+                  ({ main, timer }) => documentWorkflow.terminate(main, timer),
+                  { concurrency: 2, discard: true },
+                ),
+              ],
+              { concurrency: 2, discard: true },
             ).pipe(
               Effect.mapError(
                 (cause) =>
                   new AccountDeletion.AccountDeletionUnavailable({
                     cause,
-                    message: "Research Report product truth could not be terminalized",
-                    operation: "quiesceResearchReports",
-                  }),
-              ),
-            );
-            yield* Effect.forEach(instanceIds, workflow.terminate, {
-              concurrency: 2,
-              discard: true,
-            }).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new AccountDeletion.AccountDeletionUnavailable({
-                    cause,
-                    message: "Research Report execution hosts could not be terminated",
-                    operation: "quiesceResearchReports",
+                    message: "Workflow execution hosts could not be terminated",
+                    operation: "quiesceWorkflows",
                   }),
               ),
             );
@@ -169,7 +188,10 @@ const makePort = (bindings: Bindings) =>
                     .where(
                       and(
                         eq(allowanceUsage.user_id, userId),
-                        eq(allowanceUsage.source_type, "artifactProviderOperation"),
+                        inArray(allowanceUsage.source_type, [
+                          "artifactProviderOperation",
+                          "documentProviderOperation",
+                        ]),
                       ),
                     ),
                 ]).then(([periods, reconciledOperations]) => ({

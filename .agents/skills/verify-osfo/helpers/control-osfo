@@ -16,9 +16,9 @@ usage() {
     '  control-osfo identity <run-id>' \
     '  control-osfo journeys <run-id>' \
     '  control-osfo account-deletion-envelope-journey <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> start' \
-    '  control-osfo record <run-id> <registration|channel-linking|research-report|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> <action|result> <summary>' \
-    '  control-osfo observe <run-id> <registration|channel-linking|research-report|billing|whatsapp-wakeup|account-deletion|account-deletion-replay>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> start' \
+    '  control-osfo record <run-id> <registration|channel-linking|research-report|document-build|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> <action|result> <summary>' \
+    '  control-osfo observe <run-id> <registration|channel-linking|research-report|document-build|billing|whatsapp-wakeup|account-deletion|account-deletion-replay>' \
     '  control-osfo channel-invite <run-id>' \
     '  control-osfo telegram-reply <run-id> <message>' \
     '  control-osfo whatsapp-invite <run-id>' \
@@ -28,7 +28,7 @@ usage() {
     '  control-osfo whatsapp-reply <run-id> <message>' \
     '  control-osfo seed-account-deletion <run-id>' \
     '  control-osfo reconcile-account-deletion <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> finish' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> finish' \
     '  control-osfo cleanup <run-id>'
 }
 
@@ -42,7 +42,7 @@ require_run_id() {
 
 require_feature() {
   case "${1:-}" in
-    registration|channel-linking|research-report|billing|whatsapp-wakeup|account-deletion|account-deletion-replay) ;;
+    registration|channel-linking|research-report|document-build|billing|whatsapp-wakeup|account-deletion|account-deletion-replay) ;;
     *)
       printf 'Unknown browser feature: %s\n' "${1:-}" >&2
       exit 2
@@ -244,11 +244,16 @@ start_worker_process() {
 }
 
 inspect_agent_runtime() {
-  local run_id agent_id user_id state_dir artifact_dir observer_origin observer_port inspector_port
+  local run_id agent_id user_id file_id main_instance_id timer_instance_id artifact_id state_dir artifact_dir observer_origin observer_port inspector_port
   local observer_pid observation status
+  local -a observer_query
   run_id="$1"
   agent_id="$2"
   user_id="${3:-}"
+  file_id="${4:-}"
+  main_instance_id="${5:-}"
+  timer_instance_id="${6:-}"
+  artifact_id="${7:-}"
   state_dir="$(state_dir_for "$run_id")"
   artifact_dir="$(artifact_dir_for "$run_id")"
   observer_port="$(pick_port)"
@@ -276,9 +281,17 @@ inspect_agent_runtime() {
   observation=''
   if [[ "$status" == '0' ]]; then
     if [[ -n "$user_id" ]]; then
+      observer_query=(--data-urlencode "agentId=$agent_id" --data-urlencode "userId=$user_id")
+      if [[ -n "$file_id" ]]; then observer_query+=(--data-urlencode "fileId=$file_id"); fi
+      if [[ -n "$main_instance_id" ]]; then
+        observer_query+=(--data-urlencode "mainInstanceId=$main_instance_id")
+      fi
+      if [[ -n "$timer_instance_id" ]]; then
+        observer_query+=(--data-urlencode "timerInstanceId=$timer_instance_id")
+      fi
+      if [[ -n "$artifact_id" ]]; then observer_query+=(--data-urlencode "artifactId=$artifact_id"); fi
       if ! observation="$(curl --fail --silent --show-error --get \
-        --data-urlencode "agentId=$agent_id" --data-urlencode "userId=$user_id" \
-        "$observer_origin/agent")"; then
+        "${observer_query[@]}" "$observer_origin/agent")"; then
         status=1
       fi
     elif ! observation="$(curl --fail --silent --show-error --get \
@@ -1146,6 +1159,16 @@ observe_channel_linking() {
       'acceptedAt', ci.accepted_at,
       'acceptedUserId', ci.accepted_user_id,
       'acceptedChannelLinkId', ci.accepted_channel_link_id,
+      'acceptedRunInviteCount', (
+        select count(*) from channel_link_invites i
+        where i.state = 'accepted' and i.accepted_user_id = u.id
+          and i.accepted_channel_link_id = cl.channel_link_id
+      ),
+      'activeRunLinkCount', (
+        select count(*) from channel_links owned
+        where owned.user_id = u.id and owned.channel_id = 'telegram'
+          and owned.author_id = '$telegram_author' and owned.revoked_at is null
+      ),
       'acceptedAuditCount', (
         select count(*) from channel_link_audit_events e
         where e.channel_link_id = cl.channel_link_id and e.event_type = 'link_accepted'
@@ -1167,12 +1190,14 @@ observe_channel_linking() {
     '.phoneNumber == $phone and .channelId == "telegram" and .authorId == $author and
       .revokedAt == null and .inviteState == "accepted" and .acceptedAt != null and
       .acceptedUserId == .userId and .acceptedChannelLinkId == .channelLinkId and
+      .acceptedRunInviteCount == 1 and .activeRunLinkCount == 1 and
       .acceptedAuditCount == 1' "$feature_dir/state.json" >/dev/null
   jq --exit-status --arg author "$telegram_author" --arg invite "$invite_url" \
-    'any(.[];
+    '([.[] |
       (.body | fromjson?) as $body |
-      ($body != null) and (($body.chat_id | tostring) == $author) and
-      (($body.text? // $body.rich_message.markdown? // "") | contains($invite)))' \
+      select(($body != null) and (($body.chat_id | tostring) == $author) and
+        (($body.text? // $body.rich_message.markdown? // "") | contains($invite)))] |
+      length) == 1' \
     "$feature_dir/provider.json" >/dev/null
   complete_observation "$run_id" "$feature_dir"
   printf 'observed channel-linking state=%s provider=%s\n' \
@@ -1272,6 +1297,180 @@ observe_research_report() {
     >"$state_dir/research-report-workflow-id"
   complete_observation "$run_id" "$feature_dir"
   printf 'observed research-report state=%s provider=%s\n' \
+    "$feature_dir/state.json" "$feature_dir/provider.json"
+}
+
+observe_document_build() {
+  local run_id state_dir feature_dir container_id provider_origin phone state_json user_id agent_id file_id
+  local artifact_id main_instance_id timer_instance_id runtime source_key artifact_key attempt_key owner_key
+  local files_bucket artifacts_bucket source_exists artifact_exists attempt_exists owner_exists
+  run_id="$1"
+  state_dir="$(state_dir_for "$run_id")"
+  feature_dir="$(feature_artifact_dir_for "$run_id" document-build)"
+  begin_observation "$feature_dir"
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  state_json="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userId', u.id,
+      'agentId', db.agent_id,
+      'workflowId', db.workflow_id,
+      'state', db.state,
+      'format', db.request_json::jsonb ->> 'format',
+      'inputDigest', db.input_digest,
+      'sourceFileId', db.request_json::jsonb #>> '{fileSnapshots,0,fileId}',
+      'sourceMediaType', db.request_json::jsonb #>> '{fileSnapshots,0,mediaType}',
+      'sourceByteLength', db.request_json::jsonb #>> '{fileSnapshots,0,byteLength}',
+      'sourceSha256', db.request_json::jsonb #>> '{fileSnapshots,0,sha256}',
+      'sourceCount', jsonb_array_length(db.request_json::jsonb -> 'fileSnapshots'),
+      'cloudflareInstanceId', db.cloudflare_instance_id,
+      'cloudflareTimerInstanceId', db.cloudflare_timer_instance_id,
+      'artifactContentId', db.artifact_content_id,
+      'costEvidence', db.cost_evidence_json::jsonb,
+      'safeFailureCode', db.safe_failure_code,
+      'admittedAt', db.admitted_at,
+      'acceptedAt', db.accepted_at,
+      'startedAt', db.started_at,
+      'previewStoredAt', db.preview_stored_at,
+      'accountingCommittedAt', db.accounting_committed_at,
+      'publicationCommittedAt', db.publication_committed_at,
+      'artifactAccountedAt', db.artifact_accounted_at,
+      'terminalAt', db.terminal_at,
+      'elapsedSeconds', extract(epoch from (db.terminal_at - db.admitted_at)),
+      'previewNotifications', (select count(*) from document_build_notifications n where n.workflow_id = db.workflow_id and n.kind = 'previewReady'),
+      'terminalNotifications', (select count(*) from document_build_notifications n where n.workflow_id = db.workflow_id and n.kind = 'terminal' and n.think_submission_id is not null and n.delivered_at is not null),
+      'terminalNotificationAfterTruth', (select bool_and(n.delivered_at >= db.terminal_at) from document_build_notifications n where n.workflow_id = db.workflow_id and n.kind = 'terminal'),
+      'workflowStartUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_id = db.workflow_id and a.source_type = 'documentBuild' and a.allowance_kind = 'workflowStarts'),
+      'generatedDocumentUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_id = db.workflow_id and a.source_type = 'documentBuild' and a.allowance_kind = 'generatedDocuments'),
+      'providerCostUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_type = 'documentProviderOperation' and a.source_id = db.cost_evidence_json::jsonb ->> 'providerOperationId' and a.allowance_kind = 'vendorUsdMicros'),
+      'providerCostQuantity', (select a.quantity::text from allowance_usage a where a.user_id = u.id and a.source_type = 'documentProviderOperation' and a.source_id = db.cost_evidence_json::jsonb ->> 'providerOperationId' and a.allowance_kind = 'vendorUsdMicros' limit 1),
+      'providerCostBasis', (select a.basis from allowance_usage a where a.user_id = u.id and a.source_type = 'documentProviderOperation' and a.source_id = db.cost_evidence_json::jsonb ->> 'providerOperationId' and a.allowance_kind = 'vendorUsdMicros' limit 1),
+      'sharedUsageEvents', (select count(*) from usage_events e where e.user_id = u.id and e.root_operation_id = db.workflow_id)
+    ) from users u
+    join lateral (
+      select * from document_builds where user_id = u.id order by admitted_at desc limit 1
+    ) db on true
+    where u.phone_number = '$phone';")"
+  if [[ -z "$state_json" ]]; then
+    printf 'No committed Document Build found for the run-owned User\n' >&2
+    exit 1
+  fi
+  user_id="$(jq --exit-status --raw-output '.userId' <<<"$state_json")"
+  agent_id="$(jq --exit-status --raw-output '.agentId' <<<"$state_json")"
+  file_id="$(jq --exit-status --raw-output '.sourceFileId' <<<"$state_json")"
+  artifact_id="$(jq --exit-status --raw-output '.artifactContentId' <<<"$state_json")"
+  main_instance_id="$(jq --exit-status --raw-output '.cloudflareInstanceId' <<<"$state_json")"
+  timer_instance_id="$(jq --exit-status --raw-output '.cloudflareTimerInstanceId' <<<"$state_json")"
+  runtime="$(inspect_agent_runtime "$run_id" "$agent_id" "$user_id" "$file_id" \
+    "$main_instance_id" "$timer_instance_id" "$artifact_id")"
+  files_bucket="$(jq --exit-status --raw-output \
+    '.r2_buckets[] | select(.binding == "FILES") | .bucket_name' "$state_dir/wrangler.json")"
+  artifacts_bucket="$(jq --exit-status --raw-output \
+    '.r2_buckets[] | select(.binding == "ARTIFACTS") | .bucket_name' "$state_dir/wrangler.json")"
+  source_key="users/$(VERIFICATION_PART="$user_id" bun -e 'process.stdout.write(encodeURIComponent(process.env.VERIFICATION_PART))')/files/$(VERIFICATION_PART="$file_id" bun -e 'process.stdout.write(encodeURIComponent(process.env.VERIFICATION_PART))')/source"
+  artifact_key="client-content/$(VERIFICATION_CONTENT_ID="$artifact_id" bun -e '
+    process.stdout.write(Array.from(new TextEncoder().encode(process.env.VERIFICATION_CONTENT_ID), (byte) => byte.toString(16).padStart(2, "0")).join(""));
+  ')"
+  attempt_key="${artifact_key/client-content\//document-attempts/}"
+  owner_key="document-owners/by-user/$(VERIFICATION_PART="$user_id" bun -e 'process.stdout.write(encodeURIComponent(process.env.VERIFICATION_PART))')/${artifact_key#client-content/}"
+  if r2_object_exists "$state_dir" "$files_bucket" "$source_key"; then source_exists=true; else source_exists=false; fi
+  if r2_object_exists "$state_dir" "$artifacts_bucket" "$artifact_key"; then artifact_exists=true; else artifact_exists=false; fi
+  if r2_object_exists "$state_dir" "$artifacts_bucket" "$attempt_key"; then attempt_exists=true; else attempt_exists=false; fi
+  if r2_object_exists "$state_dir" "$artifacts_bucket" "$owner_key"; then owner_exists=true; else owner_exists=false; fi
+  jq --null-input \
+    --argjson postgres "$state_json" \
+    --argjson runtime "$runtime" \
+    --argjson sourceExists "$source_exists" \
+    --argjson artifactExists "$artifact_exists" \
+    --argjson attemptExists "$attempt_exists" \
+    --argjson ownerExists "$owner_exists" \
+    '$postgres + { agentRuntime: $runtime, sourceExists: $sourceExists,
+      artifactExists: $artifactExists, attemptExists: $attemptExists,
+      ownerExists: $ownerExists }' >"$feature_dir/state.json"
+  jq --null-input \
+    --argjson costEvidence "$(jq '.costEvidence' <<<"$state_json")" \
+    --argjson providerCostQuantity "$(jq '.providerCostQuantity' <<<"$state_json")" \
+    --argjson providerCostBasis "$(jq '.providerCostBasis' <<<"$state_json")" \
+    --argjson model "$(curl --fail --silent --show-error "$provider_origin/_test/research/ledger")" \
+    --argjson telegram "$(curl --fail --silent --show-error "$provider_origin/_test/telegram/ledger")" \
+    '{ costEvidence: $costEvidence, providerCostQuantity: $providerCostQuantity,
+      providerCostBasis: $providerCostBasis, model: $model, telegram: $telegram }' \
+    >"$feature_dir/provider.json"
+  jq --exit-status \
+    '.state == "success" and .format == "pdf" and .safeFailureCode == null and
+      .artifactContentId == ("document:workflow:" + .workflowId) and
+      (.inputDigest | test("^[0-9a-f]{64}$")) and .sourceCount == 1 and
+      .sourceMediaType == "text/plain" and
+      .acceptedAt != null and .startedAt != null and .previewStoredAt != null and
+      .accountingCommittedAt != null and .publicationCommittedAt != null and
+      .artifactAccountedAt != null and .terminalAt != null and
+      .elapsedSeconds >= 0 and .elapsedSeconds <= 3600 and
+      .cloudflareInstanceId != .cloudflareTimerInstanceId and
+      .previewNotifications <= 1 and .terminalNotifications == 1 and
+      .terminalNotificationAfterTruth == true and
+      .workflowStartUsage == 1 and .generatedDocumentUsage == 1 and
+      .providerCostUsage == 1 and .sharedUsageEvents == 0 and
+      .sourceExists == true and .artifactExists == true and
+      .attemptExists == true and .ownerExists == true and
+      .agentRuntime.inspectable == true and .agentRuntime.registered == true and
+      .agentRuntime.documentBuildSource._tag == "Found" and
+      .agentRuntime.documentBuildSource.fileId == .sourceFileId and
+      .agentRuntime.documentBuildSource.userId == .userId and
+      .agentRuntime.documentBuildSource.mediaType == .sourceMediaType and
+      .agentRuntime.documentBuildSource.byteLength == .sourceByteLength and
+      .agentRuntime.documentBuildSource.sha256 == .sourceSha256 and
+      .agentRuntime.documentBuildMain != null and .agentRuntime.documentBuildTimer != null and
+      (.agentRuntime.documentContent.customMetadata.osfo | fromjson) as $content and
+      (.agentRuntime.documentAttempt.customMetadata.osfo | fromjson) as $attempt and
+      (.agentRuntime.documentOwner.customMetadata.osfo | fromjson) as $owner and
+      $content.userId == .userId and $content.owner._tag == "Workflow" and
+      $content.owner.workflowId == .workflowId and $content.intentDigest == $attempt.intentDigest and
+      $content.format == .format and $content.retention == "accounted" and
+      $content.artifact.content.contentId == .artifactContentId and
+      ($content.artifact.content.byteLength | tostring) == (.agentRuntime.documentContent.size | tostring) and
+      .agentRuntime.documentContent.checksums.sha256 == $content.artifact.content.sha256 and
+      $content.artifact.artifactRole._tag == "GeneratedDocumentV1" and
+      $content.artifact.artifactRole.format == .format and
+      $content.artifact.artifactRole.pageCount >= 1 and
+      $content.artifact.artifactRole.pageCount <= 20 and
+      $attempt.userId == .userId and $attempt.status == "completed" and
+      $attempt.renderedPageCount == $content.artifact.artifactRole.pageCount and
+      $attempt.cost.providerOperationId == .costEvidence.providerOperationId and
+      $attempt.cost.usdMicros == .costEvidence.usdMicros and
+      $content.cost.providerOperationId == .costEvidence.providerOperationId and
+      $content.cost.usdMicros == .costEvidence.usdMicros and
+      $owner.userId == .userId and $owner.contentId == .artifactContentId and
+      .agentRuntime.documentSourceObject.customMetadata["osfo-sha256"] == .sourceSha256 and
+      .agentRuntime.documentSourceObject.checksums.sha256 == (.sourceSha256 | sub("^sha256:"; "")) and
+      (.agentRuntime.documentSourceObject.size | tostring) == .sourceByteLength' \
+    "$feature_dir/state.json" >/dev/null
+  jq --exit-status \
+    --arg fileId "$file_id" --arg workflowId "$(jq --raw-output '.workflowId' <<<"$state_json")" \
+    --arg artifactId "$artifact_id" \
+    '.costEvidence._tag == "Incurred" and
+      (.costEvidence.providerOperationId | length) > 0 and
+      .costEvidence.usdMicros != "0" and
+      .providerCostQuantity == .costEvidence.usdMicros and
+      .providerCostBasis == .costEvidence.basis and
+      ([.model[] | select(.kind == "tool-selection" and
+        .selectedTool == "startDocumentBuild" and .subject == $fileId)] | length) == 1 and
+      ([.model[] | select(.kind == "tool-selection" and
+        .selectedTool == "inspectDocumentBuild" and .subject == $workflowId)] | length) == 1 and
+      (any(.telegram[];
+        (.body | fromjson?) as $body |
+        (($body.text? // $body.rich_message.markdown? // "") | contains($workflowId)))) and
+      (any(.telegram[];
+        (.body | fromjson?) as $body |
+        (($body.text? // $body.rich_message.markdown? // "") | contains($artifactId))))' \
+    "$feature_dir/provider.json" >/dev/null
+  printf '%s\n' "$file_id" >"$state_dir/document-build-file-id"
+  printf '%s\n' "$artifact_id" >"$state_dir/document-build-artifact-id"
+  printf '%s\n' "$main_instance_id" >"$state_dir/document-build-main-instance-id"
+  printf '%s\n' "$timer_instance_id" >"$state_dir/document-build-timer-instance-id"
+  complete_observation "$run_id" "$feature_dir"
+  printf 'observed document-build state=%s provider=%s\n' \
     "$feature_dir/state.json" "$feature_dir/provider.json"
 }
 
@@ -1411,6 +1610,10 @@ observe_account_deletion() {
   local postgres_state agent_runtime provider_ledger provider_containers target_exists unrelated_exists
   local worker_log account_http feature proof_shape research_state research_expected
   local research_manifest_exists research_source_exists research_synthesis_exists research_artifact_exists research_artifact_key
+  local document_state document_expected document_source_exists document_artifact_exists
+  local document_attempt_exists document_owner_exists document_source_key document_artifact_key
+  local document_attempt_key document_owner_key document_file_id document_artifact_id
+  local document_main_instance_id document_timer_instance_id artifacts_bucket
   run_id="$1"
   feature="$2"
   if [[ "$feature" == account-deletion-replay ]]; then
@@ -1465,9 +1668,12 @@ observe_account_deletion() {
         join research_reports r on r.workflow_id = o.workflow_id where r.user_id = '$user_id'
       ),
       'researchNotificationExists', exists(select 1 from research_report_notifications where user_id = '$user_id'),
+      'documentBuildExists', exists(select 1 from document_builds where user_id = '$user_id'),
+      'documentNotificationExists', exists(select 1 from document_build_notifications where user_id = '$user_id'),
+      'documentAccountingExists', exists(select 1 from allowance_usage where user_id = '$user_id' and source_type in ('documentBuild', 'documentProviderOperation')),
+      'documentUsageEventExists', exists(select 1 from usage_events where user_id = '$user_id' and source_type = 'documentBuild'),
       'phoneVerificationExists', exists(select 1 from verifications where identifier = '$phone')
     );")"
-  agent_runtime="$(inspect_agent_runtime "$run_id" "$agent_id")"
   if r2_object_exists "$state_dir" "$files_bucket" "$target_key"; then
     target_exists=true
   else
@@ -1507,6 +1713,36 @@ observe_account_deletion() {
       research_artifact_exists=true
     fi
   fi
+  document_state="$(feature_artifact_dir_for "$run_id" document-build)/state.json"
+  document_expected=false
+  document_source_exists=false
+  document_artifact_exists=false
+  document_attempt_exists=false
+  document_owner_exists=false
+  if [[ -s "$document_state" ]]; then
+    document_expected=true
+    document_file_id="$(jq --exit-status --raw-output '.sourceFileId' "$document_state")"
+    document_artifact_id="$(jq --exit-status --raw-output '.artifactContentId' "$document_state")"
+    document_main_instance_id="$(jq --exit-status --raw-output '.cloudflareInstanceId' "$document_state")"
+    document_timer_instance_id="$(jq --exit-status --raw-output '.cloudflareTimerInstanceId' "$document_state")"
+    document_source_key="users/$(VERIFICATION_PART="$user_id" bun -e 'process.stdout.write(encodeURIComponent(process.env.VERIFICATION_PART))')/files/$(VERIFICATION_PART="$document_file_id" bun -e 'process.stdout.write(encodeURIComponent(process.env.VERIFICATION_PART))')/source"
+    document_artifact_key="client-content/$(VERIFICATION_CONTENT_ID="$document_artifact_id" bun -e '
+      process.stdout.write(Array.from(new TextEncoder().encode(process.env.VERIFICATION_CONTENT_ID), (byte) => byte.toString(16).padStart(2, "0")).join(""));
+    ')"
+    document_attempt_key="${document_artifact_key/client-content\//document-attempts/}"
+    document_owner_key="document-owners/by-user/$(VERIFICATION_PART="$user_id" bun -e 'process.stdout.write(encodeURIComponent(process.env.VERIFICATION_PART))')/${document_artifact_key#client-content/}"
+    artifacts_bucket="$(jq --exit-status --raw-output \
+      '.r2_buckets[] | select(.binding == "ARTIFACTS") | .bucket_name' "$state_dir/wrangler.json")"
+    if r2_object_exists "$state_dir" "$files_bucket" "$document_source_key"; then document_source_exists=true; fi
+    if r2_object_exists "$state_dir" "$artifacts_bucket" "$document_artifact_key"; then document_artifact_exists=true; fi
+    if r2_object_exists "$state_dir" "$artifacts_bucket" "$document_attempt_key"; then document_attempt_exists=true; fi
+    if r2_object_exists "$state_dir" "$artifacts_bucket" "$document_owner_key"; then document_owner_exists=true; fi
+    agent_runtime="$(inspect_agent_runtime "$run_id" "$agent_id" "$user_id" \
+      "$document_file_id" "$document_main_instance_id" "$document_timer_instance_id" \
+      "$document_artifact_id")"
+  else
+    agent_runtime="$(inspect_agent_runtime "$run_id" "$agent_id")"
+  fi
   account_http="$("$script_dir/inspect-account-http-log" "$worker_log" "$proof_shape")"
   jq --null-input \
     --argjson postgres "$postgres_state" \
@@ -1518,6 +1754,11 @@ observe_account_deletion() {
     --argjson researchSourceExists "$research_source_exists" \
     --argjson researchSynthesisExists "$research_synthesis_exists" \
     --argjson researchArtifactExists "$research_artifact_exists" \
+    --argjson documentProofExpected "$document_expected" \
+    --argjson documentSourceExists "$document_source_exists" \
+    --argjson documentArtifactExists "$document_artifact_exists" \
+    --argjson documentAttemptExists "$document_attempt_exists" \
+    --argjson documentOwnerExists "$document_owner_exists" \
     --argjson accountHttp "$account_http" \
     --arg targetR2Key "$target_key" \
     --arg unrelatedR2Key "$unrelated_key" \
@@ -1532,7 +1773,12 @@ observe_account_deletion() {
       researchManifestExists: $researchManifestExists,
       researchSourceExists: $researchSourceExists,
       researchSynthesisExists: $researchSynthesisExists,
-      researchArtifactExists: $researchArtifactExists
+      researchArtifactExists: $researchArtifactExists,
+      documentProofExpected: $documentProofExpected,
+      documentSourceExists: $documentSourceExists,
+      documentArtifactExists: $documentArtifactExists,
+      documentAttemptExists: $documentAttemptExists,
+      documentOwnerExists: $documentOwnerExists
     }' >"$feature_dir/state.json"
   cp "$state_dir/account-deletion-agent-runtime-before.json" \
     "$feature_dir/agent-runtime-before.json"
@@ -1556,7 +1802,9 @@ observe_account_deletion() {
       .billingExists or .allowanceExists or .whatsAppWakeUpExists or
       .whatsAppWakeUpSourceExists or .researchReportExists or
       .researchProviderOperationExists or .researchSynthesisOperationExists or
-      .researchNotificationExists or .phoneVerificationExists) == false and
+      .researchNotificationExists or .documentBuildExists or
+      .documentNotificationExists or .documentAccountingExists or
+      .documentUsageEventExists or .phoneVerificationExists) == false and
       .agentRuntime.inspectable == false and .agentRuntime.registered == false and
       .accountHttp.presentationRequests == 1 and
       .accountHttp.presentationSuccesses == 1 and
@@ -1566,7 +1814,13 @@ observe_account_deletion() {
       (.researchProofExpected == false or
         (.researchManifestExists == false and .researchSourceExists == false and
           .researchSynthesisExists == false and
-          .researchArtifactExists == false))' \
+          .researchArtifactExists == false)) and
+      (.documentProofExpected == false or
+        (.documentSourceExists == false and .documentArtifactExists == false and
+          .documentAttemptExists == false and .documentOwnerExists == false and
+          .agentRuntime.documentBuildSource._tag == "Unavailable" and
+          .agentRuntime.documentBuildMain.status == "terminated" and
+          .agentRuntime.documentBuildTimer.status == "terminated"))' \
     "$feature_dir/state.json" >/dev/null
   jq --exit-status \
     '.inspectable == true and .registered == true and
@@ -1738,6 +1992,7 @@ case "$command_name" in
       registration) observe_registration "$2" ;;
       channel-linking) observe_channel_linking "$2" ;;
       research-report) observe_research_report "$2" ;;
+      document-build) observe_document_build "$2" ;;
       billing) observe_billing "$2" ;;
       whatsapp-wakeup) observe_whatsapp_wakeup "$2" ;;
       account-deletion|account-deletion-replay) observe_account_deletion "$2" "$3" ;;

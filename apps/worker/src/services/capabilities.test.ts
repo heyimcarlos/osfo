@@ -205,7 +205,52 @@ it.effect("gives Free and Adventurer the same closed self-serve Capability Catal
 
     expect(free.catalogCapabilityIds).toEqual(adventurer.catalogCapabilityIds);
     expect(free.catalogCapabilityIds).toContain("document-generation");
+    expect(free.catalogCapabilityIds).toContain("document-build");
     expect(free.catalogCapabilityIds).not.toContain("gm-summon");
+  }),
+);
+
+it.effect("publishes Document Build start, inspect, and cancel only after its Skill loads", () =>
+  Effect.gen(function* () {
+    const capabilities = Capabilities.make();
+    const availableToolNames = [
+      ...baseInput.availableToolNames,
+      "cancelDocumentBuild",
+      "inspectDocumentBuild",
+      "startDocumentBuild",
+    ];
+    const index = yield* capabilities.eligibleIndex({
+      ...baseInput,
+      availableRequirements: [...baseInput.availableRequirements, "workflow-store"],
+      availableToolNames,
+      plan: "free",
+      taskDescription: "Build a PDF from my uploaded file",
+      taskKinds: ["document", "workflow"],
+    });
+    expect(index.selectedCapabilityIds).toContain("document-build");
+    expect(index.candidates).toContainEqual(expect.objectContaining({ skillId: "document-build" }));
+    expect(
+      capabilities.assembleToolBundle({ availableToolNames, index, loadedSkills: [] })
+        .activeToolNames,
+    ).toEqual(["loadSkill"]);
+
+    const loaded = yield* capabilities.loadSkill({
+      index,
+      personalSkills: [],
+      skillId: "document-build",
+      skillVersion: "system-document-build-v1",
+      userId: baseInput.userId,
+    });
+    expect(
+      capabilities.assembleToolBundle({ availableToolNames, index, loadedSkills: [loaded] })
+        .activeToolNames,
+    ).toEqual([
+      "cancelDocumentBuild",
+      "exportDocument",
+      "inspectDocumentBuild",
+      "loadSkill",
+      "startDocumentBuild",
+    ]);
   }),
 );
 
