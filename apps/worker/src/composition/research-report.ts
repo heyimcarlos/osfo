@@ -81,6 +81,7 @@ export const serviceLayer = (binding: WorkflowBinding) => {
     Db.database.pipe(
       Effect.map((database) =>
         ResearchReport.Port.of({
+          currentAuthorization: ResearchReportPostgres.makeCurrentAuthorization(database),
           persistence: ResearchReportPostgres.make(database),
           workflow: makeWorkflowPort(binding),
         }),

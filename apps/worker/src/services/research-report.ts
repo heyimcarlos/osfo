@@ -7,15 +7,16 @@ import {
   type ConversationRouteId,
   ModelAccessPolicyVersion,
   type PlanPolicyVersion,
-  ResourcePriceVersion,
+  type ResourcePriceVersion,
   type SessionId,
   UserId,
 } from "../domain";
 import type { ActionId } from "../domain/action-execution";
-import { currentCapabilityCatalog } from "../domain/capability-catalog";
+import { ConsequenceClass, currentCapabilityCatalog } from "../domain/capability-catalog";
 import type { ManagedModelRoute } from "../domain/model-access-policy";
 import { launchModelAccessPolicy, selectManagedRoute } from "../domain/model-access-policy";
 import { retainedCatalog } from "../domain/plan-policy";
+import { currentResourcePriceVersion } from "../domain/usage";
 import {
   type AuthorizationContext,
   type Denied,
@@ -45,6 +46,9 @@ export type InputDigest = typeof InputDigest.Type;
 
 /** Bounded public-web plan supplied by the requesting Agent. */
 export const Request = Schema.Struct({
+  consequences: Schema.Array(ConsequenceClass).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+  ),
   format: Schema.Literals(["pdf", "docx"]),
   queries: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500))).check(
     Schema.isMinLength(1),
@@ -80,11 +84,13 @@ export const terminalStates = new Set<State>(["success", "failure", "canceled"])
 /** Complete trusted product row needed to recover one Research Report. */
 export interface Record {
   readonly workflowId: WorkflowId;
+  readonly actionId: ActionId;
   readonly userId: UserId;
   readonly agentId: AgentId;
   readonly routeId: ConversationRouteId;
   readonly sessionId: SessionId;
   readonly originatingAuthority: typeof OriginatingAuthority.Type;
+  readonly approval: AuthorizationContext["approval"];
   readonly inputDigest: InputDigest;
   readonly request: Request;
   readonly state: State;
@@ -137,6 +143,9 @@ export class Unavailable extends Schema.TaggedError<Unavailable>()("ResearchRepo
 }) {}
 
 export interface PortInterface {
+  readonly currentAuthorization: (
+    report: Record,
+  ) => Effect.Effect<AuthorizationContext, Unavailable>;
   readonly persistence: {
     readonly admit: (record: Record) => Effect.Effect<
       | { readonly _tag: "Created"; readonly report: Record }
@@ -172,7 +181,7 @@ export class Port extends Context.Service<Port, PortInterface>()("@osfo/Research
 export interface Interface {
   readonly authorizeExecution: (
     payload: WorkflowPayload,
-  ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+  ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
   readonly cancel: (
     workflowId: WorkflowId,
     userId: UserId,
@@ -184,15 +193,13 @@ export interface Interface {
   readonly reconcileAcceptance: (
     workflowId: WorkflowId,
     inputDigest: InputDigest,
-  ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+  ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
   readonly start: (
     input: StartInput,
-  ) => Effect.Effect<StartResult, Conflict | Denied | Unavailable>;
+  ) => Effect.Effect<StartResult, Conflict | Denied | NotFound | Unavailable>;
 }
 
 export class Service extends Context.Service<Service, Interface>()("@osfo/ResearchReport") {}
-
-const resourcePriceVersion = ResourcePriceVersion.make("resource-prices-2026-08-22");
 
 /** Build the Research Report service around durable PostgreSQL and Cloudflare ports. */
 export const make = Effect.gen(function* () {
@@ -219,6 +226,18 @@ export const make = Effect.gen(function* () {
     return yield* ports.persistence.markAccepted(report.workflowId, report.inputDigest, acceptedAt);
   });
 
+  const recheck = Effect.fn("ResearchReport.recheck")(function* (
+    report: Record,
+    context: AuthorizationContext,
+  ) {
+    const result = authorization.recheck(
+      context,
+      workflowOperation(report.actionId, report.request),
+    );
+    if (Predicate.isTagged(result, "Denied")) return yield* Effect.fail(result);
+    return undefined;
+  });
+
   const reconcileAcceptance = Effect.fn("ResearchReport.reconcileAcceptance")(function* (
     workflowId: WorkflowId,
     inputDigest: InputDigest,
@@ -231,6 +250,8 @@ export const make = Effect.gen(function* () {
         workflowId,
       });
     }
+    const context = yield* ports.currentAuthorization(report);
+    yield* recheck(report, context);
     return yield* accept(report);
   });
 
@@ -248,6 +269,14 @@ export const make = Effect.gen(function* () {
         workflowId: payload.workflowId,
       });
     }
+    if (report.state === "cancel_requested" || terminalStates.has(report.state)) {
+      return yield* new Conflict({
+        message: "The Research Report is no longer executable",
+        workflowId: payload.workflowId,
+      });
+    }
+    const context = yield* ports.currentAuthorization(report);
+    yield* recheck(report, context);
     return report;
   });
 
@@ -266,17 +295,19 @@ export const make = Effect.gen(function* () {
           workflowId,
         });
       }
-      const accepted = yield* accept(existing).pipe(Effect.option);
-      return accepted._tag === "Some"
-        ? { _tag: "Replayed" as const, report: accepted.value }
-        : { _tag: "AcceptancePending" as const, report: existing };
+      yield* recheck(existing, input.authorization);
+      const accepted = yield* accept(existing).pipe(
+        Effect.catchIf(isWorkflowAcknowledgementFailure, () => Effect.succeed(null)),
+      );
+      return accepted === null
+        ? { _tag: "AcceptancePending" as const, report: existing }
+        : { _tag: "Replayed" as const, report: accepted };
     }
 
-    const admission = authorization.admit(input.authorization, {
-      actionId: input.actionId,
-      change: "start",
-      kind: "workflow.manage",
-    });
+    const admission = authorization.admit(
+      input.authorization,
+      workflowOperation(input.actionId, input.request),
+    );
     if (!Predicate.isTagged(admission, "Admitted")) {
       return yield* Effect.fail(
         Predicate.isTagged(admission, "Denied")
@@ -308,11 +339,13 @@ export const make = Effect.gen(function* () {
     const admittedAt = input.authorization.now;
     const report: Record = {
       workflowId,
+      actionId: input.actionId,
       userId: input.authorization.user.userId,
       agentId: input.agentId,
       routeId: input.routeId,
       sessionId: input.sessionId,
       originatingAuthority: input.authorization.originatingAuthority,
+      approval: input.authorization.approval,
       inputDigest,
       request: input.request,
       state: "admitted",
@@ -323,7 +356,7 @@ export const make = Effect.gen(function* () {
         launchModelAccessPolicy.planPolicyVersion,
       ),
       modelRoute: route.route,
-      resourcePriceVersion,
+      resourcePriceVersion: currentResourcePriceVersion,
       manifestVersion: admission.manifestVersion,
       cloudflareInstanceId,
       admittedAt,
@@ -340,13 +373,15 @@ export const make = Effect.gen(function* () {
         workflowId,
       });
     }
-    const accepted = yield* accept(exact).pipe(Effect.option);
-    if (accepted._tag === "None") {
+    const accepted = yield* accept(exact).pipe(
+      Effect.catchIf(isWorkflowAcknowledgementFailure, () => Effect.succeed(null)),
+    );
+    if (accepted === null) {
       return { _tag: "AcceptancePending" as const, report: exact };
     }
     return {
       _tag: persisted._tag === "Created" ? ("Started" as const) : ("Replayed" as const),
-      report: accepted.value,
+      report: accepted,
     };
   });
 
@@ -385,6 +420,17 @@ const deadlineAfter = (admittedAt: Date) =>
       milliseconds: currentCapabilityCatalog.operationLimits.researchOperationMilliseconds,
     }),
   );
+
+const workflowOperation = (actionId: ActionId, request: Request) => ({
+  actionId,
+  change: "start" as const,
+  consequences: request.consequences,
+  kind: "workflow.manage" as const,
+});
+
+const isWorkflowAcknowledgementFailure = (failure: Conflict | NotFound | Unavailable) =>
+  Predicate.isTagged(failure, "ResearchReportUnavailable") &&
+  (failure.operation === "workflow.create" || failure.operation === "workflow.reconcileCreate");
 
 const digest = (value: string) =>
   Effect.promise(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))).pipe(

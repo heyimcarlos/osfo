@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 
 import { ManifestVersion } from "../domain";
-import { ArtifactKind, SkillChange } from "./capability-catalog";
+import { ArtifactKind, ConsequenceClass, SkillChange } from "./capability-catalog";
 
 const nonNegative = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
 const positive = Schema.BigInt.check(Schema.isGreaterThanBigInt(0n));
@@ -141,6 +141,7 @@ export const AuthorizationOperation = Schema.Union([
   Schema.Struct({
     actionId: Schema.String,
     change: Schema.Literals(["start", "materialChange", "stop"]),
+    consequences: Schema.optionalKey(Schema.Array(ConsequenceClass)),
     kind: Schema.Literal("workflow.manage"),
   }),
   Schema.Struct({
@@ -201,4 +202,6 @@ export const AuthorizationOperation = Schema.Union([
 export type AuthorizationOperation = typeof AuthorizationOperation.Type;
 
 /** Flat operation input parsed by the Authorization boundary. */
-export type AuthorizationOperationInput = Readonly<Record<string, bigint | string>>;
+export type AuthorizationOperationInput = Readonly<
+  Record<string, bigint | ReadonlyArray<string> | string>
+>;

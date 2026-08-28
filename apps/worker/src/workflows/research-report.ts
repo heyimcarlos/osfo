@@ -6,6 +6,7 @@ import { ResearchReportComposition } from "../composition/research-report";
 import { decodeOsfoStage } from "../config";
 import { makeWorkflowRuntime } from "../layers";
 import { ResearchReport } from "../services/research-report";
+import type { Denied } from "../services/authorization";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare WorkflowEntrypoint and WorkflowStep are Promise-only host APIs. */
 /* oxlint-disable eslint/no-underscore-dangle -- Option uses the standard Effect _tag discriminator. */
@@ -21,6 +22,7 @@ const ExecutionResult = Schema.Union([
       "invalidEnvironment",
       "invalidPayload",
       "notFound",
+      "unauthorized",
       "unavailable",
     ]),
   }),
@@ -60,10 +62,11 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
 }
 
 const failureKind = (
-  failure: ResearchReport.Conflict | ResearchReport.NotFound | ResearchReport.Unavailable,
+  failure: ResearchReport.Conflict | Denied | ResearchReport.NotFound | ResearchReport.Unavailable,
 ): Extract<ExecutionResult, { readonly failure: string }>["failure"] => {
   if (Schema.is(ResearchReport.Conflict)(failure)) return "conflict";
   if (Schema.is(ResearchReport.NotFound)(failure)) return "notFound";
   if (Schema.is(ResearchReport.Unavailable)(failure)) return "unavailable";
+  if (failure._tag === "Denied") return "unauthorized";
   return "unavailable";
 };

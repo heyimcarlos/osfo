@@ -308,9 +308,12 @@ const recognizedModelPrices = Schema.decodeSync(Schema.Array(ManagedModelPrice))
   },
 ]);
 
+/** Current retained price authority pinned by newly admitted operations. */
+export const currentResourcePriceVersion = ResourcePriceVersion.make("resource-prices-2026-08-22");
+
 const recognizedResourcePriceVersions = new Set([
   ...recognizedModelPrices.map(({ resourcePriceVersion }) => resourcePriceVersion),
-  ResourcePriceVersion.make("resource-prices-2026-08-22"),
+  currentResourcePriceVersion,
 ]);
 
 const isRecognizedModelPrice = (price: ManagedModelPrice) =>

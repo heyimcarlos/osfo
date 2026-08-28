@@ -30,6 +30,7 @@ export const researchReports = pgTable(
   "research_reports",
   {
     workflow_id: text().primaryKey(),
+    action_id: text().notNull(),
     user_id: text()
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -37,6 +38,7 @@ export const researchReports = pgTable(
     route_id: text().notNull(),
     session_id: text().notNull(),
     originating_authority_json: text().notNull(),
+    approval_json: text(),
     input_digest: text().notNull(),
     request_json: text().notNull(),
     state: text({ enum: workflowStates }).notNull(),
@@ -81,6 +83,7 @@ export const researchReports = pgTable(
       "research_reports_identity_check",
       sql`length(btrim(${table.workflow_id})) > 0
         and length(btrim(${table.user_id})) > 0
+        and length(btrim(${table.action_id})) > 0
         and length(btrim(${table.agent_id})) > 0
         and length(btrim(${table.route_id})) > 0
         and length(btrim(${table.session_id})) > 0
@@ -99,6 +102,7 @@ export const researchReports = pgTable(
     check(
       "research_reports_json_check",
       sql`jsonb_typeof(${table.originating_authority_json}::jsonb) = 'object'
+        and (${table.approval_json} is null or jsonb_typeof(${table.approval_json}::jsonb) = 'object')
         and jsonb_typeof(${table.request_json}::jsonb) = 'object'`,
     ),
     check(

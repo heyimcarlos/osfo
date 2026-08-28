@@ -15,7 +15,13 @@ import {
 } from "../domain";
 import { ActionId } from "../domain/action-execution";
 import { AuthSessionId } from "../domain/auth-session";
-import { emptyLiveResourceFacts, type AuthorizationContext } from "./authorization";
+import { currentResourcePriceVersion } from "../domain/usage";
+import {
+  approvalFor,
+  ApprovalPresentation,
+  emptyLiveResourceFacts,
+  type AuthorizationContext,
+} from "./authorization";
 import { ResearchReport } from "./research-report";
 
 const now = new Date("2026-08-27T12:00:00.000Z");
@@ -27,12 +33,13 @@ const routeId = ConversationRouteId.make("research-route");
 const sessionId = SessionId.make("research-session");
 const actionId = ActionId.make("research-action");
 const request = ResearchReport.Request.make({
+  consequences: [],
   format: "pdf",
   queries: ["public evidence for the topic"],
   topic: "A bounded cited research report",
 });
 
-it.effect("persists exact product truth before creating one stable Workflow instance", () => {
+it.effect("starts an ordinary report without Approval and persists before Workflow create", () => {
   const fixture = makeFixture();
 
   return Effect.gen(function* () {
@@ -45,6 +52,7 @@ it.effect("persists exact product truth before creating one stable Workflow inst
       report: {
         acceptedAt: now,
         allowancePeriodId: "research-period",
+        resourcePriceVersion: currentResourcePriceVersion,
         state: "accepted",
         userId,
       },
@@ -56,7 +64,7 @@ it.effect("persists exact product truth before creating one stable Workflow inst
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
-it.effect("replays exact input without re-authorizing and rejects changed input", () => {
+it.effect("rechecks current authority on replay and rejects changed input", () => {
   const fixture = makeFixture();
 
   return Effect.gen(function* () {
@@ -64,7 +72,13 @@ it.effect("replays exact input without re-authorizing and rejects changed input"
     const reports = yield* ResearchReport.Service;
     const first = yield* reports.start(startInput());
     const deniedCurrentFacts = authorization("free");
-    const replayed = yield* reports.start(startInput({ authorization: deniedCurrentFacts }));
+    const deniedReplay = yield* reports
+      .start(startInput({ authorization: deniedCurrentFacts }))
+      .pipe(Effect.result);
+    expect(deniedReplay).toMatchObject({
+      failure: { _tag: "Denied", reason: "missingEntitlement" },
+    });
+    const replayed = yield* reports.start(startInput());
     expect(replayed).toMatchObject({ _tag: "Replayed", report: { state: "accepted" } });
     expect(replayed.report.workflowId).toBe(first.report.workflowId);
 
@@ -86,6 +100,50 @@ it.effect("replays exact input without re-authorizing and rejects changed input"
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
+it.effect("requires Approval when the exact Workflow plan declares a protected consequence", () => {
+  const fixture = makeFixture();
+  const protectedRequest = ResearchReport.Request.make({
+    ...request,
+    consequences: ["externalCommunication"],
+  });
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(now.getTime());
+    const reports = yield* ResearchReport.Service;
+    const protectedActionId = ActionId.make("protected-research-action");
+    const missingApproval = yield* reports
+      .start(startInput({ actionId: protectedActionId, request: protectedRequest }))
+      .pipe(Effect.result);
+    expect(missingApproval).toMatchObject({
+      failure: { _tag: "Denied", reason: "approvalRequired" },
+    });
+
+    const protectedOperation = {
+      actionId: protectedActionId,
+      change: "start" as const,
+      consequences: protectedRequest.consequences,
+      kind: "workflow.manage" as const,
+    };
+    const approved = yield* reports.start(
+      startInput({
+        actionId: protectedActionId,
+        authorization: {
+          ...authorization("adventurer"),
+          approval: approvalFor(
+            userId,
+            protectedOperation,
+            ApprovalPresentation.make("Send the exact completed report externally"),
+          ),
+        },
+        request: protectedRequest,
+      }),
+    );
+    expect(approved).toMatchObject({
+      _tag: "Started",
+      report: { approval: { actionId: protectedActionId } },
+    });
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
 it.effect("reconciles a lost create acknowledgement through the same persisted identity", () => {
   const fixture = makeFixture({ failCreates: 1 });
 
@@ -102,6 +160,40 @@ it.effect("reconciles a lost create acknowledgement through the same persisted i
     );
     expect(accepted).toMatchObject({ acceptedAt: now, state: "accepted" });
     expect(fixture.instances).toEqual([pending.report.cloudflareInstanceId]);
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
+it.effect("does not collapse persistence conflicts into acceptance pending", () => {
+  const fixture = makeFixture({ acceptFailure: "conflict" });
+
+  return Effect.gen(function* () {
+    const reports = yield* ResearchReport.Service;
+    const result = yield* reports.start(startInput()).pipe(Effect.result);
+    expect(result).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
+    expect(fixture.instances).toHaveLength(1);
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
+it.effect("does not collapse a vanished admission row into acceptance pending", () => {
+  const fixture = makeFixture({ acceptFailure: "notFound" });
+
+  return Effect.gen(function* () {
+    const reports = yield* ResearchReport.Service;
+    const result = yield* reports.start(startInput()).pipe(Effect.result);
+    expect(result).toMatchObject({ failure: { _tag: "ResearchReportNotFound" } });
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
+it.effect("rechecks current authority before acceptance reconciliation", () => {
+  const fixture = makeFixture({ currentPlan: "free", failCreates: 1 });
+
+  return Effect.gen(function* () {
+    const reports = yield* ResearchReport.Service;
+    const pending = yield* reports.start(startInput());
+    const result = yield* reports
+      .reconcileAcceptance(pending.report.workflowId, pending.report.inputDigest)
+      .pipe(Effect.result);
+    expect(result).toMatchObject({ failure: { _tag: "Denied", reason: "missingEntitlement" } });
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
@@ -188,12 +280,23 @@ const authorization = (plan: "adventurer" | "free"): AuthorizationContext => ({
   user: { _tag: "ActiveUser", userId },
 });
 
-const makeFixture = (options: { readonly failCreates?: number } = {}) => {
+const makeFixture = (
+  options: {
+    readonly acceptFailure?: "conflict" | "notFound";
+    readonly currentPlan?: "adventurer" | "free";
+    readonly failCreates?: number;
+  } = {},
+) => {
   let stored: ResearchReport.Record | null = null;
   let remainingCreateFailures = options.failCreates ?? 0;
   const calls = new Array<string>();
   const instances = new Array<ResearchReport.CloudflareInstanceId>();
   const port = ResearchReport.Port.of({
+    currentAuthorization: (report) =>
+      Effect.succeed({
+        ...authorization(options.currentPlan ?? "adventurer"),
+        approval: report.approval,
+      }),
     persistence: {
       admit: (record) =>
         Effect.sync(() => {
@@ -206,6 +309,12 @@ const makeFixture = (options: { readonly failCreates?: number } = {}) => {
       markAccepted: (workflowId, inputDigest, acceptedAt) =>
         Effect.gen(function* () {
           calls.push("persist.accept");
+          if (options.acceptFailure === "conflict") {
+            return yield* new ResearchReport.Conflict({ message: "changed digest", workflowId });
+          }
+          if (options.acceptFailure === "notFound") {
+            return yield* new ResearchReport.NotFound({ workflowId });
+          }
           if (stored === null) return yield* new ResearchReport.NotFound({ workflowId });
           if (stored.inputDigest !== inputDigest) {
             return yield* new ResearchReport.Conflict({ message: "changed digest", workflowId });
