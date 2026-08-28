@@ -575,7 +575,7 @@ const exceedsOperationLimit = (
     case "conversation.run":
       return operation.modelSteps > rules.operationLimits.modelStepsPerRequest;
     case "file.upload":
-      return operation.bytes > rules.operationLimits.uploadBytes;
+      return operation.bytes > capabilityCatalog.operationLimits.uploadBytes;
     case "document.generate":
       return (
         operation.bytes > rules.operationLimits.documentBytes ||

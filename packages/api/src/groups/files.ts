@@ -59,6 +59,12 @@ export class FileUploadConflict extends Schema.TaggedError<FileUploadConflict>()
   { httpApiStatus: 409 },
 ) {}
 
+export class FileUploadLimitExceeded extends Schema.TaggedError<FileUploadLimitExceeded>()(
+  "FileUploadLimitExceeded",
+  { message: Schema.String },
+  { httpApiStatus: 413 },
+) {}
+
 export class FileUploadUnavailable extends Schema.TaggedError<FileUploadUnavailable>()(
   "FileUploadUnavailable",
   { message: Schema.String },
@@ -79,7 +85,13 @@ export const BrowserTextFileBytes = Schema.Uint8Array.check(
 export const FilesGroup = HttpApiGroup.make("files")
   .add(
     HttpApiEndpoint.post("uploadText", "/v1/files/text", {
-      error: [FileUploadConflict, FileUploadDenied, FileUploadRejected, FileUploadUnavailable],
+      error: [
+        FileUploadConflict,
+        FileUploadDenied,
+        FileUploadLimitExceeded,
+        FileUploadRejected,
+        FileUploadUnavailable,
+      ],
       payload: BrowserTextFileBytes,
       query: FileUploadQuery,
       success: FileUploadResponse,

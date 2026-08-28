@@ -3,11 +3,12 @@ import {
   CurrentUser,
   FileUploadConflict,
   FileUploadDenied,
+  FileUploadLimitExceeded,
   FileUploadRejected,
   FileUploadUnavailable,
   type CurrentUserValue,
 } from "@osfo/api";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
@@ -17,15 +18,13 @@ import { ActionId } from "../domain/action-execution";
 import { AuthSessionId } from "../domain/auth-session";
 import { FileId, FileName, FileUploadId } from "../domain/file";
 
-/* oxlint-disable eslint/no-underscore-dangle, typescript/consistent-return -- Effect HTTP handlers branch over decoded RPC outcomes and fail through the typed error channel. */
+/* oxlint-disable eslint/no-underscore-dangle, osfo/no-unknown-parameters, osfo/no-unknown-returns, typescript/consistent-return -- Effect HTTP handlers decode untrusted Cloudflare RPC values immediately and fail through the typed error channel. */
 
 export interface Bindings {
   readonly OSFO_DIRECTORY: {
     readonly getByName: (name: string) => {
-      readonly uploadUserTextFile: (input: WebFileUpload.Request) => Promise<WebFileUpload.Result>;
-      readonly inspectUserFile: (
-        input: WebFileUpload.StatusRequest,
-      ) => Promise<WebFileUpload.StatusResult>;
+      readonly uploadUserTextFile: (input: WebFileUpload.Request) => Promise<unknown>;
+      readonly inspectUserFile: (input: WebFileUpload.StatusRequest) => Promise<unknown>;
     };
   };
 }
@@ -67,6 +66,53 @@ export const statusResponseFor = (
   );
 };
 
+export const decodeUploadResult = (untrusted: unknown) =>
+  Schema.decodeUnknownEffect(WebFileUpload.Result)(untrusted).pipe(
+    Effect.mapError(
+      () => new FileUploadUnavailable({ message: "File upload is temporarily unavailable" }),
+    ),
+  );
+
+export const decodeStatusResult = (untrusted: unknown) =>
+  Schema.decodeUnknownEffect(WebFileUpload.StatusResult)(untrusted).pipe(
+    Effect.mapError(
+      () => new FileUploadUnavailable({ message: "File status is temporarily unavailable" }),
+    ),
+  );
+
+export const uploadResponseFor = (
+  result: WebFileUpload.Result,
+): Effect.Effect<
+  Extract<WebFileUpload.Result, { readonly _tag: "Uploaded" }>,
+  | FileUploadConflict
+  | FileUploadDenied
+  | FileUploadLimitExceeded
+  | FileUploadRejected
+  | FileUploadUnavailable
+> => {
+  if (result._tag === "Uploaded") return Effect.succeed(result);
+  switch (result.reason) {
+    case "conflict":
+      return Effect.fail(
+        new FileUploadConflict({
+          message: "The upload identity already names different file content",
+        }),
+      );
+    case "denied":
+      return Effect.fail(new FileUploadDenied({ message: "File upload is not authorized" }));
+    case "invalid":
+      return Effect.fail(new FileUploadRejected({ message: "The text file is invalid" }));
+    case "limit":
+      return Effect.fail(
+        new FileUploadLimitExceeded({ message: "The retained file limit has been reached" }),
+      );
+    case "unavailable":
+      return Effect.fail(
+        new FileUploadUnavailable({ message: "File upload is temporarily unavailable" }),
+      );
+  }
+};
+
 /** Upload a bounded source through the authenticated User's stable Agent route. */
 export const layer = (bindings: Bindings) =>
   HttpApiBuilder.group(Api, "files", (handlers) =>
@@ -74,7 +120,7 @@ export const layer = (bindings: Bindings) =>
       .handle("uploadText", ({ payload, query }) =>
         Effect.gen(function* () {
           const currentUser = yield* CurrentUser;
-          const result = yield* Effect.tryPromise({
+          const untrusted = yield* Effect.tryPromise({
             try: () =>
               bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).uploadUserTextFile(
                 uploadRequestFor(currentUser, payload, query),
@@ -82,27 +128,14 @@ export const layer = (bindings: Bindings) =>
             catch: () =>
               new FileUploadUnavailable({ message: "File upload is temporarily unavailable" }),
           });
-          if (result._tag === "Uploaded") return result;
-          switch (result.reason) {
-            case "conflict":
-              return yield* new FileUploadConflict({
-                message: "The upload identity already names different file content",
-              });
-            case "denied":
-              return yield* new FileUploadDenied({ message: "File upload is not authorized" });
-            case "invalid":
-              return yield* new FileUploadRejected({ message: "The text file is invalid" });
-            case "unavailable":
-              return yield* new FileUploadUnavailable({
-                message: "File upload is temporarily unavailable",
-              });
-          }
+          const result = yield* decodeUploadResult(untrusted);
+          return yield* uploadResponseFor(result);
         }),
       )
       .handle("status", ({ params }) =>
         Effect.gen(function* () {
           const currentUser = yield* CurrentUser;
-          const result = yield* Effect.tryPromise({
+          const untrusted = yield* Effect.tryPromise({
             try: () =>
               bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).inspectUserFile(
                 WebFileUpload.StatusRequest.make({
@@ -113,6 +146,7 @@ export const layer = (bindings: Bindings) =>
             catch: () =>
               new FileUploadUnavailable({ message: "File status is temporarily unavailable" }),
           });
+          const result = yield* decodeStatusResult(untrusted);
           return yield* statusResponseFor(result);
         }),
       ),

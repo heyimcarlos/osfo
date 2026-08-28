@@ -348,7 +348,18 @@ export const makeFileResolver = (
       const result = yield* Schema.decodeUnknownEffect(DocumentBuild.FileResolutionResult)(
         untrusted,
       ).pipe(Effect.mapError((cause) => documentBuildUnavailable("files.resolve.decode", cause)));
-      if (result._tag === "Resolved") return result.files;
+      if (result._tag === "Resolved") {
+        const exactIdentity =
+          result.files.length === fileIds.length &&
+          result.files.every((file, index) => file.fileId === fileIds[index]);
+        if (!exactIdentity) {
+          return yield* documentBuildUnavailable("files.resolve.identity", {
+            requested: fileIds,
+            returned: result.files.map(({ fileId }) => fileId),
+          });
+        }
+        return result.files;
+      }
       if (result.reason === "fileUnavailable") {
         return yield* new DocumentBuild.SourceChanged({
           message: "A supplied file is missing, no longer ready, or no longer owned",

@@ -8,10 +8,8 @@ import { makeWorkflowRuntime } from "../layers";
 import type { Denied } from "../services/authorization";
 import { DocumentBuild } from "../services/document-build";
 import { DocumentBuildDocument } from "../services/document-build-document";
-import {
-  matchesInstanceIdentity,
-  requireRetryForRecoverableResult,
-} from "./document-build-host-outcome";
+import { matchesInstanceIdentity } from "./document-build-host-outcome";
+import { runRecoverableMainOperation } from "./document-build-step";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare WorkflowEntrypoint and WorkflowStep are Promise-only host APIs. */
 /* oxlint-disable eslint/no-underscore-dangle -- Product outcomes use Effect's standard tag. */
@@ -51,38 +49,44 @@ export class DocumentBuildWorkflow extends WorkflowEntrypoint<Env, DocumentBuild
   ): Promise<ExecutionResult> {
     const stage = decodeOsfoStage(this.env.OSFO_STAGE);
     if (stage._tag === "None") return { failure: "invalidEnvironment" };
-    const result = await step.do("authorize, render, validate, and publish document", async () => {
-      const decoded = Schema.decodeResult(DocumentBuild.WorkflowPayload)(event.payload);
-      if (Result.isFailure(decoded)) return { failure: "invalidPayload" } as const;
-      const payload = decoded.success;
-      if (!(await Effect.runPromise(matchesInstanceIdentity("main", event.instanceId, payload)))) {
-        return { failure: "invalidPayload" } as const;
-      }
-      const bindings = DocumentBuildComposition.bindingsFromEnv(this.env);
-      const serviceEffect = Effect.gen(function* () {
-        const builds = yield* DocumentBuild.Service;
-        const documents = yield* DocumentBuildDocument.Service;
-        const begun = yield* builds.beginExecution(payload);
-        const completed = yield* documents.generate(begun);
-        return projection(completed.build);
-      }).pipe(
-        settleTerminalOutcome(payload),
-        Effect.match({
-          onFailure: (failure) => ({ failure: failureKind(failure) }) as const,
-          onSuccess: (build) => build,
+    const result: ExecutionResult = await step.do(
+      "authorize, render, validate, and publish document",
+      () =>
+        runRecoverableMainOperation(async () => {
+          const decoded = Schema.decodeResult(DocumentBuild.WorkflowPayload)(event.payload);
+          if (Result.isFailure(decoded)) return { failure: "invalidPayload" } as const;
+          const payload = decoded.success;
+          if (
+            !(await Effect.runPromise(matchesInstanceIdentity("main", event.instanceId, payload)))
+          ) {
+            return { failure: "invalidPayload" } as const;
+          }
+          const bindings = DocumentBuildComposition.bindingsFromEnv(this.env);
+          const serviceEffect = Effect.gen(function* () {
+            const builds = yield* DocumentBuild.Service;
+            const documents = yield* DocumentBuildDocument.Service;
+            const begun = yield* builds.beginExecution(payload);
+            const completed = yield* documents.generate(begun);
+            return projection(completed.build);
+          }).pipe(
+            settleTerminalOutcome(payload),
+            Effect.match({
+              onFailure: (failure) => ({ failure: failureKind(failure) }) as const,
+              onSuccess: (build) => build,
+            }),
+          );
+          return await runInvocationEffect(
+            makeWorkflowRuntime(event.instanceId, stage.value),
+            DocumentBuildComposition.executionEffect(
+              bindings,
+              DocumentBuildComposition.makePreviewReadyFollowUpCommitter(bindings),
+              DocumentBuildComposition.makeTerminalFollowUpCommitter(bindings),
+              serviceEffect,
+            ),
+          );
         }),
-      );
-      return await runInvocationEffect(
-        makeWorkflowRuntime(event.instanceId, stage.value),
-        DocumentBuildComposition.executionEffect(
-          bindings,
-          DocumentBuildComposition.makePreviewReadyFollowUpCommitter(bindings),
-          DocumentBuildComposition.makeTerminalFollowUpCommitter(bindings),
-          serviceEffect,
-        ),
-      );
-    });
-    const settled = requireRetryForRecoverableResult(result);
+    );
+    const settled = result;
     if (!("failure" in settled) && DocumentBuild.terminalStates.has(settled.state)) {
       await step.do("stop document timer after terminal product truth", async () => {
         const timer = await this.env.DOCUMENT_BUILD_TIMER_WORKFLOW.get(

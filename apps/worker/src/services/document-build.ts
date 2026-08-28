@@ -217,6 +217,12 @@ export class SourceChanged extends Schema.TaggedError<SourceChanged>()(
   },
 ) {}
 
+/** Supplied source shape cannot fit the bounded launch Document Build contract. */
+export class SourceRejected extends Schema.TaggedError<SourceRejected>()(
+  "DocumentBuildSourceRejected",
+  { message: Schema.String, reason: Schema.Literal("pageLimit") },
+) {}
+
 type Persisted =
   | { readonly _tag: "Created"; readonly build: Record }
   | { readonly _tag: "Existing"; readonly build: Record };
@@ -383,7 +389,10 @@ export interface Interface {
   readonly settleTerminal: (build: Record) => Effect.Effect<Record, Conflict | Unavailable>;
   readonly start: (
     input: StartInput,
-  ) => Effect.Effect<StartResult, Conflict | Denied | NotFound | SourceChanged | Unavailable>;
+  ) => Effect.Effect<
+    StartResult,
+    Conflict | Denied | NotFound | SourceChanged | SourceRejected | Unavailable
+  >;
 }
 
 export class Service extends Context.Service<Service, Interface>()("@osfo/DocumentBuild") {}
@@ -447,7 +456,14 @@ export const make = Effect.gen(function* () {
       build.userId,
       build.request.fileSnapshots.map(({ fileId }) => fileId),
     );
-    const rebuilt = yield* storedRequestFor(build.request.format, files);
+    const rebuilt = yield* storedRequestFor(build.request.format, files).pipe(
+      Effect.mapError(
+        () =>
+          new SourceChanged({
+            message: "The owned Document Build source no longer fits its admitted bounds",
+          }),
+      ),
+    );
     if (!(yield* sameStoredRequest(build.request, rebuilt))) {
       return yield* new SourceChanged({
         message: "The owned Document Build source changed after admission",
@@ -631,6 +647,7 @@ export const make = Effect.gen(function* () {
       yield* reconcileAcceptance(retained.workflowId, retained.inputDigest);
     }
     const build = yield* authorizeExecution(payload);
+    if (build.acceptedAt !== null) yield* ports.recordWorkflowStart(build);
     if (["running", "preview_stored", "publication_committed"].includes(build.state)) return build;
     if (build.state !== "accepted") {
       return yield* new Conflict({
@@ -787,6 +804,30 @@ export const make = Effect.gen(function* () {
   const start = Effect.fn("DocumentBuild.start")(function* (input: StartInput) {
     const workflowId = yield* workflowIdFor(input.authorization.user.userId, input.actionId);
     const identities = yield* cloudflareInstanceIdsFor(workflowId);
+    const existing = yield* ports.persistence.inspect(workflowId);
+    if (existing !== null) {
+      const exactFileIdentity =
+        existing.request.format === input.request.format &&
+        existing.request.fileSnapshots.length === input.request.fileIds.length &&
+        existing.request.fileSnapshots.every(
+          ({ fileId }, index) => fileId === input.request.fileIds[index],
+        );
+      if (existing.userId !== input.authorization.user.userId || !exactFileIdentity) {
+        return yield* new Conflict({
+          message: "The Workflow identity was replayed with changed input",
+          workflowId,
+        });
+      }
+      yield* authorizeContinuation(existing, input.authorization);
+      const accepted = yield* (
+        existing.state === "admitted"
+          ? reconcileAcceptance(existing.workflowId, existing.inputDigest)
+          : accept(existing)
+      ).pipe(Effect.catchIf(isWorkflowAcknowledgementFailure, () => Effect.succeed(null)));
+      return accepted === null
+        ? { _tag: "AcceptancePending" as const, build: existing }
+        : { _tag: "Replayed" as const, build: accepted };
+    }
     const files = yield* ports.files.resolve(
       input.agentId,
       input.authorization.user.userId,
@@ -794,25 +835,6 @@ export const make = Effect.gen(function* () {
     );
     const request = yield* storedRequestFor(input.request.format, files);
     const inputDigest = yield* digestRequest(input.authorization.user.userId, request);
-    const existing = yield* ports.persistence.inspect(workflowId);
-    if (existing !== null) {
-      if (
-        existing.userId !== input.authorization.user.userId ||
-        existing.inputDigest !== inputDigest
-      ) {
-        return yield* new Conflict({
-          message: "The Workflow identity was replayed with changed input",
-          workflowId,
-        });
-      }
-      yield* authorizeContinuation(existing, input.authorization);
-      const accepted = yield* accept(existing).pipe(
-        Effect.catchIf(isWorkflowAcknowledgementFailure, () => Effect.succeed(null)),
-      );
-      return accepted === null
-        ? { _tag: "AcceptancePending" as const, build: existing }
-        : { _tag: "Replayed" as const, build: accepted };
-    }
     const initialAdmission = authorization.admit(
       input.authorization,
       workflowOperation(input.actionId),
@@ -1015,7 +1037,7 @@ export const layerWithoutDependencies = Layer.effect(Service, make);
 export const storedRequestFor = (
   format: DocumentArtifact.DocumentFormat,
   files: ReadonlyArray<ResolvedFile>,
-): Effect.Effect<StoredRequest, Unavailable> =>
+): Effect.Effect<StoredRequest, SourceRejected> =>
   Effect.gen(function* () {
     const pages = files.flatMap(({ fileName, normalizedText }) =>
       paginate(fileName, wrap(normalizedText)),
@@ -1024,11 +1046,10 @@ export const storedRequestFor = (
       pages,
     }).pipe(
       Effect.mapError(
-        (cause) =>
-          new Unavailable({
-            cause,
-            message: "The supplied files exceed the bounded DocumentSource contract",
-            operation: "files.combineSource",
+        () =>
+          new SourceRejected({
+            message: "The supplied files require more than 20 document pages",
+            reason: "pageLimit",
           }),
       ),
     );
@@ -1085,7 +1106,7 @@ const digestRequest = (userId: UserId, request: StoredRequest) =>
     Schema.fromJsonString(Schema.Struct({ request: StoredRequest, userId: UserId })),
   )({ request, userId }).pipe(Effect.orDie, Effect.flatMap(digest));
 
-const workflowIdFor = (userId: UserId, actionId: ActionId) =>
+export const workflowIdFor = (userId: UserId, actionId: ActionId) =>
   digest(`${userId}\0${actionId}`).pipe(
     Effect.map((value) => WorkflowId.make(`document-build:${value}`)),
   );
@@ -1152,8 +1173,10 @@ const supersedingFreeDocumentBuildAdmission = (
   } as const;
 };
 
-const isWorkflowAcknowledgementFailure = (failure: Conflict | NotFound | Unavailable) =>
-  Predicate.isTagged(failure, "DocumentBuildUnavailable") &&
+type StartFailure = Conflict | Denied | NotFound | SourceRejected | Unavailable;
+
+const isWorkflowAcknowledgementFailure = (failure: StartFailure) =>
+  Schema.is(Unavailable)(failure) &&
   (failure.operation === "workflow.create" || failure.operation === "workflow.reconcileCreate");
 
 const digest = (value: string) =>

@@ -1,4 +1,4 @@
-/* oxlint-disable vitest/no-standalone-expect -- Host stubs assert at their invocation boundary. */
+/* oxlint-disable effecttsgo/async-function, vitest/no-standalone-expect -- Cloudflare host stubs use the platform's Promise-only callback shape. */
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
@@ -7,6 +7,8 @@ import {
   matchesInstanceIdentity,
   requireRetryForRecoverableResult,
 } from "./document-build-host-outcome";
+import type { ExecutionResult } from "./document-build";
+import { runRecoverableMainOperation } from "./document-build-step";
 
 describe("DocumentBuildWorkflow host outcomes", () => {
   it("retries ambiguous and interrupted compute instead of terminalizing", () => {
@@ -26,6 +28,45 @@ describe("DocumentBuildWorkflow host outcomes", () => {
         workflowId: DocumentBuild.WorkflowId.make("document-build:terminal"),
       }),
     ).toMatchObject({ state: "canceled" });
+  });
+
+  it("does not cache a recoverable step result and reruns the callback after it throws", async () => {
+    const cache = new Map<string, ExecutionResult>();
+    let callbacks = 0;
+    const step = {
+      do: async (name: string, callback: () => Promise<ExecutionResult>) => {
+        const cached = cache.get(name);
+        if (cached !== undefined) return cached;
+        callbacks += 1;
+        const result = await callback();
+        cache.set(name, result);
+        return result;
+      },
+    };
+    let attempts = 0;
+    const operation = () => {
+      attempts += 1;
+      return Promise.resolve(
+        attempts === 1
+          ? ({ failure: "unavailable" } as const)
+          : ({
+              artifactContentId: null,
+              state: "success" as const,
+              workflowId: DocumentBuild.WorkflowId.make("document-build:step-retry"),
+            } as const),
+      );
+    };
+
+    const runStep = () =>
+      step.do("authorize, render, validate, and publish document", () =>
+        runRecoverableMainOperation(operation),
+      );
+
+    await expect(runStep()).rejects.toThrow("temporarily unavailable");
+    expect(await runStep()).toMatchObject({ state: "success" });
+    expect(await runStep()).toMatchObject({ state: "success" });
+    expect(callbacks).toBe(2);
+    expect(attempts).toBe(2);
   });
 
   it.effect("rejects a payload delivered to a different main instance before product effects", () =>

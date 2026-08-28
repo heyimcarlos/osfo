@@ -11,6 +11,7 @@ type UploadState =
   | { readonly _tag: "Idle" }
   | { readonly _tag: "Uploading"; readonly fileName: string }
   | { readonly _tag: "Uploaded"; readonly result: FileUploadResponse }
+  | { readonly _tag: "StatusUnavailable"; readonly result: FileUploadResponse }
   | { readonly _tag: "Failed" };
 
 const inspectUploadedFile = (fileId: string) => Effect.runPromise(inspectFileStatus(fileId));
@@ -55,7 +56,9 @@ export function DocumentBuildSourceUpload({
           });
         },
         () => {
-          if (requestGeneration.current === generation) setState({ _tag: "Failed" });
+          if (requestGeneration.current === generation) {
+            setState({ _tag: "StatusUnavailable", result: state.result });
+          }
         },
       );
     }, pollDelayMilliseconds);
@@ -118,6 +121,22 @@ export function DocumentBuildSourceUpload({
         <p className="mt-3 text-xs text-[#b24a55]" role="alert">
           The source could not be uploaded. Try again with a smaller UTF-8 text file.
         </p>
+      ) : state._tag === "StatusUnavailable" ? (
+        <div className="mt-3 text-xs text-[#8a6a21]" role="alert">
+          <p>
+            Status is temporarily unavailable. File ID:{" "}
+            <code className="select-all rounded bg-[#edf4ff] px-1.5 py-1 text-[#101936]">
+              {state.result.fileId}
+            </code>
+          </p>
+          <button
+            className="mt-2 font-semibold text-[#2568ca] hover:underline"
+            type="button"
+            onClick={() => setState({ _tag: "Uploaded", result: state.result })}
+          >
+            Retry status
+          </button>
+        </div>
       ) : null}
     </section>
   );

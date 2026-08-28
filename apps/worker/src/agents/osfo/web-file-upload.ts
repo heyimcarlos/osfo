@@ -1,9 +1,11 @@
-import { Schema } from "effect";
+import { Predicate, Schema } from "effect";
 
 import { UserId } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
 import { AuthSessionId } from "../../domain/auth-session";
 import { FileId, FileName, FileUploadId } from "../../domain/file";
+
+/* oxlint-disable osfo/no-unknown-parameters -- This boundary deliberately classifies the closed tagged failures produced by the owning File service without leaking their fields. */
 
 /** Trusted request constructed only after HTTP authentication. */
 export const Request = Schema.Struct({
@@ -28,7 +30,7 @@ export const Result = Schema.Union([
     state: Schema.Literals(["processing", "ready"]),
   }),
   Schema.TaggedStruct("Rejected", {
-    reason: Schema.Literals(["conflict", "denied", "invalid", "unavailable"]),
+    reason: Schema.Literals(["conflict", "denied", "invalid", "limit", "unavailable"]),
   }),
 ]);
 export type Result = typeof Result.Type;
@@ -47,5 +49,26 @@ export const StatusResult = Schema.Union([
   Schema.TaggedStruct("Unavailable", {}),
 ]);
 export type StatusResult = typeof StatusResult.Type;
+
+export const rejectionReasonForFailure = (
+  failure: unknown,
+): Extract<Result, { _tag: "Rejected" }>["reason"] => {
+  if (
+    Predicate.isTagged(failure, "FileUploadConflict") ||
+    Predicate.isTagged(failure, "FileStateTransitionConflict")
+  ) {
+    return "conflict";
+  }
+  if (Predicate.isTagged(failure, "RetainedFileLimitExceeded")) return "limit";
+  if (
+    Predicate.isTagged(failure, "InvalidFileContent") ||
+    Predicate.isTagged(failure, "UnsupportedFileMedia") ||
+    Predicate.isTagged(failure, "FileMediaMismatch") ||
+    Predicate.isTagged(failure, "FileComputeFailed")
+  ) {
+    return "invalid";
+  }
+  return "unavailable";
+};
 
 export * as WebFileUpload from "./web-file-upload";

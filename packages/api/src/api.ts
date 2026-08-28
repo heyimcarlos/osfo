@@ -39,6 +39,7 @@ export {
   BrowserTextFileBytes,
   FileUploadConflict,
   FileUploadDenied,
+  FileUploadLimitExceeded,
   FileUploadQuery,
   FileUploadRejected,
   FileUploadResponse,

@@ -9,6 +9,11 @@ import { DocumentBuild } from "../services/document-build";
 import { DocumentBuildDocument } from "../services/document-build-document";
 import { DocumentBuildFollowUp } from "../services/document-build-follow-up";
 import { matchesInstanceIdentity } from "./document-build-host-outcome";
+import {
+  postPreviewDisposition,
+  previewFollowUpDisposition,
+  terminalFollowUpAccepted,
+} from "./document-build-timer-outcome";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare WorkflowEntrypoint and WorkflowStep are Promise-only host APIs. */
 /* oxlint-disable eslint/no-underscore-dangle -- Product outcomes use Effect's standard tag. */
@@ -50,6 +55,7 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
     await step.sleepUntil("wait for validated preview milestone guard", previewAt);
 
     let preview: TimerResult["preview"] = "pending";
+    let nextPollOffset = 1;
     for (let poll = 0; poll < maximumPreviewPolls; poll += 1) {
       const claimed = await step.do(`claim validated preview milestone ${poll + 1}`, () =>
         this.#run(event.instanceId, stage.value, (followUps) => followUps.claimPreview(payload)),
@@ -60,10 +66,28 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
           break;
         }
         const notification = claimed.notification;
-        await step.do("submit validated preview Agent follow-up", () =>
+        const submission = await step.do("submit validated preview Agent follow-up", () =>
           this.#submitFollowUp(notification.notificationId),
         );
+        if (previewFollowUpDisposition(submission) === "terminal") {
+          const recovered = await step.do("recover preview-superseded publication", () =>
+            this.#recoverPublication(event.instanceId, stage.value, payload),
+          );
+          const terminalFollowUp = await this.#claimAndSubmitTerminal(
+            step,
+            event.instanceId,
+            stage.value,
+            payload,
+          );
+          return {
+            deadline: DocumentBuild.terminalStates.has(recovered.state) ? "terminal" : "notDue",
+            preview: "suppressed",
+            terminalFollowUp,
+            workflowId: payload.workflowId,
+          };
+        }
         preview = "claimed";
+        nextPollOffset = poll + 1;
         break;
       }
       if (claimed._tag === "Suppressed") {
@@ -94,28 +118,34 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
         schedule.deadlineAt.getTime(),
       );
       if (nextPollAt >= schedule.deadlineAt.getTime()) break;
+      nextPollOffset = poll + 2;
       await step.sleepUntil(`wait for validated preview ${poll + 1}`, nextPollAt);
     }
 
-    const afterPreview = await step.do("inspect document after preview window", () =>
-      this.#run(event.instanceId, stage.value, (followUps) => followUps.inspectSchedule(payload)),
-    );
-    if (
-      DocumentBuild.terminalStates.has(afterPreview.state) ||
-      afterPreview.state === "publication_committed"
-    ) {
-      if (afterPreview.state === "publication_committed") {
-        await step.do("recover committed document publication", () =>
-          this.#recoverPublication(event.instanceId, stage.value, payload),
-        );
-      }
-      const terminalFollowUp = await this.#claimAndSubmitTerminal(
-        step,
-        event.instanceId,
-        stage.value,
-        payload,
+    for (let poll = nextPollOffset; poll <= maximumPreviewPolls; poll += 1) {
+      const afterPreview = await step.do(`inspect document after preview ${poll}`, () =>
+        this.#run(event.instanceId, stage.value, (followUps) => followUps.inspectSchedule(payload)),
       );
-      return { deadline: "terminal", preview, terminalFollowUp, workflowId: payload.workflowId };
+      if (postPreviewDisposition(afterPreview.state) !== "continue") {
+        if (afterPreview.state === "publication_committed") {
+          await step.do("recover committed document publication", () =>
+            this.#recoverPublication(event.instanceId, stage.value, payload),
+          );
+        }
+        const terminalFollowUp = await this.#claimAndSubmitTerminal(
+          step,
+          event.instanceId,
+          stage.value,
+          payload,
+        );
+        return { deadline: "terminal", preview, terminalFollowUp, workflowId: payload.workflowId };
+      }
+      const nextPollAt = Math.min(
+        previewAt + poll * previewPollMilliseconds,
+        schedule.deadlineAt.getTime(),
+      );
+      if (nextPollAt >= schedule.deadlineAt.getTime()) break;
+      await step.sleepUntil(`wait for terminal document ${poll}`, nextPollAt);
     }
 
     await step.sleepUntil("wait for hard document deadline", schedule.deadlineAt);
@@ -203,9 +233,12 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
       this.#run(instanceId, stage, (followUps) => followUps.claimTerminal(payload)),
     );
     if (claimed._tag === "NotTerminal" || claimed._tag === "Suppressed") return "notTerminal";
-    await step.do("submit terminal document Agent follow-up", () =>
+    const submitted = await step.do("submit terminal document Agent follow-up", () =>
       this.#submitFollowUp(claimed.notification.notificationId),
     );
+    if (!terminalFollowUpAccepted(submitted)) {
+      throw new Error("A terminal Document Build follow-up was not accepted");
+    }
     return "claimed";
   }
 
@@ -242,9 +275,6 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
         notificationId,
       ),
     );
-    if (result._tag !== "Accepted" && result._tag !== "Replayed") {
-      throw new Error(`Document Build follow-up was not accepted: ${result._tag}`);
-    }
-    return { notificationId, submissionId: result.submissionId };
+    return result;
   }
 }

@@ -190,6 +190,43 @@ describe("DocumentBuildSourceUpload", () => {
     expect(screen.getByRole("status").textContent).toContain("web:second");
     expect(screen.queryByRole("alert")).toBeNull();
   });
+
+  it("preserves the File ID and offers retry when status inspection is unavailable", async () => {
+    uploadTextFile.mockResolvedValue({
+      fileId: "web:status-unavailable",
+      fileName: "source.txt",
+      mediaType: "text/plain",
+      state: "processing",
+    });
+    inspectFileStatus
+      .mockRejectedValueOnce(new Error("temporary status outage"))
+      .mockResolvedValueOnce(readyUpload("web:status-unavailable", "source.txt"));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(
+      <DocumentBuildSourceUpload
+        inspect={inspectFileStatus}
+        makeUploadId={() => "dddddddd-dddd-4ddd-8ddd-dddddddddddd"}
+        pollDelayMilliseconds={1_000}
+        uploadFile={uploadTextFile}
+      />,
+    );
+
+    await user.upload(
+      screen.getByLabelText("Choose text file"),
+      new File(["source"], "source.txt", { type: "text/plain" }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(screen.getByRole("alert").textContent).toContain("web:status-unavailable");
+    await user.click(screen.getByRole("button", { name: "Retry status" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(screen.getByRole("status").textContent).toContain("Ready. File ID:");
+    expect(screen.getByRole("status").textContent).toContain("web:status-unavailable");
+  });
 });
 
 const readyUpload = (fileId: string, fileName: string): UploadResult => ({

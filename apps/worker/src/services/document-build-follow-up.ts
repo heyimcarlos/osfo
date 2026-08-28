@@ -190,4 +190,8 @@ export const previewSubmissionDisposition = (notification: Notification) =>
     ? ("PromoteTerminal" as const)
     : ("Submit" as const);
 
+/** Decide replay truth from the notification refreshed inside the serialized Agent operation. */
+export const submissionDisposition = (notification: Pick<Notification, "acceptedAt">) =>
+  notification.acceptedAt === null ? ("Accepted" as const) : ("Replayed" as const);
+
 export * as DocumentBuildFollowUp from "./document-build-follow-up";

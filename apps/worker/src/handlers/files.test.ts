@@ -9,7 +9,13 @@ import {
   maximumBrowserTextUploadBytes,
 } from "@osfo/api";
 import { WebFileUpload } from "../agents/osfo/web-file-upload";
-import { statusResponseFor, uploadRequestFor } from "./files";
+import {
+  decodeStatusResult,
+  decodeUploadResult,
+  statusResponseFor,
+  uploadRequestFor,
+  uploadResponseFor,
+} from "./files";
 
 describe("authenticated text-file ingress", () => {
   it("derives the owner, authority, and stable identities from server and retry facts", () => {
@@ -84,6 +90,25 @@ describe("authenticated text-file ingress", () => {
       expect(yield* statusResponseFor({ _tag: "Unavailable" }).pipe(Effect.result)).toMatchObject({
         failure: { _tag: "FileUploadUnavailable" },
       });
+    }),
+  );
+
+  it.effect("rejects malformed Directory upload and status responses as transient", () =>
+    Effect.gen(function* () {
+      expect(yield* decodeUploadResult({ _tag: "Uploaded" }).pipe(Effect.result)).toMatchObject({
+        failure: { _tag: "FileUploadUnavailable" },
+      });
+      expect(yield* decodeStatusResult({ _tag: "Unknown" }).pipe(Effect.result)).toMatchObject({
+        failure: { _tag: "FileUploadUnavailable" },
+      });
+    }),
+  );
+
+  it.effect("preserves the retained-file limit as a non-retryable 413 failure", () =>
+    Effect.gen(function* () {
+      expect(
+        yield* uploadResponseFor({ _tag: "Rejected", reason: "limit" }).pipe(Effect.result),
+      ).toMatchObject({ failure: { _tag: "FileUploadLimitExceeded" } });
     }),
   );
 });

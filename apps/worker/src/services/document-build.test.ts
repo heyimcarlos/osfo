@@ -42,10 +42,7 @@ it.effect("rejects source content that requires more than twenty pages", () =>
     );
 
     expect(result).toMatchObject({
-      failure: {
-        _tag: "DocumentBuildUnavailable",
-        operation: "files.combineSource",
-      },
+      failure: { _tag: "DocumentBuildSourceRejected", reason: "pageLimit" },
     });
   }),
 );
@@ -190,6 +187,7 @@ it.effect("reconciles both Workflow hosts and start accounting before callback e
       state: "admitted" as const,
     };
     const events: Array<string> = [];
+    let workflowStartRecorded = false;
     const port = DocumentBuild.Port.of({
       commitPreviewReadyFollowUp: () => Effect.void,
       commitTerminalFollowUp: () => Effect.void,
@@ -220,7 +218,12 @@ it.effect("reconciles both Workflow hosts and start accounting before callback e
         recordProviderCost: () => Effect.succeed(current),
         requestCancel: () => Effect.succeed(current),
       },
-      recordWorkflowStart: () => Effect.sync(() => void events.push("workflow-start")),
+      recordWorkflowStart: () =>
+        Effect.sync(() => {
+          if (workflowStartRecorded) return;
+          workflowStartRecorded = true;
+          events.push("workflow-start");
+        }),
       workflow: {
         create: () => Effect.sync(() => void events.push("hosts-created")),
         terminate: () => Effect.void,
@@ -238,6 +241,83 @@ it.effect("reconciles both Workflow hosts and start accounting before callback e
 
     expect(events).toEqual(["hosts-created", "accepted", "workflow-start", "begin:accepted"]);
     expect(current.state).toBe("running");
+  }),
+);
+
+it.effect("replays accepted Workflow-start accounting before entering running", () =>
+  Effect.gen(function* () {
+    const request = yield* DocumentBuild.storedRequestFor("pdf", [resolvedFile("source text")]);
+    const workflowId = DocumentBuild.WorkflowId.make("document-build:accepted-accounting-replay");
+    const instances = yield* DocumentBuild.cloudflareInstanceIdsFor(workflowId);
+    let current: DocumentBuild.Record = {
+      ...buildRecord(workflowId, instances, request),
+      acceptedAt: null,
+      startedAt: null,
+      state: "admitted",
+    };
+    let accountingAttempts = 0;
+    let begins = 0;
+    const port = DocumentBuild.Port.of({
+      commitPreviewReadyFollowUp: () => Effect.void,
+      commitTerminalFollowUp: () => Effect.void,
+      currentAuthorization: () => Effect.succeed(availableAuthorization()),
+      discardPendingArtifact: () => Effect.void,
+      files: { resolve: () => Effect.succeed([resolvedFile("source text")]) },
+      persistence: {
+        admit: () => Effect.succeed({ _tag: "Existing" as const, build: current }),
+        beginExecution: () =>
+          Effect.sync(() => {
+            begins += 1;
+            current = { ...current, startedAt: productNow, state: "running" };
+            return current;
+          }),
+        commitPublication: () => Effect.succeed(current),
+        enforceDeadline: () => Effect.succeed(current),
+        finishSuccess: () => Effect.succeed(current),
+        finishTerminal: () => Effect.succeed(current),
+        inspect: () => Effect.succeed(current),
+        markAccepted: () =>
+          Effect.sync(() => {
+            current = { ...current, acceptedAt: productNow, state: "accepted" };
+            return current;
+          }),
+        markAccountingCommitted: () => Effect.succeed(current),
+        markPreviewStored: () => Effect.succeed(current),
+        recordProviderCost: () => Effect.succeed(current),
+        requestCancel: () => Effect.succeed(current),
+      },
+      recordWorkflowStart: () =>
+        Effect.gen(function* () {
+          accountingAttempts += 1;
+          if (accountingAttempts === 1) {
+            return yield* new DocumentBuild.Unavailable({
+              cause: "transient accounting outage",
+              message: "Workflow-start accounting is unavailable",
+              operation: "accounting.workflowStart",
+            });
+          }
+          return undefined;
+        }),
+      workflow: { create: () => Effect.void, terminate: () => Effect.void },
+    });
+    const begin = DocumentBuild.Service.pipe(
+      Effect.flatMap((builds) =>
+        builds.beginExecution({ inputDigest: current.inputDigest, workflowId }),
+      ),
+      Effect.provide(
+        DocumentBuild.layerWithoutDependencies.pipe(
+          Layer.provide(Layer.succeed(DocumentBuild.Port, port)),
+        ),
+      ),
+    );
+
+    expect(yield* begin.pipe(Effect.result)).toMatchObject({
+      failure: { operation: "accounting.workflowStart" },
+    });
+    expect(current.state).toBe("accepted");
+    expect(yield* begin).toMatchObject({ state: "running" });
+    expect(accountingAttempts).toBe(2);
+    expect(begins).toBe(1);
   }),
 );
 
@@ -382,6 +462,46 @@ it.effect("cancels promptly when an admitted source permanently disappears", () 
 
     expect(result).toMatchObject({ safeFailureCode: "source-changed", state: "canceled" });
     expect(fixture.terminalTransitions()).toBe(1);
+  }),
+);
+
+it.effect("reconciles an AcceptancePending row before fresh source resolution", () =>
+  Effect.gen(function* () {
+    const actionId = ActionId.make("admitted-document-build-action");
+    const workflowId = yield* DocumentBuild.workflowIdFor(userId, actionId);
+    const request = yield* DocumentBuild.storedRequestFor("pdf", [resolvedFile("source text")]);
+    const instances = yield* DocumentBuild.cloudflareInstanceIdsFor(workflowId);
+    const fixture = revalidationFixture(
+      {
+        ...buildRecord(workflowId, instances, request),
+        acceptedAt: null,
+        startedAt: null,
+        state: "admitted",
+      },
+      Effect.fail(
+        new DocumentBuild.SourceChanged({ message: "The source disappeared after admission" }),
+      ),
+    );
+
+    const result = yield* DocumentBuild.Service.pipe(
+      Effect.flatMap((builds) =>
+        builds.start({
+          actionId,
+          agentId: AgentId.make("document-build-agent"),
+          authorization: availableAuthorization(),
+          request: { fileIds: [FileId.make("document-build-source")], format: "pdf" },
+          routeId: ConversationRouteId.make("document-build-route"),
+          sessionId: SessionId.make("document-build-session"),
+        }),
+      ),
+      Effect.provide(fixture.layer),
+    );
+
+    expect(result).toMatchObject({
+      _tag: "Replayed",
+      build: { safeFailureCode: "source-changed", state: "canceled" },
+    });
+    expect(fixture.hostCreations()).toBe(0);
   }),
 );
 
@@ -530,6 +650,7 @@ const revalidationFixture = (
   >,
 ) => {
   let current = initial;
+  let hostCreations = 0;
   let terminalTransitions = 0;
   const port = DocumentBuild.Port.of({
     commitPreviewReadyFollowUp: () => Effect.void,
@@ -557,7 +678,10 @@ const revalidationFixture = (
       requestCancel: () => Effect.succeed(current),
     },
     recordWorkflowStart: () => Effect.void,
-    workflow: { create: () => Effect.void, terminate: () => Effect.void },
+    workflow: {
+      create: () => Effect.sync(() => void (hostCreations += 1)),
+      terminate: () => Effect.void,
+    },
   });
   return {
     get current() {
@@ -566,6 +690,7 @@ const revalidationFixture = (
     layer: DocumentBuild.layerWithoutDependencies.pipe(
       Layer.provide(Layer.succeed(DocumentBuild.Port, port)),
     ),
+    hostCreations: () => hostCreations,
     terminalTransitions: () => terminalTransitions,
   };
 };

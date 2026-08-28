@@ -4,6 +4,7 @@ import { Effect, Result } from "effect";
 
 import { AgentId, AllowancePeriodId, UserId } from "../domain";
 import { ContentId } from "../domain/client-content";
+import { FileDigest } from "../domain/file-content";
 import { FileId } from "../domain/file";
 import { DocumentArtifact } from "../domain/document-artifact";
 import { DocumentBuild } from "../services/document-build";
@@ -201,6 +202,31 @@ for (const files of [
   );
 }
 
+for (const returnedIds of [
+  ["source-a"],
+  ["source-b", "source-a"],
+  ["source-a", "unrelated-source"],
+]) {
+  it.effect("rejects a validly shaped file response with mismatched ordered identities", () =>
+    Effect.gen(function* () {
+      const result = yield* DocumentBuildComposition.makeFileResolver(
+        directoryBinding({
+          files: { _tag: "Resolved", files: returnedIds.map(resolvedRpcFile) },
+        }).OSFO_DIRECTORY,
+      )
+        .resolve(AgentId.make("document-build-agent"), UserId.make("document-build-user"), [
+          FileId.make("source-a"),
+          FileId.make("source-b"),
+        ])
+        .pipe(Effect.result);
+
+      expect(result).toMatchObject({
+        failure: { _tag: "DocumentBuildUnavailable", operation: "files.resolve.identity" },
+      });
+    }),
+  );
+}
+
 it.effect("classifies only a proven unavailable file as a permanent source change", () =>
   Effect.gen(function* () {
     const result = yield* DocumentBuildComposition.makeFileResolver(
@@ -265,6 +291,15 @@ const directoryBinding = (results: {
       submitDocumentBuildFollowUp: () => Promise.resolve(results.followUp),
     }),
   },
+});
+
+const resolvedRpcFile = (identity: string) => ({
+  byteLength: "6",
+  fileId: FileId.make(identity),
+  fileName: `${identity}.txt`,
+  mediaType: "text/plain",
+  normalizedText: "source",
+  sha256: FileDigest.make(`sha256:${"a".repeat(64)}`),
 });
 
 it.effect("does not delete or dispose compute for a foreign pending artifact", () => {

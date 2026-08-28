@@ -225,8 +225,10 @@ export const make = Effect.gen(function* () {
         supportingVisuals: [],
         userId: admitted.userId,
       });
-      yield* ports.recordProviderCost(admitted, contentId, computed.cost);
       if (Predicate.isTagged(computed, "AuthorizationFailure")) {
+        if (computed.cost._tag === "Incurred") {
+          yield* ports.recordProviderCost(admitted, contentId, computed.cost);
+        }
         return yield* unavailable(
           "authorize",
           "Document Build authority ended during compute",
@@ -234,11 +236,10 @@ export const make = Effect.gen(function* () {
           "authorizationEnded",
         );
       }
-      if (
-        Predicate.isTagged(computed, "AttemptPending") ||
-        Predicate.isTagged(computed, "AttemptUnavailable") ||
-        Predicate.isTagged(computed, "Interrupted")
-      ) {
+      if (Predicate.isTagged(computed, "AttemptUnavailable")) {
+        if (computed.cost._tag === "Incurred") {
+          yield* ports.recordProviderCost(admitted, contentId, computed.cost);
+        }
         cleanupRequired = false;
         return yield* unavailable(
           "compute",
@@ -253,6 +254,19 @@ export const make = Effect.gen(function* () {
           "The Workflow document identity owns changed compute intent",
           computed._tag,
           "intentConflict",
+        );
+      }
+      yield* ports.recordProviderCost(admitted, contentId, computed.cost);
+      if (
+        Predicate.isTagged(computed, "AttemptPending") ||
+        Predicate.isTagged(computed, "Interrupted")
+      ) {
+        cleanupRequired = false;
+        return yield* unavailable(
+          "compute",
+          "Document Build compute requires evidence reconciliation",
+          computed.evidence,
+          "recoveryPending",
         );
       }
       if (Predicate.isTagged(computed, "RejectedOversize")) {

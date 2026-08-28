@@ -1,4 +1,4 @@
-/* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside Effect tests. */
+/* oxlint-disable eslint/no-underscore-dangle, vitest/no-standalone-expect -- Assertions execute inside Effect tests and inspect Effect's standard outcome tag. */
 /* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect, typescript/consistent-return -- Fixed product timestamps make ordering deterministic; generator failures use Effect's typed channel. */
 /* oxlint-disable effecttsgo/strict-effect-provide -- Each test owns its service layer. */
 import { expect, it } from "@effect/vitest";
@@ -27,6 +27,7 @@ import { DocumentBuildDocument } from "./document-build-document";
 import {
   ArtifactIntegrityFailure,
   ArtifactStoreUnavailable,
+  type CostEvidence,
   DocumentCleanupUnavailable,
   type StoredArtifactMetadata,
 } from "./document-generation";
@@ -84,6 +85,35 @@ it.effect("retains incurred provider cost before failed artifact validation", ()
 
     expect(result).toMatchObject({ failure: { reason: "invalidArtifact" } });
     expect(fixture.events()).toContain("provider-cost");
+    expect(fixture.events()).not.toContain("generated-document");
+  }).pipe(Effect.provide(fixture.layer));
+});
+
+it.effect("does not pin ProvenNoUse for a retryable outage before later incurred compute", () => {
+  const fixture = publicationFixture({ computeOutageFirst: true });
+  return Effect.gen(function* () {
+    const documents = yield* DocumentBuildDocument.Service;
+    const first = yield* documents.generate(fixture.build()).pipe(Effect.result);
+
+    expect(first).toMatchObject({ failure: { reason: "recoveryPending" } });
+    expect(fixture.build().costEvidence).toBeNull();
+    expect(fixture.recordedCosts()).toEqual([]);
+
+    const completed = yield* documents.generate(fixture.build());
+    expect(completed.build.state).toBe("success");
+    expect(fixture.recordedCosts().every((evidence) => evidence._tag === "Incurred")).toBe(true);
+  }).pipe(Effect.provide(fixture.layer));
+});
+
+it.effect("retains incurred provider cost when authority ends after provider use", () => {
+  const fixture = publicationFixture({ computeAuthorizationFailureAfterUse: true });
+  return Effect.gen(function* () {
+    const documents = yield* DocumentBuildDocument.Service;
+    const result = yield* documents.generate(fixture.build()).pipe(Effect.result);
+
+    expect(result).toMatchObject({ failure: { reason: "authorizationEnded" } });
+    expect(fixture.recordedCosts()).toHaveLength(1);
+    expect(fixture.recordedCosts()[0]).toMatchObject({ _tag: "Incurred" });
     expect(fixture.events()).not.toContain("generated-document");
   }).pipe(Effect.provide(fixture.layer));
 });
@@ -156,6 +186,8 @@ const publicationFixture = (
     readonly accountFailures?: number;
     readonly cancelAtPublication?: "after" | "before";
     readonly cleanupFailures?: number;
+    readonly computeAuthorizationFailureAfterUse?: boolean;
+    readonly computeOutageFirst?: boolean;
     readonly denyAuthorization?: boolean;
     readonly generatedDocumentFailures?: number;
     readonly invalidValidation?: boolean;
@@ -171,6 +203,7 @@ const publicationFixture = (
   let publicationCalls = 0;
   let successFailures = options.successFailures ?? 0;
   const events: Array<string> = [];
+  const recordedCosts: Array<CostEvidence> = [];
   const contentId = ContentId.make(`document:workflow:${current.workflowId}`);
   const cost = {
     _tag: "Incurred" as const,
@@ -276,6 +309,24 @@ const publicationFixture = (
         Effect.sync(() => {
           events.push("compute");
           computeCalls += 1;
+          if (options.computeOutageFirst === true && computeCalls === 1) {
+            return {
+              _tag: "AttemptUnavailable" as const,
+              cost: { _tag: "ProvenNoUse" as const },
+              evidence: "Attempt store unavailable before provider use",
+            };
+          }
+          if (options.computeAuthorizationFailureAfterUse === true) {
+            return {
+              _tag: "AuthorizationFailure" as const,
+              cost,
+              failure: {
+                _tag: "Denied" as const,
+                reason: "authorityRevoked" as const,
+                resetAt: null,
+              },
+            };
+          }
           return {
             _tag: "Completed" as const,
             bytes: new Uint8Array([1, 2, 3]),
@@ -334,6 +385,7 @@ const publicationFixture = (
     recordProviderCost: (build, _contentId, retainedCost) =>
       Effect.sync(() => {
         events.push("provider-cost");
+        recordedCosts.push(retainedCost);
         current = { ...build, costEvidence: retainedCost, providerCostRecordedAt: now };
       }),
     validator: {
@@ -363,6 +415,7 @@ const publicationFixture = (
       Layer.provide(Layer.succeed(DocumentBuildDocument.Port, port)),
     ),
     publicationCalls: () => publicationCalls,
+    recordedCosts: () => recordedCosts,
     stored: () => retained,
   };
 };

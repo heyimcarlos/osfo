@@ -3803,7 +3803,6 @@ export class OsfoAgent extends Think<Env> {
       return invalidRequest("submitDocumentBuildFollowUp");
     }
     const submissionId = await documentBuildFollowUpSubmissionId(notificationId);
-    const replay = notification.acceptedAt !== null;
     const store = this.#store;
     const databaseBinding = this.env.DB;
     const activateSession = () => this.#activateSession(notification.sessionId);
@@ -3864,6 +3863,7 @@ export class OsfoAgent extends Think<Env> {
           operation: "submitDocumentBuildFollowUp.refresh",
         });
       }
+      const disposition = DocumentBuildFollowUp.submissionDisposition(current);
       if (DocumentBuildFollowUp.previewSubmissionDisposition(current) === "PromoteTerminal") {
         return {
           _tag: "TerminalSuperseded" as const,
@@ -3893,7 +3893,7 @@ export class OsfoAgent extends Think<Env> {
       });
       yield* requestWakeUp(accepted);
       return {
-        _tag: replay ? ("Replayed" as const) : ("Accepted" as const),
+        _tag: disposition,
         notificationId,
         submissionId,
       };
@@ -4149,16 +4149,7 @@ export class OsfoAgent extends Think<Env> {
       Effect.match({
         onFailure: (failure): WebFileUpload.Result => ({
           _tag: "Rejected",
-          reason:
-            Predicate.isTagged(failure, "FileUploadConflict") ||
-            Predicate.isTagged(failure, "FileStateTransitionConflict")
-              ? "conflict"
-              : Predicate.isTagged(failure, "InvalidFileContent") ||
-                  Predicate.isTagged(failure, "UnsupportedFileMedia") ||
-                  Predicate.isTagged(failure, "FileMediaMismatch") ||
-                  Predicate.isTagged(failure, "FileComputeFailed")
-                ? "invalid"
-                : "unavailable",
+          reason: WebFileUpload.rejectionReasonForFailure(failure),
         }),
         onSuccess: (result): WebFileUpload.Result => {
           if (result._tag !== "FileReady" && result._tag !== "FileNormalizationPending") {

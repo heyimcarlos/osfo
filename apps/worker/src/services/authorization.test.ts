@@ -152,6 +152,31 @@ describe("governed Authorization", () => {
     });
   });
 
+  it("uses the governing 25 MB hard upload bound for both launch Plans", () => {
+    const authorization = make(retainedCatalog);
+    const withinBound = {
+      actionId: "free-large-file",
+      bytes: 15_000_000n,
+      kind: "file.upload" as const,
+    };
+
+    expect(authorization.admit(context("free"), withinBound)).toMatchObject({ _tag: "Admitted" });
+    expect(
+      authorization.admit(context("free"), {
+        ...withinBound,
+        actionId: "free-oversized-file",
+        bytes: 25_000_001n,
+      }),
+    ).toMatchObject({ _tag: "Denied", reason: "operationLimitExceeded" });
+    expect(
+      authorization.admit(context("adventurer"), {
+        ...withinBound,
+        actionId: "adventurer-oversized-file",
+        bytes: 25_000_001n,
+      }),
+    ).toMatchObject({ _tag: "Denied", reason: "operationLimitExceeded" });
+  });
+
   it("keeps generic artifact availability with exact Plan capacities under launch policy", () => {
     const authorization = make(retainedCatalog);
     const operation = {
