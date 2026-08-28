@@ -4,6 +4,7 @@ import type { Database } from "@osfo/db";
 import type { CloudflareEnv } from "../config";
 import { Db } from "../db";
 import { ResearchReportPostgres } from "../integrations/postgres/research-report";
+import { hasRecognizedWebSearchPrice } from "../integrations/cloudflare/web";
 import { ResearchReport } from "../services/research-report";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare Workflow bindings expose Promise-only handles. */
@@ -83,6 +84,7 @@ export const serviceLayer = (binding: WorkflowBinding) => {
         ResearchReport.Port.of({
           currentAuthorization: ResearchReportPostgres.makeCurrentAuthorization(database),
           persistence: ResearchReportPostgres.make(database),
+          providerAvailable: Effect.succeed(hasRecognizedWebSearchPrice),
           workflow: makeWorkflowPort(binding),
         }),
       ),

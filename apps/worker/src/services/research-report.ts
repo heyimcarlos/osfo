@@ -20,6 +20,7 @@ import { currentResourcePriceVersion } from "../domain/usage";
 import {
   type AuthorizationContext,
   type Denied,
+  approvalFor,
   Authorization,
   type OriginatingAuthority,
 } from "./authorization";
@@ -146,6 +147,7 @@ export interface PortInterface {
   readonly currentAuthorization: (
     report: Record,
   ) => Effect.Effect<AuthorizationContext, Unavailable>;
+  readonly providerAvailable: Effect.Effect<boolean>;
   readonly persistence: {
     readonly admit: (record: Record) => Effect.Effect<
       | { readonly _tag: "Created"; readonly report: Record }
@@ -226,15 +228,49 @@ export const make = Effect.gen(function* () {
     return yield* ports.persistence.markAccepted(report.workflowId, report.inputDigest, acceptedAt);
   });
 
-  const recheck = Effect.fn("ResearchReport.recheck")(function* (
+  const authorizeContinuation = Effect.fn("ResearchReport.authorizeContinuation")(function* (
     report: Record,
     context: AuthorizationContext,
   ) {
     const result = authorization.recheck(
-      context,
-      workflowOperation(report.actionId, report.request),
+      {
+        ...context,
+        approval: null,
+        subscription: {
+          ...context.subscription,
+          planPolicyVersion: report.planPolicyVersion,
+        },
+      },
+      { actionId: report.actionId, kind: "workflow.cancel" },
     );
     if (Predicate.isTagged(result, "Denied")) return yield* Effect.fail(result);
+    if (report.request.consequences.length > 0) {
+      const retained = report.approval;
+      if (retained === null) {
+        return yield* Effect.fail({
+          _tag: "Denied",
+          reason: "approvalRequired",
+          resetAt: null,
+        } satisfies Denied);
+      }
+      const expected = approvalFor(
+        report.userId,
+        workflowOperation(report.actionId, report.request),
+        retained.presentation,
+      );
+      if (
+        retained.actionId !== expected.actionId ||
+        retained.operation !== expected.operation ||
+        retained.operationIdentity !== expected.operationIdentity ||
+        retained.userId !== expected.userId
+      ) {
+        return yield* Effect.fail({
+          _tag: "Denied",
+          reason: "approvalRequired",
+          resetAt: null,
+        } satisfies Denied);
+      }
+    }
     return undefined;
   });
 
@@ -251,7 +287,7 @@ export const make = Effect.gen(function* () {
       });
     }
     const context = yield* ports.currentAuthorization(report);
-    yield* recheck(report, context);
+    yield* authorizeContinuation(report, context);
     return yield* accept(report);
   });
 
@@ -276,7 +312,7 @@ export const make = Effect.gen(function* () {
       });
     }
     const context = yield* ports.currentAuthorization(report);
-    yield* recheck(report, context);
+    yield* authorizeContinuation(report, context);
     return report;
   });
 
@@ -295,13 +331,22 @@ export const make = Effect.gen(function* () {
           workflowId,
         });
       }
-      yield* recheck(existing, input.authorization);
+      yield* authorizeContinuation(existing, input.authorization);
       const accepted = yield* accept(existing).pipe(
         Effect.catchIf(isWorkflowAcknowledgementFailure, () => Effect.succeed(null)),
       );
       return accepted === null
         ? { _tag: "AcceptancePending" as const, report: existing }
         : { _tag: "Replayed" as const, report: accepted };
+    }
+
+    const providerAvailable = yield* ports.providerAvailable;
+    if (!providerAvailable) {
+      return yield* new Unavailable({
+        cause: "unpriced public-web provider",
+        message: "Research Report provider publication is unavailable",
+        operation: "start.providerAvailability",
+      });
     }
 
     const admission = authorization.admit(

@@ -64,7 +64,7 @@ it.effect("starts an ordinary report without Approval and persists before Workfl
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
-it.effect("rechecks current authority on replay and rejects changed input", () => {
+it.effect("continues exact admitted work after a Plan downgrade and rejects changed input", () => {
   const fixture = makeFixture();
 
   return Effect.gen(function* () {
@@ -72,13 +72,7 @@ it.effect("rechecks current authority on replay and rejects changed input", () =
     const reports = yield* ResearchReport.Service;
     const first = yield* reports.start(startInput());
     const deniedCurrentFacts = authorization("free");
-    const deniedReplay = yield* reports
-      .start(startInput({ authorization: deniedCurrentFacts }))
-      .pipe(Effect.result);
-    expect(deniedReplay).toMatchObject({
-      failure: { _tag: "Denied", reason: "missingEntitlement" },
-    });
-    const replayed = yield* reports.start(startInput());
+    const replayed = yield* reports.start(startInput({ authorization: deniedCurrentFacts }));
     expect(replayed).toMatchObject({ _tag: "Replayed", report: { state: "accepted" } });
     expect(replayed.report.workflowId).toBe(first.report.workflowId);
 
@@ -184,16 +178,66 @@ it.effect("does not collapse a vanished admission row into acceptance pending", 
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
-it.effect("rechecks current authority before acceptance reconciliation", () => {
+it.effect("reconciles admitted work after downgrade against the pinned policy", () => {
   const fixture = makeFixture({ currentPlan: "free", failCreates: 1 });
 
   return Effect.gen(function* () {
     const reports = yield* ResearchReport.Service;
     const pending = yield* reports.start(startInput());
+    const result = yield* reports.reconcileAcceptance(
+      pending.report.workflowId,
+      pending.report.inputDigest,
+    );
+    expect(result).toMatchObject({ state: "accepted" });
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
+it.effect("does not reapply changed Workflow capacity to exact admitted work", () => {
+  const fixture = makeFixture();
+
+  return Effect.gen(function* () {
+    const reports = yield* ResearchReport.Service;
+    const started = yield* reports.start(startInput());
+    const replayed = yield* reports.start(
+      startInput({
+        authorization: {
+          ...authorization("adventurer"),
+          liveFacts: {
+            ...emptyLiveResourceFacts,
+            concurrentCostlyJobs: 100n,
+            concurrentWorkflows: 100n,
+          },
+        },
+      }),
+    );
+    expect(replayed.report.workflowId).toBe(started.report.workflowId);
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
+it.effect("stops continuation after the source authority is revoked", () => {
+  const fixture = makeFixture();
+
+  return Effect.gen(function* () {
+    const reports = yield* ResearchReport.Service;
+    yield* reports.start(startInput());
+    const revoked = authorization("adventurer");
     const result = yield* reports
-      .reconcileAcceptance(pending.report.workflowId, pending.report.inputDigest)
+      .start(
+        startInput({
+          authorization: {
+            ...revoked,
+            authority: {
+              _tag: "RevokedAuthSession",
+              authSessionId: AuthSessionId.make("research-auth-session"),
+              userId,
+            },
+          },
+        }),
+      )
       .pipe(Effect.result);
-    expect(result).toMatchObject({ failure: { _tag: "Denied", reason: "missingEntitlement" } });
+    expect(result).toMatchObject({
+      failure: { _tag: "Denied", reason: "authorityRevoked" },
+    });
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
@@ -297,6 +341,7 @@ const makeFixture = (
         ...authorization(options.currentPlan ?? "adventurer"),
         approval: report.approval,
       }),
+    providerAvailable: Effect.succeed(true),
     persistence: {
       admit: (record) =>
         Effect.sync(() => {
