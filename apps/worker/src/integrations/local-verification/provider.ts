@@ -135,21 +135,21 @@ const request = <S extends Schema.Top>(
           );
     const response = yield* Effect.tryPromise({
       try: () => {
-      const url = new URL(`_local/integrations/${path}`, baseURL);
-      if (method === "GET") {
+        const url = new URL(`_local/integrations/${path}`, baseURL);
+        if (method === "GET") {
+          return fetch(url, {
+            method,
+            redirect: "error",
+            signal: AbortSignal.timeout(15_000),
+          });
+        }
         return fetch(url, {
-          method,
+          body: encoded ?? null,
+          headers: { "content-type": "application/json" },
+          method: "POST",
           redirect: "error",
           signal: AbortSignal.timeout(15_000),
         });
-      }
-      return fetch(url, {
-        body: encoded ?? null,
-        headers: { "content-type": "application/json" },
-        method: "POST",
-        redirect: "error",
-        signal: AbortSignal.timeout(15_000),
-      });
       },
       catch: () => unavailable(path),
     });

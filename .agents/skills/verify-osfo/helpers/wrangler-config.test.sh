@@ -21,11 +21,12 @@ bun "$script_dir/wrangler-config.mjs" \
   "http://127.0.0.1:41002" \
   "http://127.0.0.1:41003"
 
-jq --exit-status --arg postgres_url "$postgres_url" '
+jq --exit-status --arg postgres_url "$postgres_url" --arg provider_origin "http://127.0.0.1:41001" '
   .ai == null and
   .websearch == null and
   .secrets == null and
   .vars.OSFO_STAGE == "test" and
+  .vars.INTEGRATION_PROVIDER_BASE_URL == $provider_origin and
   (.hyperdrive | any(.binding == "DB" and .localConnectionString == $postgres_url)) and
   (.r2_buckets | all(.bucket_name | endswith("-wrangler-config-test")))
 ' "$output" >/dev/null

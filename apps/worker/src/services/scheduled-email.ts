@@ -233,6 +233,7 @@ export interface PortInterface {
   >;
   readonly recordWorkflowStart: (email: Record) => Effect.Effect<void, Unavailable>;
   readonly recordSendOutcome: (email: Record) => Effect.Effect<void, Unavailable>;
+  readonly sendAccountingRecorded: (email: Record) => Effect.Effect<boolean, Unavailable>;
   readonly commitTerminalFollowUp: (email: Record) => Effect.Effect<void, Unavailable>;
   readonly reconcileSend: (email: Record) => Effect.Effect<SendReconciliation, Unavailable>;
   readonly persistence: {
@@ -285,6 +286,13 @@ export interface PortInterface {
       providerLogId: string | null,
       safeFailureCode: string,
       terminalAt: Date,
+    ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+    readonly refineNotApplied: (
+      workflowId: WorkflowId,
+      inputDigest: InputDigest,
+      providerLogId: string | null,
+      preserveAccounting: boolean,
+      outcomeAt: Date,
     ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
     readonly requestCancel: (
       workflowId: WorkflowId,
@@ -670,8 +678,19 @@ export const make = Effect.gen(function* () {
   const refineUnaccountedAmbiguity = Effect.fn("ScheduledEmail.refineUnaccountedAmbiguity")(
     function* (email: Record) {
       const reconciliation = yield* ports.reconcileSend(email);
-      if (reconciliation._tag !== "Applied") return yield* settleTerminal(email);
       const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+      if (reconciliation._tag === "NotApplied") {
+        const preserveAccounting = yield* ports.sendAccountingRecorded(email);
+        const completed = yield* ports.persistence.refineNotApplied(
+          email.workflowId,
+          email.inputDigest,
+          reconciliation.providerLogId,
+          preserveAccounting,
+          outcomeAt,
+        );
+        return yield* settleTerminal(completed);
+      }
+      if (reconciliation._tag !== "Applied") return yield* settleTerminal(email);
       const completed = yield* ports.persistence.finishApplied(
         email.workflowId,
         email.inputDigest,

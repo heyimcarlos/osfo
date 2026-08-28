@@ -276,6 +276,12 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         respondJson(response, 200, integrationLedger);
         return;
       }
+      if (request.method === "POST" && pathname === "/_test/integrations/reset-ledger") {
+        integrationLedger.length = 0;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
       if (pathname.startsWith("/_local/integrations/")) {
         handleLocalIntegrations(
           request,
@@ -694,6 +700,62 @@ const handleResearch = (
         const workflowId = /research[:\w-]{8,300}/iu.exec(lastMessage)?.[0];
         const documentBuildWorkflowId = /document-build:[\w:-]{8,300}/iu.exec(lastMessage)?.[0];
         const documentBuildFileId = /web:[0-9a-f-]{36}/iu.exec(lastMessage)?.[0];
+        const scheduledEmailWorkflowId = /scheduled-email:[\w:-]{8,300}/iu.exec(lastMessage)?.[0];
+        const scheduledEmailFixture =
+          /recipient=([^;]+); subject=([^;]+); body=([^;]+); sendAt=([^;\s]+)/iu.exec(lastMessage);
+        if (
+          scheduledEmailWorkflowId !== undefined &&
+          toolNames.includes("inspectScheduledEmail") &&
+          lastMessageRole(input) === "user" &&
+          /(?:inspect|status|check)/iu.test(lastMessage)
+        ) {
+          ledger.push({
+            kind: "tool-selection",
+            operationId: null,
+            selectedTool: "inspectScheduledEmail",
+            subject: scheduledEmailWorkflowId,
+          });
+          respondJson(
+            response,
+            200,
+            toolResponse("inspectScheduledEmail", { workflowId: scheduledEmailWorkflowId }),
+          );
+          return;
+        }
+        if (
+          scheduledEmailFixture !== null &&
+          toolNames.includes("scheduleEmail") &&
+          lastMessageRole(input) === "user"
+        ) {
+          const [, recipient, subject, body, scheduledAt] = scheduledEmailFixture;
+          if (
+            recipient === undefined ||
+            subject === undefined ||
+            body === undefined ||
+            scheduledAt === undefined
+          ) {
+            respondJson(response, 400, { error: "Scheduled Email fixture is incomplete" });
+            return;
+          }
+          ledger.push({
+            kind: "tool-selection",
+            operationId: null,
+            selectedTool: "scheduleEmail",
+            subject: `${recipient}|${subject}|${body}|${scheduledAt}`,
+          });
+          respondJson(
+            response,
+            200,
+            toolResponse("scheduleEmail", {
+              body,
+              gmailResource: "primary",
+              recipients: [recipient],
+              scheduledAt,
+              subject,
+            }),
+          );
+          return;
+        }
         if (
           documentBuildWorkflowId !== undefined &&
           toolNames.includes("inspectDocumentBuild") &&

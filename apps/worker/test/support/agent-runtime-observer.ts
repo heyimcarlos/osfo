@@ -18,6 +18,7 @@ export {
   ResearchReportTimerWorkflow,
   ResearchReportWorkflow,
   Sandbox,
+  ScheduledEmailWorkflow,
   ThinkMessengerStateAgent,
 } from "../../src/worker";
 
@@ -85,6 +86,9 @@ interface ObserverBindings {
     readonly getByName: (name: string) => DirectoryObserver;
   };
   readonly FILES: R2Bucket;
+  readonly SCHEDULED_EMAIL_WORKFLOW: {
+    readonly get: (id: string) => Promise<{ readonly status: () => Promise<unknown> }>;
+  };
 }
 
 const r2Evidence = async (bucket: R2Bucket, key: string) => {
@@ -121,6 +125,7 @@ const worker = {
     const mainInstanceId = url.searchParams.get("mainInstanceId");
     const timerInstanceId = url.searchParams.get("timerInstanceId");
     const artifactId = url.searchParams.get("artifactId");
+    const scheduledEmailInstanceId = url.searchParams.get("scheduledEmailInstanceId");
     const sourceKey =
       userId === null || fileId === null
         ? null
@@ -138,6 +143,7 @@ const worker = {
       documentAttempt,
       documentOwner,
       documentSourceObject,
+      scheduledEmailWorkflow,
     ] = await Promise.all([
       directory.inspectAgent(agentId),
       directory.listAgents(),
@@ -168,6 +174,12 @@ const worker = {
         ? Promise.resolve(null)
         : r2Evidence(env.ARTIFACTS, ownerKeyFor(UserId.make(userId), contentId)),
       sourceKey === null ? Promise.resolve(null) : r2Evidence(env.FILES, sourceKey),
+      scheduledEmailInstanceId === null
+        ? Promise.resolve(null)
+        : env.SCHEDULED_EMAIL_WORKFLOW.get(scheduledEmailInstanceId).then(
+            (instance) => instance.status(),
+            () => null,
+          ),
     ]);
     return Response.json({
       agentId,
@@ -187,6 +199,7 @@ const worker = {
       documentAttempt,
       documentOwner,
       documentSourceObject,
+      scheduledEmailWorkflow,
     });
   },
 } satisfies ExportedHandler<ObserverBindings>;

@@ -538,6 +538,50 @@ describe("ScheduledEmail", () => {
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 
+  it.effect("refines unaccounted ambiguity when late evidence proves NotApplied", () => {
+    const fixture = makeFixture({ sendOutcome: "ambiguous" });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      yield* TestClock.setTime(scheduledAt.getTime());
+      yield* emails.sendDue(payload);
+      fixture.reconciliation = { _tag: "Ambiguous" };
+      yield* TestClock.setTime(scheduledAt.getTime() + 120_000);
+      fixture.failSendAccounting = true;
+
+      expect(yield* emails.recoverClaimed(payload).pipe(Effect.result)).toMatchObject({
+        failure: { operation: "send-accounting" },
+      });
+      expect(fixture.stored).toMatchObject({
+        sendAccountedAt: null,
+        sendAccountingBasis: "conservative",
+        sendOutcome: "ambiguous",
+        state: "failure",
+      });
+      expect(fixture.gmailSendFacts).toBe(0);
+
+      fixture.failSendAccounting = false;
+      fixture.reconciliation = {
+        _tag: "NotApplied",
+        providerLogId: "late-proved-not-applied-log",
+      };
+      expect(yield* emails.recoverClaimed(payload)).toMatchObject({
+        providerLogId: "late-proved-not-applied-log",
+        safeFailureCode: "send-not-applied",
+        sendAccountedAt: null,
+        sendAccountingBasis: null,
+        sendOutcome: "notApplied",
+        state: "failure",
+      });
+      expect(fixture.gmailSendFacts).toBe(0);
+      expect(fixture.followUps).toBe(1);
+      expect(fixture.sendAttempts).toBe(1);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
   it.effect("preserves a conservative accounting decision when later evidence is Applied", () => {
     const fixture = makeFixture({ sendOutcome: "ambiguous" });
     return Effect.gen(function* () {
@@ -573,6 +617,47 @@ describe("ScheduledEmail", () => {
       expect(fixture.gmailSendFacts).toBe(1);
       expect(fixture.gmailSendBases).toEqual(["conservative"]);
       expect(fixture.followUps).toBe(1);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect("keeps a retained conservative fact when later evidence proves NotApplied", () => {
+    const fixture = makeFixture({ sendOutcome: "ambiguous" });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      yield* TestClock.setTime(scheduledAt.getTime());
+      yield* emails.sendDue(payload);
+      fixture.reconciliation = { _tag: "Ambiguous" };
+      yield* TestClock.setTime(scheduledAt.getTime() + 120_000);
+      fixture.failSendAccountingMarker = true;
+
+      expect(yield* emails.recoverClaimed(payload).pipe(Effect.result)).toMatchObject({
+        failure: { operation: "send-accounting-marker" },
+      });
+      expect(fixture.gmailSendFacts).toBe(1);
+      expect(fixture.stored).toMatchObject({
+        sendAccountedAt: null,
+        sendAccountingBasis: "conservative",
+        sendOutcome: "ambiguous",
+      });
+
+      fixture.failSendAccountingMarker = false;
+      fixture.reconciliation = {
+        _tag: "NotApplied",
+        providerLogId: "late-not-applied-after-accounting",
+      };
+      expect(yield* emails.recoverClaimed(payload)).toMatchObject({
+        providerLogId: "late-not-applied-after-accounting",
+        safeFailureCode: "send-not-applied",
+        sendAccountingBasis: "conservative",
+        sendOutcome: "notApplied",
+        state: "failure",
+      });
+      expect(fixture.gmailSendFacts).toBe(1);
+      expect(fixture.gmailSendBases).toEqual(["conservative"]);
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 
@@ -861,6 +946,28 @@ const makeFixture = (
             return stored;
           }),
         ),
+      refineNotApplied: (workflowId, digest, providerLogId, preserveAccounting, outcomeAt) =>
+        requireStored(workflowId, digest).pipe(
+          Effect.map((email) => {
+            if (
+              email.state !== "failure" ||
+              email.sendOutcome !== "ambiguous" ||
+              email.sendAccountingBasis !== "conservative" ||
+              email.sendAccountedAt !== null
+            ) {
+              return email;
+            }
+            stored = {
+              ...email,
+              providerLogId,
+              safeFailureCode: "send-not-applied",
+              sendAccountingBasis: preserveAccounting ? "conservative" : null,
+              sendOutcome: "notApplied",
+              sendOutcomeAt: outcomeAt,
+            };
+            return stored;
+          }),
+        ),
       inspect: () => Effect.succeed(stored),
       markAccepted: (workflowId, digest, acceptedAt) =>
         requireStored(workflowId, digest).pipe(
@@ -926,6 +1033,7 @@ const makeFixture = (
               }
             }
           }),
+    sendAccountingRecorded: (email) => Effect.succeed(terminalFacts.has(email.workflowId)),
     recordWorkflowStart: (email) =>
       failWorkflowAccounting
         ? Effect.fail(unavailable("workflow-accounting"))

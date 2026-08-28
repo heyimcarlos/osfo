@@ -1,10 +1,5 @@
 /* oxlint-disable osfo/no-unknown-parameters, osfo/no-unknown-returns -- This handler owns and immediately decodes the Directory RPC trust boundary. */
-import {
-  Api,
-  CurrentUser,
-  ScheduledEmailsUnavailable,
-  type CurrentUserValue,
-} from "@osfo/api";
+import { Api, CurrentUser, ScheduledEmailsUnavailable, type CurrentUserValue } from "@osfo/api";
 import { Effect, Layer, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
@@ -70,7 +65,10 @@ export const layer = (bindings: Bindings) =>
 
 const withAgent = <Value>(
   directory: AgentDirectory.Interface,
-  use: (agentId: string, currentUser: CurrentUserValue) => Effect.Effect<Value, ScheduledEmailsUnavailable>,
+  use: (
+    agentId: string,
+    currentUser: CurrentUserValue,
+  ) => Effect.Effect<Value, ScheduledEmailsUnavailable>,
 ) =>
   Effect.gen(function* () {
     const currentUser = yield* CurrentUser;
@@ -78,15 +76,8 @@ const withAgent = <Value>(
     return yield* use(route.agentId, currentUser);
   }).pipe(Effect.mapError(() => unavailable()));
 
-const listApprovals = (
-  stub: DirectoryStub,
-  agentId: string,
-  currentUser: CurrentUserValue,
-) =>
-  rpc(
-    stub.listActionPresentations(agentId, actorFor(currentUser)),
-    ActionPresentationsFound,
-  ).pipe(
+const listApprovals = (stub: DirectoryStub, agentId: string, currentUser: CurrentUserValue) =>
+  rpc(stub.listActionPresentations(agentId, actorFor(currentUser)), ActionPresentationsFound).pipe(
     Effect.map(({ presentations }) => ({
       items: presentations
         .filter(
@@ -109,7 +100,11 @@ const decideApproval = (
   stub: DirectoryStub,
   agentId: string,
   currentUser: CurrentUserValue,
-  payload: { readonly decision: "approve" | "reject"; readonly presentationId: string; readonly reason?: string | undefined },
+  payload: {
+    readonly decision: "approve" | "reject";
+    readonly presentationId: string;
+    readonly reason?: string | undefined;
+  },
 ) => {
   const baseRequest: DecideActionApprovalRequest = {
     actor: actorFor(currentUser),
@@ -123,14 +118,9 @@ const decideApproval = (
       ({ items }) => items.some(({ presentationId }) => presentationId === payload.presentationId),
       unavailable,
     ),
-    Effect.andThen(
-      rpc(
-        stub.decideActionApproval(agentId, request),
-        ApprovalDecisionAccepted,
-      ),
-    ),
+    Effect.andThen(rpc(stub.decideActionApproval(agentId, request), ApprovalDecisionAccepted)),
     Effect.map(({ decision, presentationId }) => ({
-      decision: decision === "canceled" ? "rejected" as const : decision,
+      decision: decision === "canceled" ? ("rejected" as const) : decision,
       presentationId,
     })),
   );

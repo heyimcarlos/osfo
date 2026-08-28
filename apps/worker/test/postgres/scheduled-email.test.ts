@@ -2,7 +2,7 @@
 /* oxlint-disable eslint/no-underscore-dangle -- Assertions inspect canonical tagged outcomes. */
 import { createDb, type Database } from "@osfo/db";
 import { agents } from "@osfo/db/schema/agents";
-import { allowancePeriods } from "@osfo/db/schema/allowances";
+import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
 import { sessions, users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { channelLinks } from "@osfo/db/schema/channel-links";
@@ -220,6 +220,85 @@ it.effect(
     ),
 );
 
+it.effect("refines NotApplied truth only after checking the immutable Gmail fact", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "not-applied-refinement");
+      const persistence = ScheduledEmailPostgres.make(database);
+      const unaccounted = record(seeded, "not-applied-unaccounted");
+      yield* persistence.admit(unaccounted, 5n);
+      yield* persistence.markWaiting(unaccounted.workflowId, unaccounted.inputDigest, admittedAt);
+      yield* persistence.beginSend(unaccounted.workflowId, unaccounted.inputDigest, sendAt);
+      const unknown = yield* persistence.finishTerminal(
+        unaccounted.workflowId,
+        unaccounted.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        sendAt,
+      );
+      expect(yield* ScheduledEmailPostgres.sendAccountingRecorded(database, unknown)).toBe(false);
+      expect(
+        yield* persistence.refineNotApplied(
+          unknown.workflowId,
+          unknown.inputDigest,
+          "proved-not-applied",
+          false,
+          new Date("2026-08-28T12:00:02.000Z"),
+        ),
+      ).toMatchObject({
+        safeFailureCode: "send-not-applied",
+        sendAccountingBasis: null,
+        sendOutcome: "notApplied",
+        state: "failure",
+      });
+
+      const accounted = record(seeded, "not-applied-accounted");
+      yield* persistence.admit(accounted, 5n);
+      yield* persistence.markWaiting(accounted.workflowId, accounted.inputDigest, admittedAt);
+      yield* persistence.beginSend(accounted.workflowId, accounted.inputDigest, sendAt);
+      const retainedUnknown = yield* persistence.finishTerminal(
+        accounted.workflowId,
+        accounted.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        sendAt,
+      );
+      yield* Effect.promise(() =>
+        database.insert(allowanceUsage).values({
+          allowance_kind: "gmailSends",
+          allowance_period_id: accounted.allowancePeriodId,
+          basis: "conservative",
+          quantity: 1n,
+          source_id: accounted.actionId,
+          source_type: "integrationAction",
+          user_id: accounted.userId,
+        }),
+      );
+      expect(yield* ScheduledEmailPostgres.sendAccountingRecorded(database, retainedUnknown)).toBe(
+        true,
+      );
+      expect(
+        yield* persistence.refineNotApplied(
+          retainedUnknown.workflowId,
+          retainedUnknown.inputDigest,
+          "proved-not-applied-after-accounting",
+          true,
+          new Date("2026-08-28T12:00:03.000Z"),
+        ),
+      ).toMatchObject({
+        safeFailureCode: "send-not-applied",
+        sendAccountingBasis: "conservative",
+        sendOutcome: "notApplied",
+        state: "failure",
+      });
+    }),
+  ),
+);
+
 it.effect("selects pre-wait hosts and post-commit obligations for minute repair", () =>
   withDatabase((database) =>
     Effect.gen(function* () {
@@ -344,6 +423,7 @@ it.effect(
               return { _tag: "Applied" as const, result: applied };
             }),
           recordSendOutcome: () => Effect.void,
+          sendAccountingRecorded: () => Effect.succeed(false),
           recordWorkflowStart: () => Effect.void,
           send: () => Effect.die(new Error("Public repair must not send again")),
           workflow: {
@@ -487,6 +567,7 @@ it.effect("continues claimed reconciliation after deletion fencing and unblocks 
         persistence,
         reconcileSend: () => Effect.succeed({ _tag: "NotStarted" }),
         recordSendOutcome: () => Effect.void,
+        sendAccountingRecorded: () => Effect.succeed(false),
         recordWorkflowStart: () => Effect.void,
         send: (_email, authorize) =>
           authorize.pipe(
