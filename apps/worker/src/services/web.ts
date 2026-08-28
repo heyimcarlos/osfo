@@ -648,6 +648,7 @@ export const isSafePublicUrl = (value: string): boolean => {
   }
   if (url.protocol !== "https:" || url.username.length > 0 || url.password.length > 0) return false;
   if (url.port !== "" && url.port !== "443") return false;
+  if (Array.from(url.searchParams.keys()).some(isCredentialQueryKey)) return false;
   const hostname = url.hostname.toLowerCase().replace(/\.$/u, "");
   if (
     hostname.length === 0 ||
@@ -661,6 +662,41 @@ export const isSafePublicUrl = (value: string): boolean => {
   }
   return !isUnsafeIpLiteral(hostname);
 };
+
+const credentialQueryKeys = new Set([
+  "accesstoken",
+  "apikey",
+  "auth",
+  "authorization",
+  "awsaccesskeyid",
+  "bearertoken",
+  "clientsecret",
+  "credential",
+  "idtoken",
+  "jwt",
+  "oauthtoken",
+  "password",
+  "refreshtoken",
+  "secret",
+  "securitytoken",
+  "sessiontoken",
+  "sig",
+  "signature",
+  "token",
+  "xamzcredential",
+  "xamzsecuritytoken",
+  "xamzsignature",
+  "xgoogcredential",
+  "xgoogsignature",
+]);
+
+const isCredentialQueryKey = (value: string) =>
+  credentialQueryKeys.has(
+    value
+      .normalize("NFKC")
+      .toLowerCase()
+      .replaceAll(/[^a-z0-9]/gu, ""),
+  );
 
 const isUnsafeIpLiteral = (hostname: string) => {
   const normalized =

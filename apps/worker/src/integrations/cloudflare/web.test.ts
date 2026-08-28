@@ -83,6 +83,29 @@ describe("Cloudflare web adapters", () => {
     }),
   );
 
+  it.effect("does not follow a redirect carrying signed credentials", () =>
+    Effect.gen(function* () {
+      const requested: Array<string> = [];
+      const fetchPage = makePageFetch((input) => {
+        const url = input instanceof Request ? input.url : String(input);
+        requested.push(url);
+        return Promise.resolve(
+          new Response(null, {
+            headers: {
+              location: "https://cdn.example.com/report?X-Amz-Signature=private-signature",
+            },
+            status: 302,
+          }),
+        );
+      });
+
+      expect((yield* Effect.exit(fetchPage({ url: "https://example.com/start" })))._tag).toBe(
+        "Failure",
+      );
+      expect(requested).toEqual(["https://example.com/start"]);
+    }),
+  );
+
   it.effect("stops before a fourth public redirect", () =>
     Effect.gen(function* () {
       const requested: Array<string> = [];

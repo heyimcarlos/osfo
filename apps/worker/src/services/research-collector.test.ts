@@ -114,6 +114,42 @@ it.effect("deduplicates canonical variants before assigning page-operation ident
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
+it.effect("never fetches or manifests credential-bearing discovery URLs", () => {
+  const fixture = makeFixture({
+    discoveryUrls: [
+      "https://example.com/report?access_token=private",
+      "https://example.com/report?%58-Amz-Signature=private",
+    ],
+  });
+  return Effect.gen(function* () {
+    const collector = yield* ResearchCollector.Service;
+    const result = yield* collector.collect(report).pipe(Effect.result);
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(fixture.pageFetchCalls).toBe(0);
+    expect(fixture.evidenceBodies).toEqual([]);
+    expect(fixture.manifestWrites).toBe(0);
+    expect(Array.from(fixture.operations.values()).some(({ input }) => input._tag === "Page")).toBe(
+      false,
+    );
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
+it.effect("does not persist or manifest a credential-bearing final page URL", () => {
+  const fixture = makeFixture({
+    pageFinalUrl: "https://cdn.example.com/report?X-Goog-Credential=private",
+  });
+  return Effect.gen(function* () {
+    const collector = yield* ResearchCollector.Service;
+    const result = yield* collector.collect(report).pipe(Effect.result);
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(fixture.pageFetchCalls).toBe(1);
+    expect(fixture.evidenceBodies).toEqual([]);
+    expect(fixture.manifestWrites).toBe(0);
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
 it.effect(
   "reads only the committed manifest identity and rejects corrupt Workflow ownership",
   () => {
@@ -343,7 +379,9 @@ const makeFixture = (
     readonly beforeClaimReturn?: () => Effect.Effect<void>;
     readonly failAuthorizationAt?: number;
     readonly duplicateUrlVariants?: boolean;
+    readonly discoveryUrls?: ReadonlyArray<string>;
     readonly corruptManifestWorkflow?: boolean;
+    readonly pageFinalUrl?: string;
     readonly transientPageFailures?: number;
     readonly afterPut?: () => Effect.Effect<void>;
     readonly authorize?: ResearchCollector.PortInterface["authorize"];
@@ -357,6 +395,7 @@ const makeFixture = (
   let authorizationCalls = 0;
   let discoveryCalls = 0;
   let pageFetchCalls = 0;
+  let manifestWrites = 0;
   let ambiguousDiscoveryFailures = options.ambiguousDiscoveryFailures ?? 0;
   let transientPageFailures = options.transientPageFailures ?? 0;
   const port = ResearchCollector.Port.of({
@@ -459,11 +498,11 @@ const makeFixture = (
           return Effect.succeed({
             evidence: { latencyMs: 1, requestId: "discovery-request" },
             results: [
-              {
+              ...(options.discoveryUrls ?? ["https://example.com/source"]).map((url) => ({
                 description: "DISCOVERY_ONLY_TEXT",
                 title: "Fetched source",
-                url: "https://example.com/source",
-              },
+                url,
+              })),
               ...(options.duplicateUrlVariants === true
                 ? [
                     {
@@ -483,7 +522,12 @@ const makeFixture = (
             transientPageFailures -= 1;
             return Effect.fail({ retry: "transient" as const });
           }
-          return Effect.succeed(page());
+          const fetchedPage = page();
+          return Effect.succeed(
+            options.pageFinalUrl === undefined
+              ? fetchedPage
+              : { ...fetchedPage, finalUrl: options.pageFinalUrl },
+          );
         }),
     },
     sourceEvidence: {
@@ -497,6 +541,7 @@ const makeFixture = (
         }),
       putManifest: (manifestUserId, manifest) =>
         Effect.sync(() => {
+          manifestWrites += 1;
           retainedManifest = manifest;
           return {
             manifestDigest: ResearchReport.InputDigest.make("c".repeat(64)),
@@ -557,6 +602,9 @@ const makeFixture = (
     },
     get pageFetchCalls() {
       return pageFetchCalls;
+    },
+    get manifestWrites() {
+      return manifestWrites;
     },
   };
 };

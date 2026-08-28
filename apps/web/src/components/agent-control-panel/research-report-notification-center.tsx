@@ -60,7 +60,6 @@ export function ResearchReportNotificationCenterContent({
       {open ? (
         <section
           aria-label="Notification center"
-          aria-modal="true"
           className="absolute top-13 right-0 z-40 w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-white/85 bg-white/95 p-4 text-left shadow-[0_18px_45px_rgba(45,68,110,0.22)] backdrop-blur-xl"
           role="dialog"
         >

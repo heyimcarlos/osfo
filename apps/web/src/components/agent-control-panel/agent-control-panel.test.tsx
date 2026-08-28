@@ -146,7 +146,9 @@ describe("OsfoAgentControlPanel", () => {
         onOpen={() => undefined}
       />,
     );
-    expect(screen.getByRole("dialog", { name: "Notification center" })).toBeTruthy();
+    const notificationCenter = screen.getByRole("dialog", { name: "Notification center" });
+    expect(notificationCenter).toBeTruthy();
+    expect(notificationCenter.hasAttribute("aria-modal")).toBe(false);
     expect(screen.getByText("Research Report complete")).toBeTruthy();
     expect(screen.getByText("The cited report artifact is ready.")).toBeTruthy();
     expect(document.body.textContent).not.toContain("canonical public source evidence");

@@ -10,6 +10,7 @@ import {
   type PageFetch,
   type RankedResult,
   type WebState,
+  isSafePublicUrl,
 } from "./web";
 
 /* oxlint-disable effecttsgo/global-date-in-effect, eslint/no-underscore-dangle, vitest/no-standalone-expect -- Fixed evidence times and tagged assertions execute inside Effect Vitest generators. */
@@ -18,6 +19,33 @@ const userId = UserId.make("user-1");
 const turnId = ThinkSubmissionId.make("turn-1");
 
 describe("Web", () => {
+  it("rejects credential-bearing query keys while preserving ordinary public queries", () => {
+    const credentialKeys = [
+      "access_token",
+      "%61ccess_token",
+      "TOKEN",
+      "api_key",
+      "apikey",
+      "secret",
+      "password",
+      "credential",
+      "signature",
+      "sig",
+      "Authorization",
+      "auth",
+      "X-Amz-Credential",
+      "X-Amz-Signature",
+      "X-Amz-Security-Token",
+      "X-Goog-Signature",
+      "X-Goog-Credential",
+    ];
+
+    for (const key of credentialKeys) {
+      expect(isSafePublicUrl(`https://example.com/report?${key}=retained-secret`)).toBe(false);
+    }
+    expect(isSafePublicUrl("https://example.com/report?topic=public+policy&page=2")).toBe(true);
+  });
+
   it.effect("keeps ranked result identities stable and grounds search in fetched pages", () =>
     Effect.gen(function* () {
       const state = memoryState();
