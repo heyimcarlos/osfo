@@ -214,8 +214,41 @@ it.effect("reclaims a missing expired output and reports interruption before saf
     });
     expect(fixture.evidence()).toMatchObject({
       cost: { providerOperationId: "provider-operation-1" },
-      status: "claimed",
+      status: "recovery",
     });
+    expect(fixture.execCalls()).toBe(0);
+  });
+});
+
+it.effect("retains incurred cost when recovery authority ends before a new start", () => {
+  const fixture = recoveryFixture(
+    attemptEvidence({ executionLeaseExpiresAt: Number.MAX_SAFE_INTEGER, status: "recovery" }),
+    { denySecondAuthorization: true },
+  );
+  return Effect.gen(function* () {
+    expect(yield* fixture.generate()).toMatchObject({
+      _tag: "AuthorizationFailure",
+      cost: { _tag: "Incurred", providerOperationId: "provider-operation-1" },
+      failure: { _tag: "Denied", reason: "authorityRevoked" },
+    });
+    expect(fixture.evidence()?.status).toBe("recovery");
+    expect(fixture.startCalls()).toBe(0);
+    expect(fixture.execCalls()).toBe(0);
+  });
+});
+
+it.effect("retains incurred cost when another caller wins the recovery start", () => {
+  const fixture = recoveryFixture(
+    attemptEvidence({ executionLeaseExpiresAt: Number.MAX_SAFE_INTEGER, status: "recovery" }),
+    { startLoses: true },
+  );
+  return Effect.gen(function* () {
+    expect(yield* fixture.generate()).toMatchObject({
+      _tag: "AttemptPending",
+      cost: { _tag: "Incurred", providerOperationId: "provider-operation-1" },
+    });
+    expect(fixture.evidence()?.status).toBe("recovery");
+    expect(fixture.startCalls()).toBe(1);
     expect(fixture.execCalls()).toBe(0);
   });
 });
@@ -290,14 +323,18 @@ const recoveryFixture = (
   options: {
     readonly completeFailures?: number;
     readonly completeLoses?: boolean;
+    readonly denySecondAuthorization?: boolean;
     readonly outputExists?: boolean;
     readonly reclaimLoses?: boolean;
+    readonly startLoses?: boolean;
   } = {},
 ) => {
   let evidence = initialEvidence;
   let revision = "revision-1";
   let completeFailures = options.completeFailures ?? 0;
   let execCalls = 0;
+  let authorizationChecks = 0;
+  let startCalls = 0;
   let providerOperationId = initialEvidence?.cost.providerOperationId ?? "";
   let outputExists = options.outputExists ?? false;
   const attempts: AttemptEvidenceStore = {
@@ -334,6 +371,8 @@ const recoveryFixture = (
       return revision;
     },
     start: async (_contentId, started) => {
+      startCalls += 1;
+      if (options.startLoses === true) return null;
       evidence = started;
       revision = "revision-started";
       return revision;
@@ -372,7 +411,16 @@ const recoveryFixture = (
     generate: () =>
       compute.generate({
         allowancePeriodId: testAllowancePeriodId,
-        authorizeWrite: Effect.void,
+        authorizeWrite: Effect.suspend(() => {
+          authorizationChecks += 1;
+          return options.denySecondAuthorization === true && authorizationChecks === 2
+            ? Effect.fail({
+                _tag: "Denied" as const,
+                reason: "authorityRevoked" as const,
+                resetAt: null,
+              })
+            : Effect.void;
+        }),
         contentId: testContentId,
         format: "pdf",
         intentDigest: testIntentDigest,
@@ -381,5 +429,6 @@ const recoveryFixture = (
         userId: testUserId,
       }),
     providerOperationId: () => providerOperationId,
+    startCalls: () => startCalls,
   };
 };

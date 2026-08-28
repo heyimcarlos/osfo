@@ -27,7 +27,7 @@ export interface ActiveAttemptEvidence {
   /** Digest of the immutable document intent that owns this attempt. */
   readonly intentDigest: DocumentIntentDigest;
   readonly renderedPageCount: number | null;
-  readonly status: "claimed" | "started" | "completed";
+  readonly status: "claimed" | "recovery" | "started" | "completed";
   readonly userId?: UserId;
 }
 
@@ -74,7 +74,7 @@ export interface AttemptEvidenceStore {
   readonly inspect: (contentId: ContentId) => Promise<AttemptEvidence | null>;
   readonly reclaim: (
     contentId: ContentId,
-    evidence: ActiveAttemptEvidence & { readonly status: "claimed" },
+    evidence: ActiveAttemptEvidence & { readonly status: "recovery" },
     revision: string,
   ) => Promise<string | null>;
   readonly start: (
@@ -272,6 +272,7 @@ const render = async (
     let renderedPageCount = claimed.evidence.renderedPageCount;
     let evidence = claimed.evidence;
     let revision = claimed.revision;
+    if (evidence.status === "recovery") providerUsePossible = true;
     if (!claimed.created && claimed.evidence.status === "started") {
       if (claimed.evidence.executionLeaseExpiresAt > currentTimeMillis()) {
         return {
@@ -306,7 +307,7 @@ const render = async (
           ...claimed.evidence,
           executionLeaseExpiresAt: currentTimeMillis() + executionLeaseMs,
           renderedPageCount: null,
-          status: "claimed" as const,
+          status: "recovery" as const,
         };
         const reclaimed = await withDeadline(
           attempts.reclaim(input.contentId, reclaimedEvidence, claimed.revision),
@@ -326,12 +327,13 @@ const render = async (
       }
     }
 
-    if (evidence.status === "claimed") {
+    if (evidence.status === "claimed" || evidence.status === "recovery") {
+      const recoveringIncurredAttempt = evidence.status === "recovery";
       const startAuthorizationFailure = await authorizeWrite();
       if (startAuthorizationFailure !== null) {
         return {
           _tag: "AuthorizationFailure",
-          cost: { _tag: "ProvenNoUse" },
+          cost: recoveringIncurredAttempt ? cost : { _tag: "ProvenNoUse" },
           failure: startAuthorizationFailure,
         };
       }
@@ -343,7 +345,7 @@ const render = async (
       if (started === null) {
         return {
           _tag: "AttemptPending",
-          cost: { _tag: "ProvenNoUse" },
+          cost: recoveringIncurredAttempt ? cost : { _tag: "ProvenNoUse" },
           evidence: "Another caller owns the atomic Sandbox execution transition",
         };
       }
@@ -475,7 +477,7 @@ const AttemptEvidenceMetadata = Schema.fromJsonString(
       renderedPageCount: Schema.NullOr(
         Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(20)),
       ),
-      status: Schema.Literals(["claimed", "started", "completed"]),
+      status: Schema.Literals(["claimed", "recovery", "started", "completed"]),
       userId: Schema.optionalKey(UserId),
     }),
   ]),
@@ -625,8 +627,8 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
 });
 
 /**
- * Remove only proven no-use evidence after terminal cleanup. Started and completed attempts remain
- * durable until the scheduled allowance reconciler has consumed their incurred cost.
+ * Remove only proven no-use ownership after terminal cleanup. Recovery, started, and completed
+ * attempts remain durable until the scheduled allowance reconciler has consumed their incurred cost.
  */
 /* oxlint-disable eslint/no-await-in-loop -- Each CAS attempt must observe the revision produced by the preceding race. */
 export const settleAttemptEvidenceForTerminalCleanup = (
@@ -674,7 +676,11 @@ export const settleAttemptEvidenceForTerminalCleanup = (
         if (evidence === null || evidence.userId !== userId) {
           throw new Error("Document attempt ownership does not match the canceled Workflow");
         }
-        if (evidence.status === "started" || evidence.status === "completed") {
+        if (
+          evidence.status === "recovery" ||
+          evidence.status === "started" ||
+          evidence.status === "completed"
+        ) {
           return "preserved" as const;
         }
         if (evidence.status === "discarded") {
@@ -734,7 +740,9 @@ export const readReconciliationBatch = (bucket: R2Bucket) =>
         const encoded = object.customMetadata?.osfo;
         if (encoded === undefined) return [];
         const evidence = decodeAttemptEvidence(encoded);
-        return evidence.status === "started" || evidence.status === "completed"
+        return evidence.status === "recovery" ||
+          evidence.status === "started" ||
+          evidence.status === "completed"
           ? [evidence.cost]
           : [];
       });

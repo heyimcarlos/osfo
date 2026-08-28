@@ -7,6 +7,7 @@ import { ContentId } from "../../domain/client-content";
 import { DocumentIntentDigest } from "../../services/document-generation";
 import {
   makeAttemptEvidenceStore,
+  readReconciliationBatch,
   settleAttemptEvidenceForTerminalCleanup,
 } from "./document-compute";
 import { DocumentOwnershipIndex } from "./document-ownership-index";
@@ -68,6 +69,39 @@ it.effect("preserves completed incurred evidence and its ownership marker", () =
     );
     expect(fixture.objects.has(attemptKeyFor(contentId))).toBe(true);
     expect(fixture.objects.has(ownerKeyFor(userId, contentId))).toBe(true);
+  });
+});
+
+it.effect("preserves recovery evidence and reconciles its incurred cost", () => {
+  const fixture = bucketFixture();
+  const store = makeAttemptEvidenceStore(fixture.bucket);
+  return Effect.gen(function* () {
+    const claimed = yield* Effect.promise(() =>
+      store.claim(contentId, intentDigest, cost, Date.now() + 60_000, userId),
+    );
+    if (claimed._tag !== "Claimed") throw new Error("Expected claimed attempt evidence");
+    const started = { ...claimed.evidence, status: "started" as const };
+    const startedRevision = yield* Effect.promise(() =>
+      store.start(contentId, started, claimed.revision),
+    );
+    if (startedRevision === null) throw new Error("Expected started attempt evidence");
+    yield* Effect.promise(() =>
+      store.reclaim(
+        contentId,
+        { ...started, executionLeaseExpiresAt: Date.now() + 60_000, status: "recovery" },
+        startedRevision,
+      ),
+    );
+
+    expect(yield* settleAttemptEvidenceForTerminalCleanup(fixture.bucket, contentId, userId)).toBe(
+      "preserved",
+    );
+    expect((yield* Effect.promise(() => store.inspect(contentId)))?.status).toBe("recovery");
+    expect(fixture.objects.has(ownerKeyFor(userId, contentId))).toBe(true);
+    expect(yield* readReconciliationBatch(fixture.bucket)).toEqual({
+      checkpoint: null,
+      costs: [cost],
+    });
   });
 });
 
@@ -175,6 +209,14 @@ const bucketFixture = () => {
       return Promise.resolve();
     },
     head: (key: string) => Promise.resolve(objects.get(key) ?? null),
+    get: () => Promise.resolve(null),
+    list: (options: R2ListOptions) =>
+      Promise.resolve({
+        objects: [...objects.values()].filter((object) =>
+          object.key?.startsWith(options.prefix ?? ""),
+        ),
+        truncated: false,
+      }),
     put: async (key: string, _body: Uint8Array, options: R2PutOptions) => {
       const encoded = options.customMetadata?.osfo;
       if (encoded !== undefined && encoded.includes('"status":"discarded"')) {
