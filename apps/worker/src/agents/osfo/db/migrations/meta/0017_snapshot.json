@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d2aa8cb1-0cb7-4149-a211-8e8edb97ceee",
+  "id": "7cbfd438-19e2-4599-8333-e4f919585dcc",
   "prevId": "5132d375-b06f-465e-a715-c55bec5031a0",
   "tables": {
     "osfo_agent_initialization": {
@@ -1314,6 +1314,20 @@
           "notNull": false,
           "autoincrement": false
         },
+        "callback_capability": {
+          "name": "callback_capability",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "callback_capability_revoked_at": {
+          "name": "callback_capability_revoked_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "committed_at": {
           "name": "committed_at",
           "type": "text",
@@ -1494,6 +1508,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "callback_capability": {
+          "name": "callback_capability",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "text",
@@ -1635,6 +1656,10 @@
         "osfo_reminder_due_state": {
           "name": "osfo_reminder_due_state",
           "value": "(\"osfo_reminders\".\"state\" IN ('active', 'paused') AND \"osfo_reminders\".\"next_due_at\" IS NOT NULL) OR (\"osfo_reminders\".\"state\" IN ('canceled', 'completed') AND \"osfo_reminders\".\"next_due_at\" IS NULL)"
+        },
+        "osfo_reminder_schedule_binding": {
+          "name": "osfo_reminder_schedule_binding",
+          "value": "(\"osfo_reminders\".\"scheduler_id\" IS NULL AND \"osfo_reminders\".\"callback_capability\" IS NULL) OR (\"osfo_reminders\".\"scheduler_id\" IS NOT NULL AND \"osfo_reminders\".\"callback_capability\" IS NOT NULL)"
         }
       }
     },

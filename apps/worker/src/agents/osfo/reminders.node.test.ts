@@ -21,7 +21,9 @@ import { deleteAgentOwnedUserData } from "./agent-owned-data-deletion";
 import {
   type ReminderDeliveryPorts,
   makeReminderAuthority,
+  ReminderCallbackCapability,
   ReminderId,
+  ReminderUnavailable,
   type ReminderSchedule,
   type ReminderSchedulePort,
 } from "./reminders";
@@ -44,10 +46,20 @@ it.effect(
               return `schedule-${scheduled.length}`;
             }),
           cancel: () => Effect.void,
-          list: () => Effect.succeed([]),
+          list: () =>
+            Effect.sync(() =>
+              scheduled.map(({ at, payload }, index) => ({
+                callback: "deliverReminder",
+                id: `schedule-${index + 1}`,
+                payload,
+                time: at.getTime(),
+                type: "scheduled" as const,
+              })),
+            ),
         };
         const reminders = makeReminderAuthority({
           delivery: unusedDeliveryPorts,
+          makeCallbackCapability: deterministicCallbackCapabilities(),
           now: Effect.succeed(new Date("2026-08-28T12:00:00.000Z")),
           scheduler,
           storage,
@@ -74,6 +86,7 @@ it.effect(
           {
             at: input.firstDueAt,
             payload: {
+              callbackCapability: testCallbackCapability(1),
               nominalDueAt: input.firstDueAt.toISOString(),
               reminderId: input.reminderId,
               revision: 1,
@@ -116,12 +129,104 @@ it.effect(
     ),
 );
 
+it.effect("repairs create, change, and reactivate schedules before returning Action replay", () =>
+  withDatabase((storage) =>
+    Effect.gen(function* () {
+      const rows = new Map<string, ReminderSchedule>();
+      const failNextArm = yield* Ref.make(true);
+      let sequence = 0;
+      const scheduler: ReminderSchedulePort = {
+        arm: (at, payload) =>
+          Effect.gen(function* () {
+            if (yield* Ref.getAndSet(failNextArm, false)) {
+              return yield* new ReminderUnavailable({
+                cause: new Error("injected scheduler failure"),
+                operation: "scheduler.arm",
+              });
+            }
+            const id = `repair-${++sequence}`;
+            rows.set(id, {
+              callback: "deliverReminder",
+              id,
+              payload,
+              time: at.getTime(),
+              type: "scheduled",
+            });
+            return id;
+          }),
+        cancel: (id) => Effect.sync(() => void rows.delete(id)),
+        list: () => Effect.sync(() => [...rows.values()]),
+      };
+      const reminders = makeReminderAuthority({
+        delivery: unusedDeliveryPorts,
+        makeCallbackCapability: deterministicCallbackCapabilities(),
+        now: Effect.succeed(new Date("2026-08-28T12:00:00.000Z")),
+        scheduler,
+        storage,
+      });
+      const ownerUserId = UserId.make("user-replay-repair");
+      const reminderId = ReminderId.make("reminder-replay-repair");
+      const create = {
+        actionId: ActionId.make("action-replay-create"),
+        activeLimit: 1,
+        body: "Repair this exact approved Reminder.",
+        firstDueAt: new Date("2026-08-29T12:00:00.000Z"),
+        originalPeriodId: AllowancePeriodId.make("period-replay-repair"),
+        ownerUserId,
+        plan: "free" as const,
+        policyVersion: PlanPolicyVersion.make("launch-v1"),
+        reminderId,
+      };
+
+      expect(Exit.isFailure(yield* Effect.exit(reminders.createOneTime(create)))).toBe(true);
+      expect(yield* reminders.inspect(ownerUserId, reminderId)).toMatchObject({
+        schedulerId: null,
+        state: "active",
+      });
+      expect(yield* reminders.createOneTime(create)).toMatchObject({ _tag: "Replayed" });
+      expect(rows.size).toBe(1);
+
+      const change = {
+        actionId: ActionId.make("action-replay-change"),
+        body: "Repair this approved material change.",
+        expectedRevision: 1,
+        firstDueAt: new Date("2026-08-30T12:00:00.000Z"),
+        intervalMilliseconds: null,
+        ownerUserId,
+        reminderId,
+        scheduleKind: "oneTime" as const,
+      };
+      yield* Ref.set(failNextArm, true);
+      expect(Exit.isFailure(yield* Effect.exit(reminders.change(change)))).toBe(true);
+      expect(yield* reminders.change(change)).toMatchObject({ _tag: "Replayed", revision: 2 });
+      expect(rows.size).toBe(1);
+
+      yield* reminders.reconcileActiveLimit({ activeLimit: 0, ownerUserId });
+      const reactivate = {
+        ...change,
+        actionId: ActionId.make("action-replay-reactivate"),
+        activeLimit: 1,
+        expectedRevision: 2,
+        firstDueAt: new Date("2026-08-31T12:00:00.000Z"),
+      };
+      yield* Ref.set(failNextArm, true);
+      expect(Exit.isFailure(yield* Effect.exit(reminders.reactivate(reactivate)))).toBe(true);
+      expect(yield* reminders.reactivate(reactivate)).toMatchObject({
+        _tag: "Replayed",
+        revision: 3,
+      });
+      expect(rows.size).toBe(1);
+    }),
+  ),
+);
+
 it.effect("accepts only fixed recurring intervals of at least 24 hours", () =>
   withDatabase((storage) =>
     Effect.gen(function* () {
       const scheduled: Array<{ readonly at: Date; readonly payload: unknown }> = [];
       const reminders = makeReminderAuthority({
         delivery: unusedDeliveryPorts,
+        makeCallbackCapability: deterministicCallbackCapabilities(),
         now: Effect.succeed(new Date("2026-08-28T12:00:00.000Z")),
         scheduler: {
           arm: (at, payload) =>
@@ -177,6 +282,7 @@ it.effect("revises exact approved facts, pauses by creation order, reactivates, 
       const canceled: Array<string> = [];
       const reminders = makeReminderAuthority({
         delivery: unusedDeliveryPorts,
+        makeCallbackCapability: deterministicCallbackCapabilities(),
         now: Effect.succeed(new Date("2026-08-28T12:00:00.000Z")),
         scheduler: {
           arm: (_at, payload) =>
@@ -304,6 +410,7 @@ it.effect("commits one recurring occurrence before accounting and one prompt Wak
       const clock = yield* Ref.make(new Date("2026-08-29T11:59:59.000Z"));
       const reminders = makeReminderAuthority({
         delivery,
+        makeCallbackCapability: deterministicCallbackCapabilities(),
         now: Ref.get(clock),
         scheduler: {
           arm: (at, payload) =>
@@ -333,7 +440,19 @@ it.effect("commits one recurring occurrence before accounting and one prompt Wak
       });
       yield* Ref.set(clock, new Date("2026-08-29T12:00:01.000Z"));
 
+      expect(
+        yield* reminders.deliver({
+          nominalDueAt: nominalDueAt.toISOString(),
+          reminderId,
+          revision: 1,
+        }),
+      ).toMatchObject({ _tag: "Noop", reason: "unauthorizedCallback" });
+      expect(accounting).toEqual([]);
+      expect(wakeUps).toEqual([]);
+      expect(prompts).toEqual([]);
+
       const payload = {
+        callbackCapability: testCallbackCapability(1),
         nominalDueAt: nominalDueAt.toISOString(),
         reminderId,
         revision: 1,
@@ -350,6 +469,7 @@ it.effect("commits one recurring occurrence before accounting and one prompt Wak
       expect(scheduled.at(-1)).toEqual({
         at: new Date("2026-08-30T12:00:00.000Z"),
         payload: {
+          callbackCapability: testCallbackCapability(2),
           nominalDueAt: "2026-08-30T12:00:00.000Z",
           reminderId,
           revision: 1,
@@ -377,6 +497,114 @@ it.effect("commits one recurring occurrence before accounting and one prompt Wak
           ThinkSubmissionId.make("reminder-think-two"),
         ),
       ).toEqual([]);
+    }),
+  ),
+);
+
+it.effect("reauthorizes partial committed delivery and revokes a denied crash replay", () =>
+  withDatabase((storage) =>
+    Effect.gen(function* () {
+      const authorization = yield* Ref.make<"Authorized" | "Blocked">("Authorized");
+      const clock = yield* Ref.make(new Date("2026-08-29T11:59:59.000Z"));
+      const accounting: Array<string> = [];
+      const requests: Array<string> = [];
+      const prompts: Array<string> = [];
+      const failedSources = new Set<string>();
+      const reminders = makeReminderAuthority({
+        delivery: {
+          authorize: () =>
+            Ref.get(authorization).pipe(
+              Effect.map((decision) =>
+                decision === "Authorized"
+                  ? {
+                      _tag: "Authorized" as const,
+                      channelLinkId: ChannelLinkId.make("whatsapp-link-1"),
+                    }
+                  : { _tag: "Blocked" as const, reason: "subscriptionSuspended" },
+              ),
+            ),
+          cancelSource: () => Effect.void,
+          promptWakeUp: (sourceIdentity) => Effect.sync(() => void prompts.push(sourceIdentity)),
+          recordLaunchDelivery: ({ sourceIdentity }) =>
+            Effect.sync(() => void accounting.push(sourceIdentity)),
+          requestWakeUp: ({ sourceIdentity }) =>
+            Effect.gen(function* () {
+              requests.push(sourceIdentity);
+              if (!failedSources.has(sourceIdentity)) {
+                failedSources.add(sourceIdentity);
+                return yield* new ReminderUnavailable({
+                  cause: new Error("injected Wake-up failure"),
+                  operation: "deliver.wakeUp",
+                });
+              }
+              return undefined;
+            }),
+        },
+        makeCallbackCapability: deterministicCallbackCapabilities(),
+        now: Ref.get(clock),
+        scheduler: {
+          arm: (_at, payload) => Effect.succeed(`schedule-${payload.reminderId}`),
+          cancel: () => Effect.void,
+          list: () => Effect.succeed([]),
+        },
+        storage,
+      });
+      const due = new Date("2026-08-29T12:00:00.000Z");
+      const ownerUserId = UserId.make("user-partial-replay");
+      const base = {
+        activeLimit: 2,
+        body: "Resume this occurrence only with current authority.",
+        firstDueAt: due,
+        originalPeriodId: AllowancePeriodId.make("period-partial-replay"),
+        ownerUserId,
+        plan: "free" as const,
+        policyVersion: PlanPolicyVersion.make("launch-v1"),
+      };
+      const resumableId = ReminderId.make("reminder-partial-resumable");
+      const deniedId = ReminderId.make("reminder-partial-denied");
+      yield* reminders.createOneTime({
+        ...base,
+        actionId: ActionId.make("action-partial-resumable"),
+        reminderId: resumableId,
+      });
+      yield* reminders.createOneTime({
+        ...base,
+        actionId: ActionId.make("action-partial-denied"),
+        reminderId: deniedId,
+      });
+      yield* Ref.set(clock, new Date("2026-08-29T12:00:01.000Z"));
+      const resumablePayload = {
+        callbackCapability: testCallbackCapability(1),
+        nominalDueAt: due.toISOString(),
+        reminderId: resumableId,
+        revision: 1,
+      };
+      expect(Exit.isFailure(yield* Effect.exit(reminders.deliver(resumablePayload)))).toBe(true);
+      expect(yield* reminders.deliver(resumablePayload)).toMatchObject({ _tag: "Replayed" });
+      expect(accounting).toHaveLength(1);
+      expect(requests).toHaveLength(2);
+      expect(prompts).toHaveLength(1);
+
+      const deniedPayload = {
+        callbackCapability: testCallbackCapability(2),
+        nominalDueAt: due.toISOString(),
+        reminderId: deniedId,
+        revision: 1,
+      };
+      expect(Exit.isFailure(yield* Effect.exit(reminders.deliver(deniedPayload)))).toBe(true);
+      yield* Ref.set(authorization, "Blocked");
+      expect(yield* reminders.deliver(deniedPayload)).toMatchObject({
+        _tag: "Noop",
+        reason: "authorityRevoked",
+      });
+      yield* Ref.set(authorization, "Authorized");
+      expect(yield* reminders.deliver(deniedPayload)).toMatchObject({
+        _tag: "Noop",
+        reason: "unauthorizedCallback",
+      });
+      expect(accounting).toHaveLength(2);
+      expect(requests).toHaveLength(3);
+      expect(prompts).toHaveLength(1);
     }),
   ),
 );
@@ -410,6 +638,7 @@ it.effect(
         };
         const reminders = makeReminderAuthority({
           delivery,
+          makeCallbackCapability: deterministicCallbackCapabilities(),
           now: Ref.get(clock),
           scheduler: {
             arm: (_at, payload) => Effect.succeed(`schedule-${payload.reminderId}`),
@@ -435,6 +664,7 @@ it.effect(
         yield* Ref.set(clock, now);
         expect(
           yield* reminders.deliver({
+            callbackCapability: testCallbackCapability(1),
             nominalDueAt: due.toISOString(),
             reminderId: blockedId,
             revision: 1,
@@ -460,6 +690,7 @@ it.effect(
         yield* Ref.set(clock, now);
         expect(
           yield* reminders.deliver({
+            callbackCapability: testCallbackCapability(2),
             nominalDueAt: due.toISOString(),
             reminderId: sharedId,
             revision: 1,
@@ -472,6 +703,7 @@ it.effect(
         expect(accounting).toEqual([]);
         expect(
           yield* reminders.deliver({
+            callbackCapability: testCallbackCapability(2),
             nominalDueAt: due.toISOString(),
             reminderId: sharedId,
             revision: 2,
@@ -501,6 +733,7 @@ it.effect("rejects a changed source snapshot and permanently fences deleted Remi
           recordLaunchDelivery: () => Effect.void,
           requestWakeUp: () => Effect.void,
         },
+        makeCallbackCapability: deterministicCallbackCapabilities(),
         now: Ref.get(clock),
         scheduler: {
           arm: (_at, payload) => Effect.succeed(`schedule-${payload.reminderId}`),
@@ -525,7 +758,12 @@ it.effect("rejects a changed source snapshot and permanently fences deleted Remi
         reminderId,
       });
       yield* Ref.set(clock, new Date("2026-09-02T12:00:01.000Z"));
-      yield* reminders.deliver({ nominalDueAt: due.toISOString(), reminderId, revision: 1 });
+      yield* reminders.deliver({
+        callbackCapability: testCallbackCapability(1),
+        nominalDueAt: due.toISOString(),
+        reminderId,
+        revision: 1,
+      });
       const snapshot = yield* reminders.pendingSources(ownerUserId);
       const changedSnapshot = snapshot.map((source) => ({
         ...source,
@@ -554,7 +792,12 @@ it.effect("rejects a changed source snapshot and permanently fences deleted Remi
       expect(canceledSources).toEqual([snapshot[0]?.sourceIdentity]);
       expect(deletedPersonalSkills).toEqual([ownerUserId]);
       expect(
-        yield* reminders.deliver({ nominalDueAt: due.toISOString(), reminderId, revision: 1 }),
+        yield* reminders.deliver({
+          callbackCapability: testCallbackCapability(1),
+          nominalDueAt: due.toISOString(),
+          reminderId,
+          revision: 1,
+        }),
       ).toMatchObject({ _tag: "Noop", reason: "missing" });
     }),
   ),
@@ -587,6 +830,7 @@ it.effect(
             recordLaunchDelivery: () => Effect.void,
             requestWakeUp: () => Effect.void,
           },
+          makeCallbackCapability: deterministicCallbackCapabilities(),
           now: Ref.get(clock),
           scheduler: {
             arm: (_at, payload) => Effect.succeed(`schedule-${payload.reminderId}`),
@@ -624,11 +868,13 @@ it.effect(
         });
         yield* Ref.set(clock, new Date("2026-09-05T12:00:01.000Z"));
         yield* reminders.deliver({
+          callbackCapability: testCallbackCapability(1),
           nominalDueAt: firstDueAt.toISOString(),
           reminderId: firstId,
           revision: 1,
         });
         yield* reminders.deliver({
+          callbackCapability: testCallbackCapability(2),
           nominalDueAt: firstDueAt.toISOString(),
           reminderId: secondId,
           revision: 1,
@@ -671,6 +917,7 @@ it.effect(
         yield* Ref.set(clock, new Date("2026-09-06T12:00:01.000Z"));
         expect(
           yield* reminders.deliver({
+            callbackCapability: testCallbackCapability(6),
             nominalDueAt: "2026-09-06T12:00:00.000Z",
             reminderId: thirdId,
             revision: 1,
@@ -689,6 +936,7 @@ it.effect("repairs a missing one-time schedule and cancels stale Reminder callba
       const listed = yield* Ref.make<ReadonlyArray<ReminderSchedule>>([]);
       const reminders = makeReminderAuthority({
         delivery: unusedDeliveryPorts,
+        makeCallbackCapability: deterministicCallbackCapabilities(),
         now: Effect.succeed(new Date("2026-09-03T11:00:00.000Z")),
         scheduler: {
           arm: (_at, payload) =>
@@ -720,7 +968,12 @@ it.effect("repairs a missing one-time schedule and cancels stale Reminder callba
         {
           callback: "deliverReminder",
           id: "stale-revision",
-          payload: { nominalDueAt: due.toISOString(), reminderId, revision: 9 },
+          payload: {
+            callbackCapability: testCallbackCapability(9),
+            nominalDueAt: due.toISOString(),
+            reminderId,
+            revision: 9,
+          },
           time: due.getTime(),
           type: "scheduled",
         },
@@ -739,6 +992,23 @@ it.effect("repairs a missing one-time schedule and cancels stale Reminder callba
       expect(yield* reminders.inspect(ownerUserId, reminderId)).toMatchObject({
         schedulerId: "replacement-1-2",
       });
+      expect(
+        storage.sql
+          .exec<{ callbackCapability: string }>(
+            `SELECT callback_capability AS callbackCapability
+               FROM osfo_reminders WHERE reminder_id = ?`,
+            reminderId,
+          )
+          .one().callbackCapability,
+      ).toBe(testCallbackCapability(2));
+      expect(
+        yield* reminders.deliver({
+          callbackCapability: testCallbackCapability(1),
+          nominalDueAt: due.toISOString(),
+          reminderId,
+          revision: 1,
+        }),
+      ).toMatchObject({ _tag: "Noop", reason: "stale" });
     }),
   ),
 );
@@ -762,6 +1032,7 @@ const withDatabase = <A, E>(
         next_due_at TEXT,
         interval_milliseconds INTEGER,
         state TEXT NOT NULL CHECK (state IN ('active', 'paused', 'canceled', 'completed')),
+        callback_capability TEXT,
         scheduler_id TEXT,
         original_period_id TEXT NOT NULL,
         policy_version TEXT NOT NULL,
@@ -780,6 +1051,8 @@ const withDatabase = <A, E>(
         nominal_due_at TEXT NOT NULL,
         owner_user_id TEXT NOT NULL,
         channel_link_id TEXT,
+        callback_capability TEXT NOT NULL,
+        callback_capability_revoked_at TEXT,
         source_identity TEXT NOT NULL UNIQUE,
         source_revoked_at TEXT,
         body_snapshot TEXT NOT NULL,
@@ -883,6 +1156,14 @@ const normalizeRow = (row: Record<string, SQLOutputValue>): Record<string, SqlSt
 
 const toNodeBinding = (value: SqlStorageValue): SQLInputValue =>
   value instanceof ArrayBuffer ? new Uint8Array(value) : value;
+
+const testCallbackCapability = (sequence: number) =>
+  ReminderCallbackCapability.make(sequence.toString(16).padStart(64, "0"));
+
+const deterministicCallbackCapabilities = () => {
+  let sequence = 0;
+  return () => Effect.sync(() => testCallbackCapability(++sequence));
+};
 
 const unusedDeliveryPorts: ReminderDeliveryPorts = {
   authorize: () => Effect.die(new Error("Unexpected Reminder delivery authorization")),

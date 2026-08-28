@@ -138,6 +138,12 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     return agent === null ? [] : agent.pendingReminderWakeUpSources(userId);
   }
 
+  /** Inspect privacy-safe Reminder lifecycle evidence through its owning User Agent. */
+  async inspectReminderVerificationState(userId: string) {
+    const agent = await this.#agentForUser(userId);
+    return agent === null ? null : agent.inspectReminderVerificationState(userId);
+  }
+
   /** Commit an exact Reminder source exposure snapshot in its owning User Agent. */
   async exposeReminderWakeUpSources(
     userId: string,

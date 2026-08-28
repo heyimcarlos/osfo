@@ -29,6 +29,11 @@ const ReminderId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength
 );
 export type StoredReminderId = typeof ReminderId.Type;
 
+const ReminderCallbackCapability = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)).pipe(
+  Schema.brand("ReminderCallbackCapability"),
+);
+export type StoredReminderCallbackCapability = typeof ReminderCallbackCapability.Type;
+
 const ReminderRow = Schema.Struct({
   body: Schema.String,
   creationActionId: ActionId,
@@ -64,6 +69,7 @@ const MutationTarget = Schema.Struct({
 
 const DueReminderRow = Schema.Struct({
   body: Schema.String,
+  callbackCapability: Schema.NullOr(ReminderCallbackCapability),
   intervalMilliseconds: Schema.NullOr(Schema.Int),
   nextDueAt: Schema.NullOr(Schema.DateFromString),
   originalPeriodId: AllowancePeriodId,
@@ -72,6 +78,7 @@ const DueReminderRow = Schema.Struct({
   reminderId: ReminderId,
   revision: Schema.Int.check(Schema.isGreaterThan(0)),
   scheduleKind: Schema.Literals(["oneTime", "recurring"]),
+  schedulerId: Schema.NullOr(Schema.String),
   state: Schema.Literals(["active", "paused", "canceled", "completed"]),
 });
 export type DueReminderRow = typeof DueReminderRow.Type;
@@ -81,10 +88,16 @@ const OccurrenceRow = Schema.Struct({
   blockedAt: Schema.NullOr(Schema.String),
   canceledAt: Schema.NullOr(Schema.String),
   channelLinkId: Schema.NullOr(ChannelLinkId),
+  callbackCapability: ReminderCallbackCapability,
+  callbackCapabilityRevokedAt: Schema.NullOr(Schema.String),
   committedAt: Schema.NullOr(Schema.DateFromString),
   originalPeriodId: AllowancePeriodId,
   ownerUserId: UserId,
   policyVersion: PlanPolicyVersion,
+  nominalDueAt: Schema.DateFromString,
+  reminderId: ReminderId,
+  revision: Schema.Int.check(Schema.isGreaterThan(0)),
+  scheduleKind: Schema.Literals(["oneTime", "recurring"]),
   sourceIdentity: Schema.String,
   wakeupPromptedAt: Schema.NullOr(Schema.String),
   wakeupRequestedAt: Schema.NullOr(Schema.String),
@@ -104,7 +117,20 @@ const ThinkExposureRow = Schema.Struct({
 });
 export type ThinkExposureRow = typeof ThinkExposureRow.Type;
 
+const VerificationOccurrenceRow = Schema.Struct({
+  callbackCapabilityRevokedAt: Schema.NullOr(Schema.DateFromString),
+  committedAt: Schema.NullOr(Schema.DateFromString),
+  exposedAt: Schema.NullOr(Schema.DateFromString),
+  nominalDueAt: Schema.DateFromString,
+  sourceIdentity: Schema.String,
+  sourceRevokedAt: Schema.NullOr(Schema.DateFromString),
+  thinkPresentedAt: Schema.NullOr(Schema.DateFromString),
+  thinkSubmissionId: Schema.NullOr(Schema.String),
+});
+export type VerificationOccurrenceRow = typeof VerificationOccurrenceRow.Type;
+
 const ActiveScheduleRow = Schema.Struct({
+  callbackCapability: Schema.NullOr(ReminderCallbackCapability),
   nextDueAt: Schema.DateFromString,
   ownerUserId: UserId,
   reminderId: ReminderId,
@@ -139,9 +165,11 @@ const cancelCommittedSources = (
   raw.sql.exec(
     `UPDATE osfo_reminder_occurrences
         SET source_revoked_at = COALESCE(source_revoked_at, ?),
+            callback_capability_revoked_at = COALESCE(callback_capability_revoked_at, ?),
             disposition_reason = 'authoritySuperseded'
       WHERE owner_user_id = ? AND reminder_id = ? AND revision = ?
         AND committed_at IS NOT NULL AND source_revoked_at IS NULL`,
+    now.toISOString(),
     now.toISOString(),
     ownerUserId,
     reminderId,
@@ -322,7 +350,8 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
         raw.sql.exec(
           `UPDATE osfo_reminders SET revision = ?, schedule_kind = ?, body = ?,
                   first_due_at = ?, next_due_at = ?, interval_milliseconds = ?,
-                  state = 'active', scheduler_id = NULL, updated_at = ?
+                  state = 'active', callback_capability = NULL,
+                  scheduler_id = NULL, updated_at = ?
             WHERE owner_user_id = ? AND reminder_id = ?`,
           revision,
           input.scheduleKind,
@@ -355,6 +384,7 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
     reminderId: StoredReminderId,
     revision: number,
     nominalDueAt: Date,
+    callbackCapability: StoredReminderCallbackCapability,
     schedulerId: string,
     now: Date,
   ) =>
@@ -363,10 +393,12 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
         () =>
           raw.sql
             .exec(
-              `UPDATE osfo_reminders SET scheduler_id = ?, updated_at = ?
+              `UPDATE osfo_reminders SET callback_capability = ?, scheduler_id = ?, updated_at = ?
                 WHERE owner_user_id = ? AND reminder_id = ? AND revision = ?
                   AND state = 'active' AND next_due_at = ? AND scheduler_id IS NULL
+                  AND callback_capability IS NULL
                 RETURNING reminder_id AS reminderId`,
+              callbackCapability,
               schedulerId,
               now.toISOString(),
               ownerUserId,
@@ -407,7 +439,7 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
         const revision = target.revision + 1;
         raw.sql.exec(
           `UPDATE osfo_reminders SET revision = ?, state = 'canceled', next_due_at = NULL,
-                  scheduler_id = NULL, updated_at = ?
+                  callback_capability = NULL, scheduler_id = NULL, updated_at = ?
             WHERE owner_user_id = ? AND reminder_id = ?`,
           revision,
           now.toISOString(),
@@ -450,6 +482,21 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
       );
     });
 
+  const revokeOccurrence = (sourceIdentity: string, reason: string, now: Date) =>
+    attempt("deliver.revokeOccurrence", () => {
+      raw.sql.exec(
+        `UPDATE osfo_reminder_occurrences
+            SET callback_capability_revoked_at = COALESCE(callback_capability_revoked_at, ?),
+                source_revoked_at = COALESCE(source_revoked_at, ?),
+                disposition_reason = ?
+          WHERE source_identity = ? AND committed_at IS NOT NULL`,
+        now.toISOString(),
+        now.toISOString(),
+        reason,
+        sourceIdentity,
+      );
+    });
+
   const readOccurrence = (reminderId: StoredReminderId, revision: number, nominalDueAt: Date) =>
     queryOptional(
       "deliver.inspectOccurrence",
@@ -457,7 +504,11 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
       () =>
         raw.sql
           .exec(
-            `SELECT owner_user_id AS ownerUserId, channel_link_id AS channelLinkId,
+            `SELECT reminder_id AS reminderId, revision,
+                    nominal_due_at AS nominalDueAt, schedule_kind AS scheduleKind,
+                    owner_user_id AS ownerUserId, channel_link_id AS channelLinkId,
+                    callback_capability AS callbackCapability,
+                    callback_capability_revoked_at AS callbackCapabilityRevokedAt,
                     source_identity AS sourceIdentity, original_period_id AS originalPeriodId,
                     policy_version AS policyVersion, committed_at AS committedAt,
                     blocked_at AS blockedAt, canceled_at AS canceledAt,
@@ -483,6 +534,7 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
             `SELECT reminder_id AS reminderId, owner_user_id AS ownerUserId, revision,
                     schedule_kind AS scheduleKind, body, next_due_at AS nextDueAt,
                     interval_milliseconds AS intervalMilliseconds, state,
+                    callback_capability AS callbackCapability, scheduler_id AS schedulerId,
                     original_period_id AS originalPeriodId, policy_version AS policyVersion
                FROM osfo_reminders WHERE reminder_id = ? LIMIT 1`,
             reminderId,
@@ -491,6 +543,7 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
     );
 
   const retainDisposition = (input: {
+    readonly callbackCapability: StoredReminderCallbackCapability;
     readonly disposition: "Blocked" | "Canceled";
     readonly due: DueReminderRow;
     readonly nominalDueAt: Date;
@@ -500,18 +553,35 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
   }) =>
     attempt("deliver.retainDisposition", () =>
       raw.transactionSync(() => {
+        const updated = raw.sql
+          .exec(
+            `UPDATE osfo_reminders SET state = 'paused', callback_capability = NULL,
+                    scheduler_id = NULL, updated_at = ?
+              WHERE reminder_id = ? AND revision = ? AND state = 'active'
+                AND next_due_at = ? AND callback_capability = ?
+              RETURNING reminder_id AS reminderId`,
+            input.now.toISOString(),
+            input.due.reminderId,
+            input.due.revision,
+            input.nominalDueAt.toISOString(),
+            input.callbackCapability,
+          )
+          .toArray();
+        if (updated.length !== 1) return false;
         const sql =
           input.disposition === "Blocked"
             ? `INSERT OR IGNORE INTO osfo_reminder_occurrences (
                  reminder_id, revision, nominal_due_at, owner_user_id, channel_link_id,
                  source_identity, body_snapshot, schedule_kind, original_period_id,
-                 policy_version, blocked_at, disposition_reason
-               ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`
+                 policy_version, callback_capability, callback_capability_revoked_at,
+                 blocked_at, disposition_reason
+               ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
             : `INSERT OR IGNORE INTO osfo_reminder_occurrences (
                  reminder_id, revision, nominal_due_at, owner_user_id, channel_link_id,
                  source_identity, body_snapshot, schedule_kind, original_period_id,
-                 policy_version, canceled_at, disposition_reason
-               ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`;
+                 policy_version, callback_capability, callback_capability_revoked_at,
+                 canceled_at, disposition_reason
+               ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
         raw.sql.exec(
           sql,
           input.due.reminderId,
@@ -523,20 +593,17 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
           input.due.scheduleKind,
           input.due.originalPeriodId,
           input.due.policyVersion,
+          input.callbackCapability,
+          input.now.toISOString(),
           input.now.toISOString(),
           input.reason,
         );
-        raw.sql.exec(
-          `UPDATE osfo_reminders SET state = 'paused', scheduler_id = NULL, updated_at = ?
-            WHERE reminder_id = ? AND revision = ? AND state = 'active'`,
-          input.now.toISOString(),
-          input.due.reminderId,
-          input.due.revision,
-        );
+        return true;
       }),
     );
 
   const commitOccurrence = (input: {
+    readonly callbackCapability: StoredReminderCallbackCapability;
     readonly channelLinkId: ChannelLinkIdType;
     readonly due: DueReminderRow;
     readonly nextDueAt: Date | null;
@@ -548,9 +615,11 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
       raw.transactionSync(() => {
         const updated = raw.sql
           .exec(
-            `UPDATE osfo_reminders SET state = ?, next_due_at = ?, scheduler_id = NULL,
+            `UPDATE osfo_reminders SET state = ?, next_due_at = ?,
+                    callback_capability = NULL, scheduler_id = NULL,
                     updated_at = ?
               WHERE reminder_id = ? AND revision = ? AND state = 'active' AND next_due_at = ?
+                AND callback_capability = ?
               RETURNING reminder_id AS reminderId`,
             input.nextDueAt === null ? "completed" : "active",
             input.nextDueAt?.toISOString() ?? null,
@@ -558,6 +627,7 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
             input.due.reminderId,
             input.due.revision,
             input.nominalDueAt.toISOString(),
+            input.callbackCapability,
           )
           .toArray();
         if (updated.length !== 1) return false;
@@ -565,8 +635,8 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
           `INSERT INTO osfo_reminder_occurrences (
              reminder_id, revision, nominal_due_at, owner_user_id, channel_link_id,
              source_identity, body_snapshot, schedule_kind, original_period_id,
-             policy_version, committed_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             policy_version, callback_capability, committed_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           input.due.reminderId,
           input.due.revision,
           input.nominalDueAt.toISOString(),
@@ -577,6 +647,7 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
           input.due.scheduleKind,
           input.due.originalPeriodId,
           input.due.policyVersion,
+          input.callbackCapability,
           input.now.toISOString(),
         );
         return true;
@@ -639,6 +710,46 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
         }
       }),
     );
+
+  const verificationState = (ownerUserId: UserIdType) =>
+    attempt("verification.inspect", () => {
+      const reminderCount = raw.sql
+        .exec<{ count: number }>(
+          `SELECT COUNT(*) AS count FROM osfo_reminders WHERE owner_user_id = ?`,
+          ownerUserId,
+        )
+        .one().count;
+      const activeScheduleBindingCount = raw.sql
+        .exec<{ count: number }>(
+          `SELECT COUNT(*) AS count FROM osfo_reminders
+            WHERE owner_user_id = ? AND state = 'active'
+              AND scheduler_id IS NOT NULL AND callback_capability IS NOT NULL`,
+          ownerUserId,
+        )
+        .one().count;
+      const occurrences = Schema.decodeUnknownSync(Schema.Array(VerificationOccurrenceRow))(
+        raw.sql
+          .exec(
+            `SELECT callback_capability_revoked_at AS callbackCapabilityRevokedAt,
+                    committed_at AS committedAt, exposed_at AS exposedAt,
+                    nominal_due_at AS nominalDueAt, source_identity AS sourceIdentity,
+                    source_revoked_at AS sourceRevokedAt,
+                    think_presented_at AS thinkPresentedAt,
+                    think_submission_id AS thinkSubmissionId
+               FROM osfo_reminder_occurrences
+              WHERE owner_user_id = ?
+              ORDER BY nominal_due_at, source_identity`,
+            ownerUserId,
+          )
+          .toArray(),
+      );
+      return {
+        activeScheduleBindingCount,
+        occurrenceCount: occurrences.length,
+        occurrences,
+        reminderCount,
+      };
+    });
 
   const claimThinkExposures = (
     ownerUserId: UserIdType,
@@ -707,7 +818,8 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
         );
         raw.sql.exec(
           `UPDATE osfo_reminders SET revision = revision + 1, state = 'canceled',
-                  next_due_at = NULL, scheduler_id = NULL, updated_at = ?
+                  next_due_at = NULL, callback_capability = NULL,
+                  scheduler_id = NULL, updated_at = ?
             WHERE owner_user_id = ?`,
           now.toISOString(),
           ownerUserId,
@@ -715,8 +827,10 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
         raw.sql.exec(
           `UPDATE osfo_reminder_occurrences
               SET source_revoked_at = COALESCE(source_revoked_at, ?),
+                  callback_capability_revoked_at = COALESCE(callback_capability_revoked_at, ?),
                   disposition_reason = 'accountDeletion'
             WHERE owner_user_id = ? AND committed_at IS NOT NULL`,
+          now.toISOString(),
           now.toISOString(),
           ownerUserId,
         );
@@ -734,7 +848,8 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
       raw.sql
         .exec(
           `SELECT reminder_id AS reminderId, owner_user_id AS ownerUserId,
-                  revision, next_due_at AS nextDueAt, scheduler_id AS schedulerId
+                  callback_capability AS callbackCapability, revision,
+                  next_due_at AS nextDueAt, scheduler_id AS schedulerId
              FROM osfo_reminders WHERE state = 'active' AND next_due_at IS NOT NULL
             ORDER BY created_at, reminder_id`,
         )
@@ -744,7 +859,7 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
   const clearScheduleBinding = (row: ActiveScheduleRow, now: Date) =>
     attempt("reconcileSchedules.clearBinding", () => {
       raw.sql.exec(
-        `UPDATE osfo_reminders SET scheduler_id = NULL, updated_at = ?
+        `UPDATE osfo_reminders SET callback_capability = NULL, scheduler_id = NULL, updated_at = ?
           WHERE reminder_id = ? AND revision = ? AND state = 'active' AND next_due_at = ?`,
         now.toISOString(),
         row.reminderId,
@@ -786,7 +901,8 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
         );
         for (const reminder of decoded) {
           raw.sql.exec(
-            `UPDATE osfo_reminders SET state = 'paused', scheduler_id = NULL, updated_at = ?
+            `UPDATE osfo_reminders SET state = 'paused', callback_capability = NULL,
+                    scheduler_id = NULL, updated_at = ?
               WHERE owner_user_id = ? AND reminder_id = ? AND state = 'active'`,
             now.toISOString(),
             ownerUserId,
@@ -816,8 +932,10 @@ export const makeReminderStorage = (raw: RawReminderStorage) => {
     readActiveSchedules,
     readDueReminder,
     readOccurrence,
+    revokeOccurrence,
     claimThinkExposures,
     retainDisposition,
+    verificationState,
   };
 };
 

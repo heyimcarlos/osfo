@@ -364,6 +364,7 @@ import { makeWebState } from "./db/web-state";
 import { makeWebTools } from "./web-tools";
 import {
   makeReminderAuthority,
+  ReminderCallbackCapability,
   ReminderId,
   ReminderUnavailable,
   type ReminderDeliveryPorts,
@@ -697,6 +698,13 @@ export class OsfoAgent extends Think<Env> {
       recordLaunchDelivery: (input) => this.#recordReminderDelivery(input),
       requestWakeUp: (input) => this.#requestReminderWakeUp(input),
     },
+    makeCallbackCapability: () =>
+      Effect.sync(() => {
+        const bytes = crypto.getRandomValues(new Uint8Array(32));
+        return ReminderCallbackCapability.make(
+          Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+        );
+      }),
     now: Effect.sync(() => new Date()),
     scheduler: {
       arm: (at, payload) =>
@@ -3010,6 +3018,30 @@ export class OsfoAgent extends Think<Env> {
         sourceIdentity,
       }),
     );
+  }
+
+  /** Inspect privacy-safe Reminder lifecycle evidence through the owning Agent. */
+  async inspectReminderVerificationState(encodedUserId: string) {
+    await this.#migrationsReady;
+    const userId = await Effect.runPromise(Schema.decodeEffect(UserId)(encodedUserId));
+    const state = await Effect.runPromise(this.#reminders.verificationState(userId));
+    const agentScheduleCount = (await this.listSchedules({ type: "scheduled" })).filter(
+      (schedule) => schedule.type === "scheduled" && schedule.callback === "deliverReminder",
+    ).length;
+    return {
+      ...state,
+      agentScheduleCount,
+      occurrences: state.occurrences.map((occurrence) => ({
+        callbackCapabilityRevokedAt: occurrence.callbackCapabilityRevokedAt?.toISOString() ?? null,
+        committedAt: occurrence.committedAt?.toISOString() ?? null,
+        exposedAt: occurrence.exposedAt?.toISOString() ?? null,
+        nominalDueAt: occurrence.nominalDueAt.toISOString(),
+        sourceIdentity: occurrence.sourceIdentity,
+        sourceRevokedAt: occurrence.sourceRevokedAt?.toISOString() ?? null,
+        thinkPresentedAt: occurrence.thinkPresentedAt?.toISOString() ?? null,
+        thinkSubmissionId: occurrence.thinkSubmissionId,
+      })),
+    };
   }
 
   /** Commit the Directory's exact Reminder source exposure snapshot. */

@@ -17,7 +17,9 @@ Send Osfo a private Telegram message from the address to link. Open the private 
 ## Driving it with Chrome
 
 1. Complete [registration](registration.md) and keep that Chrome tab signed in.
-2. Run `control-osfo channel-invite <run-id>`. This delivers a run-owned direct message through `/webhooks/telegram` and prints the invite returned through the local Bot API boundary.
+2. Run `control-osfo channel-invite <run-id>` exactly once. The helper atomically consumes the
+   run's single Telegram-link attempt before it delivers a run-owned direct message through
+   `/webhooks/telegram`; a second invocation fails even when the first provider call did not.
 3. Start channel-linking evidence and open the invite in the same tab.
 4. Wait for `Connect this chat`, capture the enabled `Link this channel` button as `action.png`, then choose it.
 5. Wait for `Channel linked` and capture `result.png`.

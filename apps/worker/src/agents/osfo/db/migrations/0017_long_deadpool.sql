@@ -14,6 +14,8 @@ CREATE TABLE `osfo_reminder_occurrences` (
 	`body_snapshot` text NOT NULL,
 	`canceled_at` text,
 	`channel_link_id` text,
+	`callback_capability` text NOT NULL,
+	`callback_capability_revoked_at` text,
 	`committed_at` text,
 	`disposition_reason` text,
 	`exposed_at` text,
@@ -44,6 +46,7 @@ CREATE UNIQUE INDEX `osfo_reminder_occurrence_identity` ON `osfo_reminder_occurr
 CREATE INDEX `osfo_reminder_occurrences_pending_source` ON `osfo_reminder_occurrences` (`owner_user_id`,`exposed_at`,`committed_at`,`source_identity`);--> statement-breakpoint
 CREATE TABLE `osfo_reminders` (
 	`body` text NOT NULL,
+	`callback_capability` text,
 	`created_at` text NOT NULL,
 	`creation_action_id` text NOT NULL,
 	`first_due_at` text NOT NULL,
@@ -63,7 +66,8 @@ CREATE TABLE `osfo_reminders` (
 	CONSTRAINT "osfo_reminder_schedule_kind" CHECK("osfo_reminders"."schedule_kind" IN ('oneTime', 'recurring')),
 	CONSTRAINT "osfo_reminder_schedule_shape" CHECK(("osfo_reminders"."schedule_kind" = 'oneTime' AND "osfo_reminders"."interval_milliseconds" IS NULL) OR ("osfo_reminders"."schedule_kind" = 'recurring' AND "osfo_reminders"."interval_milliseconds" >= 86400000)),
 	CONSTRAINT "osfo_reminder_state" CHECK("osfo_reminders"."state" IN ('active', 'paused', 'canceled', 'completed')),
-	CONSTRAINT "osfo_reminder_due_state" CHECK(("osfo_reminders"."state" IN ('active', 'paused') AND "osfo_reminders"."next_due_at" IS NOT NULL) OR ("osfo_reminders"."state" IN ('canceled', 'completed') AND "osfo_reminders"."next_due_at" IS NULL))
+	CONSTRAINT "osfo_reminder_due_state" CHECK(("osfo_reminders"."state" IN ('active', 'paused') AND "osfo_reminders"."next_due_at" IS NOT NULL) OR ("osfo_reminders"."state" IN ('canceled', 'completed') AND "osfo_reminders"."next_due_at" IS NULL)),
+	CONSTRAINT "osfo_reminder_schedule_binding" CHECK(("osfo_reminders"."scheduler_id" IS NULL AND "osfo_reminders"."callback_capability" IS NULL) OR ("osfo_reminders"."scheduler_id" IS NOT NULL AND "osfo_reminders"."callback_capability" IS NOT NULL))
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `osfo_reminders_creation_action_id_unique` ON `osfo_reminders` (`creation_action_id`);--> statement-breakpoint

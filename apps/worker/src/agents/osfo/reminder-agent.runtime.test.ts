@@ -54,6 +54,42 @@ it("registers Reminder Action/tools and decodes only the public scheduler payloa
       `INSERT INTO osfo_reminders (
          reminder_id, owner_user_id, creation_action_id, created_at, revision,
          schedule_kind, body, first_due_at, next_due_at, interval_milliseconds,
+         state, callback_capability, scheduler_id, original_period_id,
+         policy_version, plan, updated_at
+       ) VALUES (?, ?, ?, ?, 1, 'oneTime', ?, ?, ?, NULL,
+                 'active', ?, ?, ?, 'launch-v1', 'free', ?)`,
+      "runtime-direct-rpc",
+      "runtime-user",
+      "runtime-direct-rpc-action",
+      "2026-08-27T11:00:00.000Z",
+      "Direct RPC must not deliver this body.",
+      "2026-08-27T12:00:00.000Z",
+      "2026-08-27T12:00:00.000Z",
+      "0000000000000000000000000000000000000000000000000000000000000002",
+      "runtime-direct-rpc-schedule",
+      "runtime-period",
+      "2026-08-27T11:00:00.000Z",
+    );
+    await expect(
+      agent.deliverReminder({
+        nominalDueAt: "2026-08-27T12:00:00.000Z",
+        reminderId: "runtime-direct-rpc",
+        revision: 1,
+      }),
+    ).resolves.toBeUndefined();
+    expect(
+      state.storage.sql
+        .exec<{ count: number }>(
+          `SELECT COUNT(*) AS count FROM osfo_reminder_occurrences
+            WHERE reminder_id = 'runtime-direct-rpc'`,
+        )
+        .one().count,
+    ).toBe(0);
+
+    state.storage.sql.exec(
+      `INSERT INTO osfo_reminders (
+         reminder_id, owner_user_id, creation_action_id, created_at, revision,
+         schedule_kind, body, first_due_at, next_due_at, interval_milliseconds,
          state, scheduler_id, original_period_id, policy_version, plan, updated_at
        ) VALUES (?, ?, ?, ?, 1, 'oneTime', ?, ?, NULL, NULL,
                  'completed', NULL, ?, 'launch-v1', 'free', ?)`,
@@ -70,8 +106,8 @@ it("registers Reminder Action/tools and decodes only the public scheduler payloa
       `INSERT INTO osfo_reminder_occurrences (
          reminder_id, revision, nominal_due_at, owner_user_id, channel_link_id,
          source_identity, body_snapshot, schedule_kind, original_period_id,
-         policy_version, committed_at
-       ) VALUES (?, 1, ?, ?, ?, ?, ?, 'oneTime', ?, 'launch-v1', ?)`,
+         policy_version, callback_capability, committed_at
+       ) VALUES (?, 1, ?, ?, ?, ?, ?, 'oneTime', ?, 'launch-v1', ?, ?)`,
       "runtime-reminder",
       "2026-08-27T12:00:00.000Z",
       "runtime-user",
@@ -79,6 +115,7 @@ it("registers Reminder Action/tools and decodes only the public scheduler payloa
       "reminder:runtime:first",
       "Pay the electricity bill.",
       "runtime-period",
+      "0000000000000000000000000000000000000000000000000000000000000001",
       "2026-08-27T12:00:01.000Z",
     );
     await agent.exposeReminderWakeUpSources("runtime-user", [
@@ -115,6 +152,26 @@ it("registers Reminder Action/tools and decodes only the public scheduler payloa
       tools: agent.getTools(),
     });
     expect(continuation.instructions).toContain("Pay the electricity bill.");
+    await expect(agent.inspectReminderVerificationState("runtime-user")).resolves.toEqual(
+      expect.objectContaining({
+        activeScheduleBindingCount: 1,
+        agentScheduleCount: 0,
+        occurrenceCount: 1,
+        occurrences: [
+          expect.objectContaining({
+            callbackCapabilityRevokedAt: null,
+            committedAt: "2026-08-27T12:00:01.000Z",
+            exposedAt: expect.any(String),
+            nominalDueAt: "2026-08-27T12:00:00.000Z",
+            sourceIdentity: "reminder:runtime:first",
+            sourceRevokedAt: null,
+            thinkPresentedAt: expect.any(String),
+            thinkSubmissionId: "reminder-runtime-submission",
+          }),
+        ],
+        reminderCount: 2,
+      }),
+    );
   });
 });
 

@@ -37,8 +37,16 @@ export const ReminderId = Schema.String.check(Schema.isMinLength(1), Schema.isMa
 /** Stable identity of one User-owned Reminder. */
 export type ReminderId = typeof ReminderId.Type;
 
+/** Opaque one-occurrence capability retained only to authenticate a scheduler callback. */
+export const ReminderCallbackCapability = Schema.String.check(
+  Schema.isPattern(/^[0-9a-f]{64}$/u),
+).pipe(Schema.brand("ReminderCallbackCapability"));
+
+export type ReminderCallbackCapability = typeof ReminderCallbackCapability.Type;
+
 /** Privacy-safe payload retained by the Agents scheduler. */
 export const ReminderSchedulePayload = Schema.Struct({
+  callbackCapability: ReminderCallbackCapability,
   nominalDueAt: Schema.DateFromString,
   reminderId: ReminderId,
   revision: Schema.Int.check(Schema.isGreaterThan(0)),
@@ -46,6 +54,13 @@ export const ReminderSchedulePayload = Schema.Struct({
 
 /** Privacy-safe payload retained by the Agents scheduler. */
 export type ReminderSchedulePayload = typeof ReminderSchedulePayload.Encoded;
+
+const ReminderScheduleEnvelope = Schema.Struct({
+  callbackCapability: Schema.optionalKey(Schema.String),
+  nominalDueAt: Schema.DateFromString,
+  reminderId: ReminderId,
+  revision: Schema.Int.check(Schema.isGreaterThan(0)),
+});
 
 /** Scheduler row visible to Reminder activation reconciliation. */
 export interface ReminderSchedule {
@@ -204,9 +219,30 @@ export interface ReminderRecord {
   readonly updatedAt: Date;
 }
 
+/** Privacy-safe Reminder lifecycle facts exposed only to the local verifier. */
+export interface ReminderVerificationState {
+  readonly activeScheduleBindingCount: number;
+  readonly occurrenceCount: number;
+  readonly occurrences: ReadonlyArray<{
+    readonly callbackCapabilityRevokedAt: Date | null;
+    readonly committedAt: Date | null;
+    readonly exposedAt: Date | null;
+    readonly nominalDueAt: Date;
+    readonly sourceIdentity: string;
+    readonly sourceRevokedAt: Date | null;
+    readonly thinkPresentedAt: Date | null;
+    readonly thinkSubmissionId: string | null;
+  }>;
+  readonly reminderCount: number;
+}
+
 /** Construct the Agent-local Reminder authority behind one compact interface. */
 export const makeReminderAuthority = (options: {
   readonly delivery: ReminderDeliveryPorts;
+  readonly makeCallbackCapability: () => Effect.Effect<
+    ReminderCallbackCapability,
+    ReminderUnavailable
+  >;
   readonly now: Effect.Effect<Date>;
   readonly scheduler: ReminderSchedulePort;
   readonly storage: RawReminderStorage;
@@ -249,10 +285,13 @@ export const makeReminderAuthority = (options: {
           reminderId: input.reminderId,
         });
       }
+      yield* reconcileSchedules();
       return mutationResult("Replayed", input.reminderId, 1);
     }
 
+    const callbackCapability = yield* options.makeCallbackCapability();
     const payload = {
+      callbackCapability,
       nominalDueAt: input.firstDueAt.toISOString(),
       reminderId: input.reminderId,
       revision: 1,
@@ -264,6 +303,7 @@ export const makeReminderAuthority = (options: {
         input.reminderId,
         1,
         input.firstDueAt,
+        callbackCapability,
         schedulerId,
         now,
       ),
@@ -316,6 +356,7 @@ export const makeReminderAuthority = (options: {
           reminderId: input.reminderId,
         });
       }
+      yield* reconcileSchedules();
       return mutationResult("Replayed", input.reminderId, revision);
     }
     if (persisted._tag === "Limit") {
@@ -337,7 +378,9 @@ export const makeReminderAuthority = (options: {
         options.delivery.cancelSource({ ownerUserId: input.ownerUserId, sourceIdentity }),
       { concurrency: 1, discard: true },
     );
+    const callbackCapability = yield* options.makeCallbackCapability();
     const payload = {
+      callbackCapability,
       nominalDueAt: input.firstDueAt.toISOString(),
       reminderId: input.reminderId,
       revision,
@@ -348,6 +391,7 @@ export const makeReminderAuthority = (options: {
       input.reminderId,
       revision,
       input.firstDueAt,
+      callbackCapability,
       schedulerId,
       now,
     );
@@ -370,11 +414,20 @@ export const makeReminderAuthority = (options: {
     reminderId: ReminderId,
     revision: number,
     nominalDueAt: Date,
+    callbackCapability: ReminderCallbackCapability,
     schedulerId: string,
     now: Date,
   ) {
     return yield* fromStorage(
-      storage.bindSchedule(ownerUserId, reminderId, revision, nominalDueAt, schedulerId, now),
+      storage.bindSchedule(
+        ownerUserId,
+        reminderId,
+        revision,
+        nominalDueAt,
+        callbackCapability,
+        schedulerId,
+        now,
+      ),
     );
   });
 
@@ -477,18 +530,96 @@ export const makeReminderAuthority = (options: {
   });
 
   const deliver = Effect.fn("Reminders.deliver")(function* (encoded: unknown) {
-    const payload = yield* Schema.decodeUnknownEffect(ReminderSchedulePayload)(encoded).pipe(
+    const envelope = yield* Schema.decodeUnknownEffect(ReminderScheduleEnvelope)(encoded).pipe(
       Effect.mapError(
         (cause) => new ReminderUnavailable({ cause, operation: "deliver.decodePayload" }),
       ),
     );
+    if (
+      envelope.callbackCapability === undefined ||
+      !Schema.is(ReminderCallbackCapability)(envelope.callbackCapability)
+    ) {
+      return { _tag: "Noop" as const, reason: "unauthorizedCallback" as const };
+    }
+    const payload = { ...envelope, callbackCapability: envelope.callbackCapability };
     const existing = yield* readOccurrence(
       payload.reminderId,
       payload.revision,
       payload.nominalDueAt,
     );
     if (existing !== null) {
-      if (existing.committedAt !== null) yield* completeCommittedOccurrence(existing);
+      if (
+        existing.callbackCapability !== payload.callbackCapability ||
+        existing.callbackCapabilityRevokedAt !== null
+      ) {
+        return { _tag: "Noop" as const, reason: "unauthorizedCallback" as const };
+      }
+      if (existing.committedAt !== null) {
+        const current = yield* fromStorage(storage.readDueReminder(payload.reminderId));
+        if (
+          current === null ||
+          current.revision !== existing.revision ||
+          (current.state !== "active" && current.state !== "completed")
+        ) {
+          const now = yield* options.now;
+          yield* fromStorage(
+            storage.revokeOccurrence(existing.sourceIdentity, "reminderAuthorityChanged", now),
+          );
+          yield* options.delivery.cancelSource({
+            ownerUserId: existing.ownerUserId,
+            sourceIdentity: existing.sourceIdentity,
+          });
+          return { _tag: "Noop" as const, reason: "authorityRevoked" as const };
+        }
+        const authorization = yield* options.delivery.authorize({
+          nominalDueAt: existing.nominalDueAt,
+          ownerUserId: existing.ownerUserId,
+          reminderId: existing.reminderId,
+          revision: existing.revision,
+          scheduleKind: existing.scheduleKind,
+        });
+        if (
+          authorization._tag !== "Authorized" ||
+          authorization.channelLinkId !== existing.channelLinkId
+        ) {
+          const reason =
+            authorization._tag === "Authorized" ? "channelLinkChanged" : authorization.reason;
+          const now = yield* options.now;
+          yield* fromStorage(storage.revokeOccurrence(existing.sourceIdentity, reason, now));
+          yield* options.delivery.cancelSource({
+            ownerUserId: existing.ownerUserId,
+            sourceIdentity: existing.sourceIdentity,
+          });
+          return { _tag: "Noop" as const, reason: "authorityRevoked" as const };
+        }
+        if (
+          current.state === "active" &&
+          current.nextDueAt !== null &&
+          current.schedulerId === null
+        ) {
+          const nextCapability = yield* options.makeCallbackCapability();
+          const schedulerId = yield* options.scheduler.arm(current.nextDueAt, {
+            callbackCapability: nextCapability,
+            nominalDueAt: current.nextDueAt.toISOString(),
+            reminderId: current.reminderId,
+            revision: current.revision,
+          });
+          if (
+            !(yield* bindSchedule(
+              current.ownerUserId,
+              current.reminderId,
+              current.revision,
+              current.nextDueAt,
+              nextCapability,
+              schedulerId,
+              yield* options.now,
+            ))
+          ) {
+            yield* options.scheduler.cancel(schedulerId);
+          }
+        }
+        yield* completeCommittedOccurrence(existing);
+      }
       return {
         _tag: "Replayed" as const,
         nextDueAt: null,
@@ -501,6 +632,7 @@ export const makeReminderAuthority = (options: {
     if (
       reminder.state !== "active" ||
       reminder.revision !== payload.revision ||
+      reminder.callbackCapability !== payload.callbackCapability ||
       reminder.nextDueAt?.getTime() !== payload.nominalDueAt.getTime()
     ) {
       return { _tag: "Noop" as const, reason: "stale" as const };
@@ -517,9 +649,10 @@ export const makeReminderAuthority = (options: {
     });
     const sourceIdentity = occurrenceSourceIdentity(payload);
     if (authorization._tag !== "Authorized") {
-      yield* fromStorage(
+      const retained = yield* fromStorage(
         storage.retainDisposition({
           disposition: authorization._tag,
+          callbackCapability: payload.callbackCapability,
           due: reminder,
           nominalDueAt: payload.nominalDueAt,
           now,
@@ -527,6 +660,7 @@ export const makeReminderAuthority = (options: {
           sourceIdentity,
         }),
       );
+      if (!retained) return { _tag: "Noop" as const, reason: "stale" as const };
       return { _tag: authorization._tag, reason: authorization.reason, sourceIdentity };
     }
 
@@ -536,6 +670,7 @@ export const makeReminderAuthority = (options: {
         : null;
     const committed = yield* fromStorage(
       storage.commitOccurrence({
+        callbackCapability: payload.callbackCapability,
         channelLinkId: authorization.channelLinkId,
         due: reminder,
         nextDueAt,
@@ -547,7 +682,9 @@ export const makeReminderAuthority = (options: {
     if (!committed) return { _tag: "Noop" as const, reason: "stale" as const };
 
     if (nextDueAt !== null) {
+      const callbackCapability = yield* options.makeCallbackCapability();
       const schedulerId = yield* options.scheduler.arm(nextDueAt, {
+        callbackCapability,
         nominalDueAt: nextDueAt.toISOString(),
         reminderId: reminder.reminderId,
         revision: reminder.revision,
@@ -558,6 +695,7 @@ export const makeReminderAuthority = (options: {
           reminder.reminderId,
           reminder.revision,
           nextDueAt,
+          callbackCapability,
           schedulerId,
           now,
         ))
@@ -655,6 +793,7 @@ export const makeReminderAuthority = (options: {
       if (
         reminder === undefined ||
         reminder.schedulerId !== schedule.id ||
+        reminder.callbackCapability !== decoded.value.callbackCapability ||
         reminder.revision !== decoded.value.revision ||
         reminder.nextDueAt.getTime() !== decoded.value.nominalDueAt.getTime() ||
         schedule.time !== reminder.nextDueAt.getTime()
@@ -670,7 +809,9 @@ export const makeReminderAuthority = (options: {
     for (const reminder of active) {
       if (reminder.schedulerId !== null && validIds.has(reminder.schedulerId)) continue;
       yield* fromStorage(storage.clearScheduleBinding(reminder, now));
+      const callbackCapability = yield* options.makeCallbackCapability();
       const schedulerId = yield* options.scheduler.arm(reminder.nextDueAt, {
+        callbackCapability,
         nominalDueAt: reminder.nextDueAt.toISOString(),
         reminderId: reminder.reminderId,
         revision: reminder.revision,
@@ -681,6 +822,7 @@ export const makeReminderAuthority = (options: {
           reminder.reminderId,
           reminder.revision,
           reminder.nextDueAt,
+          callbackCapability,
           schedulerId,
           now,
         )
@@ -718,6 +860,9 @@ export const makeReminderAuthority = (options: {
     return paused.reminders.map(({ reminderId }) => ({ reminderId }));
   });
 
+  const verificationState = (ownerUserId: UserIdType) =>
+    fromStorage(storage.verificationState(ownerUserId));
+
   return {
     cancel,
     change,
@@ -734,6 +879,7 @@ export const makeReminderAuthority = (options: {
     reactivate,
     reconcileActiveLimit,
     reconcileSchedules,
+    verificationState,
   };
 };
 

@@ -159,6 +159,39 @@ it.effect("projects the exact material Reminder revision without mutating its Ap
         ActionId.make("reminder-change-action"),
       ),
     ).toBe(false);
+    expect(
+      hasExactReminderManageInput(
+        presentation,
+        { ...input, _tag: "ReactivateRecurring" },
+        ownerUserId,
+        ActionId.make("reminder-change-action"),
+      ),
+    ).toBe(false);
+
+    const reactivation = yield* presentOsfoAction(
+      {
+        ...pending,
+        descriptor: {
+          ...pending.descriptor,
+          input: {
+            ...input,
+            _tag: "ReactivateRecurring",
+            firstDueAt: input.firstDueAt.toISOString(),
+          },
+        },
+      },
+      undefined,
+      ownerUserId,
+    );
+    expect(reactivation.title).toBe("Reactivate Reminder");
+    expect(
+      hasExactReminderManageInput(
+        reactivation,
+        input,
+        ownerUserId,
+        ActionId.make("reminder-change-action"),
+      ),
+    ).toBe(false);
   }),
 );
 

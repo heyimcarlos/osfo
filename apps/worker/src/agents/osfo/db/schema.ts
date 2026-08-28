@@ -575,6 +575,7 @@ export const reminders = sqliteTable(
   "osfo_reminders",
   {
     body: text().notNull(),
+    callback_capability: text(),
     created_at: timestamp().notNull(),
     creation_action_id: actionId().notNull().unique(),
     first_due_at: timestamp().notNull(),
@@ -605,6 +606,10 @@ export const reminders = sqliteTable(
     check(
       "osfo_reminder_due_state",
       sql`(${table.state} IN ('active', 'paused') AND ${table.next_due_at} IS NOT NULL) OR (${table.state} IN ('canceled', 'completed') AND ${table.next_due_at} IS NULL)`,
+    ),
+    check(
+      "osfo_reminder_schedule_binding",
+      sql`(${table.scheduler_id} IS NULL AND ${table.callback_capability} IS NULL) OR (${table.scheduler_id} IS NOT NULL AND ${table.callback_capability} IS NOT NULL)`,
     ),
     index("osfo_reminders_by_owner_state").on(
       table.owner_user_id,
@@ -641,6 +646,8 @@ export const reminderOccurrences = sqliteTable(
     body_snapshot: text().notNull(),
     canceled_at: timestamp(),
     channel_link_id: channelLinkId(),
+    callback_capability: text().notNull(),
+    callback_capability_revoked_at: timestamp(),
     committed_at: timestamp(),
     disposition_reason: text(),
     exposed_at: timestamp(),

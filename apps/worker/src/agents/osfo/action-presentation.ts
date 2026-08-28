@@ -362,20 +362,28 @@ const presentReminderManageAction = Effect.fn("ActionPresentation.presentReminde
       ),
     );
     const actionId = ActionId.make(pending.descriptor.toolCallId);
+    const creating = input._tag.startsWith("Create");
+    const reactivating = input._tag.startsWith("Reactivate");
     return ActionPresentation.make({
       actionDefinitionVersion: "osfo-reminder-manage-v1",
       actionId,
       consequences: [
-        input._tag.startsWith("Create")
+        creating
           ? "Create and activate this exact Reminder."
-          : "Replace the current Reminder facts and activate this exact revision.",
+          : reactivating
+            ? "Reactivate this paused Reminder with the exact replacement facts shown here."
+            : "Replace the current active Reminder facts with this exact revision.",
         "At each due occurrence, ask the User to return through the fixed WhatsApp Wake-up template.",
       ],
       description: "Commit the exact private Reminder body and fixed schedule shown here.",
       fields: reminderPresentationFields(input, ownerUserId, actionId),
       operation: "reminder.manage",
       presentationId: ActionPresentationId.make(pending.executionId),
-      title: input._tag.startsWith("Create") ? "Create Reminder" : "Change Reminder",
+      title: creating
+        ? "Create Reminder"
+        : reactivating
+          ? "Reactivate Reminder"
+          : "Change Reminder",
     });
   },
 );
@@ -744,6 +752,7 @@ const reminderPresentationFields = (
   const reminderId = creating ? actionId : input.reminderId;
   const expectedRevision = creating ? "none" : String(input.expectedRevision);
   return [
+    { label: "Action", name: "manageKind", value: input._tag },
     { label: "User", name: "ownerUserId", value: ownerUserId },
     { label: "Reminder", name: "reminderId", value: reminderId },
     { label: "Body", name: "body", value: input.body },

@@ -2,6 +2,7 @@
 export {
   makeReminderAuthority,
   ReminderConflict,
+  ReminderCallbackCapability,
   ReminderId,
   ReminderInputInvalid,
   ReminderLimitReached,
@@ -15,4 +16,5 @@ export {
   type ReminderSchedule,
   type ReminderSchedulePort,
   type ReminderThinkExposure,
+  type ReminderVerificationState,
 } from "./reminder-lifecycle";
