@@ -97,18 +97,22 @@ export const makeFileCompute = (sandboxFor: (taskId: string) => FileTaskSandbox)
             input.bytes,
           );
           const result = yield* executeTask(sandbox).pipe(
-            Effect.catch(() =>
-              readResult(sandbox).pipe(
-                Effect.mapError(
-                  () =>
-                    new FileComputeFailed({
-                      basis: "conservative",
-                      message: "Sandbox normalization outcome could not be reconciled",
-                      reason: "parser_failure",
-                      vendorUsdMicros: input.conservativeVendorUsdMicros,
-                    }),
-                ),
-              ),
+            Effect.catchTag("FileComputeFailed", (failure) =>
+              failure.kind === "task_rejected"
+                ? failure
+                : readResult(sandbox).pipe(
+                    Effect.mapError((reconciliationFailure) =>
+                      reconciliationFailure.kind === "task_rejected"
+                        ? reconciliationFailure
+                        : new FileComputeFailed({
+                            basis: "conservative",
+                            kind: "dependency_unavailable",
+                            message: "Sandbox normalization outcome could not be reconciled",
+                            reason: "parser_failure",
+                            vendorUsdMicros: input.conservativeVendorUsdMicros,
+                          }),
+                    ),
+                  ),
             ),
           );
           if (!result.ok) return yield* taskFailure(result);
@@ -121,6 +125,7 @@ export const makeFileCompute = (sandboxFor: (taskId: string) => FileTaskSandbox)
           ) {
             return yield* new FileComputeFailed({
               basis: null,
+              kind: "task_rejected",
               message: "Normalized file content exceeds the retained text limit",
               reason: "content_limit",
               vendorUsdMicros: 0n,
@@ -206,16 +211,16 @@ const writeTaskFiles = (
 const executeTask = (sandbox: FileTaskSandbox) =>
   dependency("execute", async () => {
     await sandbox.exec("python3 /workspace/file-task.py", { timeout: taskTimeoutMilliseconds });
-    return await readResultPromise(sandbox);
-  });
+  }).pipe(Effect.andThen(readResult(sandbox)));
 
 const readResult = (sandbox: FileTaskSandbox) =>
-  dependency("read", () => readResultPromise(sandbox));
-
-const readResultPromise = async (sandbox: FileTaskSandbox): Promise<TaskResult> => {
-  const result = await sandbox.readFile("/workspace/result.json", { encoding: "utf-8" });
-  return Schema.decodeSync(Schema.fromJsonString(TaskResult))(result.content);
-};
+  dependency("read", () => sandbox.readFile("/workspace/result.json", { encoding: "utf-8" })).pipe(
+    Effect.flatMap(({ content }) =>
+      Schema.decodeEffect(Schema.fromJsonString(TaskResult))(content).pipe(
+        Effect.mapError(() => invalidTaskResult("Sandbox task output is invalid")),
+      ),
+    ),
+  );
 
 const dependency = <A>(operation: string, run: () => Promise<A>) =>
   Effect.tryPromise({
@@ -223,6 +228,7 @@ const dependency = <A>(operation: string, run: () => Promise<A>) =>
     catch: () =>
       new FileComputeFailed({
         basis: null,
+        kind: "dependency_unavailable",
         message: `Disposable file compute could not ${operation} its task`,
         reason: "parser_failure",
         vendorUsdMicros: 0n,
@@ -232,6 +238,7 @@ const dependency = <A>(operation: string, run: () => Promise<A>) =>
 const taskFailure = (result: typeof FailedTask.Type) =>
   new FileComputeFailed({
     basis: null,
+    kind: "task_rejected",
     message: result.message,
     reason: result.reason,
     vendorUsdMicros: 0n,
@@ -240,6 +247,7 @@ const taskFailure = (result: typeof FailedTask.Type) =>
 const invalidTaskResult = (message: string) =>
   new FileComputeFailed({
     basis: null,
+    kind: "task_rejected",
     message,
     reason: "parser_failure",
     vendorUsdMicros: 0n,
@@ -251,6 +259,7 @@ const destroy = (sandbox: FileTaskSandbox) =>
     catch: () =>
       new FileComputeFailed({
         basis: null,
+        kind: "dependency_unavailable",
         message: "Disposable file compute cleanup failed",
         reason: "parser_failure",
         vendorUsdMicros: 0n,

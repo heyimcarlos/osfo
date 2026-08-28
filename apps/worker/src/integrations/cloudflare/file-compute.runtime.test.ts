@@ -82,3 +82,67 @@ it.effect("rejects normalized text that still exceeds the two MB compute limit",
     expect(result).toMatchObject({ failure: { reason: "content_limit" } });
   }),
 );
+
+it.effect(
+  "classifies a Sandbox startup or write outage as retryable dependency unavailability",
+  () =>
+    Effect.gen(function* () {
+      const compute = makeFileCompute(() => ({
+        destroy: async () => undefined,
+        exec: async () => ({ success: true }),
+        readFile: async () => ({
+          content: JSON.stringify({ normalizedText: "source", ok: true, parser: "text" }),
+        }),
+        writeFile: async () => Promise.reject(new Error("Sandbox app did not start")),
+      }));
+
+      expect(
+        yield* compute
+          .normalize({
+            bytes: new TextEncoder().encode("valid UTF-8 source"),
+            conservativeVendorUsdMicros: 0n,
+            limits: launchFileComputeLimits,
+            mediaType: "text/plain",
+            sha256: FileDigest.make(`sha256:${"a".repeat(64)}`),
+            taskScope: "unavailable-sandbox",
+          })
+          .pipe(Effect.result),
+      ).toMatchObject({
+        failure: {
+          _tag: "FileComputeFailed",
+          kind: "dependency_unavailable",
+          reason: "parser_failure",
+        },
+      });
+    }),
+);
+
+it.effect("keeps malformed normalization output as a non-retryable task rejection", () =>
+  Effect.gen(function* () {
+    const compute = makeFileCompute(() => ({
+      destroy: async () => undefined,
+      exec: async () => ({ success: true }),
+      readFile: async () => ({ content: "not valid task JSON" }),
+      writeFile: async () => undefined,
+    }));
+
+    expect(
+      yield* compute
+        .normalize({
+          bytes: new TextEncoder().encode("valid UTF-8 source"),
+          conservativeVendorUsdMicros: 0n,
+          limits: launchFileComputeLimits,
+          mediaType: "text/plain",
+          sha256: FileDigest.make(`sha256:${"a".repeat(64)}`),
+          taskScope: "malformed-task-output",
+        })
+        .pipe(Effect.result),
+    ).toMatchObject({
+      failure: {
+        _tag: "FileComputeFailed",
+        kind: "task_rejected",
+        reason: "parser_failure",
+      },
+    });
+  }),
+);

@@ -159,4 +159,12 @@ describe("authenticated text-file ingress", () => {
       ).toMatchObject({ failure: { _tag: "FileUploadLimitExceeded" } });
     }),
   );
+
+  it.effect("preserves retryable upload dependency failures as unavailable", () =>
+    Effect.gen(function* () {
+      expect(
+        yield* uploadResponseFor({ _tag: "Rejected", reason: "unavailable" }).pipe(Effect.result),
+      ).toMatchObject({ failure: { _tag: "FileUploadUnavailable" } });
+    }),
+  );
 });

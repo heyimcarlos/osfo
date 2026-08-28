@@ -4,6 +4,7 @@ import { UserId } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
 import { AuthSessionId } from "../../domain/auth-session";
 import { FileId, FileName, FileUploadId } from "../../domain/file";
+import { FileComputeFailed } from "../../services/files";
 
 /* oxlint-disable osfo/no-unknown-parameters -- This boundary deliberately classifies the closed tagged failures produced by the owning File service without leaking their fields. */
 
@@ -60,11 +61,13 @@ export const rejectionReasonForFailure = (
     return "conflict";
   }
   if (Predicate.isTagged(failure, "RetainedFileLimitExceeded")) return "limit";
+  if (Schema.is(FileComputeFailed)(failure)) {
+    return failure.kind === "dependency_unavailable" ? "unavailable" : "invalid";
+  }
   if (
     Predicate.isTagged(failure, "InvalidFileContent") ||
     Predicate.isTagged(failure, "UnsupportedFileMedia") ||
-    Predicate.isTagged(failure, "FileMediaMismatch") ||
-    Predicate.isTagged(failure, "FileComputeFailed")
+    Predicate.isTagged(failure, "FileMediaMismatch")
   ) {
     return "invalid";
   }
