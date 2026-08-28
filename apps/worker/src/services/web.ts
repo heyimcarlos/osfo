@@ -732,30 +732,24 @@ const hasUnsafeNestedQueryValue = (value: string, depth: number) => {
     try {
       nestedUrl = new URL(candidate);
     } catch {
-      return looksLikeNestedUrl(candidate) && hasCredentialAssignment(candidate);
+      return hasCredentialAssignment(candidate);
     }
     if (depth >= maxNestedUrlDepth) return true;
     return !isSafePublicUrlAtDepth(nestedUrl.href, depth + 1);
   });
 };
 
-const looksLikeNestedUrl = (value: string) =>
-  /^[a-z][a-z0-9+.-]*:\/\//iu.test(value) || value.startsWith("//");
-
 const hasCredentialAssignment = (value: string) =>
-  value
-    .split(/[?&#;]/u)
-    .slice(1)
-    .some((part) => {
-      const separator = part.indexOf("=");
-      if (separator <= 0) return false;
-      const key = part.slice(0, separator);
-      try {
-        return isCredentialQueryKey(decodeURIComponent(key));
-      } catch {
-        return isCredentialQueryKey(key);
-      }
-    });
+  value.split(/[?&#;]/u).some((part) => {
+    const separator = part.indexOf("=");
+    if (separator <= 0) return false;
+    const key = part.slice(0, separator);
+    try {
+      return isCredentialQueryKey(decodeURIComponent(key));
+    } catch {
+      return isCredentialQueryKey(key);
+    }
+  });
 
 const isUnsafeIpLiteral = (hostname: string) => {
   const normalized =
