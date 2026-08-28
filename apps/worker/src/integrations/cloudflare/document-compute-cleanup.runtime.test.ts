@@ -87,6 +87,46 @@ it.effect("removes claimed no-use evidence and its ownership marker", () => {
   });
 });
 
+it.effect("preserves started evidence when compute wins the claimed cleanup revision", () => {
+  const fixture = bucketFixture();
+  const store = makeAttemptEvidenceStore(fixture.bucket);
+  return Effect.gen(function* () {
+    const claimed = yield* Effect.promise(() =>
+      store.claim(contentId, intentDigest, cost, Date.now() + 60_000, userId),
+    );
+    if (claimed._tag !== "Claimed") throw new Error("Expected claimed attempt evidence");
+    fixture.beforeDiscard = () =>
+      store.start(contentId, { ...claimed.evidence, status: "started" }, claimed.revision);
+
+    expect(yield* settleAttemptEvidenceForTerminalCleanup(fixture.bucket, contentId, userId)).toBe(
+      "preserved",
+    );
+    expect((yield* Effect.promise(() => store.inspect(contentId)))?.status).toBe("started");
+    expect(fixture.objects.has(ownerKeyFor(userId, contentId))).toBe(true);
+  });
+});
+
+it.effect("prevents provider start after cleanup wins the claimed revision", () => {
+  const fixture = bucketFixture();
+  const store = makeAttemptEvidenceStore(fixture.bucket);
+  return Effect.gen(function* () {
+    const claimed = yield* Effect.promise(() =>
+      store.claim(contentId, intentDigest, cost, Date.now() + 60_000, userId),
+    );
+    if (claimed._tag !== "Claimed") throw new Error("Expected claimed attempt evidence");
+
+    expect(yield* settleAttemptEvidenceForTerminalCleanup(fixture.bucket, contentId, userId)).toBe(
+      "discarded",
+    );
+    expect(
+      yield* Effect.promise(() =>
+        store.start(contentId, { ...claimed.evidence, status: "started" }, claimed.revision),
+      ),
+    ).toBeNull();
+    expect(fixture.objects.has(attemptKeyFor(contentId))).toBe(false);
+  });
+});
+
 it.effect("removes an orphan ownership marker created before an attempt claim", () => {
   const fixture = bucketFixture();
   return Effect.gen(function* () {
@@ -102,20 +142,27 @@ it.effect("removes an orphan ownership marker created before an attempt claim", 
 const bucketFixture = () => {
   const objects = new Map<string, Partial<R2Object>>();
   let revision = 0;
+  let beforeDiscard: (() => Promise<string | null>) | undefined;
   const bucket = {
     delete: (keys: string | Array<string>) => {
       for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key);
       return Promise.resolve();
     },
     head: (key: string) => Promise.resolve(objects.get(key) ?? null),
-    put: (key: string, _body: Uint8Array, options: R2PutOptions) => {
+    put: async (key: string, _body: Uint8Array, options: R2PutOptions) => {
+      const encoded = options.customMetadata?.osfo;
+      if (encoded !== undefined && encoded.includes('"status":"discarded"')) {
+        const race = beforeDiscard;
+        beforeDiscard = undefined;
+        await race?.();
+      }
       const existing = objects.get(key);
       if (options.onlyIf !== undefined) {
         if ("etagDoesNotMatch" in options.onlyIf && existing !== undefined) {
-          return Promise.resolve(null);
+          return null;
         }
         if ("etagMatches" in options.onlyIf && existing?.etag !== options.onlyIf.etagMatches) {
-          return Promise.resolve(null);
+          return null;
         }
       }
       revision += 1;
@@ -124,10 +171,21 @@ const bucketFixture = () => {
           ? { etag: `revision-${revision}`, key }
           : { customMetadata: options.customMetadata, etag: `revision-${revision}`, key };
       objects.set(key, object);
-      return Promise.resolve(object);
+      return object;
     },
   };
   // SAFETY: This fake implements only the R2 methods exercised by attempt cleanup.
   // oxlint-disable-next-line osfo/no-chained-type-assertions, typescript/no-unsafe-type-assertion -- Narrow external test seam.
-  return { bucket: bucket as unknown as R2Bucket, objects };
+  return {
+    // SAFETY: This fake implements only the R2 methods exercised by attempt cleanup.
+    // oxlint-disable-next-line osfo/no-chained-type-assertions, typescript/no-unsafe-type-assertion -- Narrow external test seam.
+    bucket: bucket as unknown as R2Bucket,
+    get beforeDiscard() {
+      return beforeDiscard;
+    },
+    set beforeDiscard(value: (() => Promise<string | null>) | undefined) {
+      beforeDiscard = value;
+    },
+    objects,
+  };
 };

@@ -3824,6 +3824,21 @@ export class OsfoAgent extends Think<Env> {
     const operation = Effect.gen(function* () {
       const agent = yield* store.inspect();
       const route = yield* store.readRoute(notification.routeId);
+      if (agent.agentId !== notification.agentId || route.routeId !== notification.routeId) {
+        return yield* new ThinkSubmissionUnavailable({
+          cause: notificationId,
+          message: "Document Build follow-up Agent correlation no longer matches",
+          operation: "submitDocumentBuildFollowUp.authority",
+        });
+      }
+      if (notification.acceptedAt !== null) {
+        yield* requestWakeUp(notification);
+        return {
+          _tag: "Replayed" as const,
+          notificationId,
+          submissionId,
+        };
+      }
       const deliveryCandidate = DocumentBuildFollowUp.deliverySessionFor(
         notification,
         agent.agentId,

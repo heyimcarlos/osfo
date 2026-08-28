@@ -27,7 +27,7 @@ export interface AttemptEvidence {
   /** Digest of the immutable document intent that owns this attempt. */
   readonly intentDigest: DocumentIntentDigest;
   readonly renderedPageCount: number | null;
-  readonly status: "claimed" | "started" | "completed";
+  readonly status: "claimed" | "started" | "completed" | "discarded";
   readonly userId?: UserId;
 }
 
@@ -52,6 +52,7 @@ export interface AttemptEvidenceStore {
         readonly evidence: AttemptEvidence;
         readonly revision: string;
       }
+    | { readonly _tag: "Discarded" }
     | { readonly _tag: "IntentConflict" }
   >;
   readonly complete: (
@@ -247,6 +248,14 @@ const render = async (
     // oxlint-disable-next-line eslint/no-underscore-dangle -- Persisted outcomes use _tag.
     if (claimed._tag === "IntentConflict") {
       return { _tag: "IntentConflict", cost: { _tag: "ProvenNoUse" } };
+    }
+    // oxlint-disable-next-line eslint/no-underscore-dangle -- Persisted outcomes use _tag.
+    if (claimed._tag === "Discarded") {
+      return {
+        _tag: "AttemptUnavailable",
+        cost: { _tag: "ProvenNoUse" },
+        evidence: "The terminal Workflow discarded its unused compute claim",
+      };
     }
     durableAttemptClaimed = true;
     providerOperationId = claimed.evidence.cost.providerOperationId;
@@ -447,7 +456,7 @@ const AttemptEvidenceMetadata = Schema.fromJsonString(
     renderedPageCount: Schema.NullOr(
       Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(20)),
     ),
-    status: Schema.Literals(["claimed", "started", "completed"]),
+    status: Schema.Literals(["claimed", "started", "completed", "discarded"]),
     userId: Schema.optionalKey(UserId),
   }),
 );
@@ -550,6 +559,7 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
     if (evidence.intentDigest !== intentDigest) {
       return { _tag: "IntentConflict" };
     }
+    if (evidence.status === "discarded") return { _tag: "Discarded" };
     return {
       _tag: "Claimed",
       created: false,
@@ -595,6 +605,7 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
  * Remove only proven no-use evidence after terminal cleanup. Started and completed attempts remain
  * durable until the scheduled allowance reconciler has consumed their incurred cost.
  */
+/* oxlint-disable eslint/no-await-in-loop -- Each CAS attempt must observe the revision produced by the preceding race. */
 export const settleAttemptEvidenceForTerminalCleanup = (
   bucket: R2Bucket,
   contentId: ContentId,
@@ -605,31 +616,50 @@ export const settleAttemptEvidenceForTerminalCleanup = (
     try: async () => {
       const attemptKey = attemptKeyFor(contentId);
       const ownerKey = ownerKeyFor(userId, contentId);
-      const [attempt, owner] = await Promise.all([bucket.head(attemptKey), bucket.head(ownerKey)]);
-      let attemptStatus: AttemptEvidence["status"] | null = null;
-      if (attempt !== null) {
+      for (;;) {
+        const [attempt, owner] = await Promise.all([
+          bucket.head(attemptKey),
+          bucket.head(ownerKey),
+        ]);
+        if (owner !== null) {
+          const ownership = DocumentOwnershipIndex.decode(owner);
+          if (
+            Result.isFailure(ownership) ||
+            ownership.success.userId !== userId ||
+            ownership.success.contentId !== contentId
+          ) {
+            throw new Error("Document ownership marker does not match the canceled Workflow");
+          }
+        }
+        if (attempt === null) {
+          await bucket.delete(ownerKey);
+          return "discarded" as const;
+        }
         const encoded = attempt.customMetadata?.osfo;
         const evidence = encoded === undefined ? null : decodeAttemptEvidence(encoded);
         if (evidence === null || evidence.userId !== userId) {
           throw new Error("Document attempt ownership does not match the canceled Workflow");
         }
-        attemptStatus = evidence.status;
-      }
-      if (owner !== null) {
-        const ownership = DocumentOwnershipIndex.decode(owner);
-        if (
-          Result.isFailure(ownership) ||
-          ownership.success.userId !== userId ||
-          ownership.success.contentId !== contentId
-        ) {
-          throw new Error("Document ownership marker does not match the canceled Workflow");
+        if (evidence.status === "started" || evidence.status === "completed") {
+          return "preserved" as const;
         }
+        if (evidence.status === "discarded") {
+          await bucket.delete([attemptKey, ownerKey]);
+          return "discarded" as const;
+        }
+        const discarded = await bucket.put(attemptKey, new Uint8Array(), {
+          customMetadata: {
+            osfo: encodeAttemptEvidence({ ...evidence, status: "discarded" }),
+          },
+          onlyIf: { etagMatches: attempt.etag },
+        });
+        if (discarded !== null) {
+          await bucket.delete([attemptKey, ownerKey]);
+          return "discarded" as const;
+        }
+        // A compute claimant won the revision race. Re-read before deciding whether evidence is
+        // incurred and must be retained, or remains an unused claim that can be tombstoned.
       }
-      if (attemptStatus === "started" || attemptStatus === "completed") {
-        return "preserved" as const;
-      }
-      await bucket.delete([attemptKey, ownerKey]);
-      return "discarded" as const;
     },
     catch: (cause) =>
       new DocumentAttemptEvidenceUnavailable({
@@ -637,6 +667,7 @@ export const settleAttemptEvidenceForTerminalCleanup = (
         message: "R2 document attempt cleanup could not prove and settle owned evidence",
       }),
   });
+/* oxlint-enable eslint/no-await-in-loop */
 
 const reconciliationCheckpointKey = "document-reconciliation/checkpoint";
 
@@ -665,7 +696,9 @@ export const readReconciliationBatch = (bucket: R2Bucket) =>
         const encoded = object.customMetadata?.osfo;
         if (encoded === undefined) return [];
         const evidence = decodeAttemptEvidence(encoded);
-        return evidence.status === "claimed" ? [] : [evidence.cost];
+        return evidence.status === "started" || evidence.status === "completed"
+          ? [evidence.cost]
+          : [];
       });
       const last = listed.objects.at(-1)?.key;
       return {

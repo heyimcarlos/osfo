@@ -314,6 +314,51 @@ it.effect("serializes concurrent cross-type admission and deletion fencing", () 
   }).pipe(Effect.scoped),
 );
 
+it.effect("rotates bounded host recovery and excludes newly deletion-fenced work", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedUser(fixture.database);
+    const builds = DocumentBuildPostgres.make(fixture.database);
+    const admitted = Array.from({ length: 25 }, (_, index) =>
+      record("a", `host-rotation-${index.toString().padStart(2, "0")}`),
+    );
+    yield* Effect.forEach(admitted, (build) => builds.admit(build, 30n), {
+      concurrency: 1,
+      discard: true,
+    });
+
+    const first = yield* DocumentBuildPostgres.hostRecoveryBatch(fixture.database, 20);
+    const second = yield* DocumentBuildPostgres.hostRecoveryBatch(fixture.database, 20);
+    expect(first).toHaveLength(20);
+    expect(second).toHaveLength(20);
+    expect(new Set([...first, ...second].map(({ workflowId }) => workflowId)).size).toBe(25);
+
+    const selected = second[0];
+    if (selected === undefined) throw new Error("Expected a host recovery candidate");
+    yield* Effect.promise(() =>
+      fixture.database.insert(deletionCases).values({
+        access_fenced_at: admittedAt,
+        approval_action_id: "host-recovery-delete-action",
+        approval_presentation: "Delete Account",
+        deletion_case_id: "host-recovery-delete-case",
+        reason: "User requested account deletion",
+        requested_by_user_id: userId,
+        user_id: userId,
+      }),
+    );
+    expect(
+      yield* DocumentBuildPostgres.hostRecoveryDisposition(
+        fixture.database,
+        selected.workflowId,
+        selected.inputDigest,
+      ),
+    ).toBe("Terminate");
+    expect(yield* DocumentBuildPostgres.hostRecoveryBatch(fixture.database, 20)).toEqual([]);
+  }).pipe(Effect.scoped),
+);
+
 it.effect(
   "retains provider cost before validation and cancels publication at the fenced claim",
   () =>
@@ -537,7 +582,7 @@ it.effect("claims preview and terminal follow-ups exactly once and suppresses la
       SessionId.make("document-build-later-session"),
     );
     expect(stableSelection.deliverySessionId).toBe(replacementSessionId);
-    expect(replayedSelection.deliverySessionId).toBe(replacementSessionId);
+    expect(replayedSelection.deliverySessionId).toBe("document-build-later-session");
     yield* followUps.markAccepted(
       terminalNotificationId,
       ThinkSubmissionId.make("document-build-terminal-submission"),
@@ -553,8 +598,14 @@ it.effect("claims preview and terminal follow-ups exactly once and suppresses la
         .pipe(Effect.result),
     ).toMatchObject({ failure: { _tag: "DocumentBuildFollowUpConflict" } });
     expect((yield* followUps.inspect(terminalNotificationId))?.deliverySessionId).toBe(
-      replacementSessionId,
+      "document-build-later-session",
     );
+    expect(
+      (yield* followUps.selectDeliverySession(
+        terminalNotificationId,
+        SessionId.make("document-build-newest-session"),
+      )).deliverySessionId,
+    ).toBe("document-build-later-session");
     const delayedPreview = yield* followUps.inspect(
       DocumentBuildFollowUp.notificationIdFor(build.workflowId, "previewReady"),
     );

@@ -1,5 +1,12 @@
-import type { FileStatusResponse, FileUploadResponse } from "@osfo/api";
-import { Effect } from "effect";
+import {
+  FileUploadConflict,
+  FileUploadDenied,
+  FileUploadLimitExceeded,
+  FileUploadRejected,
+  type FileStatusResponse,
+  type FileUploadResponse,
+} from "@osfo/api";
+import { Effect, Option, Schema } from "effect";
 import { FileUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -13,7 +20,7 @@ type UploadState =
   | { readonly _tag: "Uploaded"; readonly result: FileUploadResponse }
   | { readonly _tag: "StatusUnavailable"; readonly result: FileUploadResponse }
   | { readonly _tag: "UploadUnavailable"; readonly pending: PendingUpload }
-  | { readonly _tag: "Failed" };
+  | { readonly _tag: "Failed"; readonly message: string };
 
 interface PendingUpload {
   readonly bytes: Uint8Array;
@@ -49,7 +56,7 @@ export function DocumentBuildSourceUpload({
         (result) => {
           if (requestGeneration.current !== generation) return;
           if (result.state === "failed") {
-            setState({ _tag: "Failed" });
+            setState({ _tag: "Failed", message: "The source file could not be processed." });
             return;
           }
           setState({
@@ -77,9 +84,14 @@ export function DocumentBuildSourceUpload({
       (result) => {
         if (requestGeneration.current === generation) setState({ _tag: "Uploaded", result });
       },
-      () => {
+      (failure) => {
         if (requestGeneration.current === generation) {
-          setState({ _tag: "UploadUnavailable", pending });
+          const permanent = Option.getOrUndefined(decodePermanentUploadFailure(failure));
+          setState(
+            permanent === undefined
+              ? { _tag: "UploadUnavailable", pending }
+              : { _tag: "Failed", message: permanentUploadFailureMessage(permanent) },
+          );
         }
       },
     );
@@ -98,7 +110,12 @@ export function DocumentBuildSourceUpload({
       .then(
         () => undefined,
         () => {
-          if (requestGeneration.current === generation) setState({ _tag: "Failed" });
+          if (requestGeneration.current === generation) {
+            setState({
+              _tag: "Failed",
+              message: "The source file could not be read. Choose it again.",
+            });
+          }
         },
       );
   };
@@ -140,7 +157,7 @@ export function DocumentBuildSourceUpload({
         </p>
       ) : state._tag === "Failed" ? (
         <p className="mt-3 text-xs text-[#b24a55]" role="alert">
-          The source could not be uploaded. Try again with a smaller UTF-8 text file.
+          {state.message}
         </p>
       ) : state._tag === "UploadUnavailable" ? (
         <div className="mt-3 text-xs text-[#8a6a21]" role="alert">
@@ -177,6 +194,29 @@ export function DocumentBuildSourceUpload({
     </section>
   );
 }
+
+const PermanentUploadFailure = Schema.Union([
+  FileUploadDenied,
+  FileUploadRejected,
+  FileUploadLimitExceeded,
+  FileUploadConflict,
+]);
+type PermanentUploadFailure = typeof PermanentUploadFailure.Type;
+const decodePermanentUploadFailure = Schema.decodeUnknownOption(PermanentUploadFailure);
+
+const permanentUploadFailureMessage = (failure: PermanentUploadFailure) => {
+  if (Schema.is(FileUploadDenied)(failure)) return "Your account cannot upload this source.";
+  if (Schema.is(FileUploadRejected)(failure)) {
+    return "The selected source was rejected. Choose a valid UTF-8 text file.";
+  }
+  if (Schema.is(FileUploadLimitExceeded)(failure)) {
+    return "Your retained file limit has been reached.";
+  }
+  if (Schema.is(FileUploadConflict)(failure)) {
+    return "This upload no longer matches its original content. Choose the file again.";
+  }
+  return "The source upload was rejected.";
+};
 
 export interface DocumentBuildSourceUploadProps {
   readonly inspect?: (fileId: string) => Promise<FileStatusResponse>;

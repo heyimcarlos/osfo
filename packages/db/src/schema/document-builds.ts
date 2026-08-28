@@ -68,6 +68,7 @@ export const documentBuilds = pgTable(
     terminal_followup_claimed_at: timestamp({ withTimezone: true }),
     terminal_followup_at: timestamp({ withTimezone: true }),
     wakeup_requested_at: timestamp({ withTimezone: true }),
+    host_recovery_checked_at: timestamp({ withTimezone: true }),
     created_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
     updated_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
   },

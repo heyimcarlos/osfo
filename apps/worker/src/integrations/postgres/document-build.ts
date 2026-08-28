@@ -6,7 +6,19 @@ import { channelLinks } from "@osfo/db/schema/channel-links";
 import { documentBuilds } from "@osfo/db/schema/document-builds";
 import { researchReports } from "@osfo/db/schema/research-reports";
 import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  notExists,
+  or,
+  sql,
+} from "drizzle-orm";
 import { DateTime, Effect, Predicate, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -967,8 +979,30 @@ export const hostRecoveryBatch = (database: Database, limit: number) =>
     const candidates = await database
       .select({ userId: documentBuilds.user_id, workflowId: documentBuilds.workflow_id })
       .from(documentBuilds)
-      .where(inArray(documentBuilds.state, activeStates))
-      .orderBy(asc(documentBuilds.deadline_at), asc(documentBuilds.workflow_id))
+      .where(
+        and(
+          inArray(documentBuilds.state, activeStates),
+          or(
+            eq(documentBuilds.state, "publication_committed"),
+            notExists(
+              database
+                .select({ id: deletionCases.deletion_case_id })
+                .from(deletionCases)
+                .where(
+                  and(
+                    eq(deletionCases.user_id, documentBuilds.user_id),
+                    isNotNull(deletionCases.access_fenced_at),
+                  ),
+                ),
+            ),
+          ),
+        ),
+      )
+      .orderBy(
+        sql`${documentBuilds.host_recovery_checked_at} asc nulls first`,
+        asc(documentBuilds.deadline_at),
+        asc(documentBuilds.workflow_id),
+      )
       .limit(limit);
     const recovered = new Array<typeof HostRecoveryCandidate.Type>();
     for (const candidate of candidates) {
@@ -981,18 +1015,89 @@ export const hostRecoveryBatch = (database: Database, limit: number) =>
             mainInstanceId: documentBuilds.cloudflare_instance_id,
             state: documentBuilds.state,
             timerInstanceId: documentBuilds.cloudflare_timer_instance_id,
+            userId: documentBuilds.user_id,
             workflowId: documentBuilds.workflow_id,
           })
           .from(documentBuilds)
           .where(eq(documentBuilds.workflow_id, candidate.workflowId))
           .for("update")
           .limit(1);
-        return current === undefined || !activeStateSet.has(current.state) ? null : current;
+        if (current === undefined || !activeStateSet.has(current.state)) return null;
+        const [deletion] = await transaction
+          .select({ id: deletionCases.deletion_case_id })
+          .from(deletionCases)
+          .where(
+            and(
+              eq(deletionCases.user_id, current.userId),
+              isNotNull(deletionCases.access_fenced_at),
+            ),
+          )
+          .limit(1);
+        if (deletion !== undefined && current.state !== "publication_committed") return null;
+        await transaction
+          .update(documentBuilds)
+          .set({ host_recovery_checked_at: sql`clock_timestamp()` })
+          .where(eq(documentBuilds.workflow_id, current.workflowId));
+        return current;
       });
       if (row !== null) recovered.push(Schema.decodeSync(HostRecoveryCandidate)(row));
     }
     return recovered;
   });
+
+const HostRecoveryDisposition = Schema.Literals(["Keep", "Terminate"]);
+
+/** Recheck host eligibility after a repair under the same User-first serialization as deletion. */
+export const hostRecoveryDisposition = (
+  database: Database,
+  workflowId: DocumentBuild.WorkflowId,
+  inputDigest: DocumentBuild.InputDigest,
+) =>
+  attempt("hostRecoveryDisposition", async () => {
+    return database.transaction(async (transaction) => {
+      const [identity] = await transaction
+        .select({ inputDigest: documentBuilds.input_digest, userId: documentBuilds.user_id })
+        .from(documentBuilds)
+        .where(eq(documentBuilds.workflow_id, workflowId))
+        .limit(1);
+      if (identity === undefined || identity.inputDigest !== inputDigest) return "Terminate";
+      if (!(await lockWorkflowUser(transaction, identity.userId))) return "Terminate";
+      const [current] = await transaction
+        .select({ state: documentBuilds.state, userId: documentBuilds.user_id })
+        .from(documentBuilds)
+        .where(
+          and(
+            eq(documentBuilds.workflow_id, workflowId),
+            eq(documentBuilds.input_digest, inputDigest),
+          ),
+        )
+        .for("update")
+        .limit(1);
+      if (current === undefined || !activeStateSet.has(current.state)) return "Terminate";
+      const [deletion] = await transaction
+        .select({ id: deletionCases.deletion_case_id })
+        .from(deletionCases)
+        .where(
+          and(eq(deletionCases.user_id, current.userId), isNotNull(deletionCases.access_fenced_at)),
+        )
+        .limit(1);
+      return deletion === undefined || current.state === "publication_committed"
+        ? "Keep"
+        : "Terminate";
+    });
+  }).pipe(
+    Effect.flatMap((outcome) =>
+      Schema.decodeEffect(HostRecoveryDisposition)(outcome).pipe(
+        Effect.mapError((cause) =>
+          unavailable(
+            "hostRecoveryDisposition.decode",
+            "PostgreSQL returned invalid Document Build host eligibility",
+            cause,
+          ),
+        ),
+      ),
+    ),
+  );
 
 const transition = (
   database: Database,

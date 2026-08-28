@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
 
 import { DocumentBuildComposition } from "./composition/document-build";
 import { Db } from "./db";
@@ -18,21 +18,50 @@ export interface RecoveryCandidate {
 export const repair = (
   candidates: ReadonlyArray<RecoveryCandidate>,
   workflow: DocumentBuild.PortInterface["workflow"],
+  disposition: (
+    candidate: RecoveryCandidate,
+  ) => Effect.Effect<"Keep" | "Terminate", DocumentBuild.Unavailable>,
 ) =>
   Effect.forEach(
     candidates,
     (candidate) =>
-      workflow
-        .create(
-          candidate.mainInstanceId,
-          candidate.timerInstanceId,
-          DocumentBuild.WorkflowPayload.make({
-            inputDigest: candidate.inputDigest,
-            workflowId: candidate.workflowId,
-          }),
-        )
-        .pipe(Effect.result),
-    { concurrency: 2, discard: true },
+      Effect.gen(function* () {
+        const created = yield* workflow
+          .create(
+            candidate.mainInstanceId,
+            candidate.timerInstanceId,
+            DocumentBuild.WorkflowPayload.make({
+              inputDigest: candidate.inputDigest,
+              workflowId: candidate.workflowId,
+            }),
+          )
+          .pipe(Effect.result);
+        const eligibility = yield* disposition(candidate).pipe(Effect.result);
+        if (Result.isFailure(eligibility)) return false;
+        if (eligibility.success === "Terminate") {
+          return yield* workflow
+            .terminate(candidate.mainInstanceId, candidate.timerInstanceId)
+            .pipe(
+              Effect.as(true),
+              Effect.orElseSucceed(() => false),
+            );
+        }
+        return Result.isSuccess(created);
+      }),
+    { concurrency: 2 },
+  ).pipe(
+    Effect.flatMap((results) => {
+      const failed = results.filter((result) => !result).length;
+      return failed === 0
+        ? Effect.void
+        : Effect.fail(
+            new DocumentBuild.Unavailable({
+              cause: failed,
+              message: `Document Build host repair failed for ${failed} candidate(s)`,
+              operation: "hostRecovery.repair",
+            }),
+          );
+    }),
   );
 
 /** Hourly production owner for missing or exhausted Document Build Workflow instances. */
@@ -49,6 +78,12 @@ export const run = (env: DocumentBuildComposition.Bindings) =>
                   env.DOCUMENT_BUILD_WORKFLOW,
                   env.DOCUMENT_BUILD_TIMER_WORKFLOW,
                 ),
+                (candidate) =>
+                  DocumentBuildPostgres.hostRecoveryDisposition(
+                    database,
+                    candidate.workflowId,
+                    candidate.inputDigest,
+                  ),
               ),
             ),
           ),

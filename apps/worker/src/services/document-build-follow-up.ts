@@ -203,23 +203,18 @@ export const previewSubmissionDisposition = (notification: Notification) =>
 export const submissionDisposition = (notification: Pick<Notification, "acceptedAt">) =>
   notification.acceptedAt === null ? ("Accepted" as const) : ("Replayed" as const);
 
-/** Choose a route-owned delivery Session only until PostgreSQL has retained one. */
+/** Choose the route's live delivery Session until acceptance makes the retained identity final. */
 export const deliverySessionFor = (
-  notification: Pick<Notification, "agentId" | "deliverySessionId" | "routeId" | "sessionId">,
+  notification: Pick<Notification, "acceptedAt" | "agentId" | "deliverySessionId" | "routeId">,
   agentId: AgentId,
   route: {
     readonly currentSessionId: SessionId;
-    readonly historicalSessionIds: ReadonlyArray<SessionId>;
     readonly routeId: ConversationRouteId;
   },
 ) => {
   if (agentId !== notification.agentId || route.routeId !== notification.routeId) return null;
-  const routeOwns = (sessionId: SessionId) =>
-    route.currentSessionId === sessionId || route.historicalSessionIds.includes(sessionId);
-  if (notification.deliverySessionId !== null) {
-    return routeOwns(notification.deliverySessionId) ? notification.deliverySessionId : null;
-  }
-  return routeOwns(notification.sessionId) ? notification.sessionId : route.currentSessionId;
+  if (notification.acceptedAt !== null) return notification.deliverySessionId;
+  return route.currentSessionId;
 };
 
 export * as DocumentBuildFollowUp from "./document-build-follow-up";

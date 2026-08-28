@@ -2257,6 +2257,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "host_recovery_checked_at": {
+          "name": "host_recovery_checked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",

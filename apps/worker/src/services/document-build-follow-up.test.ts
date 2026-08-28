@@ -29,6 +29,7 @@ describe("DocumentBuildFollowUp delivery Session selection", () => {
   const origin = SessionId.make("deleted-origin-session");
   const current = SessionId.make("current-delivery-session");
   const notification = {
+    acceptedAt: null,
     agentId,
     deliverySessionId: null,
     routeId,
@@ -39,14 +40,13 @@ describe("DocumentBuildFollowUp delivery Session selection", () => {
     expect(
       DocumentBuildFollowUp.deliverySessionFor(notification, agentId, {
         currentSessionId: current,
-        historicalSessionIds: [],
         routeId,
       }),
     ).toBe(current);
   });
 
-  it("keeps a retained delivery Session stable and rejects another Agent or route", () => {
-    const selected = { ...notification, deliverySessionId: current };
+  it("retargets an unaccepted historical selection and rejects another Agent or route", () => {
+    const selected = { ...notification, deliverySessionId: origin };
     const route = { currentSessionId: current, historicalSessionIds: [], routeId };
     expect(DocumentBuildFollowUp.deliverySessionFor(selected, agentId, route)).toBe(current);
     expect(
@@ -58,5 +58,15 @@ describe("DocumentBuildFollowUp delivery Session selection", () => {
         routeId: ConversationRouteId.make("another-route"),
       }),
     ).toBeNull();
+  });
+
+  it("keeps an accepted delivery identity stable without selecting a historical target", () => {
+    expect(
+      DocumentBuildFollowUp.deliverySessionFor(
+        { ...notification, acceptedAt: new Date(0), deliverySessionId: origin },
+        agentId,
+        { currentSessionId: current, routeId },
+      ),
+    ).toBe(origin);
   });
 });

@@ -1,6 +1,13 @@
 // @vitest-environment happy-dom
 
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
+import {
+  FileUploadConflict,
+  FileUploadDenied,
+  FileUploadLimitExceeded,
+  FileUploadRejected,
+  FileUploadUnavailable,
+} from "@osfo/api";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
@@ -99,6 +106,71 @@ describe("DocumentBuildSourceUpload", () => {
       "The upload result is temporarily unavailable.Retry upload",
     );
     expect(document.body.textContent).not.toContain("private failure");
+  });
+
+  it.each([
+    [
+      new FileUploadDenied({ message: "private denial" }),
+      "Your account cannot upload this source.",
+    ],
+    [
+      new FileUploadRejected({ message: "private rejection" }),
+      "The selected source was rejected. Choose a valid UTF-8 text file.",
+    ],
+    [
+      new FileUploadLimitExceeded({ message: "private limit" }),
+      "Your retained file limit has been reached.",
+    ],
+    [
+      new FileUploadConflict({ message: "private conflict" }),
+      "This upload no longer matches its original content. Choose the file again.",
+    ],
+  ])(
+    "shows a non-retryable safe message for permanent upload failures",
+    async (failure, message) => {
+      uploadTextFile.mockRejectedValue(failure);
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      render(
+        <DocumentBuildSourceUpload
+          inspect={inspectFileStatus}
+          makeUploadId={() => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
+          uploadFile={uploadTextFile}
+        />,
+      );
+
+      await user.upload(
+        screen.getByLabelText("Choose text file"),
+        new File(["Document Build source"], "source.txt", { type: "text/plain" }),
+      );
+
+      expect((await screen.findByRole("alert")).textContent).toBe(message);
+      expect(screen.queryByRole("button", { name: "Retry upload" })).toBeNull();
+      expect(document.body.textContent).not.toContain("private");
+    },
+  );
+
+  it("preserves retry identity for a typed transient upload failure", async () => {
+    uploadTextFile
+      .mockRejectedValueOnce(new FileUploadUnavailable({ message: "temporary" }))
+      .mockResolvedValueOnce(readyUpload("web:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "source.txt"));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(
+      <DocumentBuildSourceUpload
+        inspect={inspectFileStatus}
+        makeUploadId={() => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
+        uploadFile={uploadTextFile}
+      />,
+    );
+
+    await user.upload(
+      screen.getByLabelText("Choose text file"),
+      new File(["Document Build source"], "source.txt", { type: "text/plain" }),
+    );
+    await user.click(await screen.findByRole("button", { name: "Retry upload" }));
+    await screen.findByText(/web:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/u);
+
+    expect(uploadTextFile).toHaveBeenCalledTimes(2);
+    expect(uploadTextFile.mock.calls[1]).toEqual(uploadTextFile.mock.calls[0]);
   });
 
   it("retries a response-lost upload with the exact same identity and bytes", async () => {

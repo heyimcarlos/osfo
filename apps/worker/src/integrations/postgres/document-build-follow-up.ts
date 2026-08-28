@@ -541,13 +541,16 @@ export const make = (database: Database): DocumentBuildFollowUp.PortInterface =>
               .limit(1);
             if (deletion !== undefined) return { _tag: "Missing" as const };
             const [notification] = await transaction
-              .select({ deliverySessionId: documentBuildNotifications.delivery_session_id })
+              .select({
+                deliveredAt: documentBuildNotifications.delivered_at,
+                deliverySessionId: documentBuildNotifications.delivery_session_id,
+              })
               .from(documentBuildNotifications)
               .where(eq(documentBuildNotifications.notification_id, notificationId))
               .for("update")
               .limit(1);
             if (notification === undefined) return { _tag: "Missing" as const };
-            if (notification.deliverySessionId === null) {
+            if (notification.deliveredAt === null && notification.deliverySessionId !== sessionId) {
               await transaction
                 .update(documentBuildNotifications)
                 .set({ delivery_session_id: sessionId })
