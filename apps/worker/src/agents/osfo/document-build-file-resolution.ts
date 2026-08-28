@@ -1,11 +1,13 @@
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option, Predicate, Schema } from "effect";
 
 import { AgentId, UserId } from "../../domain";
 import { FileDigest, FileMediaType } from "../../domain/file-content";
 import { FileId, type FileRecord } from "../../domain/file";
 import type { DocumentBuild } from "../../services/document-build";
 
-/** Resolve only ready, exactly owned FileRecords and erase all store failure detail. */
+/* oxlint-disable eslint/no-underscore-dangle -- RPC and local resolution results use Effect-style discriminators. */
+
+/** Resolve only ready, exactly owned FileRecords without misclassifying store outages. */
 export const resolveFromFileStore = <E>(
   request: DocumentBuild.FileResolutionRequest,
   owningAgentId: AgentId,
@@ -15,11 +17,24 @@ export const resolveFromFileStore = <E>(
     return Effect.succeed({ _tag: "Unavailable", reason: "routeMismatch" });
   }
   return Effect.gen(function* () {
-    const records = yield* Effect.forEach(
+    const resolution = yield* Effect.forEach(
       request.fileIds,
-      (fileId) => find(fileId).pipe(Effect.option),
+      (fileId) =>
+        find(fileId).pipe(
+          Effect.map(Option.some),
+          Effect.catch((failure) =>
+            Predicate.isTagged(failure, "FileNotFound")
+              ? Effect.succeed(Option.none())
+              : Effect.fail(failure),
+          ),
+        ),
       { concurrency: 1 },
+    ).pipe(
+      Effect.map((records) => ({ _tag: "Records" as const, records })),
+      Effect.orElseSucceed(() => ({ _tag: "Unavailable", reason: "resolverUnavailable" }) as const),
     );
+    if (resolution._tag === "Unavailable") return resolution;
+    const records = resolution.records;
     if (records.some(Option.isNone)) {
       return { _tag: "Unavailable", reason: "fileUnavailable" } as const;
     }

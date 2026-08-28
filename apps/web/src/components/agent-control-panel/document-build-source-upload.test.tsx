@@ -100,6 +100,103 @@ describe("DocumentBuildSourceUpload", () => {
     );
     expect(document.body.textContent).not.toContain("private failure");
   });
+
+  it("keeps the newest file when two uploads complete out of order", async () => {
+    let completeFirst: ((result: UploadResult) => void) | undefined;
+    let completeSecond: ((result: UploadResult) => void) | undefined;
+    uploadTextFile
+      .mockReturnValueOnce(
+        new Promise<UploadResult>((resolve) => {
+          completeFirst = resolve;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise<UploadResult>((resolve) => {
+          completeSecond = resolve;
+        }),
+      );
+    const makeUploadId = vi
+      .fn<() => string>()
+      .mockReturnValueOnce("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .mockReturnValueOnce("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(
+      <DocumentBuildSourceUpload
+        inspect={inspectFileStatus}
+        makeUploadId={makeUploadId}
+        uploadFile={uploadTextFile}
+      />,
+    );
+    const input = screen.getByLabelText("Choose text file");
+
+    await user.upload(input, new File(["first"], "first.txt", { type: "text/plain" }));
+    await user.upload(input, new File(["second"], "second.txt", { type: "text/plain" }));
+    await act(async () => {
+      completeSecond?.(readyUpload("web:second", "second.txt"));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      completeFirst?.(readyUpload("web:first", "first.txt"));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("status").textContent).toContain("web:second");
+    expect(document.body.textContent).not.toContain("web:first");
+  });
+
+  it("ignores a stale processing poll after a newer upload starts", async () => {
+    let completePoll: ((result: FileResult) => void) | undefined;
+    uploadTextFile
+      .mockResolvedValueOnce({
+        fileId: "web:first",
+        fileName: "first.txt",
+        mediaType: "text/plain",
+        state: "processing",
+      })
+      .mockResolvedValueOnce(readyUpload("web:second", "second.txt"));
+    inspectFileStatus.mockReturnValue(
+      new Promise<FileResult>((resolve) => {
+        completePoll = resolve;
+      }),
+    );
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(
+      <DocumentBuildSourceUpload
+        inspect={inspectFileStatus}
+        makeUploadId={() => "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}
+        pollDelayMilliseconds={1_000}
+        uploadFile={uploadTextFile}
+      />,
+    );
+    const input = screen.getByLabelText("Choose text file");
+
+    await user.upload(input, new File(["first"], "first.txt", { type: "text/plain" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(inspectFileStatus).toHaveBeenCalledWith("web:first");
+    await user.upload(input, new File(["second"], "second.txt", { type: "text/plain" }));
+    await screen.findByText(/web:second/u);
+    await act(async () => {
+      completePoll?.({
+        fileId: "web:first",
+        fileName: "first.txt",
+        mediaType: "text/plain",
+        state: "failed",
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("status").textContent).toContain("web:second");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+const readyUpload = (fileId: string, fileName: string): UploadResult => ({
+  fileId,
+  fileName,
+  mediaType: "text/plain",
+  state: "ready",
 });
 
 interface UploadResult {

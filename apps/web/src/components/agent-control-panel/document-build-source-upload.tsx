@@ -1,7 +1,7 @@
 import type { FileStatusResponse, FileUploadResponse } from "@osfo/api";
 import { Effect } from "effect";
 import { FileUp } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { inspectFileStatus, uploadTextFile } from "../../lib/api-client";
 
@@ -26,11 +26,20 @@ export function DocumentBuildSourceUpload({
   uploadFile = uploadSourceFile,
 }: DocumentBuildSourceUploadProps = {}) {
   const [state, setState] = useState<UploadState>({ _tag: "Idle" });
+  const requestGeneration = useRef(0);
+  useEffect(
+    () => () => {
+      requestGeneration.current += 1;
+    },
+    [],
+  );
   useEffect(() => {
     if (state._tag !== "Uploaded" || state.result.state !== "processing") return undefined;
+    const generation = requestGeneration.current;
     const timeout = setTimeout(() => {
       void inspect(state.result.fileId).then(
         (result) => {
+          if (requestGeneration.current !== generation) return;
           if (result.state === "failed") {
             setState({ _tag: "Failed" });
             return;
@@ -45,20 +54,28 @@ export function DocumentBuildSourceUpload({
             },
           });
         },
-        () => setState({ _tag: "Failed" }),
+        () => {
+          if (requestGeneration.current === generation) setState({ _tag: "Failed" });
+        },
       );
     }, pollDelayMilliseconds);
     return () => clearTimeout(timeout);
   }, [inspect, pollDelayMilliseconds, state]);
   const upload = (file: File) => {
+    const generation = requestGeneration.current + 1;
+    requestGeneration.current = generation;
     const uploadId = makeUploadId();
     setState({ _tag: "Uploading", fileName: file.name });
     return void file
       .arrayBuffer()
       .then((buffer) => uploadFile(new Uint8Array(buffer), file.name, uploadId))
       .then(
-        (result) => setState({ _tag: "Uploaded", result }),
-        () => setState({ _tag: "Failed" }),
+        (result) => {
+          if (requestGeneration.current === generation) setState({ _tag: "Uploaded", result });
+        },
+        () => {
+          if (requestGeneration.current === generation) setState({ _tag: "Failed" });
+        },
       );
   };
 

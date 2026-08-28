@@ -1,18 +1,18 @@
 import { Context, DateTime, Effect, Layer, Schema } from "effect";
 
-import type {
-  AgentId,
-  AllowancePeriodId,
-  CapabilityCatalogVersion,
-  ChannelLinkId,
-  ConversationRouteId,
-  ModelAccessPolicyVersion,
-  Plan,
-  PlanPolicyVersion,
-  ResourcePriceVersion,
-  SessionId,
+import {
   ThinkSubmissionId,
-  UserId,
+  type AgentId,
+  type AllowancePeriodId,
+  type CapabilityCatalogVersion,
+  type ChannelLinkId,
+  type ConversationRouteId,
+  type ModelAccessPolicyVersion,
+  type Plan,
+  type PlanPolicyVersion,
+  type ResourcePriceVersion,
+  type SessionId,
+  type UserId,
 } from "../domain";
 import type { ManagedModelRoute } from "../domain/model-access-policy";
 import { DocumentBuild } from "./document-build";
@@ -24,6 +24,22 @@ export type NotificationId = typeof NotificationId.Type;
 
 export const NotificationKind = Schema.Literals(["previewReady", "terminal"]);
 export type NotificationKind = typeof NotificationKind.Type;
+
+export const SubmissionSuccess = Schema.Union([
+  Schema.TaggedStruct("Accepted", {
+    notificationId: NotificationId,
+    submissionId: ThinkSubmissionId,
+  }),
+  Schema.TaggedStruct("Replayed", {
+    notificationId: NotificationId,
+    submissionId: ThinkSubmissionId,
+  }),
+  Schema.TaggedStruct("TerminalSuperseded", {
+    notificationId: NotificationId,
+    submissionId: ThinkSubmissionId,
+  }),
+]);
+export type SubmissionSuccess = typeof SubmissionSuccess.Type;
 
 /** Safe product facts re-read by the publicly callable Agent RPC. */
 export interface Notification {

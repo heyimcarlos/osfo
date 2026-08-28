@@ -2,8 +2,9 @@
 import { expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 
-import { AllowancePeriodId, UserId } from "../domain";
+import { AgentId, AllowancePeriodId, UserId } from "../domain";
 import { ContentId } from "../domain/client-content";
+import { FileId } from "../domain/file";
 import { DocumentArtifact } from "../domain/document-artifact";
 import { DocumentBuild } from "../services/document-build";
 import { DocumentBuildFollowUp } from "../services/document-build-follow-up";
@@ -120,6 +121,121 @@ it.effect("keeps Directory follow-up outages in the typed retryable channel", ()
   }),
 );
 
+for (const tag of ["Accepted", "Replayed", "TerminalSuperseded"] as const) {
+  it.effect(`decodes the ${tag} follow-up acknowledgement`, () =>
+    Effect.gen(function* () {
+      const notificationId = DocumentBuildFollowUp.NotificationId.make(
+        `document-build-${tag}-notification`,
+      );
+      const result = yield* DocumentBuildComposition.submitFollowUp(
+        directoryBinding({
+          followUp: {
+            _tag: tag,
+            notificationId,
+            submissionId: `document-build-${tag}-submission`,
+          },
+        }),
+        notificationId,
+      );
+
+      expect(result).toMatchObject({ _tag: tag, notificationId });
+    }),
+  );
+}
+
+it.effect("rejects malformed and stale follow-up acknowledgements as retryable", () =>
+  Effect.gen(function* () {
+    const notificationId = DocumentBuildFollowUp.NotificationId.make("document-build-notification");
+    const malformed = yield* DocumentBuildComposition.submitFollowUp(
+      directoryBinding({ followUp: { _tag: "Accepted", notificationId } }),
+      notificationId,
+    ).pipe(Effect.result);
+    const stale = yield* DocumentBuildComposition.submitFollowUp(
+      directoryBinding({
+        followUp: {
+          _tag: "Accepted",
+          notificationId: "other-notification",
+          submissionId: "document-build-submission",
+        },
+      }),
+      notificationId,
+    ).pipe(Effect.result);
+
+    expect(malformed).toMatchObject({ failure: { operation: "followUp.decode" } });
+    expect(stale).toMatchObject({ failure: { operation: "followUp.identity" } });
+  }),
+);
+
+it.effect("adapts a valid Agent follow-up failure result to Document Build unavailability", () =>
+  Effect.gen(function* () {
+    const notificationId = DocumentBuildFollowUp.NotificationId.make("document-build-notification");
+    const result = yield* DocumentBuildComposition.submitFollowUp(
+      directoryBinding({ followUp: { _tag: "DocumentBuildFollowUpUnavailable" } }),
+      notificationId,
+    ).pipe(Effect.result);
+
+    expect(result).toMatchObject({
+      failure: { _tag: "DocumentBuildUnavailable", operation: "followUp.decode" },
+    });
+  }),
+);
+
+for (const files of [
+  { _tag: "Resolved", files: [{ fileId: "missing-authoritative-fields" }] },
+  { _tag: "UnknownResult" },
+]) {
+  it.effect("rejects malformed Directory file resolution results as retryable", () =>
+    Effect.gen(function* () {
+      const result = yield* DocumentBuildComposition.makeFileResolver(
+        directoryBinding({ files }).OSFO_DIRECTORY,
+      )
+        .resolve(AgentId.make("document-build-agent"), UserId.make("document-build-user"), [
+          FileId.make("document-build-file"),
+        ])
+        .pipe(Effect.result);
+
+      expect(result).toMatchObject({
+        failure: { _tag: "DocumentBuildUnavailable", operation: "files.resolve.decode" },
+      });
+    }),
+  );
+}
+
+it.effect("classifies only a proven unavailable file as a permanent source change", () =>
+  Effect.gen(function* () {
+    const result = yield* DocumentBuildComposition.makeFileResolver(
+      directoryBinding({ files: { _tag: "Unavailable", reason: "fileUnavailable" } })
+        .OSFO_DIRECTORY,
+    )
+      .resolve(AgentId.make("document-build-agent"), UserId.make("document-build-user"), [
+        FileId.make("document-build-file"),
+      ])
+      .pipe(Effect.result);
+
+    expect(result).toMatchObject({ failure: { _tag: "DocumentBuildSourceChanged" } });
+  }),
+);
+
+it.effect("keeps an explicit resolver outage retryable at the composition boundary", () =>
+  Effect.gen(function* () {
+    const result = yield* DocumentBuildComposition.makeFileResolver(
+      directoryBinding({ files: { _tag: "Unavailable", reason: "resolverUnavailable" } })
+        .OSFO_DIRECTORY,
+    )
+      .resolve(AgentId.make("document-build-agent"), UserId.make("document-build-user"), [
+        FileId.make("document-build-file"),
+      ])
+      .pipe(Effect.result);
+
+    expect(result).toMatchObject({
+      failure: {
+        _tag: "DocumentBuildUnavailable",
+        operation: "files.resolve.resolverUnavailable",
+      },
+    });
+  }),
+);
+
 it.effect("cleans attempt evidence and Sandbox after a crash before the preview marker", () => {
   const events = new Array<string>();
   return Effect.gen(function* () {
@@ -137,6 +253,18 @@ it.effect("cleans attempt evidence and Sandbox after a crash before the preview 
     );
     expect(events).toEqual(["attempt", "sandbox"]);
   });
+});
+
+const directoryBinding = (results: {
+  readonly files?: unknown;
+  readonly followUp?: unknown;
+}): Pick<DocumentBuildComposition.Bindings, "OSFO_DIRECTORY"> => ({
+  OSFO_DIRECTORY: {
+    getByName: () => ({
+      resolveDocumentBuildFiles: () => Promise.resolve(results.files),
+      submitDocumentBuildFollowUp: () => Promise.resolve(results.followUp),
+    }),
+  },
 });
 
 it.effect("does not delete or dispose compute for a foreign pending artifact", () => {

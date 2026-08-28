@@ -8,6 +8,7 @@ import { FileDigest } from "../../domain/file-content";
 import { FileId, FileUploadId, type FileRecord } from "../../domain/file";
 import { DocumentBuild } from "../../services/document-build";
 import { makeAccountDeletionFence } from "./account-deletion-fence";
+import { FileNotFound, FileStoreRecordInvalid, FileStoreUnavailable } from "./db/file-store";
 import { DocumentBuildFileResolution } from "./document-build-file-resolution";
 
 it.effect("returns only the minimal ready owned source snapshot", () =>
@@ -33,20 +34,61 @@ it.effect("returns only the minimal ready owned source snapshot", () =>
   }),
 );
 
-const unavailableCases: ReadonlyArray<{
-  readonly find: (fileId: FileId) => Effect.Effect<FileRecord, string>;
+const permanentlyUnavailableCases: ReadonlyArray<{
+  readonly find: (fileId: FileId) => Effect.Effect<FileRecord, unknown>;
   readonly name: string;
 }> = [
-  { find: () => Effect.fail("missing"), name: "missing file" },
-  { find: () => Effect.fail("sqlite unavailable"), name: "store failure" },
+  {
+    find: () => Effect.fail(new FileNotFound({ fileId, message: "The file does not exist" })),
+    name: "missing file",
+  },
   { find: () => Effect.succeed(readyFile(UserId.make("foreign-user"))), name: "foreign owner" },
   { find: () => Effect.succeed(pendingFile()), name: "non-ready file" },
 ];
 
-for (const { find, name } of unavailableCases) {
+for (const { find, name } of permanentlyUnavailableCases) {
   it.effect(`fails closed for ${name}`, () =>
     Effect.gen(function* () {
       expect(yield* resolve(find)).toEqual({ _tag: "Unavailable", reason: "fileUnavailable" });
+    }),
+  );
+}
+
+const transientCases: ReadonlyArray<{
+  readonly find: (fileId: FileId) => Effect.Effect<FileRecord, unknown>;
+  readonly name: string;
+}> = [
+  {
+    find: () =>
+      Effect.fail(
+        new FileStoreUnavailable({
+          cause: "sqlite busy",
+          message: "The file store is unavailable",
+          operation: "find",
+        }),
+      ),
+    name: "store failure",
+  },
+  {
+    find: () =>
+      Effect.fail(
+        new FileStoreRecordInvalid({
+          cause: "invalid row",
+          message: "The durable source record is invalid",
+          operation: "find",
+        }),
+      ),
+    name: "durable source decode failure",
+  },
+];
+
+for (const { find, name } of transientCases) {
+  it.effect(`keeps ${name} retryable`, () =>
+    Effect.gen(function* () {
+      expect(yield* resolve(find)).toEqual({
+        _tag: "Unavailable",
+        reason: "resolverUnavailable",
+      });
     }),
   );
 }

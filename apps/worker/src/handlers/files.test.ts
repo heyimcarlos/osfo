@@ -2,7 +2,12 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 
-import { BrowserFileId, FileUploadQuery } from "@osfo/api";
+import {
+  BrowserFileId,
+  BrowserTextFileBytes,
+  FileUploadQuery,
+  maximumBrowserTextUploadBytes,
+} from "@osfo/api";
 import { WebFileUpload } from "../agents/osfo/web-file-upload";
 import { statusResponseFor, uploadRequestFor } from "./files";
 
@@ -44,6 +49,29 @@ describe("authenticated text-file ingress", () => {
         fileName: "source.txt",
         uploadId: "not-a-uuid",
       })._tag,
+    ).toBe("Failure");
+  });
+
+  it("accepts raw text above two MB through the public boundary and retains the 25 MB cap", () => {
+    const aboveNormalizationLimit = new Uint8Array(2_000_001);
+    const request = uploadRequestFor(
+      {
+        authSessionExpiresAt: new Date("2026-08-28T13:00:00.000Z"),
+        authSessionId: "session-from-middleware",
+        userId: "user-from-middleware",
+      },
+      aboveNormalizationLimit,
+      {
+        fileName: "source.txt",
+        uploadId: "58453ab2-6d53-45b6-96b7-d4411059e63d",
+      },
+    );
+
+    expect(Schema.decodeResult(BrowserTextFileBytes)(aboveNormalizationLimit)._tag).toBe("Success");
+    expect(request.bytes.byteLength).toBe(2_000_001);
+    expect(
+      Schema.decodeResult(BrowserTextFileBytes)(new Uint8Array(maximumBrowserTextUploadBytes + 1))
+        ._tag,
     ).toBe("Failure");
   });
 

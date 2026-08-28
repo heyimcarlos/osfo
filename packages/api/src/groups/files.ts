@@ -65,11 +65,13 @@ export class FileUploadUnavailable extends Schema.TaggedError<FileUploadUnavaila
   { httpApiStatus: 503 },
 ) {}
 
-const TextFileBytes = Schema.Uint8Array.check(
+export const maximumBrowserTextUploadBytes = 25_000_000;
+
+export const BrowserTextFileBytes = Schema.Uint8Array.check(
   Schema.makeFilter(
     (bytes) =>
-      (bytes.byteLength > 0 && bytes.byteLength <= 2_000_000) ||
-      "must contain between 1 and 2,000,000 bytes",
+      (bytes.byteLength > 0 && bytes.byteLength <= maximumBrowserTextUploadBytes) ||
+      `must contain between 1 and ${maximumBrowserTextUploadBytes.toLocaleString("en-US")} bytes`,
   ),
 ).pipe(HttpApiSchema.asUint8Array({ contentType: "application/octet-stream" }));
 
@@ -78,7 +80,7 @@ export const FilesGroup = HttpApiGroup.make("files")
   .add(
     HttpApiEndpoint.post("uploadText", "/v1/files/text", {
       error: [FileUploadConflict, FileUploadDenied, FileUploadRejected, FileUploadUnavailable],
-      payload: TextFileBytes,
+      payload: BrowserTextFileBytes,
       query: FileUploadQuery,
       success: FileUploadResponse,
     })

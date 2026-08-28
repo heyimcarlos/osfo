@@ -56,3 +56,29 @@ it.effect(
       expect(sandboxIdFor(analysisScope)).toBe(sandboxIdFor(analysisScope));
     }),
 );
+
+it.effect("rejects normalized text that still exceeds the two MB compute limit", () =>
+  Effect.gen(function* () {
+    const oversized = "x".repeat(launchFileComputeLimits.maximumNormalizedTextBytes + 1);
+    const compute = makeFileCompute(() => ({
+      destroy: async () => undefined,
+      exec: async () => ({ success: true }),
+      readFile: async () => ({
+        content: JSON.stringify({ normalizedText: oversized, ok: true, parser: "text" }),
+      }),
+      writeFile: async () => undefined,
+    }));
+    const result = yield* compute
+      .normalize({
+        bytes: new TextEncoder().encode("source"),
+        conservativeVendorUsdMicros: 0n,
+        limits: launchFileComputeLimits,
+        mediaType: "text/plain",
+        sha256: FileDigest.make(`sha256:${"a".repeat(64)}`),
+        taskScope: "oversized-normalized-text",
+      })
+      .pipe(Effect.result);
+
+    expect(result).toMatchObject({ failure: { reason: "content_limit" } });
+  }),
+);

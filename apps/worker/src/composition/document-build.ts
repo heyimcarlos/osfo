@@ -1,4 +1,4 @@
-import { DateTime, Effect, Layer } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
@@ -18,7 +18,7 @@ import { DocumentBuildDocument } from "../services/document-build-document";
 import { DocumentBuildFollowUp } from "../services/document-build-follow-up";
 import type { StoredArtifactMetadata } from "../services/document-generation";
 
-/* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle, typescript/consistent-return -- This module is the Document Build application composition root and adapts Promise-only Cloudflare bindings. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle, osfo/no-unknown-returns, typescript/consistent-return -- This module is the Document Build application composition root. Cloudflare RPC returns are untrusted and decoded immediately after the Promise boundary. */
 
 type WorkflowInstanceHandle = Pick<WorkflowInstance, "status" | "terminate">;
 
@@ -34,11 +34,8 @@ export interface DirectoryBinding {
   readonly getByName: (name: string) => {
     readonly resolveDocumentBuildFiles: (
       input: DocumentBuild.FileResolutionRequest,
-    ) => Promise<DocumentBuild.FileResolutionResult>;
-    readonly submitDocumentBuildFollowUp: (notificationId: string) => Promise<{
-      readonly _tag: string;
-      readonly submissionId?: string;
-    }>;
+    ) => Promise<unknown>;
+    readonly submitDocumentBuildFollowUp: (notificationId: string) => Promise<unknown>;
   };
 }
 
@@ -313,36 +310,52 @@ export const makePreviewReadyFollowUpCommitter = (
     if (result._tag === "TerminalSuperseded") {
       return yield* makeTerminalFollowUpCommitter(env)(build);
     }
-    if (result._tag !== "Accepted" && result._tag !== "Replayed") {
-      return yield* documentBuildUnavailable("followUp.submitPreview", result._tag);
-    }
   });
 
 export const submitFollowUp = (
   env: Pick<Bindings, "OSFO_DIRECTORY">,
   notificationId: DocumentBuildFollowUp.NotificationId,
 ) =>
-  Effect.tryPromise({
-    try: () =>
-      env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).submitDocumentBuildFollowUp(notificationId),
-    catch: (cause) => documentBuildUnavailable("followUp.directory", cause),
+  Effect.gen(function* () {
+    const untrusted = yield* Effect.tryPromise({
+      try: () =>
+        env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).submitDocumentBuildFollowUp(
+          notificationId,
+        ),
+      catch: (cause) => documentBuildUnavailable("followUp.directory", cause),
+    });
+    const result = yield* Schema.decodeUnknownEffect(DocumentBuildFollowUp.SubmissionSuccess)(
+      untrusted,
+    ).pipe(Effect.mapError((cause) => documentBuildUnavailable("followUp.decode", cause)));
+    if (result.notificationId !== notificationId) {
+      return yield* documentBuildUnavailable("followUp.identity", notificationId);
+    }
+    return result;
   });
 
-const makeFileResolver = (directory: DirectoryBinding): DocumentBuild.PortInterface["files"] => ({
+export const makeFileResolver = (
+  directory: DirectoryBinding,
+): DocumentBuild.PortInterface["files"] => ({
   resolve: (agentId, userId, fileIds) =>
-    Effect.tryPromise({
-      try: () =>
-        directory
-          .getByName(OSFO_DIRECTORY_NAME)
-          .resolveDocumentBuildFiles({ agentId, fileIds, userId }),
-      catch: (cause) => documentBuildUnavailable("files.resolve", cause),
-    }).pipe(
-      Effect.flatMap((result) =>
-        result._tag === "Resolved"
-          ? Effect.succeed(result.files)
-          : Effect.fail(documentBuildUnavailable(`files.resolve.${result.reason}`, result.reason)),
-      ),
-    ),
+    Effect.gen(function* () {
+      const untrusted = yield* Effect.tryPromise({
+        try: () =>
+          directory
+            .getByName(OSFO_DIRECTORY_NAME)
+            .resolveDocumentBuildFiles({ agentId, fileIds, userId }),
+        catch: (cause) => documentBuildUnavailable("files.resolve", cause),
+      });
+      const result = yield* Schema.decodeUnknownEffect(DocumentBuild.FileResolutionResult)(
+        untrusted,
+      ).pipe(Effect.mapError((cause) => documentBuildUnavailable("files.resolve.decode", cause)));
+      if (result._tag === "Resolved") return result.files;
+      if (result.reason === "fileUnavailable") {
+        return yield* new DocumentBuild.SourceChanged({
+          message: "A supplied file is missing, no longer ready, or no longer owned",
+        });
+      }
+      return yield* documentBuildUnavailable(`files.resolve.${result.reason}`, result.reason);
+    }),
 });
 
 const makeAccounting = (database: Database) =>

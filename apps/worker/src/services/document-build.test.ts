@@ -304,6 +304,87 @@ it.effect("cancels and settles when admitted source facts change before host acc
   }),
 );
 
+it.effect("keeps transient source resolution outages retryable without terminal mutation", () =>
+  Effect.gen(function* () {
+    const request = yield* DocumentBuild.storedRequestFor("pdf", [resolvedFile("source text")]);
+    const unavailable = new DocumentBuild.Unavailable({
+      cause: "Directory RPC outage",
+      message: "Source resolution is temporarily unavailable",
+      operation: "files.resolve",
+    });
+    const admittedId = DocumentBuild.WorkflowId.make("document-build:acceptance-source-outage");
+    const admittedInstances = yield* DocumentBuild.cloudflareInstanceIdsFor(admittedId);
+    const admitted = revalidationFixture(
+      {
+        ...buildRecord(admittedId, admittedInstances, request),
+        acceptedAt: null,
+        startedAt: null,
+        state: "admitted",
+      },
+      Effect.fail(unavailable),
+    );
+    const runningId = DocumentBuild.WorkflowId.make("document-build:running-source-outage");
+    const runningInstances = yield* DocumentBuild.cloudflareInstanceIdsFor(runningId);
+    const running = revalidationFixture(
+      buildRecord(runningId, runningInstances, request),
+      Effect.fail(unavailable),
+    );
+
+    const acceptance = yield* DocumentBuild.Service.pipe(
+      Effect.flatMap((builds) =>
+        builds.reconcileAcceptance(admittedId, admitted.current.inputDigest),
+      ),
+      Effect.provide(admitted.layer),
+      Effect.result,
+    );
+    const execution = yield* DocumentBuild.Service.pipe(
+      Effect.flatMap((builds) =>
+        builds.beginExecution({ inputDigest: running.current.inputDigest, workflowId: runningId }),
+      ),
+      Effect.provide(running.layer),
+      Effect.result,
+    );
+
+    expect(acceptance).toMatchObject({
+      failure: { _tag: "DocumentBuildUnavailable", operation: "files.resolve" },
+    });
+    expect(execution).toMatchObject({
+      failure: { _tag: "DocumentBuildUnavailable", operation: "files.resolve" },
+    });
+    expect(admitted.current.state).toBe("admitted");
+    expect(running.current.state).toBe("running");
+    expect(admitted.terminalTransitions()).toBe(0);
+    expect(running.terminalTransitions()).toBe(0);
+  }),
+);
+
+it.effect("cancels promptly when an admitted source permanently disappears", () =>
+  Effect.gen(function* () {
+    const request = yield* DocumentBuild.storedRequestFor("pdf", [resolvedFile("source text")]);
+    const workflowId = DocumentBuild.WorkflowId.make("document-build:source-disappeared");
+    const instances = yield* DocumentBuild.cloudflareInstanceIdsFor(workflowId);
+    const fixture = revalidationFixture(
+      {
+        ...buildRecord(workflowId, instances, request),
+        acceptedAt: null,
+        startedAt: null,
+        state: "admitted",
+      },
+      Effect.fail(new DocumentBuild.SourceChanged({ message: "The source file no longer exists" })),
+    );
+
+    const result = yield* DocumentBuild.Service.pipe(
+      Effect.flatMap((builds) =>
+        builds.reconcileAcceptance(workflowId, fixture.current.inputDigest),
+      ),
+      Effect.provide(fixture.layer),
+    );
+
+    expect(result).toMatchObject({ safeFailureCode: "source-changed", state: "canceled" });
+    expect(fixture.terminalTransitions()).toBe(1);
+  }),
+);
+
 it.effect("retries terminal cleanup and follow-up after canceled truth is already durable", () =>
   Effect.gen(function* () {
     const request = yield* DocumentBuild.storedRequestFor("pdf", [resolvedFile("source text")]);
@@ -440,6 +521,54 @@ const resolvedFile = (normalizedText: string): DocumentBuild.ResolvedFile => ({
   normalizedText,
   sha256: FileDigest.make(`sha256:${"a".repeat(64)}`),
 });
+
+const revalidationFixture = (
+  initial: DocumentBuild.Record,
+  resolution: Effect.Effect<
+    ReadonlyArray<DocumentBuild.ResolvedFile>,
+    DocumentBuild.SourceChanged | DocumentBuild.Unavailable
+  >,
+) => {
+  let current = initial;
+  let terminalTransitions = 0;
+  const port = DocumentBuild.Port.of({
+    commitPreviewReadyFollowUp: () => Effect.void,
+    commitTerminalFollowUp: () => Effect.void,
+    currentAuthorization: () => Effect.succeed(availableAuthorization()),
+    discardPendingArtifact: () => Effect.void,
+    files: { resolve: () => resolution },
+    persistence: {
+      admit: () => Effect.succeed({ _tag: "Existing" as const, build: current }),
+      beginExecution: () => Effect.succeed(current),
+      commitPublication: () => Effect.succeed(current),
+      enforceDeadline: () => Effect.succeed(current),
+      finishSuccess: () => Effect.succeed(current),
+      finishTerminal: (_workflowId, _digest, state, safeFailureCode, terminalAt) =>
+        Effect.sync(() => {
+          terminalTransitions += 1;
+          current = { ...current, safeFailureCode, state, terminalAt };
+          return current;
+        }),
+      inspect: () => Effect.succeed(current),
+      markAccepted: () => Effect.die(new Error("Source outage must not be accepted")),
+      markAccountingCommitted: () => Effect.succeed(current),
+      markPreviewStored: () => Effect.succeed(current),
+      recordProviderCost: () => Effect.succeed(current),
+      requestCancel: () => Effect.succeed(current),
+    },
+    recordWorkflowStart: () => Effect.void,
+    workflow: { create: () => Effect.void, terminate: () => Effect.void },
+  });
+  return {
+    get current() {
+      return current;
+    },
+    layer: DocumentBuild.layerWithoutDependencies.pipe(
+      Layer.provide(Layer.succeed(DocumentBuild.Port, port)),
+    ),
+    terminalTransitions: () => terminalTransitions,
+  };
+};
 
 const productNow = new Date("2026-08-28T12:00:00.000Z");
 const userId = UserId.make("document-build-user");

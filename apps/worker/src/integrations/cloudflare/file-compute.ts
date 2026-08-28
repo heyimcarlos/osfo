@@ -115,6 +115,17 @@ export const makeFileCompute = (sandboxFor: (taskId: string) => FileTaskSandbox)
           if (result.normalizedText === undefined || result.parser === undefined) {
             return yield* invalidTaskResult("Normalization output is incomplete");
           }
+          if (
+            new TextEncoder().encode(result.normalizedText).byteLength >
+            input.limits.maximumNormalizedTextBytes
+          ) {
+            return yield* new FileComputeFailed({
+              basis: null,
+              message: "Normalized file content exceeds the retained text limit",
+              reason: "content_limit",
+              vendorUsdMicros: 0n,
+            });
+          }
           const provenance = yield* Schema.decodeEffect(FileNormalizationProvenance)({
             mediaType: input.mediaType,
             parser: result.parser,

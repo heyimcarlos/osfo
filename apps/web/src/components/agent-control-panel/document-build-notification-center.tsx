@@ -1,10 +1,12 @@
 import type { DocumentBuildNotificationSummary } from "@osfo/api";
 import { Effect } from "effect";
 import { FileCheck2, FileClock, FileX2, Hammer, X } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { apiBaseURL } from "../../config";
 import { inspectDocumentBuildNotifications } from "../../lib/api-client";
+
+/* oxlint-disable eslint/no-underscore-dangle -- The load state is an Effect-style discriminated union. */
 
 /** Authenticated safe status and download projection for delivered Document Builds. */
 export function DocumentBuildNotificationCenter() {
@@ -22,38 +24,58 @@ export function DocumentBuildNotificationCenterWithLoader({
     readonly items: ReadonlyArray<DocumentBuildNotificationSummary>;
   }>;
 }) {
-  const [items, setItems] = useState<ReadonlyArray<DocumentBuildNotificationSummary> | null>(null);
+  const [loadState, setLoadState] = useState<NotificationLoadState>({ _tag: "Loading" });
   const [open, setOpen] = useState(false);
+  const loadGeneration = useRef(0);
+  const load = () => {
+    const generation = loadGeneration.current + 1;
+    loadGeneration.current = generation;
+    setLoadState({ _tag: "Loading" });
+    void loadNotifications().then(
+      (notifications) => {
+        if (loadGeneration.current === generation) {
+          setLoadState({ _tag: "Ready", items: notifications.items });
+        }
+      },
+      () => {
+        if (loadGeneration.current === generation) setLoadState({ _tag: "Unavailable" });
+      },
+    );
+  };
   const openCenter = () => {
     setOpen(true);
-    setItems(null);
-    void loadNotifications().then(
-      (notifications) => setItems(notifications.items),
-      () => setItems([]),
-    );
+    load();
   };
   return (
     <DocumentBuildNotificationCenterContent
-      items={items}
+      loadState={loadState}
       open={open}
       onClose={() => setOpen(false)}
       onOpen={openCenter}
+      onRetry={load}
     />
   );
 }
 
+export type NotificationLoadState =
+  | { readonly _tag: "Loading" }
+  | { readonly _tag: "Ready"; readonly items: ReadonlyArray<DocumentBuildNotificationSummary> }
+  | { readonly _tag: "Unavailable" };
+
 export function DocumentBuildNotificationCenterContent({
-  items,
+  loadState,
   onClose,
   onOpen,
+  onRetry,
   open,
 }: {
-  readonly items: ReadonlyArray<DocumentBuildNotificationSummary> | null;
+  readonly loadState: NotificationLoadState;
   readonly onClose: () => void;
   readonly onOpen: () => void;
+  readonly onRetry: () => void;
   readonly open: boolean;
 }) {
-  const count = items?.length ?? 0;
+  const count = loadState._tag === "Ready" ? loadState.items.length : 0;
   return (
     <div className="relative">
       <button
@@ -81,13 +103,24 @@ export function DocumentBuildNotificationCenterContent({
               <X aria-hidden="true" className="size-4" />
             </button>
           </div>
-          {items === null ? (
+          {loadState._tag === "Loading" ? (
             <p className="mt-4 text-sm text-[#687896]">Loading Document Build updates...</p>
-          ) : items.length === 0 ? (
+          ) : loadState._tag === "Unavailable" ? (
+            <div className="mt-4 text-sm text-[#687896]" role="alert">
+              <p>Document Build updates are temporarily unavailable.</p>
+              <button
+                className="mt-2 font-semibold text-[#2568ca] hover:underline"
+                type="button"
+                onClick={onRetry}
+              >
+                Retry
+              </button>
+            </div>
+          ) : loadState.items.length === 0 ? (
             <p className="mt-4 text-sm text-[#687896]">No Document Build updates yet.</p>
           ) : (
             <ul className="mt-3 grid max-h-80 gap-2 overflow-auto">
-              {items.map((item) => (
+              {loadState.items.map((item) => (
                 <NotificationItem item={item} key={`${item.workflowId}:${item.kind}`} />
               ))}
             </ul>

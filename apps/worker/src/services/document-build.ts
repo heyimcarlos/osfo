@@ -103,6 +103,7 @@ export const FileResolutionResult = Schema.Union([
       "deletionFenced",
       "fileUnavailable",
       "invalidRequest",
+      "resolverUnavailable",
       "routeMismatch",
     ]),
   }),
@@ -208,6 +209,14 @@ export class Unavailable extends Schema.TaggedError<Unavailable>()("DocumentBuil
   operation: Schema.String,
 }) {}
 
+/** A previously owned source is missing, no longer ready, or has changed immutable facts. */
+export class SourceChanged extends Schema.TaggedError<SourceChanged>()(
+  "DocumentBuildSourceChanged",
+  {
+    message: Schema.String,
+  },
+) {}
+
 type Persisted =
   | { readonly _tag: "Created"; readonly build: Record }
   | { readonly _tag: "Existing"; readonly build: Record };
@@ -222,7 +231,7 @@ export interface PortInterface {
       agentId: AgentId,
       userId: UserId,
       fileIds: ReadonlyArray<FileId>,
-    ) => Effect.Effect<ReadonlyArray<ResolvedFile>, Unavailable>;
+    ) => Effect.Effect<ReadonlyArray<ResolvedFile>, SourceChanged | Unavailable>;
   };
   readonly recordWorkflowStart: (build: Record) => Effect.Effect<void, Unavailable>;
   readonly commitPreviewReadyFollowUp: (build: Record) => Effect.Effect<void, Unavailable>;
@@ -374,7 +383,7 @@ export interface Interface {
   readonly settleTerminal: (build: Record) => Effect.Effect<Record, Conflict | Unavailable>;
   readonly start: (
     input: StartInput,
-  ) => Effect.Effect<StartResult, Conflict | Denied | NotFound | Unavailable>;
+  ) => Effect.Effect<StartResult, Conflict | Denied | NotFound | SourceChanged | Unavailable>;
 }
 
 export class Service extends Context.Service<Service, Interface>()("@osfo/DocumentBuild") {}
@@ -440,9 +449,8 @@ export const make = Effect.gen(function* () {
     );
     const rebuilt = yield* storedRequestFor(build.request.format, files);
     if (!(yield* sameStoredRequest(build.request, rebuilt))) {
-      return yield* new Conflict({
+      return yield* new SourceChanged({
         message: "The owned Document Build source changed after admission",
-        workflowId: build.workflowId,
       });
     }
   });
@@ -487,7 +495,7 @@ export const make = Effect.gen(function* () {
     yield* authorizeContinuation(build, current);
     const validation = yield* revalidateFiles(build).pipe(
       Effect.as({ _tag: "Valid" as const }),
-      Effect.catch(() =>
+      Effect.catchTag("DocumentBuildSourceChanged", () =>
         ports.persistence
           .finishTerminal(
             build.workflowId,
@@ -570,7 +578,7 @@ export const make = Effect.gen(function* () {
         ),
       );
       yield* revalidateFiles(deadlineChecked).pipe(
-        Effect.catch((failure) =>
+        Effect.catchTag("DocumentBuildSourceChanged", (failure) =>
           ports.persistence
             .finishTerminal(
               build.workflowId,
@@ -579,7 +587,17 @@ export const make = Effect.gen(function* () {
               "source-changed",
               current.now,
             )
-            .pipe(Effect.flatMap(settleTerminal), Effect.andThen(Effect.fail(failure))),
+            .pipe(
+              Effect.flatMap(settleTerminal),
+              Effect.andThen(
+                Effect.fail(
+                  new Conflict({
+                    message: failure.message,
+                    workflowId: build.workflowId,
+                  }),
+                ),
+              ),
+            ),
         ),
       );
     }
@@ -732,8 +750,12 @@ export const make = Effect.gen(function* () {
     return finished;
   });
 
-  const finishTerminal = (payload: WorkflowPayload, state: "canceled" | "failure", code: string) =>
-    DateTime.now.pipe(
+  const finishTerminal = Effect.fn("DocumentBuild.finishTerminal")(function* (
+    payload: WorkflowPayload,
+    state: "canceled" | "failure",
+    code: string,
+  ) {
+    return yield* DateTime.now.pipe(
       Effect.map(DateTime.toDateUtc),
       Effect.flatMap((terminalAt) =>
         ports.persistence.finishTerminal(
@@ -746,6 +768,7 @@ export const make = Effect.gen(function* () {
       ),
       Effect.flatMap(settleTerminal),
     );
+  });
 
   const finishCanceled = Effect.fn("DocumentBuild.finishCanceled")(function* (
     payload: WorkflowPayload,
