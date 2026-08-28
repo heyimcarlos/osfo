@@ -27,6 +27,7 @@ import {
   type ReminderSchedule,
   type ReminderSchedulePort,
 } from "./reminders";
+import { reminderSchedulerDate, reminderSchedulerEpochSecond } from "./reminder-scheduler-time";
 
 interface ReminderAuthorityStorage {
   readonly sql: Pick<SqlStorage, "exec">;
@@ -52,7 +53,7 @@ it.effect(
                 callback: "deliverReminder",
                 id: `schedule-${index + 1}`,
                 payload,
-                time: at.getTime(),
+                timeEpochSeconds: Math.ceil(at.getTime() / 1_000),
                 type: "scheduled" as const,
               })),
             ),
@@ -149,7 +150,7 @@ it.effect("repairs create, change, and reactivate schedules before returning Act
               callback: "deliverReminder",
               id,
               payload,
-              time: at.getTime(),
+              timeEpochSeconds: Math.ceil(at.getTime() / 1_000),
               type: "scheduled",
             });
             return id;
@@ -928,6 +929,13 @@ it.effect(
     ),
 );
 
+it("normalizes fractional nominal due instants to the next Agents scheduler second", () => {
+  const nominalDueAt = new Date("2026-09-04T12:00:00.123Z");
+
+  expect(reminderSchedulerDate(nominalDueAt).toISOString()).toBe("2026-09-04T12:00:01.000Z");
+  expect(reminderSchedulerEpochSecond(nominalDueAt)).toBe(1_788_523_201);
+});
+
 it.effect("repairs a missing one-time schedule and cancels stale Reminder callbacks", () =>
   withDatabase((storage) =>
     Effect.gen(function* () {
@@ -974,14 +982,14 @@ it.effect("repairs a missing one-time schedule and cancels stale Reminder callba
             reminderId,
             revision: 9,
           },
-          time: due.getTime(),
+          timeEpochSeconds: Math.ceil(due.getTime() / 1_000),
           type: "scheduled",
         },
         {
           callback: "anotherCallback",
           id: "unrelated",
           payload: {},
-          time: due.getTime(),
+          timeEpochSeconds: Math.ceil(due.getTime() / 1_000),
           type: "scheduled",
         },
       ]);

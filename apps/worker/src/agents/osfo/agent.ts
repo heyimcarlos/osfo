@@ -370,6 +370,7 @@ import {
   type ReminderDeliveryPorts,
   type ReminderThinkExposure,
 } from "./reminders";
+import { reminderSchedulerDate } from "./reminder-scheduler-time";
 import {
   makeReminderTools,
   reminderManageActionName,
@@ -710,9 +711,9 @@ export class OsfoAgent extends Think<Env> {
       arm: (at, payload) =>
         Effect.tryPromise({
           try: () =>
-            this.schedule(at, "deliverReminder", payload, { idempotent: true }).then(
-              ({ id }) => id,
-            ),
+            this.schedule(reminderSchedulerDate(at), "deliverReminder", payload, {
+              idempotent: true,
+            }).then(({ id }) => id),
           catch: (cause) => new ReminderUnavailable({ cause, operation: "scheduler.arm" }),
         }),
       cancel: (schedulerId) =>
@@ -730,7 +731,7 @@ export class OsfoAgent extends Think<Env> {
                       callback: schedule.callback,
                       id: schedule.id,
                       payload: schedule.payload,
-                      time: schedule.time,
+                      timeEpochSeconds: schedule.time,
                       type: schedule.type,
                     },
                   ]
@@ -2985,7 +2986,24 @@ export class OsfoAgent extends Think<Env> {
   // oxlint-disable-next-line osfo/no-unknown-parameters -- Cloudflare invokes scheduler callbacks with untrusted retained payloads; Reminder authority decodes it once.
   async deliverReminder(payload: unknown): Promise<void> {
     await this.#migrationsReady;
-    await Effect.runPromise(this.#reminders.deliver(payload));
+    await Effect.runPromise(
+      this.#accountDeletionFencedSessionExecution
+        .run(
+          this.#reminders.deliver(payload),
+          () =>
+            new ReminderUnavailable({
+              cause: new Error("Account deletion fenced Reminder delivery"),
+              operation: "deliver.accountDeletionFence",
+            }),
+        )
+        .pipe(
+          Effect.catch((failure) =>
+            failure.operation === "deliver.accountDeletionFence"
+              ? Effect.void
+              : Effect.fail(failure),
+          ),
+        ),
+    );
   }
 
   /** Inspect one committed Reminder source without exposing its private body. */

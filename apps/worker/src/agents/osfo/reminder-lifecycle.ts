@@ -16,6 +16,7 @@ import {
   type ReminderRow,
   type ReminderStorageUnavailable,
 } from "./reminder-storage";
+import { reminderSchedulerEpochSecond } from "./reminder-scheduler-time";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect and Reminder outcomes use the canonical _tag discriminator. */
 /* oxlint-disable osfo/no-unknown-parameters -- The scheduler payload is decoded immediately at this owned trust boundary. */
@@ -67,7 +68,7 @@ export interface ReminderSchedule {
   readonly callback: string;
   readonly id: string;
   readonly payload: unknown;
-  readonly time: number;
+  readonly timeEpochSeconds: number;
   readonly type: "scheduled";
 }
 
@@ -796,7 +797,7 @@ export const makeReminderAuthority = (options: {
         reminder.callbackCapability !== decoded.value.callbackCapability ||
         reminder.revision !== decoded.value.revision ||
         reminder.nextDueAt.getTime() !== decoded.value.nominalDueAt.getTime() ||
-        schedule.time !== reminder.nextDueAt.getTime()
+        schedule.timeEpochSeconds !== reminderSchedulerEpochSecond(reminder.nextDueAt)
       ) {
         staleIds.push(schedule.id);
         continue;
