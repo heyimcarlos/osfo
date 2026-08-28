@@ -6,6 +6,8 @@ export {
   ExecutionUnitWorkflow,
   OsfoAgent,
   OsfoDirectory,
+  ResearchReportTimerWorkflow,
+  ResearchReportWorkflow,
   Sandbox,
   ThinkMessengerStateAgent,
 } from "../../src/worker";

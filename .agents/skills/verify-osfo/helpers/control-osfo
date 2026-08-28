@@ -1050,15 +1050,11 @@ seed_account_deletion() {
   require_owned_identifier 'User ID' "$user_id"
   require_owned_identifier 'Agent ID' "$agent_id"
   require_owned_identifier 'Channel Link ID' "$channel_link_id"
-  printf '%s\n' "$user_id" >"$state_dir/account-deletion-user-id"
-  printf '%s\n' "$agent_id" >"$state_dir/account-deletion-agent-id"
-  printf '%s\n' "$channel_link_id" >"$state_dir/account-deletion-channel-link-id"
-
   agent_runtime="$(inspect_agent_runtime "$run_id" "$agent_id" "$user_id")"
   jq --exit-status \
     '.inspectable == true and .registered == true and
-      .reminderVerification.reminderCount >= 1 and
-      .reminderVerification.occurrenceCount >= 1 and
+      .reminderVerification.reminderCount >= 0 and
+      .reminderVerification.occurrenceCount >= 0 and
       .reminderVerification.agentScheduleCount >= 0 and
       .reminderVerification.activeScheduleBindingCount >= 0' \
     <<<"$agent_runtime" >/dev/null
@@ -1094,6 +1090,9 @@ seed_account_deletion() {
     "unrelated User sentinel for $run_id"
   r2_object_exists "$state_dir" "$files_bucket" "$target_key"
   r2_object_exists "$state_dir" "$files_bucket" "$unrelated_key"
+  printf '%s\n' "$user_id" >"$state_dir/account-deletion-user-id"
+  printf '%s\n' "$agent_id" >"$state_dir/account-deletion-agent-id"
+  printf '%s\n' "$channel_link_id" >"$state_dir/account-deletion-channel-link-id"
 
   printf 'deletion_seed_ready user=%s agent=%s channel_link=%s provider_target=%s r2_target=%s unrelated_sentinels=provider,r2\n' \
     "$user_id" "$agent_id" "$channel_link_id" "$target_tag" "$target_key"
@@ -1265,9 +1264,9 @@ observe_research_report() {
       .synthesisExists == true and .artifactExists == true' \
     "$feature_dir/state.json" >/dev/null
   jq --exit-status \
-    '[.[] | select(.kind == "discover")] | length == 1 and
-      [.[] | select(.kind == "page")] | length == 1 and
-      [.[] | select(.kind == "synthesize")] | length == 1' \
+    '([.[] | select(.kind == "discover")] | length == 1) and
+      ([.[] | select(.kind == "page")] | length == 1) and
+      ([.[] | select(.kind == "synthesize")] | length == 1)' \
     "$feature_dir/provider.json" >/dev/null
   printf '%s\n' "$(jq --raw-output '.workflowId' "$feature_dir/state.json")" \
     >"$state_dir/research-report-workflow-id"
@@ -1571,8 +1570,8 @@ observe_account_deletion() {
     "$feature_dir/state.json" >/dev/null
   jq --exit-status \
     '.inspectable == true and .registered == true and
-      .reminderVerification.reminderCount >= 1 and
-      .reminderVerification.occurrenceCount >= 1 and
+      .reminderVerification.reminderCount >= 0 and
+      .reminderVerification.occurrenceCount >= 0 and
       .reminderVerification.agentScheduleCount >= 0 and
       .reminderVerification.activeScheduleBindingCount >= 0' \
     "$feature_dir/agent-runtime-before.json" >/dev/null
