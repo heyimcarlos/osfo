@@ -7,7 +7,7 @@ import { sessions, users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { deletionCases } from "@osfo/db/schema/user-lifecycle";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
-import { Deferred, Effect, Fiber, Layer, Result } from "effect";
+import { Deferred, Effect, Fiber, Layer, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
 
 import {
@@ -129,6 +129,9 @@ it.effect("never fetches or manifests credential-bearing discovery URLs", () => 
     expect(fixture.pageFetchCalls).toBe(0);
     expect(fixture.evidenceBodies).toEqual([]);
     expect(fixture.manifestWrites).toBe(0);
+    const persistedSearch = fixture.resultJson.get(`${workflowId}:provider:0`) ?? "";
+    expect(persistedSearch).not.toContain("private");
+    expect(persistedSearch).not.toMatch(/access_token|signature/iu);
     expect(Array.from(fixture.operations.values()).some(({ input }) => input._tag === "Page")).toBe(
       false,
     );
@@ -147,6 +150,39 @@ it.effect("does not persist or manifest a credential-bearing final page URL", ()
     expect(fixture.pageFetchCalls).toBe(1);
     expect(fixture.evidenceBodies).toEqual([]);
     expect(fixture.manifestWrites).toBe(0);
+    const persistedPage = fixture.resultJson.get(`${workflowId}:provider:1`) ?? "";
+    expect(persistedPage).toContain('"reason":"unsafeUrl"');
+    expect(persistedPage).toContain("https://example.com/source");
+    expect(persistedPage).not.toContain("private");
+    expect(persistedPage).not.toMatch(/credential|signature/iu);
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
+it.effect("replays benign canonical result JSON and rejects changed provider input", () => {
+  const fixture = makeFixture({ duplicateUrlVariants: true });
+  return Effect.gen(function* () {
+    const collector = yield* ResearchCollector.Service;
+    yield* collector.collect(report);
+    const firstSearch = fixture.resultJson.get(`${workflowId}:provider:0`);
+    const firstPage = fixture.resultJson.get(`${workflowId}:provider:1`);
+
+    yield* collector.collect(report);
+    expect(fixture.discoveryCalls).toBe(1);
+    expect(fixture.pageFetchCalls).toBe(1);
+    expect(fixture.resultJson.get(`${workflowId}:provider:0`)).toBe(firstSearch);
+    expect(fixture.resultJson.get(`${workflowId}:provider:1`)).toBe(firstPage);
+    expect(firstSearch).toContain("https://example.com/source");
+
+    const changed = {
+      ...report,
+      request: ResearchReport.Request.make({
+        ...report.request,
+        queries: ["changed public source query"],
+      }),
+    };
+    const conflict = yield* collector.collect(changed).pipe(Effect.result);
+    expect(conflict).toMatchObject({ failure: { _tag: "ResearchCollectorConflict" } });
+    expect(fixture.discoveryCalls).toBe(1);
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
@@ -388,6 +424,7 @@ const makeFixture = (
   } = {},
 ) => {
   const operations = new Map<string, ResearchCollector.Operation>();
+  const resultJson = new Map<string, string>();
   const failureCodes = new Map<string, string>();
   const evidenceBodies = new Array<string>();
   const removedKeys = new Array<string>();
@@ -437,12 +474,16 @@ const makeFixture = (
             : { _tag: "Created" as const, operation: pending };
         }),
       complete: (operation, result) =>
-        Effect.sync(() => {
-          const retained = operations.get(operation.operationId) ?? operation;
-          const completed = { ...retained, result, state: "completed" as const };
-          operations.set(operation.operationId, completed);
-          return completed;
-        }),
+        Schema.encodeEffect(Schema.fromJsonString(ResearchCollector.OperationResult))(result).pipe(
+          Effect.orDie,
+          Effect.map((encodedResult) => {
+            const retained = operations.get(operation.operationId) ?? operation;
+            const completed = { ...retained, result, state: "completed" as const };
+            operations.set(operation.operationId, completed);
+            resultJson.set(operation.operationId, encodedResult);
+            return completed;
+          }),
+        ),
       finish: (operation, state, safeFailureCode) =>
         Effect.sync(() => {
           const retained = operations.get(operation.operationId) ?? operation;
@@ -597,6 +638,7 @@ const makeFixture = (
     operations,
     port,
     removedKeys,
+    resultJson,
     get discoveryCalls() {
       return discoveryCalls;
     },

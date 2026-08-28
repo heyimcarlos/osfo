@@ -574,15 +574,17 @@ const providerEffect = (
   OperationResult,
   Unavailable | { readonly retry: "ambiguous" | "never" | "transient" }
 > => {
-  if (Predicate.isTagged(operation.input, "Search")) {
-    const input = operation.input;
+  const input = operation.input;
+  if (Predicate.isTagged(input, "Search")) {
     return ports.provider
       .discover(input.query, input.limit)
       .pipe(Effect.map((result) => searchResult(input, result)));
   }
   return ports.provider
-    .fetchPage({ url: operation.input.url })
-    .pipe(Effect.flatMap((page) => pageResult(ports, report, operation.operationId, page)));
+    .fetchPage({ url: input.url })
+    .pipe(
+      Effect.flatMap((page) => pageResult(ports, report, operation.operationId, input.url, page)),
+    );
 };
 
 const searchResult = (
@@ -592,20 +594,20 @@ const searchResult = (
   _tag: "Search",
   query: input.query,
   requestId: result.evidence.requestId,
-  results: result.results.map((item) => ({
-    title: item.title,
-    url: item.url,
-  })),
+  results: result.results.flatMap((item) =>
+    isSafePublicUrl(item.url) ? [{ title: item.title, url: canonicalPublicUrl(item.url) }] : [],
+  ),
 });
 
 const pageResult = (
   ports: PortInterface,
   report: ResearchReport.Record,
   operationId: OperationId,
+  requestedUrl: string,
   page: PageFetch,
 ) =>
   Effect.gen(function* () {
-    const unavailable = unreadablePage(page);
+    const unavailable = unreadablePage(requestedUrl, page);
     if (unavailable !== null) return unavailable;
     const fetchedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     const contentDigest = yield* digest(page.content);
@@ -622,13 +624,18 @@ const pageResult = (
   });
 
 const unreadablePage = (
+  requestedUrl: string,
   page: PageFetch,
 ): Extract<OperationResult, { readonly _tag: "PageUnavailable" }> | null => {
   if (
     page.redirects.some((redirect) => !isSafePublicUrl(redirect)) ||
     !isSafePublicUrl(page.finalUrl)
   ) {
-    return { _tag: "PageUnavailable", reason: "unsafeUrl", url: page.finalUrl };
+    return {
+      _tag: "PageUnavailable",
+      reason: "unsafeUrl",
+      url: canonicalPublicUrl(requestedUrl),
+    };
   }
   if (page.status < 200 || page.status >= 300) {
     return { _tag: "PageUnavailable", reason: "inaccessible", url: page.finalUrl };
