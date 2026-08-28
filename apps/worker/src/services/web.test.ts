@@ -65,6 +65,7 @@ describe("Web", () => {
     const unsafeUrls = [
       `https://example.com/report?redirect=${encodeURIComponent(signedUrl)}`,
       `https://example.com/report?redirect=${encodeURIComponent(encodeURIComponent(signedUrl))}`,
+      `https://example.com/report?redirect=${encodeURIComponent(encodeURIComponent(encodeURIComponent(encodeURIComponent(signedUrl))))}`,
       `https://example.com/report?redirect=${encodeURIComponent(ambiguousSignedUrl)}`,
       `https://example.com/report?next=${encodeURIComponent("auth_token=retained-secret")}`,
     ];
@@ -74,6 +75,11 @@ describe("Web", () => {
       isSafePublicUrl(`https://example.com/report?next=${encodeURIComponent("topic=public")}`),
     ).toBe(true);
     expect(isSafePublicUrl("https://example.com/report?next=ordinary+plain+text")).toBe(true);
+    expect(
+      isSafePublicUrl(
+        `https://example.com/report?next=${encodeURIComponent(encodeURIComponent("public research"))}`,
+      ),
+    ).toBe(true);
     expect(
       isSafePublicUrl(
         `https://example.com/report?redirect=${encodeURIComponent("https://cdn.example.com/report?topic=public&page=2")}`,

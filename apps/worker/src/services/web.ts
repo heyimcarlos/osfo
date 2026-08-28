@@ -727,6 +727,11 @@ const hasUnsafeNestedQueryValue = (value: string, depth: number) => {
     candidates.push(next);
     decoded = next;
   }
+  try {
+    if (decodeURIComponent(decoded) !== decoded) return true;
+  } catch {
+    // Malformed residual escapes are handled by the bounded candidates already collected.
+  }
   return candidates.some((candidate) => {
     let nestedUrl: URL | undefined;
     try {
