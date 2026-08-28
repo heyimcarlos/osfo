@@ -4078,10 +4078,30 @@ export class OsfoAgent extends Think<Env> {
     const submissionId = await Effect.runPromise(
       ScheduledEmailFollowUp.submissionIdFor(notificationId),
     );
-    const self = this;
+    const activateSession = (sessionId: SessionId) => this.#activateSession(sessionId);
+    const markAccepted = () =>
+      this.#markScheduledEmailFollowUpAccepted(notificationId, submissionId);
+    const requestWakeUp = (accepted: ScheduledEmailFollowUp.Notification) =>
+      this.#requestScheduledEmailWakeUp(accepted);
+    const runFollowUp = (current: ScheduledEmailFollowUp.Notification) =>
+      this.runTurn({
+        idempotencyKey: `scheduled-email-follow-up-${submissionId}`,
+        input: {
+          id: submissionId,
+          metadata: { turnMetadata: scheduledEmailFollowUpMetadata(current, submissionId) },
+          parts: [{ text: ScheduledEmailFollowUp.message(current), type: "text" }],
+          role: "user",
+        },
+        metadata: scheduledEmailFollowUpMetadata(current, submissionId),
+        mode: "submit",
+        submissionId,
+      });
+    const selectDeliverySession = (sessionId: SessionId) =>
+      this.#selectScheduledEmailDeliverySession(notificationId, sessionId);
+    const store = this.#store;
     const operation = Effect.gen(function* () {
-      const agent = yield* self.#store.inspect();
-      const route = yield* self.#store.readRoute(notification.routeId);
+      const agent = yield* store.inspect();
+      const route = yield* store.readRoute(notification.routeId);
       const deliveryCandidate = ScheduledEmailFollowUp.deliverySessionFor(
         notification,
         agent.agentId,
@@ -4091,11 +4111,11 @@ export class OsfoAgent extends Think<Env> {
         return yield* scheduledEmailFollowUpUnavailable("authority", notificationId);
       }
       if (notification.acceptedAt !== null) {
-        yield* self.#requestScheduledEmailWakeUp(notification);
+        yield* requestWakeUp(notification);
         return { _tag: "Replayed" as const, notificationId, submissionId };
       }
       const selected = yield* Effect.tryPromise({
-        try: () => self.#selectScheduledEmailDeliverySession(notificationId, deliveryCandidate),
+        try: () => selectDeliverySession(deliveryCandidate),
         catch: (cause) => scheduledEmailFollowUpUnavailable("selectSession", cause),
       });
       const deliverySessionId = ScheduledEmailFollowUp.deliverySessionFor(
@@ -4107,7 +4127,7 @@ export class OsfoAgent extends Think<Env> {
         return yield* scheduledEmailFollowUpUnavailable("selectedSession", notificationId);
       }
       yield* Effect.tryPromise({
-        try: () => self.#activateSession(deliverySessionId),
+        try: () => activateSession(deliverySessionId),
         catch: (cause) => scheduledEmailFollowUpUnavailable("activateSession", cause),
       });
       const current = yield* Effect.tryPromise({
@@ -4122,24 +4142,13 @@ export class OsfoAgent extends Think<Env> {
         return yield* scheduledEmailFollowUpUnavailable("refreshIdentity", notificationId);
       }
       yield* callThinkSubmission("submitScheduledEmailFollowUp.runTurn", () =>
-        self.runTurn({
-          idempotencyKey: `scheduled-email-follow-up-${submissionId}`,
-          input: {
-            id: submissionId,
-            metadata: { turnMetadata: scheduledEmailFollowUpMetadata(current, submissionId) },
-            parts: [{ text: ScheduledEmailFollowUp.message(current), type: "text" }],
-            role: "user",
-          },
-          metadata: scheduledEmailFollowUpMetadata(current, submissionId),
-          mode: "submit",
-          submissionId,
-        }),
+        runFollowUp(current),
       );
       const accepted = yield* Effect.tryPromise({
-        try: () => self.#markScheduledEmailFollowUpAccepted(notificationId, submissionId),
+        try: markAccepted,
         catch: (cause) => scheduledEmailFollowUpUnavailable("markAccepted", cause),
       });
-      yield* self.#requestScheduledEmailWakeUp(accepted);
+      yield* requestWakeUp(accepted);
       return { _tag: "Accepted" as const, notificationId, submissionId };
     }).pipe(
       Effect.mapError((cause) =>
@@ -4227,6 +4236,7 @@ export class OsfoAgent extends Think<Env> {
                   wakeUpId: WhatsAppWakeUps.WakeUpId.make(notification.notificationId),
                 }),
               ),
+              // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The public Agent RPC is the application entry point for this complete Wake-up composition.
               Effect.provide(
                 WhatsAppWakeUpComposition.layer(
                   loadConfig(this.env),

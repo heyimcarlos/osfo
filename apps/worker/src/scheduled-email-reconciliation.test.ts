@@ -1,4 +1,4 @@
-/* oxlint-disable effecttsgo/async-function, vitest/no-standalone-expect -- Promise-only Directory stubs model the Cloudflare RPC boundary. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, vitest/no-standalone-expect -- Promise-only Directory stubs model the Cloudflare RPC boundary with fixed timestamps. */
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
@@ -15,7 +15,7 @@ const candidate = (identity: string, kind: ScheduledEmail.ReconciliationCandidat
     workflowId: ScheduledEmail.WorkflowId.make(`scheduled-email:${identity}`),
   });
 
-const result = (payload: ScheduledEmail.WorkflowPayload, state: ScheduledEmail.State) => ({
+const encodedResult = (payload: ScheduledEmail.WorkflowPayload, state: ScheduledEmail.State) => ({
   dueAt: payload.dueAt.toISOString(),
   sendStartedAt: state === "waiting" ? null : payload.dueAt.toISOString(),
   state,
@@ -28,11 +28,11 @@ it.effect("keeps due recovery fenced and routes claimed recovery through the nar
   const directory = {
     executeScheduledEmail: async (payload: ScheduledEmail.WorkflowPayload) => {
       calls.push(`execute:${payload.workflowId}`);
-      return result(payload, "waiting");
+      return encodedResult(payload, "waiting");
     },
     recoverScheduledEmail: async (payload: ScheduledEmail.WorkflowPayload) => {
       calls.push(`recover:${payload.workflowId}`);
-      return result(payload, "send_pending_reconciliation");
+      return encodedResult(payload, "send_pending_reconciliation");
     },
   };
   return Effect.gen(function* () {
@@ -50,16 +50,16 @@ it.effect("attempts the complete bounded batch before reporting invalid recovery
     },
     recoverScheduledEmail: async (payload: ScheduledEmail.WorkflowPayload) => {
       calls.push(payload.workflowId);
-      return result(payload, "sending");
+      return encodedResult(payload, "sending");
     },
   };
   return Effect.gen(function* () {
-    const result = yield* repair(
+    const repairResult = yield* repair(
       [candidate("c", "due"), candidate("d", "claimed")],
       directory,
     ).pipe(Effect.result);
     expect(calls).toHaveLength(2);
-    expect(result).toMatchObject({
+    expect(repairResult).toMatchObject({
       failure: { message: "Scheduled Email reconciliation is unavailable", operation: "batch" },
     });
   });

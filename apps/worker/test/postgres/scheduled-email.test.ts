@@ -1,4 +1,4 @@
-/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date-in-effect, effecttsgo/strict-effect-provide, vitest/no-standalone-expect -- These tests own native PostgreSQL clients and deterministic lifecycle timestamps. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/global-date-in-effect, effecttsgo/strict-effect-provide, vitest/no-standalone-expect -- These tests own native PostgreSQL clients and deterministic lifecycle timestamps. */
 /* oxlint-disable eslint/no-underscore-dangle -- Assertions inspect canonical tagged outcomes. */
 import { createDb, type Database } from "@osfo/db";
 import { agents } from "@osfo/db/schema/agents";
@@ -28,10 +28,8 @@ import {
 } from "../../src/domain";
 import { ActionId } from "../../src/domain/action-execution";
 import { AuthSessionId } from "../../src/domain/auth-session";
-import {
-  quiesceWorkflows,
-  type Bindings as AccountDeletionBindings,
-} from "../../src/composition/account-deletion";
+import { quiesceWorkflows } from "../../src/composition/account-deletion";
+import type { Bindings } from "../../src/composition/account-deletion";
 import { scheduledEmailSourceAuthority } from "../../src/composition/whatsapp-wakeups";
 import { ScheduledEmailFollowUpPostgres } from "../../src/integrations/postgres/scheduled-email-follow-up";
 import { ScheduledEmailPostgres } from "../../src/integrations/postgres/scheduled-email";
@@ -541,7 +539,7 @@ const applied: IntegrationEffectCompleted = {
   toolkit: "gmail",
 };
 
-const deletionBindings = (terminated: Array<string>): AccountDeletionBindings => {
+const deletionBindings = (terminated: Array<string>): Bindings => {
   const binding = {
     create: async () => ({
       restart: async () => undefined,

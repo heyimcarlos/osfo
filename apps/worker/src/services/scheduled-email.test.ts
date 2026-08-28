@@ -1,5 +1,5 @@
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside Effects returned to it.effect. */
-/* oxlint-disable effecttsgo/global-date -- Fixed authority fixtures prove exact schedule behavior. */
+/* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect -- Fixed authority fixtures prove exact schedule behavior. */
 /* oxlint-disable effecttsgo/strict-effect-provide -- Each it.effect owns its isolated service Layer. */
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";

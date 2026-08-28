@@ -4,7 +4,7 @@ import { Effect, Result, Schema } from "effect";
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { ScheduledEmail } from "../services/scheduled-email";
 
-/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, eslint/no-await-in-loop -- Cloudflare Workflow callbacks are Promise-only; reconciliation polling is sequential and durable. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, eslint/no-await-in-loop, osfo/no-unknown-parameters, osfo/no-unknown-returns -- Cloudflare Workflow and Directory callbacks are Promise-only; untrusted RPC results are decoded immediately, and reconciliation polling is sequential and durable. */
 
 export const ExecutionResult = Schema.Struct({
   dueAt: Schema.DateFromString,

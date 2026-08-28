@@ -36,7 +36,7 @@ import type { Denied } from "../../services/authorization";
 import { ScheduledEmail } from "../../services/scheduled-email";
 import { countActiveWorkflows, lockWorkflowUser } from "./workflow-serialization";
 
-/* oxlint-disable effecttsgo/async-function -- Drizzle transactions serialize irreversible send claims. */
+/* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Drizzle transactions serialize irreversible send claims, and outcomes use the canonical tagged discriminator. */
 
 type Row = typeof scheduledEmails.$inferSelect;
 
@@ -592,7 +592,9 @@ const decodeAdmission = (
     return Effect.fail(conflict(workflowId, "Scheduled Email admission vanished"));
   }
   return decodeRow(outcome.row).pipe(
-    Effect.map((email) => ({ _tag: outcome._tag, email }) as Persisted),
+    Effect.map((email): Persisted =>
+      outcome._tag === "Created" ? { _tag: "Created", email } : { _tag: "Existing", email },
+    ),
   );
 };
 
@@ -620,12 +622,10 @@ const decodeTransition = (
 };
 
 const decodeRow = (row: Row): Effect.Effect<ScheduledEmail.Record, ScheduledEmail.Unavailable> => {
-  const authority = Schema.decodeUnknownResult(Schema.fromJsonString(OriginatingAuthority))(
+  const authority = Schema.decodeResult(Schema.fromJsonString(OriginatingAuthority))(
     row.originating_authority_json,
   );
-  const request = Schema.decodeUnknownResult(Schema.fromJsonString(StoredRequest))(
-    row.request_json,
-  );
+  const request = Schema.decodeResult(Schema.fromJsonString(StoredRequest))(row.request_json);
   if (Result.isFailure(authority) || Result.isFailure(request)) {
     return Effect.fail(
       unavailable("decode", "PostgreSQL returned invalid Scheduled Email JSON", {
@@ -634,7 +634,7 @@ const decodeRow = (row: Row): Effect.Effect<ScheduledEmail.Record, ScheduledEmai
       }),
     );
   }
-  return Schema.decodeUnknownEffect(EncodedRecord)({
+  return Schema.decodeEffect(EncodedRecord)({
     acceptedAt: row.accepted_at,
     actionId: row.action_id,
     admittedAt: row.admitted_at,

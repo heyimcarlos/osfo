@@ -32,7 +32,7 @@ import { currentResourcePriceVersion } from "../domain/usage";
 import {
   type AuthorizationContext,
   type Denied,
-  OriginatingAuthority,
+  type OriginatingAuthority,
   type ApprovalPresentation,
   Authorization,
   approvalFor,
@@ -379,6 +379,7 @@ export const make = Effect.gen(function* () {
       operation,
     );
     if (Predicate.isTagged(result, "Denied")) return yield* Effect.fail(result);
+    return undefined;
   });
 
   const authorizeProtectedSend = Effect.fn("ScheduledEmail.authorizeProtectedSend")(function* (
@@ -399,6 +400,7 @@ export const make = Effect.gen(function* () {
         message: `Current Gmail send authority ended: ${result.reason}`,
       });
     }
+    return undefined;
   });
 
   const accept = Effect.fn("ScheduledEmail.accept")(function* (email: Record) {
@@ -499,15 +501,14 @@ export const make = Effect.gen(function* () {
   ) {
     const outcome = yield* ports.send(email, authorizeProtectedSend(email)).pipe(
       Effect.map((result) => ({ _tag: "Applied" as const, result })),
-      Effect.catchTag("ScheduledEmailSendAuthorityEnded", (failure) =>
-        Effect.succeed({ _tag: "AuthorityEnded" as const, failure }),
-      ),
-      Effect.catchTag("ScheduledEmailSendAmbiguous", (failure) =>
-        Effect.succeed({ _tag: "Ambiguous" as const, failure }),
-      ),
-      Effect.catchTag("ScheduledEmailSendNotApplied", (failure) =>
-        Effect.succeed({ _tag: "NotApplied" as const, failure }),
-      ),
+      Effect.catchTags({
+        ScheduledEmailSendAmbiguous: (failure) =>
+          Effect.succeed({ _tag: "Ambiguous" as const, failure }),
+        ScheduledEmailSendAuthorityEnded: (failure) =>
+          Effect.succeed({ _tag: "AuthorityEnded" as const, failure }),
+        ScheduledEmailSendNotApplied: (failure) =>
+          Effect.succeed({ _tag: "NotApplied" as const, failure }),
+      }),
     );
     const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     if (outcome._tag === "Applied") {

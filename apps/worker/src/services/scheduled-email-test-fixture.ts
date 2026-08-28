@@ -1,3 +1,4 @@
+/* oxlint-disable effecttsgo/global-date -- Fixed timestamps define deterministic Scheduled Email fixtures. */
 import {
   AgentId,
   AllowancePeriodId,

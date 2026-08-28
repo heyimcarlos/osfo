@@ -134,6 +134,7 @@ export const quiesceWorkflows = (bindings: Bindings, database: Database, userId:
         operation: "quiesceWorkflows",
       });
     }
+    return undefined;
   });
 };
 

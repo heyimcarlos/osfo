@@ -8,7 +8,7 @@ import { ScheduledEmail } from "../../services/scheduled-email";
 import { ScheduledEmailFollowUp } from "../../services/scheduled-email-follow-up";
 import { lockWorkflowUser } from "./workflow-serialization";
 
-/* oxlint-disable effecttsgo/async-function -- Drizzle transactions own notification first-write-wins truth. */
+/* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Drizzle transactions own notification first-write-wins truth, and outcomes use the canonical tagged discriminator. */
 
 const selection = {
   acceptedAt: scheduledEmailNotifications.accepted_at,
@@ -334,14 +334,20 @@ const isAccessFenced = async (
   return deletion !== undefined;
 };
 
-const decode = (row: Record<string, unknown>, state: unknown) =>
-  Schema.decodeUnknownEffect(ScheduledEmailFollowUp.Notification)({ ...row, state }).pipe(
+type EncodedNotification = typeof ScheduledEmailFollowUp.Notification.Encoded;
+type EncodedNotificationWithoutState = Omit<EncodedNotification, "state">;
+
+const decode = (row: EncodedNotificationWithoutState, state: ScheduledEmail.State) =>
+  Schema.decodeUnknownEffect(ScheduledEmailFollowUp.Notification.fields.state)(state).pipe(
+    Effect.flatMap((terminalState) =>
+      Schema.decodeEffect(ScheduledEmailFollowUp.Notification)({ ...row, state: terminalState }),
+    ),
     Effect.mapError((cause) => unavailable("decode", cause)),
   );
 
 const requireNotification = (
   notificationId: ScheduledEmailFollowUp.NotificationId,
-  row: (Record<string, unknown> & { readonly state: unknown }) | null,
+  row: (EncodedNotificationWithoutState & { readonly state: ScheduledEmail.State }) | null,
 ) => (row === null ? Effect.fail(unavailable("identity", notificationId)) : decode(row, row.state));
 
 const attempt = <Value>(operation: string, run: () => PromiseLike<Value>) =>

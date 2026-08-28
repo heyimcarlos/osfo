@@ -377,33 +377,33 @@ export const hasExactScheduledEmailStartInput = (
     scheduledEmailPresentationFields(input),
   );
 
-const presentScheduledEmailStartAction = Effect.fn(
-  "ActionPresentation.presentScheduledEmailStart",
-)(function* (pending: PendingThinkAction) {
-  const input = yield* Schema.decodeUnknownEffect(ScheduledEmail.Request)(
-    pending.descriptor.input,
-  ).pipe(
-    Effect.mapError(
-      () =>
-        new ActionPresentationUnavailable({
-          action: pending.descriptor.action,
-          message: "The Scheduled Email input cannot be projected safely",
-        }),
-    ),
-  );
-  return ActionPresentation.make({
-    actionDefinitionVersion: "osfo-scheduled-email-start-v1",
-    actionId: ActionId.make(pending.descriptor.toolCallId),
-    consequences: [
-      "At the exact scheduled instant, send this message from the connected primary Gmail mailbox.",
-    ],
-    description: "Schedule the exact Gmail message and send time shown here.",
-    fields: scheduledEmailPresentationFields(input),
-    operation: "integration.effect",
-    presentationId: ActionPresentationId.make(pending.executionId),
-    title: "Schedule Gmail message",
-  });
-});
+const presentScheduledEmailStartAction = Effect.fn("ActionPresentation.presentScheduledEmailStart")(
+  function* (pending: PendingThinkAction) {
+    const input = yield* Schema.decodeUnknownEffect(ScheduledEmail.Request)(
+      pending.descriptor.input,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "The Scheduled Email input cannot be projected safely",
+          }),
+      ),
+    );
+    return ActionPresentation.make({
+      actionDefinitionVersion: "osfo-scheduled-email-start-v1",
+      actionId: ActionId.make(pending.descriptor.toolCallId),
+      consequences: [
+        "At the exact scheduled instant, send this message from the connected primary Gmail mailbox.",
+      ],
+      description: "Schedule the exact Gmail message and send time shown here.",
+      fields: scheduledEmailPresentationFields(input),
+      operation: "integration.effect",
+      presentationId: ActionPresentationId.make(pending.executionId),
+      title: "Schedule Gmail message",
+    });
+  },
+);
 
 const presentGmailSendAction = Effect.fn("ActionPresentation.presentGmailSend")(function* (
   pending: PendingThinkAction,

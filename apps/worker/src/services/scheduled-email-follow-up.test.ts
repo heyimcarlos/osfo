@@ -1,3 +1,4 @@
+/* oxlint-disable effecttsgo/global-date, vitest/no-standalone-expect -- Fixed timestamps and Effect generators define deterministic follow-up assertions. */
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 

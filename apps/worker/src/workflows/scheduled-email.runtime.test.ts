@@ -1,4 +1,4 @@
-/* oxlint-disable effecttsgo/async-function, vitest/no-standalone-expect -- Promise-only fakes model the Cloudflare Workflow host. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, vitest/no-standalone-expect -- Promise-only fakes model the Cloudflare Workflow host with fixed timestamps. */
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 

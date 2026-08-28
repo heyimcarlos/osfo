@@ -1,3 +1,4 @@
+/* oxlint-disable effecttsgo/prefer-schema-over-json, osfo/no-runtime-typeof, osfo/no-unknown-parameters, typescript/consistent-return, vitest/no-standalone-expect -- This deterministic test-only recorder compares bigint allowance facts without crossing an application trust boundary. */
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 

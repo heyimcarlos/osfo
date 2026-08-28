@@ -1,9 +1,11 @@
-import { Effect, Schema } from "effect";
+import { DateTime, Effect, Schema } from "effect";
 
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/identity";
 import { Db } from "./db";
 import { ScheduledEmailPostgres } from "./integrations/postgres/scheduled-email";
 import { ScheduledEmail } from "./services/scheduled-email";
+
+/* oxlint-disable effecttsgo/async-function, osfo/no-unknown-returns -- Cloudflare Directory RPC results are untrusted and decoded immediately after the Promise boundary. */
 
 const maximumRepairsPerRun = 20;
 const ReconciliationResult = Schema.Struct({ state: ScheduledEmail.State });
@@ -54,7 +56,7 @@ export const run = (env: Pick<Env, "DB" | "OSFO_DIRECTORY">) =>
       Db.database.pipe(
         Effect.flatMap((database) =>
           Effect.gen(function* () {
-            const now = yield* Effect.sync(() => new Date());
+            const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
             const candidates = yield* ScheduledEmailPostgres.reconciliationBatch(
               database,
               now,
@@ -64,6 +66,7 @@ export const run = (env: Pick<Env, "DB" | "OSFO_DIRECTORY">) =>
             yield* repair(candidates, directory);
           }),
         ),
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Scheduled maintenance is an application entry point.
         Effect.provide(Db.layer({ db: env.DB })),
       ),
     ),

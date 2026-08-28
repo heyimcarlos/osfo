@@ -13,7 +13,7 @@ import { ScheduledEmailAccounting } from "../services/scheduled-email-accounting
 import { ScheduledEmailFollowUp } from "../services/scheduled-email-follow-up";
 import type { Integrations } from "../services/integrations";
 
-/* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- Cloudflare Workflow and Agent RPC boundaries are Promise-only and decode untrusted results. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle, osfo/no-unknown-returns, typescript/consistent-return -- This module is the Scheduled Email application composition root. Cloudflare RPC returns are untrusted and decoded immediately after the Promise boundary. */
 
 type WorkflowInstanceHandle = Pick<WorkflowInstance, "status" | "terminate">;
 
@@ -141,41 +141,35 @@ export const serviceLayerFromDatabase = (
               ? Effect.succeed(result)
               : Effect.fail(unavailable("send.readOutcome", result)),
           ),
-          Effect.catchTag("IntegrationActionAmbiguous", (cause) =>
-            Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
-          ),
-          Effect.catchTag("IntegrationActionConflict", (cause) =>
-            Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
-          ),
-          Effect.catchTag("IntegrationConnectionUnavailable", (cause) =>
-            Effect.fail(new ScheduledEmail.SendAuthorityEnded({ message: cause.message })),
-          ),
-          Effect.catchTag("IntegrationExecutionRejected", (cause) =>
-            Effect.fail(
-              new ScheduledEmail.SendNotApplied({
-                message: cause.message,
-                providerLogId: cause.providerLogId ?? null,
-              }),
-            ),
-          ),
-          Effect.catchTag("IntegrationManifestUnavailable", (cause) =>
-            Effect.fail(
-              new ScheduledEmail.SendNotApplied({ message: cause.message, providerLogId: null }),
-            ),
-          ),
-          Effect.catchTag("IntegrationManifestValueInvalid", (cause) =>
-            Effect.fail(
-              new ScheduledEmail.SendNotApplied({ message: cause.message, providerLogId: null }),
-            ),
-          ),
-          Effect.catchTag("IntegrationProviderUnavailable", (cause) =>
-            Effect.fail(
-              new ScheduledEmail.SendNotApplied({ message: cause.message, providerLogId: null }),
-            ),
-          ),
-          Effect.catchTag("IntegrationPersistenceUnavailable", (cause) =>
-            Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
-          ),
+          Effect.catchTags({
+            IntegrationActionAmbiguous: (cause) =>
+              Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
+            IntegrationActionConflict: (cause) =>
+              Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
+            IntegrationConnectionUnavailable: (cause) =>
+              Effect.fail(new ScheduledEmail.SendAuthorityEnded({ message: cause.message })),
+            IntegrationExecutionRejected: (cause) =>
+              Effect.fail(
+                new ScheduledEmail.SendNotApplied({
+                  message: cause.message,
+                  providerLogId: cause.providerLogId ?? null,
+                }),
+              ),
+            IntegrationManifestUnavailable: (cause) =>
+              Effect.fail(
+                new ScheduledEmail.SendNotApplied({ message: cause.message, providerLogId: null }),
+              ),
+            IntegrationManifestValueInvalid: (cause) =>
+              Effect.fail(
+                new ScheduledEmail.SendNotApplied({ message: cause.message, providerLogId: null }),
+              ),
+            IntegrationPersistenceUnavailable: (cause) =>
+              Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
+            IntegrationProviderUnavailable: (cause) =>
+              Effect.fail(
+                new ScheduledEmail.SendNotApplied({ message: cause.message, providerLogId: null }),
+              ),
+          }),
         ),
     workflow: makeWorkflowPort(bindings.SCHEDULED_EMAIL_WORKFLOW),
   });
