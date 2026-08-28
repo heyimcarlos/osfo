@@ -27,6 +27,7 @@ import { DocumentBuildDocument } from "./document-build-document";
 import {
   ArtifactIntegrityFailure,
   ArtifactStoreUnavailable,
+  DocumentCleanupUnavailable,
   type StoredArtifactMetadata,
 } from "./document-generation";
 
@@ -96,11 +97,32 @@ it.effect("resumes pending publication without starting a second compute attempt
     expect(fixture.build().state).toBe("publication_committed");
     expect(fixture.stored()?.retention).toBe("pending");
 
-    const completed = yield* documents.generate(fixture.build());
+    const completed = yield* documents.recoverPublication(fixture.build());
     expect(completed.build.state).toBe("success");
     expect(fixture.computeCalls()).toBe(1);
     expect(fixture.stored()?.retention).toBe("accounted");
   }).pipe(Effect.provide(fixture.layer));
+});
+
+it.effect("retries every post-publication step without rendering or republishing", () => {
+  const fixtures = [
+    publicationFixture({ generatedDocumentFailures: 1 }),
+    publicationFixture({ cleanupFailures: 1 }),
+    publicationFixture({ successFailures: 1 }),
+  ];
+  return Effect.forEach(fixtures, (fixture) =>
+    Effect.gen(function* () {
+      const documents = yield* DocumentBuildDocument.Service;
+      const first = yield* documents.generate(fixture.build()).pipe(Effect.result);
+      expect(first).toMatchObject({ failure: {} });
+      expect(fixture.build().state).toBe("publication_committed");
+
+      const completed = yield* documents.recoverPublication(fixture.build());
+      expect(completed.build.state).toBe("success");
+      expect(fixture.computeCalls()).toBe(1);
+      expect(fixture.publicationCalls()).toBe(1);
+    }).pipe(Effect.provide(fixture.layer)),
+  );
 });
 
 it.effect("records zero User Usage when cancellation wins before publication claim", () => {
@@ -133,14 +155,21 @@ const publicationFixture = (
   options: {
     readonly accountFailures?: number;
     readonly cancelAtPublication?: "after" | "before";
+    readonly cleanupFailures?: number;
     readonly denyAuthorization?: boolean;
+    readonly generatedDocumentFailures?: number;
     readonly invalidValidation?: boolean;
+    readonly successFailures?: number;
   } = {},
 ) => {
   let current = buildRecord();
   let retained: StoredArtifactMetadata | null = null;
   let computeCalls = 0;
   let accountFailures = options.accountFailures ?? 0;
+  let cleanupFailures = options.cleanupFailures ?? 0;
+  let generatedDocumentFailures = options.generatedDocumentFailures ?? 0;
+  let publicationCalls = 0;
+  let successFailures = options.successFailures ?? 0;
   const events: Array<string> = [];
   const contentId = ContentId.make(`document:workflow:${current.workflowId}`);
   const cost = {
@@ -208,6 +237,7 @@ const publicationFixture = (
       Effect.gen(function* () {
         events.push("publication");
         if (build.publicationCommittedAt !== null) return build;
+        publicationCalls += 1;
         if (options.cancelAtPublication === "before") {
           current = {
             ...build,
@@ -230,7 +260,18 @@ const publicationFixture = (
         return current;
       }),
     compute: {
-      dispose: () => Effect.sync(() => void events.push("cleanup")),
+      dispose: () =>
+        Effect.gen(function* () {
+          events.push("cleanup");
+          if (cleanupFailures > 0) {
+            cleanupFailures -= 1;
+            return yield* new DocumentCleanupUnavailable({
+              cause: "Sandbox unavailable",
+              contentId,
+              message: "Sandbox unavailable",
+            });
+          }
+        }),
       generate: () =>
         Effect.sync(() => {
           events.push("compute");
@@ -245,8 +286,16 @@ const publicationFixture = (
       inspect: () => Effect.succeed(null),
     },
     finishSuccess: (build, retainedContentId) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         events.push("success");
+        if (successFailures > 0) {
+          successFailures -= 1;
+          return yield* new DocumentBuild.Unavailable({
+            cause: "PostgreSQL unavailable",
+            message: "PostgreSQL unavailable",
+            operation: "finishSuccess",
+          });
+        }
         current = {
           ...build,
           artifactAccountedAt: now,
@@ -269,8 +318,24 @@ const publicationFixture = (
         return current;
       }),
     maximumComputeUsdMicros: 100n,
-    recordGeneratedDocument: () => Effect.sync(() => void events.push("generated-document")),
-    recordProviderCost: () => Effect.sync(() => void events.push("provider-cost")),
+    recordGeneratedDocument: () =>
+      Effect.gen(function* () {
+        events.push("generated-document");
+        if (generatedDocumentFailures > 0) {
+          generatedDocumentFailures -= 1;
+          return yield* new DocumentBuildDocument.Unavailable({
+            cause: "Usage unavailable",
+            message: "Usage unavailable",
+            operation: "accounting",
+            reason: "storageUnavailable",
+          });
+        }
+      }),
+    recordProviderCost: (build, _contentId, retainedCost) =>
+      Effect.sync(() => {
+        events.push("provider-cost");
+        current = { ...build, costEvidence: retainedCost, providerCostRecordedAt: now };
+      }),
     validator: {
       validate: (retainedContentId, format, bytes, pages) =>
         options.invalidValidation === true
@@ -297,6 +362,7 @@ const publicationFixture = (
     layer: DocumentBuildDocument.layerWithoutDependencies.pipe(
       Layer.provide(Layer.succeed(DocumentBuildDocument.Port, port)),
     ),
+    publicationCalls: () => publicationCalls,
     stored: () => retained,
   };
 };
@@ -344,6 +410,7 @@ const buildRecord = (): DocumentBuild.Record => ({
   safeFailureCode: null,
   sessionId: SessionId.make("document-build-session"),
   startedAt: now,
+  providerCostRecordedAt: null,
   state: "running",
   terminalAt: null,
   userId: UserId.make("document-build-user"),

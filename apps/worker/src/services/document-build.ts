@@ -165,6 +165,7 @@ export interface Record {
   readonly deadlineAt: Date;
   readonly acceptedAt: Date | null;
   readonly startedAt: Date | null;
+  readonly providerCostRecordedAt: Date | null;
   readonly previewStoredAt: Date | null;
   readonly accountingCommittedAt: Date | null;
   readonly publicationCommittedAt: Date | null;
@@ -247,6 +248,13 @@ export interface PortInterface {
       inputDigest: InputDigest,
       contentId: string,
       storedAt: Date,
+    ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+    readonly recordProviderCost: (
+      workflowId: WorkflowId,
+      inputDigest: InputDigest,
+      contentId: string,
+      cost: CostEvidence,
+      recordedAt: Date,
     ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
     readonly markAccountingCommitted: (
       workflowId: WorkflowId,
@@ -477,8 +485,24 @@ export const make = Effect.gen(function* () {
     }
     const current = yield* ports.currentAuthorization(build);
     yield* authorizeContinuation(build, current);
-    yield* revalidateFiles(build);
-    return yield* accept(build);
+    const validation = yield* revalidateFiles(build).pipe(
+      Effect.as({ _tag: "Valid" as const }),
+      Effect.catch(() =>
+        ports.persistence
+          .finishTerminal(
+            build.workflowId,
+            build.inputDigest,
+            "canceled",
+            "source-changed",
+            current.now,
+          )
+          .pipe(
+            Effect.flatMap(settleTerminal),
+            Effect.map((canceled) => ({ _tag: "Canceled" as const, build: canceled })),
+          ),
+      ),
+    );
+    return validation._tag === "Canceled" ? validation.build : yield* accept(build);
   });
 
   const authorizeExecution = Effect.fn("DocumentBuild.authorizeExecution")(function* (
@@ -669,13 +693,13 @@ export const make = Effect.gen(function* () {
     cost: CostEvidence,
   ) {
     const build = yield* inspectExecution(payload);
-    const committedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-    return yield* ports.persistence.markAccountingCommitted(
+    const recordedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    return yield* ports.persistence.recordProviderCost(
       build.workflowId,
       build.inputDigest,
       contentId,
       cost,
-      committedAt,
+      recordedAt,
     );
   });
 
@@ -722,6 +746,20 @@ export const make = Effect.gen(function* () {
       ),
       Effect.flatMap(settleTerminal),
     );
+
+  const finishCanceled = Effect.fn("DocumentBuild.finishCanceled")(function* (
+    payload: WorkflowPayload,
+    code: string,
+  ) {
+    return yield* finishTerminal(payload, "canceled", code);
+  });
+
+  const finishFailure = Effect.fn("DocumentBuild.finishFailure")(function* (
+    payload: WorkflowPayload,
+    code: string,
+  ) {
+    return yield* finishTerminal(payload, "failure", code);
+  });
 
   const start = Effect.fn("DocumentBuild.start")(function* (input: StartInput) {
     const workflowId = yield* workflowIdFor(input.authorization.user.userId, input.actionId);
@@ -834,6 +872,7 @@ export const make = Effect.gen(function* () {
       deadlineAt: deadlineAfter(input.authorization.now),
       acceptedAt: null,
       startedAt: null,
+      providerCostRecordedAt: null,
       previewStoredAt: null,
       accountingCommittedAt: null,
       publicationCommittedAt: null,
@@ -934,8 +973,8 @@ export const make = Effect.gen(function* () {
     cancel,
     commitAccounting,
     commitPublication,
-    finishCanceled: (payload, code) => finishTerminal(payload, "canceled", code),
-    finishFailure: (payload, code) => finishTerminal(payload, "failure", code),
+    finishCanceled,
+    finishFailure,
     finishSuccess,
     inspect,
     inspectExecution,

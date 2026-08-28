@@ -40,6 +40,7 @@ CREATE TABLE "document_builds" (
 	"deadline_at" timestamp with time zone NOT NULL,
 	"accepted_at" timestamp with time zone,
 	"started_at" timestamp with time zone,
+	"provider_cost_recorded_at" timestamp with time zone,
 	"preview_stored_at" timestamp with time zone,
 	"accounting_committed_at" timestamp with time zone,
 	"publication_committed_at" timestamp with time zone,
@@ -75,6 +76,7 @@ CREATE TABLE "document_builds" (
 	CONSTRAINT "document_builds_lifecycle_check" CHECK ("document_builds"."deadline_at" > "document_builds"."admitted_at"
         and ("document_builds"."accepted_at" is null or "document_builds"."accepted_at" >= "document_builds"."admitted_at")
         and ("document_builds"."started_at" is null or ("document_builds"."accepted_at" is not null and "document_builds"."started_at" >= "document_builds"."admitted_at"))
+        and ("document_builds"."provider_cost_recorded_at" is null or ("document_builds"."started_at" is not null and "document_builds"."provider_cost_recorded_at" >= "document_builds"."started_at"))
         and ("document_builds"."preview_stored_at" is null or "document_builds"."preview_stored_at" >= "document_builds"."admitted_at")
         and ("document_builds"."accounting_committed_at" is null or "document_builds"."accounting_committed_at" >= "document_builds"."preview_stored_at")
         and ("document_builds"."publication_committed_at" is null or "document_builds"."publication_committed_at" >= "document_builds"."accounting_committed_at")
@@ -85,7 +87,8 @@ CREATE TABLE "document_builds" (
         and (("document_builds"."state" in ('failure', 'canceled')) = ("document_builds"."safe_failure_code" is not null))
         and ("document_builds"."safe_failure_code" is null or (length(btrim("document_builds"."safe_failure_code")) between 1 and 120))
         and (("document_builds"."artifact_content_id" is null) = ("document_builds"."preview_stored_at" is null))
-        and (("document_builds"."cost_evidence_json" is null) = ("document_builds"."accounting_committed_at" is null))
+        and (("document_builds"."cost_evidence_json" is null) = ("document_builds"."provider_cost_recorded_at" is null))
+        and ("document_builds"."accounting_committed_at" is null or "document_builds"."provider_cost_recorded_at" is not null)
         and ("document_builds"."state" not in ('running', 'preview_stored', 'publication_committed', 'success', 'failure') or ("document_builds"."accepted_at" is not null and "document_builds"."started_at" is not null))
         and ("document_builds"."state" not in ('preview_stored', 'publication_committed', 'success') or ("document_builds"."artifact_content_id" is not null and "document_builds"."preview_stored_at" is not null))
         and ("document_builds"."state" not in ('publication_committed', 'success') or ("document_builds"."accounting_committed_at" is not null and "document_builds"."publication_committed_at" is not null))

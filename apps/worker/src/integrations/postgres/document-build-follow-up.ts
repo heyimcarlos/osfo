@@ -229,7 +229,10 @@ export const make = (database: Database): DocumentBuildFollowUp.PortInterface =>
                 .limit(1);
               return { _tag: "AlreadyClaimed" as const, notificationId: existing?.id ?? null };
             }
-            if (DocumentBuild.terminalStates.has(DocumentBuild.State.make(row.state))) {
+            if (
+              DocumentBuild.terminalStates.has(DocumentBuild.State.make(row.state)) ||
+              row.state === "publication_committed"
+            ) {
               return { _tag: "Terminal" as const };
             }
             if (
@@ -347,6 +350,9 @@ export const make = (database: Database): DocumentBuildFollowUp.PortInterface =>
     enforceDeadline: (payload, now) =>
       attempt("enforceDeadline", () =>
         database.transaction(async (transaction) => {
+          if ((await lockNotificationWorkflowUser(transaction, payload)) === null) {
+            return { _tag: "Conflict" as const };
+          }
           const [row] = await transaction
             .select({
               deadlineAt: documentBuilds.deadline_at,

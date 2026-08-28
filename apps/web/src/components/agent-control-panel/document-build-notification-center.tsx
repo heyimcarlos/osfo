@@ -3,16 +3,31 @@ import { Effect } from "effect";
 import { FileCheck2, FileClock, FileX2, Hammer, X } from "lucide-react";
 import { useState } from "react";
 
+import { apiBaseURL } from "../../config";
 import { inspectDocumentBuildNotifications } from "../../lib/api-client";
 
 /** Authenticated safe status and download projection for delivered Document Builds. */
 export function DocumentBuildNotificationCenter() {
+  return (
+    <DocumentBuildNotificationCenterWithLoader
+      loadNotifications={() => Effect.runPromise(inspectDocumentBuildNotifications)}
+    />
+  );
+}
+
+export function DocumentBuildNotificationCenterWithLoader({
+  loadNotifications,
+}: {
+  readonly loadNotifications: () => Promise<{
+    readonly items: ReadonlyArray<DocumentBuildNotificationSummary>;
+  }>;
+}) {
   const [items, setItems] = useState<ReadonlyArray<DocumentBuildNotificationSummary> | null>(null);
   const [open, setOpen] = useState(false);
   const openCenter = () => {
     setOpen(true);
-    if (items !== null) return;
-    void Effect.runPromise(inspectDocumentBuildNotifications).then(
+    setItems(null);
+    void loadNotifications().then(
       (notifications) => setItems(notifications.items),
       () => setItems([]),
     );
@@ -98,7 +113,7 @@ function NotificationItem({ item }: { readonly item: DocumentBuildNotificationSu
           item.artifactContentId !== null ? (
             <a
               className="mt-2 inline-flex text-xs font-semibold text-[#2568ca] hover:underline"
-              href={`/documents/export?contentId=${encodeURIComponent(item.artifactContentId)}`}
+              href={documentExportUrl(item.artifactContentId)}
             >
               Download {item.format.toUpperCase()}
             </a>
@@ -108,6 +123,12 @@ function NotificationItem({ item }: { readonly item: DocumentBuildNotificationSu
     </li>
   );
 }
+
+export const documentExportUrl = (contentId: string, baseUrl = apiBaseURL) =>
+  new URL(
+    `/documents/export?contentId=${encodeURIComponent(contentId)}`,
+    `${baseUrl.replace(/\/$/u, "")}/`,
+  ).href;
 
 const notificationPresentation = (item: DocumentBuildNotificationSummary) => {
   if (item.kind === "previewReady")

@@ -1,7 +1,7 @@
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { Clock, Effect, Random, Schema } from "effect";
+import { Clock, Effect, Random, Result, Schema } from "effect";
 
 import { ContentId } from "../../domain/client-content";
 import { AllowancePeriodId, UserId } from "../../domain";
@@ -18,7 +18,7 @@ import {
   type ComputeResult,
   type DisposableCompute,
 } from "../../services/document-generation";
-import { attemptKeyFor } from "./document-storage-keys";
+import { attemptKeyFor, ownerKeyFor } from "./document-storage-keys";
 import { DocumentOwnershipIndex } from "./document-ownership-index";
 
 export interface AttemptEvidence {
@@ -60,13 +60,19 @@ export interface AttemptEvidenceStore {
       readonly renderedPageCount: number;
       readonly status: "completed";
     },
-  ) => Promise<void>;
+    revision: string,
+  ) => Promise<boolean>;
   readonly inspect: (contentId: ContentId) => Promise<AttemptEvidence | null>;
+  readonly reclaim: (
+    contentId: ContentId,
+    evidence: AttemptEvidence & { readonly status: "claimed" },
+    revision: string,
+  ) => Promise<string | null>;
   readonly start: (
     contentId: ContentId,
     evidence: AttemptEvidence & { readonly status: "started" },
     revision: string,
-  ) => Promise<boolean>;
+  ) => Promise<string | null>;
 }
 
 /** Narrow Sandbox SDK client needed by the generated-document adapter. */
@@ -246,42 +252,86 @@ const render = async (
     providerOperationId = claimed.evidence.cost.providerOperationId;
     const cost = claimed.evidence.cost;
     let renderedPageCount = claimed.evidence.renderedPageCount;
+    let evidence = claimed.evidence;
+    let revision = claimed.revision;
     if (!claimed.created && claimed.evidence.status === "started") {
-      return claimed.evidence.executionLeaseExpiresAt > currentTimeMillis()
-        ? {
-            _tag: "AttemptPending",
-            cost,
-            evidence: "Another caller owns the live Sandbox execution lease",
-          }
-        : interrupted(cost, "The prior Sandbox execution has no verified terminal result");
-    }
-
-    if (claimed.evidence.status === "claimed") {
-      if (!claimed.created) {
+      if (claimed.evidence.executionLeaseExpiresAt > currentTimeMillis()) {
         return {
           _tag: "AttemptPending",
           cost,
-          evidence: "Another caller owns the durable Sandbox execution transition",
+          evidence: "Another caller owns the live Sandbox execution lease",
         };
       }
+      providerUsePossible = true;
+      const cachedOutput = await withDeadline(sandbox.exists(outputPath), deadlines.rpcMs);
+      if (cachedOutput.exists) {
+        const completedEvidence = {
+          ...claimed.evidence,
+          renderedPageCount: input.source.pages.length,
+          status: "completed" as const,
+        };
+        const completed = await withDeadline(
+          attempts.complete(input.contentId, completedEvidence, claimed.revision),
+          deadlines.rpcMs,
+        );
+        if (!completed) {
+          return {
+            _tag: "AttemptPending",
+            cost,
+            evidence: "Another caller reconciled the expired Sandbox execution lease",
+          };
+        }
+        evidence = completedEvidence;
+        renderedPageCount = completedEvidence.renderedPageCount;
+      } else {
+        const reclaimedEvidence = {
+          ...claimed.evidence,
+          executionLeaseExpiresAt: currentTimeMillis() + executionLeaseMs,
+          renderedPageCount: null,
+          status: "claimed" as const,
+        };
+        const reclaimed = await withDeadline(
+          attempts.reclaim(input.contentId, reclaimedEvidence, claimed.revision),
+          deadlines.rpcMs,
+        );
+        if (reclaimed === null) {
+          return {
+            _tag: "AttemptPending",
+            cost,
+            evidence: "Another caller reclaimed the expired Sandbox execution lease",
+          };
+        }
+        return interrupted(
+          cost,
+          "The expired Sandbox execution was reclaimed after its output was missing",
+        );
+      }
+    }
+
+    if (evidence.status === "claimed") {
       const startAuthorizationFailure = await authorizeWrite();
       if (startAuthorizationFailure !== null) {
         return { _tag: "AuthorizationFailure", cost, failure: startAuthorizationFailure };
       }
       const started = await attempts.start(
         input.contentId,
-        { ...claimed.evidence, status: "started" },
-        claimed.revision,
+        { ...evidence, status: "started" },
+        revision,
       );
-      if (!started) {
+      if (started === null) {
         return {
           _tag: "AttemptPending",
           cost,
           evidence: "Another caller owns the atomic Sandbox execution transition",
         };
       }
+      evidence = { ...evidence, status: "started" };
+      revision = started;
     }
-    if (claimed.evidence.executionLeaseExpiresAt - currentTimeMillis() < minimumProtectedWindowMs) {
+    if (
+      renderedPageCount === null &&
+      evidence.executionLeaseExpiresAt - currentTimeMillis() < minimumProtectedWindowMs
+    ) {
       return {
         _tag: "AttemptPending",
         cost,
@@ -291,7 +341,7 @@ const render = async (
     providerUsePossible = true;
 
     const cachedOutput = await withDeadline(sandbox.exists(outputPath), deadlines.rpcMs);
-    if (!claimed.created && renderedPageCount !== null && !cachedOutput.exists) {
+    if (renderedPageCount !== null && !cachedOutput.exists) {
       return interrupted(
         cost,
         "Completed compute evidence exists but its Sandbox output is unavailable",
@@ -326,14 +376,21 @@ const render = async (
       if (completionAuthorizationFailure !== null) {
         return { _tag: "AuthorizationFailure", cost, failure: completionAuthorizationFailure };
       }
-      await withDeadline(
-        attempts.complete(input.contentId, {
-          ...claimed.evidence,
-          renderedPageCount,
-          status: "completed",
-        }),
+      const completed = await withDeadline(
+        attempts.complete(
+          input.contentId,
+          { ...evidence, renderedPageCount, status: "completed" },
+          revision,
+        ),
         deadlines.rpcMs,
       );
+      if (!completed) {
+        return {
+          _tag: "AttemptPending",
+          cost,
+          evidence: "Another caller owns the atomic Sandbox completion transition",
+        };
+      }
     }
 
     const file = await withDeadline(sandbox.readStream(outputPath), deadlines.rpcMs);
@@ -501,10 +558,12 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
     };
   },
   // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
-  complete: async (contentId, evidence) => {
-    await bucket.put(attemptKeyFor(contentId), new Uint8Array(), {
+  complete: async (contentId, evidence, revision) => {
+    const completed = await bucket.put(attemptKeyFor(contentId), new Uint8Array(), {
       customMetadata: { osfo: encodeAttemptEvidence(evidence) },
+      onlyIf: { etagMatches: revision },
     });
+    return completed !== null;
   },
   // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
   inspect: async (contentId) => {
@@ -515,14 +574,55 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
     return decodeAttemptEvidence(encoded);
   },
   // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
+  reclaim: async (contentId, evidence, revision) => {
+    const reclaimed = await bucket.put(attemptKeyFor(contentId), new Uint8Array(), {
+      customMetadata: { osfo: encodeAttemptEvidence(evidence) },
+      onlyIf: { etagMatches: revision },
+    });
+    return reclaimed?.etag ?? null;
+  },
+  // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
   start: async (contentId, evidence, revision) => {
     const started = await bucket.put(attemptKeyFor(contentId), new Uint8Array(), {
       customMetadata: { osfo: encodeAttemptEvidence(evidence) },
       onlyIf: { etagMatches: revision },
     });
-    return started !== null;
+    return started?.etag ?? null;
   },
 });
+
+/** Remove an unretained attempt only after proving its durable User ownership. */
+export const discardAttemptEvidence = (bucket: R2Bucket, contentId: ContentId, userId: UserId) =>
+  Effect.tryPromise({
+    // oxlint-disable-next-line effecttsgo/async-function -- R2 ownership checks and deletion share one Promise boundary.
+    try: async () => {
+      const attemptKey = attemptKeyFor(contentId);
+      const ownerKey = ownerKeyFor(userId, contentId);
+      const [attempt, owner] = await Promise.all([bucket.head(attemptKey), bucket.head(ownerKey)]);
+      if (attempt !== null) {
+        const encoded = attempt.customMetadata?.osfo;
+        if (encoded === undefined || decodeAttemptEvidence(encoded).userId !== userId) {
+          throw new Error("Document attempt ownership does not match the canceled Workflow");
+        }
+      }
+      if (owner !== null) {
+        const ownership = DocumentOwnershipIndex.decode(owner);
+        if (
+          Result.isFailure(ownership) ||
+          ownership.success.userId !== userId ||
+          ownership.success.contentId !== contentId
+        ) {
+          throw new Error("Document ownership marker does not match the canceled Workflow");
+        }
+      }
+      await bucket.delete([attemptKey, ownerKey]);
+    },
+    catch: (cause) =>
+      new DocumentAttemptEvidenceUnavailable({
+        cause,
+        message: "R2 document attempt cleanup could not prove and remove owned evidence",
+      }),
+  });
 
 const reconciliationCheckpointKey = "document-reconciliation/checkpoint";
 

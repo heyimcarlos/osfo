@@ -16,6 +16,7 @@ import { DocumentBuild } from "../services/document-build";
 import { DocumentBuildAccounting } from "../services/document-build-accounting";
 import { DocumentBuildDocument } from "../services/document-build-document";
 import { DocumentBuildFollowUp } from "../services/document-build-follow-up";
+import type { StoredArtifactMetadata } from "../services/document-generation";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle, typescript/consistent-return -- This module is the Document Build application composition root and adapts Promise-only Cloudflare bindings. */
 
@@ -85,7 +86,11 @@ export const makeWorkflowPort = (
 export const serviceLayerFromDatabase = (
   bindings: Pick<
     Bindings,
-    "ARTIFACTS" | "DOCUMENT_BUILD_TIMER_WORKFLOW" | "DOCUMENT_BUILD_WORKFLOW" | "OSFO_DIRECTORY"
+    | "ARTIFACTS"
+    | "DOCUMENT_BUILD_TIMER_WORKFLOW"
+    | "DOCUMENT_BUILD_WORKFLOW"
+    | "DOCUMENT_SANDBOX"
+    | "OSFO_DIRECTORY"
   >,
   database: Database,
   commitPreviewReadyFollowUp: DocumentBuild.PortInterface["commitPreviewReadyFollowUp"],
@@ -95,7 +100,10 @@ export const serviceLayerFromDatabase = (
     commitPreviewReadyFollowUp,
     commitTerminalFollowUp,
     currentAuthorization: DocumentBuildPostgres.makeCurrentAuthorization(database),
-    discardPendingArtifact: makePendingArtifactDiscarder(bindings.ARTIFACTS),
+    discardPendingArtifact: makePendingArtifactDiscarder(
+      bindings.ARTIFACTS,
+      bindings.DOCUMENT_SANDBOX,
+    ),
     files: makeFileResolver(bindings.OSFO_DIRECTORY),
     persistence: DocumentBuildPostgres.make(database),
     recordWorkflowStart: (build) =>
@@ -115,11 +123,11 @@ export const serviceLayerFromDatabase = (
 };
 
 /** Run one main/timer Workflow callback with fresh PostgreSQL and product services. */
-export const executionEffect = <Value>(
+export const executionEffect = <Value, Failure>(
   env: Bindings,
   commitPreviewReadyFollowUp: DocumentBuild.PortInterface["commitPreviewReadyFollowUp"],
   commitTerminalFollowUp: DocumentBuild.PortInterface["commitTerminalFollowUp"],
-  effect: Effect.Effect<Value, never, DocumentBuild.Service | DocumentBuildDocument.Service>,
+  effect: Effect.Effect<Value, Failure, DocumentBuild.Service | DocumentBuildDocument.Service>,
 ) =>
   Effect.scoped(
     Db.database.pipe(
@@ -193,6 +201,7 @@ export const controlEffect = <Value, Failure>(
     | "DB"
     | "DOCUMENT_BUILD_TIMER_WORKFLOW"
     | "DOCUMENT_BUILD_WORKFLOW"
+    | "DOCUMENT_SANDBOX"
     | "OSFO_DIRECTORY"
   >,
   commitPreviewReadyFollowUp: DocumentBuild.PortInterface["commitPreviewReadyFollowUp"],
@@ -360,28 +369,73 @@ const makeAccounting = (database: Database) =>
 
 const makePendingArtifactDiscarder = (
   bucket: R2Bucket,
+  sandbox: Env["DOCUMENT_SANDBOX"],
 ): DocumentBuild.PortInterface["discardPendingArtifact"] =>
   Effect.fn("DocumentBuildComposition.discardPendingArtifact")(function* (build) {
-    if (build.artifactContentId === null) return;
-    const contentId = ContentId.make(build.artifactContentId);
+    const contentId = ContentId.make(`document:workflow:${build.workflowId}`);
     const artifacts = DocumentArtifacts.make(bucket);
-    const retained = yield* artifacts
-      .inspect(contentId)
-      .pipe(
-        Effect.mapError((cause) => documentBuildUnavailable("artifact.discard.inspect", cause)),
-      );
-    if (retained === null) return;
-    const owner = DocumentArtifact.DocumentOwner.make({
-      _tag: "Workflow",
-      workflowId: build.workflowId,
+    const { DocumentCompute } = yield* Effect.promise(
+      () => import("../integrations/cloudflare/document-compute"),
+    );
+    yield* discardPendingArtifact(build, {
+      deleteArtifact: (retained) =>
+        artifacts
+          .delete(retained)
+          .pipe(
+            Effect.mapError((cause) => documentBuildUnavailable("artifact.discard.delete", cause)),
+          ),
+      discardAttempt: () =>
+        DocumentCompute.discardAttemptEvidence(bucket, contentId, build.userId).pipe(
+          Effect.mapError((cause) => documentBuildUnavailable("artifact.discard.attempt", cause)),
+        ),
+      dispose: () =>
+        DocumentCompute.make(sandbox, bucket, maximumDocumentBuildComputeUsdMicros)
+          .dispose(contentId)
+          .pipe(
+            Effect.mapError((cause) => documentBuildUnavailable("artifact.discard.sandbox", cause)),
+          ),
+      inspectArtifact: () =>
+        artifacts
+          .inspect(contentId)
+          .pipe(
+            Effect.mapError((cause) => documentBuildUnavailable("artifact.discard.inspect", cause)),
+          ),
     });
-    if (retained.userId !== build.userId || !DocumentArtifact.sameOwner(retained.owner, owner)) {
-      return yield* documentBuildUnavailable("artifact.discard.identity", retained.owner);
-    }
-    yield* artifacts
-      .delete(retained)
-      .pipe(Effect.mapError((cause) => documentBuildUnavailable("artifact.discard.delete", cause)));
   });
+
+interface PendingArtifactCleanupPorts {
+  readonly deleteArtifact: (
+    artifact: StoredArtifactMetadata,
+  ) => Effect.Effect<void, DocumentBuild.Unavailable>;
+  readonly discardAttempt: () => Effect.Effect<void, DocumentBuild.Unavailable>;
+  readonly dispose: () => Effect.Effect<void, DocumentBuild.Unavailable>;
+  readonly inspectArtifact: () => Effect.Effect<
+    StoredArtifactMetadata | null,
+    DocumentBuild.Unavailable
+  >;
+}
+
+/** Settle deterministic pending storage even when PostgreSQL missed the preview marker. */
+export const discardPendingArtifact = Effect.fn(
+  "DocumentBuildComposition.discardPendingArtifactEvidence",
+)(function* (
+  build: Pick<DocumentBuild.Record, "userId" | "workflowId">,
+  ports: PendingArtifactCleanupPorts,
+) {
+  const retained = yield* ports.inspectArtifact();
+  const owner = DocumentArtifact.DocumentOwner.make({
+    _tag: "Workflow",
+    workflowId: build.workflowId,
+  });
+  if (
+    retained !== null &&
+    (retained.userId !== build.userId || !DocumentArtifact.sameOwner(retained.owner, owner))
+  ) {
+    return yield* documentBuildUnavailable("artifact.discard.identity", retained.owner);
+  }
+  yield* retained === null ? ports.discardAttempt() : ports.deleteArtifact(retained);
+  yield* ports.dispose();
+});
 
 const createWorkflowInstance = (
   binding: WorkflowBinding,

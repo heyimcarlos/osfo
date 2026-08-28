@@ -1,5 +1,6 @@
 import { documentBuildNotifications, documentBuilds } from "@osfo/db/schema/document-builds";
 import { researchReportNotifications, researchReports } from "@osfo/db/schema/research-reports";
+import { users } from "@osfo/db/schema/auth";
 import { and, eq, gt, inArray, sql } from "drizzle-orm";
 
 import type { Database } from "@osfo/db";
@@ -28,11 +29,20 @@ const researchActiveStates = [
   "cancel_requested",
 ] as const;
 
-/** One User-scoped identity serializes Workflow admission, callbacks, milestones, and deletion. */
-export const lockWorkflowUser = (transaction: Transaction, userId: UserId | string) =>
-  transaction.execute(
+/** Lock one User row before the shared Workflow advisory identity, in that order everywhere. */
+export const lockWorkflowUser = async (transaction: Transaction, userId: UserId | string) => {
+  const [user] = await transaction
+    .select({ userId: users.id })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1)
+    .for("update");
+  if (user === undefined) return false;
+  await transaction.execute(
     sql`select pg_advisory_xact_lock(hashtextextended(${`workflow:user:${userId}`}, 0))`,
   );
+  return true;
+};
 
 /** Count every live Workflow family while the canonical User lock is held. */
 export const countActiveWorkflows = async (transaction: Transaction, userId: UserId | string) => {

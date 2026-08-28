@@ -80,6 +80,7 @@ it.effect("admits Free Document Build despite the superseded zero Workflow count
           }),
         markAccountingCommitted: () => Effect.die(new Error("Unexpected accounting")),
         markPreviewStored: () => Effect.die(new Error("Unexpected preview")),
+        recordProviderCost: () => Effect.die(new Error("Unexpected provider cost")),
         requestCancel: () => Effect.die(new Error("Unexpected cancel")),
       },
       recordWorkflowStart: () => Effect.void,
@@ -139,6 +140,7 @@ it.effect("continues admitted work after allowance exhaustion while denying a ne
         markAccepted: () => Effect.succeed(build),
         markAccountingCommitted: () => Effect.succeed(build),
         markPreviewStored: () => Effect.succeed(build),
+        recordProviderCost: () => Effect.succeed(build),
         requestCancel: () => Effect.succeed(build),
       },
       recordWorkflowStart: () => Effect.void,
@@ -215,6 +217,7 @@ it.effect("reconciles both Workflow hosts and start accounting before callback e
           }),
         markAccountingCommitted: () => Effect.succeed(current),
         markPreviewStored: () => Effect.succeed(current),
+        recordProviderCost: () => Effect.succeed(current),
         requestCancel: () => Effect.succeed(current),
       },
       recordWorkflowStart: () => Effect.sync(() => void events.push("workflow-start")),
@@ -235,6 +238,69 @@ it.effect("reconciles both Workflow hosts and start accounting before callback e
 
     expect(events).toEqual(["hosts-created", "accepted", "workflow-start", "begin:accepted"]);
     expect(current.state).toBe("running");
+  }),
+);
+
+it.effect("cancels and settles when admitted source facts change before host acceptance", () =>
+  Effect.gen(function* () {
+    const request = yield* DocumentBuild.storedRequestFor("pdf", [resolvedFile("source text")]);
+    const workflowId = DocumentBuild.WorkflowId.make("document-build:source-changed");
+    const instances = yield* DocumentBuild.cloudflareInstanceIdsFor(workflowId);
+    let current: DocumentBuild.Record = {
+      ...buildRecord(workflowId, instances, request),
+      acceptedAt: null,
+      startedAt: null,
+      state: "admitted",
+    };
+    let cleanups = 0;
+    let followUps = 0;
+    const changedFile = {
+      ...resolvedFile("changed source text"),
+      sha256: FileDigest.make(`sha256:${"d".repeat(64)}`),
+    };
+    const port = DocumentBuild.Port.of({
+      commitPreviewReadyFollowUp: () => Effect.void,
+      commitTerminalFollowUp: () => Effect.sync(() => void (followUps += 1)),
+      currentAuthorization: () => Effect.succeed(availableAuthorization()),
+      discardPendingArtifact: () => Effect.sync(() => void (cleanups += 1)),
+      files: { resolve: () => Effect.succeed([changedFile]) },
+      persistence: {
+        admit: () => Effect.succeed({ _tag: "Existing" as const, build: current }),
+        beginExecution: () => Effect.die(new Error("Changed source must not execute")),
+        commitPublication: () => Effect.succeed(current),
+        enforceDeadline: () => Effect.succeed(current),
+        finishSuccess: () => Effect.succeed(current),
+        finishTerminal: (_workflowId, _digest, state, safeFailureCode, terminalAt) =>
+          Effect.sync(() => {
+            current = { ...current, safeFailureCode, state, terminalAt };
+            return current;
+          }),
+        inspect: () => Effect.succeed(current),
+        markAccepted: () => Effect.die(new Error("Changed source must not be accepted")),
+        markAccountingCommitted: () => Effect.succeed(current),
+        markPreviewStored: () => Effect.succeed(current),
+        recordProviderCost: () => Effect.succeed(current),
+        requestCancel: () => Effect.succeed(current),
+      },
+      recordWorkflowStart: () => Effect.die(new Error("Changed source must not be accounted")),
+      workflow: { create: () => Effect.void, terminate: () => Effect.void },
+    });
+    const result = yield* DocumentBuild.Service.pipe(
+      Effect.flatMap((builds) =>
+        builds.beginExecution({ inputDigest: current.inputDigest, workflowId }),
+      ),
+      Effect.provide(
+        DocumentBuild.layerWithoutDependencies.pipe(
+          Layer.provide(Layer.succeed(DocumentBuild.Port, port)),
+        ),
+      ),
+      Effect.result,
+    );
+
+    expect(result).toMatchObject({ failure: { _tag: "DocumentBuildConflict" } });
+    expect(current).toMatchObject({ safeFailureCode: "source-changed", state: "canceled" });
+    expect(cleanups).toBe(1);
+    expect(followUps).toBe(1);
   }),
 );
 
@@ -279,6 +345,7 @@ it.effect("retries terminal cleanup and follow-up after canceled truth is alread
         markAccepted: () => Effect.succeed(canceled),
         markAccountingCommitted: () => Effect.succeed(canceled),
         markPreviewStored: () => Effect.succeed(canceled),
+        recordProviderCost: () => Effect.succeed(canceled),
         requestCancel: () => Effect.succeed(canceled),
       },
       recordWorkflowStart: () => Effect.void,
@@ -342,6 +409,7 @@ it.effect("replays idempotent cleanup after a transient terminal follow-up failu
         markAccepted: () => Effect.succeed(canceled),
         markAccountingCommitted: () => Effect.succeed(canceled),
         markPreviewStored: () => Effect.succeed(canceled),
+        recordProviderCost: () => Effect.succeed(canceled),
         requestCancel: () => Effect.succeed(canceled),
       },
       recordWorkflowStart: () => Effect.void,
@@ -461,6 +529,7 @@ const buildRecord = (
   safeFailureCode: null,
   sessionId: SessionId.make("document-build-session"),
   startedAt: productNow,
+  providerCostRecordedAt: null,
   state: "running",
   terminalAt: null,
   userId,

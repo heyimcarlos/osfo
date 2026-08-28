@@ -54,22 +54,24 @@ export type UsefulDocumentAccounting =
   | { readonly _tag: "Shared"; readonly event: UsageEvent };
 
 export const make = (port: Port): Interface => ({
-  recordGeneratedDocument: (build, artifact, renderCost) =>
-    usefulDocumentAccountingFor(build, artifact, renderCost).pipe(
-      Effect.flatMap((accounting) =>
-        accounting._tag === "Shared"
-          ? port.recordUsageEvent(accounting.event)
-          : Effect.forEach(
-              accounting.facts,
-              ({ items, source }) => port.recordLegacy(build.allowancePeriodId, source, items),
-              { discard: true },
-            ),
+  recordGeneratedDocument: Effect.fn("DocumentBuildAccounting.recordGeneratedDocument")(
+    (build, artifact, renderCost) =>
+      usefulDocumentAccountingFor(build, artifact, renderCost).pipe(
+        Effect.flatMap((accounting) =>
+          accounting._tag === "Shared"
+            ? port.recordUsageEvent(accounting.event)
+            : Effect.forEach(
+                accounting.facts,
+                ({ items, source }) => port.recordLegacy(build.allowancePeriodId, source, items),
+                { discard: true },
+              ),
+        ),
+        Effect.mapError((cause) =>
+          unavailable("usefulDocument", "Useful Document Build accounting is unavailable", cause),
+        ),
       ),
-      Effect.mapError((cause) =>
-        unavailable("usefulDocument", "Useful Document Build accounting is unavailable", cause),
-      ),
-    ),
-  recordWorkflowStart: (build) =>
+  ),
+  recordWorkflowStart: Effect.fn("DocumentBuildAccounting.recordWorkflowStart")((build) =>
     build.planPolicyVersion !== "launch-v1"
       ? Effect.void
       : port
@@ -83,6 +85,7 @@ export const make = (port: Port): Interface => ({
               unavailable("workflowStart", "Document Build start accounting is unavailable", cause),
             ),
           ),
+  ),
 });
 
 /** Build final useful accounting without charging failed or canceled attempts. */

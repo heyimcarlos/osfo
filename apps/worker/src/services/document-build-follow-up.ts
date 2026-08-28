@@ -145,16 +145,21 @@ export const make = Effect.gen(function* () {
   const port = yield* Port;
   const now = DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
   return Service.of({
-    claimPreview: (payload) => now.pipe(Effect.flatMap((time) => port.claimPreview(payload, time))),
-    claimTerminal: (payload) =>
+    claimPreview: Effect.fn("DocumentBuildFollowUp.claimPreview")((payload) =>
+      now.pipe(Effect.flatMap((time) => port.claimPreview(payload, time))),
+    ),
+    claimTerminal: Effect.fn("DocumentBuildFollowUp.claimTerminal")((payload) =>
       now.pipe(Effect.flatMap((time) => port.claimTerminal(payload, time))),
-    deliveredForUser: port.deliveredForUser,
-    enforceDeadline: (payload) =>
+    ),
+    deliveredForUser: Effect.fn("DocumentBuildFollowUp.deliveredForUser")(port.deliveredForUser),
+    enforceDeadline: Effect.fn("DocumentBuildFollowUp.enforceDeadline")((payload) =>
       now.pipe(Effect.flatMap((time) => port.enforceDeadline(payload, time))),
-    inspect: port.inspect,
-    inspectSchedule: port.inspectSchedule,
-    markAccepted: (notificationId, submissionId) =>
+    ),
+    inspect: Effect.fn("DocumentBuildFollowUp.inspect")(port.inspect),
+    inspectSchedule: Effect.fn("DocumentBuildFollowUp.inspectSchedule")(port.inspectSchedule),
+    markAccepted: Effect.fn("DocumentBuildFollowUp.markAccepted")((notificationId, submissionId) =>
       now.pipe(Effect.flatMap((time) => port.markAccepted(notificationId, submissionId, time))),
+    ),
   });
 });
 

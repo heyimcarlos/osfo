@@ -129,6 +129,7 @@ const renderCost = {
 const buildRecord = (policy: "launch-v1" | "shared-usage-v1"): DocumentBuild.Record => ({
   acceptedAt: occurredAt,
   accountingCommittedAt: occurredAt,
+  providerCostRecordedAt: occurredAt,
   actionId: ActionId.make("document-build-accounting-action"),
   admittedAt: occurredAt,
   agentId: AgentId.make("document-build-agent"),

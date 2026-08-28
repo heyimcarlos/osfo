@@ -124,7 +124,7 @@ const makePort = (bindings: Bindings) =>
           );
           return Effect.gen(function* () {
             const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-            const [instanceIds, documentInstanceIds] = yield* Effect.all([
+            const [instanceIds, documentQuiescence] = yield* Effect.all([
               ResearchReportPostgres.quiesceForAccountDeletion(database, userId, now),
               DocumentBuildPostgres.quiesceForAccountDeletion(database, userId, now),
             ]).pipe(
@@ -137,6 +137,13 @@ const makePort = (bindings: Bindings) =>
                   }),
               ),
             );
+            if (documentQuiescence._tag === "RecoveryPending") {
+              return yield* new AccountDeletion.AccountDeletionUnavailable({
+                cause: documentQuiescence.workflowIds,
+                message: "A committed Document Build publication is still recovering",
+                operation: "quiesceWorkflows",
+              });
+            }
             yield* Effect.all(
               [
                 Effect.forEach(instanceIds, workflow.terminate, {
@@ -144,7 +151,7 @@ const makePort = (bindings: Bindings) =>
                   discard: true,
                 }),
                 Effect.forEach(
-                  documentInstanceIds,
+                  documentQuiescence.instances,
                   ({ main, timer }) => documentWorkflow.terminate(main, timer),
                   { concurrency: 2, discard: true },
                 ),
@@ -160,6 +167,7 @@ const makePort = (bindings: Bindings) =>
                   }),
               ),
             );
+            return undefined;
           });
         },
       },

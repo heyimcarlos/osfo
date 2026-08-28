@@ -1333,6 +1333,7 @@ observe_document_build() {
       'admittedAt', db.admitted_at,
       'acceptedAt', db.accepted_at,
       'startedAt', db.started_at,
+      'providerCostRecordedAt', db.provider_cost_recorded_at,
       'previewStoredAt', db.preview_stored_at,
       'accountingCommittedAt', db.accounting_committed_at,
       'publicationCommittedAt', db.publication_committed_at,
@@ -1403,7 +1404,8 @@ observe_document_build() {
       .artifactContentId == ("document:workflow:" + .workflowId) and
       (.inputDigest | test("^[0-9a-f]{64}$")) and .sourceCount == 1 and
       .sourceMediaType == "text/plain" and
-      .acceptedAt != null and .startedAt != null and .previewStoredAt != null and
+      .acceptedAt != null and .startedAt != null and .providerCostRecordedAt != null and
+      .previewStoredAt != null and .providerCostRecordedAt <= .previewStoredAt and
       .accountingCommittedAt != null and .publicationCommittedAt != null and
       .artifactAccountedAt != null and .terminalAt != null and
       .elapsedSeconds >= 0 and .elapsedSeconds <= 3600 and

@@ -123,41 +123,60 @@ it.effect("retains one exact request and serializes preview publication against 
 
     const publicationWinner = record("d", "publication-winner");
     yield* persistence.admit(publicationWinner, 3n);
+    const acceptedAt = new Date("2099-08-28T12:00:01.000Z");
+    const startedAt = new Date("2099-08-28T12:00:02.000Z");
+    const providerCostRecordedAt = new Date("2099-08-28T12:00:03.000Z");
+    const previewStoredAt = new Date("2099-08-28T12:00:04.000Z");
+    const accountingCommittedAt = new Date("2099-08-28T12:00:05.000Z");
+    const publicationCommittedAt = new Date("2099-08-28T12:00:06.000Z");
     yield* persistence.markAccepted(
       publicationWinner.workflowId,
       publicationWinner.inputDigest,
-      admittedAt,
+      acceptedAt,
     );
     yield* persistence.beginExecution(
       publicationWinner.workflowId,
       publicationWinner.inputDigest,
-      admittedAt,
+      startedAt,
     );
     const winnerContentId = `document:workflow:${publicationWinner.workflowId}`;
+    const winnerCost = {
+      _tag: "Incurred" as const,
+      allowancePeriodId,
+      basis: "observed" as const,
+      providerOperationId: "document-build-publication-winner",
+      usdMicros: 25n,
+    };
+    const costRecorded = yield* persistence.recordProviderCost(
+      publicationWinner.workflowId,
+      publicationWinner.inputDigest,
+      winnerContentId,
+      winnerCost,
+      providerCostRecordedAt,
+    );
+    expect(costRecorded).toMatchObject({
+      accountingCommittedAt: null,
+      providerCostRecordedAt,
+      state: "running",
+    });
     yield* persistence.markPreviewStored(
       publicationWinner.workflowId,
       publicationWinner.inputDigest,
       winnerContentId,
-      admittedAt,
+      previewStoredAt,
     );
     yield* persistence.markAccountingCommitted(
       publicationWinner.workflowId,
       publicationWinner.inputDigest,
       winnerContentId,
-      {
-        _tag: "Incurred",
-        allowancePeriodId,
-        basis: "observed",
-        providerOperationId: "document-build-publication-winner",
-        usdMicros: 25n,
-      },
-      admittedAt,
+      winnerCost,
+      accountingCommittedAt,
     );
     const published = yield* persistence.commitPublication(
       publicationWinner.workflowId,
       publicationWinner.inputDigest,
       winnerContentId,
-      admittedAt,
+      publicationCommittedAt,
     );
     const losingCancel = yield* persistence.requestCancel(
       publicationWinner.workflowId,
@@ -167,12 +186,50 @@ it.effect("retains one exact request and serializes preview publication against 
     expect(published.state).toBe("publication_committed");
     expect(losingCancel.state).toBe("publication_committed");
     expect(
+      yield* DocumentBuildFollowUpPostgres.make(fixture.database).claimPreview(
+        payloadFor(publicationWinner),
+        publicationCommittedAt,
+      ),
+    ).toEqual({ _tag: "Terminal" });
+    expect(
       yield* persistence.enforceDeadline(
         publicationWinner.workflowId,
         publicationWinner.inputDigest,
         new Date("2099-08-28T14:00:00.000Z"),
       ),
     ).toMatchObject({ state: "publication_committed" });
+    yield* Effect.promise(() =>
+      fixture.database.insert(deletionCases).values({
+        access_fenced_at: new Date("2099-08-28T12:00:07.000Z"),
+        approval_action_id: "publication-winner-delete-action",
+        approval_presentation: "Delete Account",
+        deletion_case_id: "publication-winner-delete-case",
+        reason: "User requested account deletion",
+        requested_by_user_id: userId,
+        user_id: userId,
+      }),
+    );
+    expect(
+      yield* DocumentBuildPostgres.quiesceForAccountDeletion(
+        fixture.database,
+        userId,
+        new Date("2099-08-28T12:00:08.000Z"),
+      ),
+    ).toEqual({ _tag: "RecoveryPending", workflowIds: [publicationWinner.workflowId] });
+    const succeeded = yield* persistence.finishSuccess(
+      publicationWinner.workflowId,
+      publicationWinner.inputDigest,
+      winnerContentId,
+      new Date("2099-08-28T12:00:09.000Z"),
+    );
+    expect(succeeded.state).toBe("success");
+    expect(
+      yield* DocumentBuildPostgres.quiesceForAccountDeletion(
+        fixture.database,
+        userId,
+        new Date("2099-08-28T12:00:10.000Z"),
+      ),
+    ).toMatchObject({ _tag: "Ready" });
   }).pipe(Effect.scoped),
 );
 
@@ -249,14 +306,14 @@ it.effect(
       yield* persistence.markAccepted(failed.workflowId, failed.inputDigest, admittedAt);
       yield* persistence.beginExecution(failed.workflowId, failed.inputDigest, admittedAt);
       const failedContentId = `document:workflow:${failed.workflowId}`;
-      const costCommitted = yield* persistence.markAccountingCommitted(
+      const costCommitted = yield* persistence.recordProviderCost(
         failed.workflowId,
         failed.inputDigest,
         failedContentId,
         cost,
         admittedAt,
       );
-      const costReplay = yield* persistence.markAccountingCommitted(
+      const costReplay = yield* persistence.recordProviderCost(
         failed.workflowId,
         failed.inputDigest,
         failedContentId,
@@ -282,17 +339,28 @@ it.effect(
       yield* persistence.markAccepted(deadline.workflowId, deadline.inputDigest, admittedAt);
       yield* persistence.beginExecution(deadline.workflowId, deadline.inputDigest, admittedAt);
       const deadlineContentId = `document:workflow:${deadline.workflowId}`;
-      yield* persistence.markAccountingCommitted(
+      const deadlineCost = {
+        ...cost,
+        providerOperationId: "document-build-deadline-provider-operation",
+      };
+      yield* persistence.recordProviderCost(
         deadline.workflowId,
         deadline.inputDigest,
         deadlineContentId,
-        { ...cost, providerOperationId: "document-build-deadline-provider-operation" },
+        deadlineCost,
         admittedAt,
       );
       yield* persistence.markPreviewStored(
         deadline.workflowId,
         deadline.inputDigest,
         deadlineContentId,
+        admittedAt,
+      );
+      yield* persistence.markAccountingCommitted(
+        deadline.workflowId,
+        deadline.inputDigest,
+        deadlineContentId,
+        deadlineCost,
         admittedAt,
       );
       expect(
@@ -316,17 +384,28 @@ it.effect(
       yield* persistence.markAccepted(fenced.workflowId, fenced.inputDigest, admittedAt);
       yield* persistence.beginExecution(fenced.workflowId, fenced.inputDigest, admittedAt);
       const fencedContentId = `document:workflow:${fenced.workflowId}`;
-      yield* persistence.markAccountingCommitted(
+      const fencedCost = {
+        ...cost,
+        providerOperationId: "document-build-fenced-provider-operation",
+      };
+      yield* persistence.recordProviderCost(
         fenced.workflowId,
         fenced.inputDigest,
         fencedContentId,
-        { ...cost, providerOperationId: "document-build-fenced-provider-operation" },
+        fencedCost,
         admittedAt,
       );
       yield* persistence.markPreviewStored(
         fenced.workflowId,
         fenced.inputDigest,
         fencedContentId,
+        admittedAt,
+      );
+      yield* persistence.markAccountingCommitted(
+        fenced.workflowId,
+        fenced.inputDigest,
+        fencedContentId,
+        fencedCost,
         admittedAt,
       );
       yield* Effect.promise(() =>
@@ -368,6 +447,20 @@ it.effect("claims preview and terminal follow-ups exactly once and suppresses la
     yield* persistence.markAccepted(build.workflowId, build.inputDigest, admittedAt);
     yield* persistence.beginExecution(build.workflowId, build.inputDigest, admittedAt);
     const contentId = `document:workflow:${build.workflowId}`;
+    const followUpCost = {
+      _tag: "Incurred" as const,
+      allowancePeriodId,
+      basis: "observed" as const,
+      providerOperationId: "document-build-follow-up",
+      usdMicros: 25n,
+    };
+    yield* persistence.recordProviderCost(
+      build.workflowId,
+      build.inputDigest,
+      contentId,
+      followUpCost,
+      admittedAt,
+    );
     yield* persistence.markPreviewStored(build.workflowId, build.inputDigest, contentId, previewAt);
     const payload = payloadFor(build);
 
@@ -383,13 +476,7 @@ it.effect("claims preview and terminal follow-ups exactly once and suppresses la
       build.workflowId,
       build.inputDigest,
       contentId,
-      {
-        _tag: "Incurred",
-        allowancePeriodId,
-        basis: "observed",
-        providerOperationId: "document-build-follow-up",
-        usdMicros: 25n,
-      },
+      followUpCost,
       terminalAt,
     );
     yield* persistence.commitPublication(
@@ -570,6 +657,50 @@ it.effect("serializes concurrent cross-type milestone claims at the global cap",
   }).pipe(Effect.scoped),
 );
 
+it.effect("serializes a milestone claim behind deletion fencing without deadlock", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedUser(fixture.database);
+    const builds = DocumentBuildPostgres.make(fixture.database);
+    const followUps = DocumentBuildFollowUpPostgres.make(fixture.database);
+    const dueAt = new Date("2099-08-28T12:16:00.000Z");
+    const build = record("e", "milestone-deletion-race");
+    yield* builds.admit(build, 10n);
+    yield* builds.markAccepted(build.workflowId, build.inputDigest, admittedAt);
+    yield* builds.beginExecution(build.workflowId, build.inputDigest, admittedAt);
+    yield* builds.markPreviewStored(
+      build.workflowId,
+      build.inputDigest,
+      `document:workflow:${build.workflowId}`,
+      dueAt,
+    );
+
+    const acquired = deferred();
+    const release = deferred();
+    const fence = fixture.database.transaction(async (transaction) => {
+      await lockWorkflowUser(transaction, userId);
+      acquired.resolve();
+      await release.promise;
+      await transaction.insert(deletionCases).values({
+        access_fenced_at: dueAt,
+        approval_action_id: "milestone-race-delete-action",
+        approval_presentation: "Delete Account",
+        deletion_case_id: "milestone-race-delete-case",
+        reason: "User requested account deletion",
+        requested_by_user_id: userId,
+        user_id: userId,
+      });
+    });
+    yield* Effect.promise(() => acquired.promise);
+    const claim = Effect.runPromise(followUps.claimPreview(payloadFor(build), dueAt));
+    release.resolve();
+    yield* Effect.promise(() => fence);
+    expect(yield* Effect.promise(() => claim)).toEqual({ _tag: "Suppressed" });
+  }).pipe(Effect.scoped),
+);
+
 it.effect("quiesces deletion-fenced builds and cascades private follow-up truth", () =>
   Effect.gen(function* () {
     const fixture = yield* makeTestDatabase;
@@ -609,9 +740,10 @@ it.effect("quiesces deletion-fenced builds and cascades private follow-up truth"
       userId,
       previewAt,
     );
-    expect(instances).toEqual([
-      { main: build.cloudflareInstanceId, timer: build.cloudflareTimerInstanceId },
-    ]);
+    expect(instances).toEqual({
+      _tag: "Ready",
+      instances: [{ main: build.cloudflareInstanceId, timer: build.cloudflareTimerInstanceId }],
+    });
     expect(yield* persistence.inspect(build.workflowId)).toMatchObject({
       safeFailureCode: "account-deletion",
       state: "canceled",
@@ -768,6 +900,7 @@ const record = (digest: string, identity = "test"): DocumentBuild.Record => {
     safeFailureCode: null,
     sessionId: SessionId.make("document-build-session"),
     startedAt: null,
+    providerCostRecordedAt: null,
     state: "admitted",
     terminalAt: null,
     userId,

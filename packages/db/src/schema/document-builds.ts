@@ -56,6 +56,7 @@ export const documentBuilds = pgTable(
     deadline_at: timestamp({ withTimezone: true }).notNull(),
     accepted_at: timestamp({ withTimezone: true }),
     started_at: timestamp({ withTimezone: true }),
+    provider_cost_recorded_at: timestamp({ withTimezone: true }),
     preview_stored_at: timestamp({ withTimezone: true }),
     accounting_committed_at: timestamp({ withTimezone: true }),
     publication_committed_at: timestamp({ withTimezone: true }),
@@ -116,6 +117,7 @@ export const documentBuilds = pgTable(
       sql`${table.deadline_at} > ${table.admitted_at}
         and (${table.accepted_at} is null or ${table.accepted_at} >= ${table.admitted_at})
         and (${table.started_at} is null or (${table.accepted_at} is not null and ${table.started_at} >= ${table.admitted_at}))
+        and (${table.provider_cost_recorded_at} is null or (${table.started_at} is not null and ${table.provider_cost_recorded_at} >= ${table.started_at}))
         and (${table.preview_stored_at} is null or ${table.preview_stored_at} >= ${table.admitted_at})
         and (${table.accounting_committed_at} is null or ${table.accounting_committed_at} >= ${table.preview_stored_at})
         and (${table.publication_committed_at} is null or ${table.publication_committed_at} >= ${table.accounting_committed_at})
@@ -126,7 +128,8 @@ export const documentBuilds = pgTable(
         and ((${table.state} in ('failure', 'canceled')) = (${table.safe_failure_code} is not null))
         and (${table.safe_failure_code} is null or (length(btrim(${table.safe_failure_code})) between 1 and 120))
         and ((${table.artifact_content_id} is null) = (${table.preview_stored_at} is null))
-        and ((${table.cost_evidence_json} is null) = (${table.accounting_committed_at} is null))
+        and ((${table.cost_evidence_json} is null) = (${table.provider_cost_recorded_at} is null))
+        and (${table.accounting_committed_at} is null or ${table.provider_cost_recorded_at} is not null)
         and (${table.state} not in ('running', 'preview_stored', 'publication_committed', 'success', 'failure') or (${table.accepted_at} is not null and ${table.started_at} is not null))
         and (${table.state} not in ('preview_stored', 'publication_committed', 'success') or (${table.artifact_content_id} is not null and ${table.preview_stored_at} is not null))
         and (${table.state} not in ('publication_committed', 'success') or (${table.accounting_committed_at} is not null and ${table.publication_committed_at} is not null))

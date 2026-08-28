@@ -109,6 +109,12 @@ export interface Interface {
     { readonly artifact: DocumentArtifact.ArtifactRef; readonly build: DocumentBuild.Record },
     Unavailable
   >;
+  readonly recoverPublication: (
+    build: DocumentBuild.Record,
+  ) => Effect.Effect<
+    { readonly artifact: DocumentArtifact.ArtifactRef; readonly build: DocumentBuild.Record },
+    Unavailable
+  >;
 }
 
 export class Service extends Context.Service<Service, Interface>()("@osfo/DocumentBuildDocument") {}
@@ -180,8 +186,20 @@ export const make = Effect.gen(function* () {
           "intentConflict",
         );
       }
+      if (admitted.state === "publication_committed" || admitted.state === "success") {
+        const completed = yield* recoverPublished(ports, admitted, existing);
+        return { artifact: existing.artifact, build: completed };
+      }
       const completed = yield* publishRetained(ports, admitted, existing);
       return { artifact: existing.artifact, build: completed };
+    }
+    if (admitted.state === "publication_committed" || admitted.state === "success") {
+      return yield* unavailable(
+        "inspect",
+        "The published Document Build artifact is unavailable for recovery",
+        admitted.artifactContentId,
+        "recoveryPending",
+      );
     }
 
     yield* authorize(admitted);
@@ -312,7 +330,40 @@ export const make = Effect.gen(function* () {
     return generated.success;
   });
 
-  return Service.of({ discard, generate });
+  const recoverPublication = Effect.fn("DocumentBuildDocument.recoverPublication")(function* (
+    build: DocumentBuild.Record,
+  ) {
+    if (build.state !== "publication_committed" && build.state !== "success") {
+      return yield* unavailable(
+        "publish",
+        "Only an irreversible publication winner can be recovered",
+        build.state,
+        "intentConflict",
+      );
+    }
+    const contentId = contentIdFor(build);
+    const existing = yield* inspect(ports, contentId);
+    if (existing === null) {
+      return yield* unavailable(
+        "inspect",
+        "The published Document Build artifact is unavailable for recovery",
+        contentId,
+        "recoveryPending",
+      );
+    }
+    if (!sameIdentity(existing, build, yield* digestIntent(build))) {
+      return yield* unavailable(
+        "inspect",
+        "The published Document Build artifact owns changed immutable facts",
+        existing,
+        "intentConflict",
+      );
+    }
+    const completed = yield* recoverPublished(ports, build, existing);
+    return { artifact: existing.artifact, build: completed };
+  });
+
+  return Service.of({ discard, generate, recoverPublication });
 });
 
 export const layerWithoutDependencies = Layer.effect(Service, make);
@@ -350,6 +401,15 @@ const publishRetained = Effect.fn("DocumentBuildDocument.publishRetained")(funct
     .pipe(
       Effect.mapError((cause) => unavailable("publish", "Publication lost its state race", cause)),
     );
+  return yield* recoverPublished(ports, published, retained);
+});
+
+const recoverPublished = Effect.fn("DocumentBuildDocument.recoverPublished")(function* (
+  ports: PortInterface,
+  published: DocumentBuild.Record,
+  retained: StoredArtifactMetadata,
+) {
+  const contentId = retained.artifact.content.contentId;
   yield* ports.recordGeneratedDocument(published, retained.artifact, retained.cost);
   yield* ports.artifacts
     .account(contentId)

@@ -71,11 +71,7 @@ export const fenceDeletionCaseAccess = (
   candidate: ExactDeletionCaseAuthority,
 ) =>
   database.transaction(async (transaction) => {
-    // User is the canonical first lock for every authoritative User/Deletion Case transaction.
-    const user = await lockDeletionCaseUser(transaction, candidate.userId);
-    if (user === undefined) return false;
-    // Serialize the durable fence with every User-owned Workflow admission and publication claim.
-    await lockWorkflowUser(transaction, candidate.userId);
+    if (!(await lockWorkflowUser(transaction, candidate.userId))) return false;
     if (candidate._tag === "Administrative") {
       // Serialize revocation with the whole fence transaction; the case lock alone cannot
       // keep a distinct Administrative Authority current through session deletion.

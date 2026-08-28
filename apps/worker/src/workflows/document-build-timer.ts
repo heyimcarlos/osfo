@@ -2,11 +2,11 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import { Effect, Result, Schema } from "effect";
 
 import { runInvocationEffect } from "../adapters/host";
-import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { DocumentBuildComposition } from "../composition/document-build";
 import { decodeOsfoStage, type OsfoStage } from "../config";
 import { makeWorkflowRuntime } from "../layers";
 import { DocumentBuild } from "../services/document-build";
+import { DocumentBuildDocument } from "../services/document-build-document";
 import { DocumentBuildFollowUp } from "../services/document-build-follow-up";
 import { matchesInstanceIdentity } from "./document-build-host-outcome";
 
@@ -71,6 +71,9 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
         break;
       }
       if (claimed._tag === "Terminal") {
+        const terminalSchedule = await step.do("recover committed document publication", () =>
+          this.#recoverPublication(event.instanceId, stage.value, payload),
+        );
         const terminalFollowUp = await this.#claimAndSubmitTerminal(
           step,
           event.instanceId,
@@ -78,7 +81,9 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
           payload,
         );
         return {
-          deadline: "terminal",
+          deadline: DocumentBuild.terminalStates.has(terminalSchedule.state)
+            ? "terminal"
+            : "notDue",
           preview: "suppressed",
           terminalFollowUp,
           workflowId: payload.workflowId,
@@ -99,9 +104,17 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
       DocumentBuild.terminalStates.has(afterPreview.state) ||
       afterPreview.state === "publication_committed"
     ) {
-      const terminalFollowUp = DocumentBuild.terminalStates.has(afterPreview.state)
-        ? await this.#claimAndSubmitTerminal(step, event.instanceId, stage.value, payload)
-        : "notTerminal";
+      if (afterPreview.state === "publication_committed") {
+        await step.do("recover committed document publication", () =>
+          this.#recoverPublication(event.instanceId, stage.value, payload),
+        );
+      }
+      const terminalFollowUp = await this.#claimAndSubmitTerminal(
+        step,
+        event.instanceId,
+        stage.value,
+        payload,
+      );
       return { deadline: "terminal", preview, terminalFollowUp, workflowId: payload.workflowId };
     }
 
@@ -112,6 +125,11 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
     if (deadline._tag === "Canceled") {
       await step.do("discard canceled document and commit terminal follow-up", () =>
         this.#settleCanceled(event.instanceId, stage.value, payload),
+      );
+    }
+    if (deadline._tag === "Terminal" && deadline.build.state === "publication_committed") {
+      await step.do("recover deadline publication winner", () =>
+        this.#recoverPublication(event.instanceId, stage.value, payload),
       );
     }
     const terminalFollowUp =
@@ -143,7 +161,34 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
           const builds = yield* DocumentBuild.Service;
           const canceled = yield* builds.finishCanceled(payload, "deadline-exceeded");
           return { state: canceled.state };
-        }).pipe(Effect.orDie),
+        }),
+      ),
+    );
+  }
+
+  #recoverPublication(
+    instanceId: string,
+    stage: OsfoStage,
+    payload: DocumentBuild.WorkflowPayload,
+  ) {
+    const bindings = DocumentBuildComposition.bindingsFromEnv(this.env);
+    return runInvocationEffect(
+      makeWorkflowRuntime(instanceId, stage),
+      DocumentBuildComposition.executionEffect(
+        bindings,
+        DocumentBuildComposition.makePreviewReadyFollowUpCommitter(bindings),
+        DocumentBuildComposition.makeTerminalFollowUpCommitter(bindings),
+        Effect.gen(function* () {
+          const builds = yield* DocumentBuild.Service;
+          const documents = yield* DocumentBuildDocument.Service;
+          const build = yield* builds.inspectExecution(payload);
+          if (build.state === "publication_committed") {
+            return yield* documents
+              .recoverPublication(build)
+              .pipe(Effect.map(({ build: completed }) => completed));
+          }
+          return build;
+        }),
       ),
     );
   }
@@ -175,14 +220,28 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
       makeWorkflowRuntime(instanceId, stage),
       DocumentBuildComposition.followUpEffect(
         { DB: this.env.DB },
-        DocumentBuildFollowUp.Service.pipe(Effect.flatMap(operation), Effect.orDie),
+        DocumentBuildFollowUp.Service.pipe(
+          Effect.flatMap(operation),
+          Effect.mapError(
+            (cause) =>
+              new DocumentBuild.Unavailable({
+                cause,
+                message: "Document Build follow-up persistence is unavailable",
+                operation: "followUp.timer",
+              }),
+          ),
+        ),
       ),
     );
   }
 
   async #submitFollowUp(notificationId: DocumentBuildFollowUp.NotificationId) {
-    const directory = this.env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
-    const result = await directory.submitDocumentBuildFollowUp(notificationId);
+    const result = await Effect.runPromise(
+      DocumentBuildComposition.submitFollowUp(
+        { OSFO_DIRECTORY: this.env.OSFO_DIRECTORY },
+        notificationId,
+      ),
+    );
     if (result._tag !== "Accepted" && result._tag !== "Replayed") {
       throw new Error(`Document Build follow-up was not accepted: ${result._tag}`);
     }

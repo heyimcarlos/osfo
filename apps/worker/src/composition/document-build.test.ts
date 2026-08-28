@@ -2,8 +2,12 @@
 import { expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 
+import { AllowancePeriodId, UserId } from "../domain";
+import { ContentId } from "../domain/client-content";
+import { DocumentArtifact } from "../domain/document-artifact";
 import { DocumentBuild } from "../services/document-build";
 import { DocumentBuildFollowUp } from "../services/document-build-follow-up";
+import { DocumentIntentDigest } from "../services/document-generation";
 import { DocumentBuildComposition } from "./document-build";
 
 const mainId = DocumentBuild.CloudflareInstanceId.make("document-build-main");
@@ -115,3 +119,56 @@ it.effect("keeps Directory follow-up outages in the typed retryable channel", ()
     });
   }),
 );
+
+it.effect("cleans attempt evidence and Sandbox after a crash before the preview marker", () => {
+  const events = new Array<string>();
+  return Effect.gen(function* () {
+    yield* DocumentBuildComposition.discardPendingArtifact(
+      {
+        userId: UserId.make("document-build-user"),
+        workflowId: DocumentBuild.WorkflowId.make("document-build:crash-cleanup"),
+      },
+      {
+        deleteArtifact: () => Effect.sync(() => void events.push("artifact")),
+        discardAttempt: () => Effect.sync(() => void events.push("attempt")),
+        dispose: () => Effect.sync(() => void events.push("sandbox")),
+        inspectArtifact: () => Effect.succeed(null),
+      },
+    );
+    expect(events).toEqual(["attempt", "sandbox"]);
+  });
+});
+
+it.effect("does not delete or dispose compute for a foreign pending artifact", () => {
+  const events = new Array<string>();
+  const workflowId = DocumentBuild.WorkflowId.make("document-build:foreign-cleanup");
+  const contentId = ContentId.make(`document:workflow:${workflowId}`);
+  return Effect.gen(function* () {
+    const artifact = yield* DocumentArtifact.make(contentId, "pdf", 3, 1, "f".repeat(64));
+    const result = yield* DocumentBuildComposition.discardPendingArtifact(
+      { userId: UserId.make("document-build-user"), workflowId },
+      {
+        deleteArtifact: () => Effect.sync(() => void events.push("artifact")),
+        discardAttempt: () => Effect.sync(() => void events.push("attempt")),
+        dispose: () => Effect.sync(() => void events.push("sandbox")),
+        inspectArtifact: () =>
+          Effect.succeed({
+            allowancePeriodId: AllowancePeriodId.make("document-build-period"),
+            artifact,
+            cost: { _tag: "ProvenNoUse" },
+            format: "pdf",
+            intentDigest: DocumentIntentDigest.make("a".repeat(64)),
+            owner: DocumentArtifact.DocumentOwner.make({
+              _tag: "Workflow",
+              workflowId: DocumentBuild.WorkflowId.make("document-build:other"),
+            }),
+            retention: "pending",
+            userId: UserId.make("other-user"),
+          }),
+      },
+    ).pipe(Effect.result);
+
+    expect(result).toMatchObject({ failure: { operation: "artifact.discard.identity" } });
+    expect(events).toEqual([]);
+  });
+});
