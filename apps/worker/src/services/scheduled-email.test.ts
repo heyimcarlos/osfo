@@ -200,6 +200,52 @@ describe("ScheduledEmail", () => {
       expect(fixture.followUps).toBe(1);
     }).pipe(Effect.provide(layer(fixture.port)));
   });
+
+  it.effect(
+    "resumes the same Action safely after a crash between send claim and Action retain",
+    () => {
+      const fixture = makeFixture();
+      return Effect.gen(function* () {
+        yield* TestClock.setTime(now.getTime());
+        const emails = yield* ScheduledEmail.Service;
+        const started = yield* emails.start(startInput());
+        const payload = payloadFor(started.email);
+        yield* emails.beginWaiting(payload);
+        yield* TestClock.setTime(scheduledAt.getTime());
+        yield* fixture.port.persistence.beginSend(
+          started.email.workflowId,
+          started.email.inputDigest,
+          scheduledAt,
+        );
+        fixture.reconciliation = { _tag: "NotStarted" };
+
+        const recovered = yield* emails.sendDue(payload);
+        expect(recovered).toMatchObject({ sendOutcome: "applied", state: "success" });
+        expect(fixture.sendAttempts).toBe(1);
+      }).pipe(Effect.provide(layer(fixture.port)));
+    },
+  );
+
+  it.effect("reconciles ambiguous Applied truth despite a later cancellation request", () => {
+    const fixture = makeFixture({ sendOutcome: "ambiguous" });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      yield* TestClock.setTime(scheduledAt.getTime());
+      yield* emails.sendDue(payload);
+      const cancellation = yield* emails.cancel(started.email.workflowId, userId);
+      expect(cancellation).toMatchObject({ _tag: "ReconciliationRequired" });
+      fixture.reconciliation = { _tag: "Applied", result: applied };
+
+      const reconciled = yield* emails.sendDue(payload);
+      expect(reconciled).toMatchObject({ sendOutcome: "applied", state: "success" });
+      expect(fixture.sendAttempts).toBe(1);
+      expect(fixture.followUps).toBe(1);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
 });
 
 const startInput = (overrides: Partial<ScheduledEmail.StartInput> = {}) => ({
@@ -288,7 +334,10 @@ const makeFixture = (
     return Effect.succeed(applied);
   };
 
-  const requireStored = (workflowId: ScheduledEmail.WorkflowId, digest: ScheduledEmail.InputDigest) =>
+  const requireStored = (
+    workflowId: ScheduledEmail.WorkflowId,
+    digest: ScheduledEmail.InputDigest,
+  ) =>
     Effect.gen(function* () {
       if (stored === null) return yield* new ScheduledEmail.NotFound({ workflowId });
       if (stored.inputDigest !== digest) {
@@ -317,7 +366,11 @@ const makeFixture = (
       beginSend: (workflowId, digest, startedAt) =>
         requireStored(workflowId, digest).pipe(
           Effect.map((email) => {
-            stored = { ...email, sendStartedAt: email.sendStartedAt ?? startedAt, state: "sending" };
+            stored = {
+              ...email,
+              sendStartedAt: email.sendStartedAt ?? startedAt,
+              state: "sending",
+            };
             return stored;
           }),
         ),
@@ -403,10 +456,7 @@ const makeFixture = (
         }
       }),
     reconcileSend: () => Effect.succeed(reconciliation),
-    send: (_email, authorize) =>
-      authorize.pipe(
-        Effect.andThen(Effect.suspend(sendResult)),
-      ),
+    send: (_email, authorize) => authorize.pipe(Effect.andThen(Effect.suspend(sendResult))),
     workflow: {
       create: (instanceId) =>
         Effect.sync(() => {
@@ -437,6 +487,12 @@ const makeFixture = (
     },
     instances,
     port,
+    get reconciliation() {
+      return reconciliation;
+    },
+    set reconciliation(value: ScheduledEmail.SendReconciliation) {
+      reconciliation = value;
+    },
     get sendAttempts() {
       return sendAttempts;
     },
@@ -448,6 +504,8 @@ const makeFixture = (
 
 const payloadFor = (email: ScheduledEmail.Record) =>
   ScheduledEmail.WorkflowPayload.make({
+    agentId: email.agentId,
+    dueAt: email.dueAt,
     inputDigest: email.inputDigest,
     workflowId: email.workflowId,
   });

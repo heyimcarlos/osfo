@@ -5,6 +5,7 @@ export * from "./billing";
 export * from "./channel-links";
 export * from "./document-builds";
 export * from "./research-reports";
+export * from "./scheduled-emails";
 export * from "./user-lifecycle";
 export * from "./webhooks";
 export * from "./whatsapp-wakeups";

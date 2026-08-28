@@ -1,5 +1,6 @@
 import { documentBuildNotifications, documentBuilds } from "@osfo/db/schema/document-builds";
 import { researchReportNotifications, researchReports } from "@osfo/db/schema/research-reports";
+import { scheduledEmails } from "@osfo/db/schema/scheduled-emails";
 import { users } from "@osfo/db/schema/auth";
 import { and, eq, gt, inArray, sql } from "drizzle-orm";
 
@@ -29,6 +30,14 @@ const researchActiveStates = [
   "cancel_requested",
 ] as const;
 
+const scheduledEmailActiveStates = [
+  "admitted",
+  "accepted",
+  "waiting",
+  "sending",
+  "send_pending_reconciliation",
+] as const;
+
 /** Lock one User row before the shared Workflow advisory identity, in that order everywhere. */
 export const lockWorkflowUser = async (transaction: Transaction, userId: UserId | string) => {
   const [user] = await transaction
@@ -46,7 +55,7 @@ export const lockWorkflowUser = async (transaction: Transaction, userId: UserId 
 
 /** Count every live Workflow family while the canonical User lock is held. */
 export const countActiveWorkflows = async (transaction: Transaction, userId: UserId | string) => {
-  const [builds, reports] = await Promise.all([
+  const [builds, reports, emails] = await Promise.all([
     transaction
       .select({ count: sql<number>`count(*)::integer` })
       .from(documentBuilds)
@@ -65,8 +74,17 @@ export const countActiveWorkflows = async (transaction: Transaction, userId: Use
           inArray(researchReports.state, researchActiveStates),
         ),
       ),
+    transaction
+      .select({ count: sql<number>`count(*)::integer` })
+      .from(scheduledEmails)
+      .where(
+        and(
+          eq(scheduledEmails.user_id, userId),
+          inArray(scheduledEmails.state, scheduledEmailActiveStates),
+        ),
+      ),
   ]);
-  return (builds[0]?.count ?? 0) + (reports[0]?.count ?? 0);
+  return (builds[0]?.count ?? 0) + (reports[0]?.count ?? 0) + (emails[0]?.count ?? 0);
 };
 
 /** Count every claimed progress milestone in the shared rolling User window. */

@@ -21,7 +21,12 @@ import {
   selectManagedRoute,
   sharedUsageModelAccessPolicy,
 } from "../domain/model-access-policy";
-import { isLaunchPolicy, policyFor, policyForVersion, retainedCatalog } from "../domain/plan-policy";
+import {
+  isLaunchPolicy,
+  policyFor,
+  policyForVersion,
+  retainedCatalog,
+} from "../domain/plan-policy";
 import { currentResourcePriceVersion } from "../domain/usage";
 import {
   type AuthorizationContext,
@@ -61,6 +66,8 @@ export const Request = Schema.Struct({
 export type Request = typeof Request.Type;
 
 export const WorkflowPayload = Schema.Struct({
+  agentId: AgentId,
+  dueAt: Schema.Date,
   inputDigest: InputDigest,
   workflowId: WorkflowId,
 });
@@ -135,6 +142,7 @@ export type CancelResult =
 
 export type SendReconciliation =
   | { readonly _tag: "Applied"; readonly result: IntegrationEffectCompleted }
+  | { readonly _tag: "NotStarted" }
   | { readonly _tag: "NotApplied"; readonly providerLogId: string | null }
   | { readonly _tag: "Pending" };
 
@@ -173,7 +181,9 @@ type Persisted =
   | { readonly _tag: "Existing"; readonly email: Record };
 
 export interface PortInterface {
-  readonly currentAuthorization: (email: Record) => Effect.Effect<AuthorizationContext, Unavailable>;
+  readonly currentAuthorization: (
+    email: Record,
+  ) => Effect.Effect<AuthorizationContext, Unavailable>;
   readonly send: (
     email: Record,
     authorization: Effect.Effect<void, SendAuthorityEnded | Unavailable>,
@@ -296,6 +306,8 @@ export const make = Effect.gen(function* () {
     const instanceId = yield* cloudflareInstanceIdFor(payload.workflowId);
     if (
       email.inputDigest !== payload.inputDigest ||
+      email.agentId !== payload.agentId ||
+      email.dueAt.getTime() !== payload.dueAt.getTime() ||
       email.cloudflareInstanceId !== instanceId
     ) {
       return yield* new Conflict({
@@ -344,25 +356,25 @@ export const make = Effect.gen(function* () {
     if (Predicate.isTagged(result, "Denied")) return yield* Effect.fail(result);
   });
 
-  const authorizeProtectedSend = Effect.fn("ScheduledEmail.authorizeProtectedSend")(
-    function* (email: Record) {
-      const current = yield* ports.currentAuthorization(email);
-      const operation = integrationOperation(email.actionId);
-      const result = authorization.recheck(
-        {
-          ...current,
-          approval: approvalFor(email.userId, operation, email.approvalPresentation),
-          subscription: { ...current.subscription, planPolicyVersion: email.planPolicyVersion },
-        },
-        operation,
-      );
-      if (Predicate.isTagged(result, "Denied")) {
-        return yield* new SendAuthorityEnded({
-          message: `Current Gmail send authority ended: ${result.reason}`,
-        });
-      }
-    },
-  );
+  const authorizeProtectedSend = Effect.fn("ScheduledEmail.authorizeProtectedSend")(function* (
+    email: Record,
+  ) {
+    const current = yield* ports.currentAuthorization(email);
+    const operation = integrationOperation(email.actionId);
+    const result = authorization.recheck(
+      {
+        ...current,
+        approval: approvalFor(email.userId, operation, email.approvalPresentation),
+        subscription: { ...current.subscription, planPolicyVersion: email.planPolicyVersion },
+      },
+      operation,
+    );
+    if (Predicate.isTagged(result, "Denied")) {
+      return yield* new SendAuthorityEnded({
+        message: `Current Gmail send authority ended: ${result.reason}`,
+      });
+    }
+  });
 
   const accept = Effect.fn("ScheduledEmail.accept")(function* (email: Record) {
     if (email.state !== "admitted") {
@@ -428,11 +440,7 @@ export const make = Effect.gen(function* () {
     return yield* ports.persistence.markWaiting(email.workflowId, email.inputDigest, waitingAt);
   });
 
-  const finishCanceled = (
-    email: Record,
-    safeFailureCode: string,
-    terminalAt: Date,
-  ) =>
+  const finishCanceled = (email: Record, safeFailureCode: string, terminalAt: Date) =>
     ports.persistence
       .finishTerminal(
         email.workflowId,
@@ -461,10 +469,51 @@ export const make = Effect.gen(function* () {
       )
       .pipe(Effect.flatMap(settleTerminal));
 
+  const executeClaimedSend = Effect.fn("ScheduledEmail.executeClaimedSend")(function* (
+    email: Record,
+  ) {
+    const outcome = yield* ports.send(email, authorizeProtectedSend(email)).pipe(
+      Effect.map((result) => ({ _tag: "Applied" as const, result })),
+      Effect.catchTag("ScheduledEmailSendAuthorityEnded", (failure) =>
+        Effect.succeed({ _tag: "AuthorityEnded" as const, failure }),
+      ),
+      Effect.catchTag("ScheduledEmailSendAmbiguous", (failure) =>
+        Effect.succeed({ _tag: "Ambiguous" as const, failure }),
+      ),
+      Effect.catchTag("ScheduledEmailSendNotApplied", (failure) =>
+        Effect.succeed({ _tag: "NotApplied" as const, failure }),
+      ),
+    );
+    const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    if (outcome._tag === "Applied") {
+      const completed = yield* ports.persistence.finishApplied(
+        email.workflowId,
+        email.inputDigest,
+        outcome.result,
+        outcomeAt,
+      );
+      return yield* settleTerminal(completed);
+    }
+    if (outcome._tag === "AuthorityEnded") {
+      return yield* finishCanceled(email, "authority-ended", outcomeAt);
+    }
+    if (outcome._tag === "NotApplied") {
+      return yield* finishAfterClaim(email, "notApplied", "send-not-applied", outcomeAt);
+    }
+    const pending = yield* ports.persistence.markAmbiguous(
+      email.workflowId,
+      email.inputDigest,
+      outcomeAt,
+    );
+    yield* ports.recordSendOutcome(pending);
+    return pending;
+  });
+
   const reconcileClaimedSend = Effect.fn("ScheduledEmail.reconcileClaimedSend")(function* (
     email: Record,
   ) {
     const reconciliation = yield* ports.reconcileSend(email);
+    if (reconciliation._tag === "NotStarted") return yield* executeClaimedSend(email);
     if (reconciliation._tag === "Pending") return email;
     const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     if (reconciliation._tag === "Applied") {
@@ -486,7 +535,8 @@ export const make = Effect.gen(function* () {
       return yield* reconcileClaimedSend(email);
     }
     const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-    if (email.cancelRequestedAt !== null) return yield* finishCanceled(email, "cancel-requested", now);
+    if (email.cancelRequestedAt !== null)
+      return yield* finishCanceled(email, "cancel-requested", now);
     if (email.state !== "waiting") {
       return yield* new Conflict({
         message: "The Scheduled Email is not ready to send",
@@ -499,43 +549,8 @@ export const make = Effect.gen(function* () {
         workflowId: email.workflowId,
       });
     }
-    const authorize = authorizeProtectedSend(email);
     const begun = yield* ports.persistence.beginSend(email.workflowId, email.inputDigest, now);
-    const outcome = yield* ports.send(begun, authorize).pipe(
-      Effect.map((result) => ({ _tag: "Applied" as const, result })),
-      Effect.catchTag("ScheduledEmailSendAuthorityEnded", (failure) =>
-        Effect.succeed({ _tag: "AuthorityEnded" as const, failure }),
-      ),
-      Effect.catchTag("ScheduledEmailSendAmbiguous", (failure) =>
-        Effect.succeed({ _tag: "Ambiguous" as const, failure }),
-      ),
-      Effect.catchTag("ScheduledEmailSendNotApplied", (failure) =>
-        Effect.succeed({ _tag: "NotApplied" as const, failure }),
-      ),
-    );
-    const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-    if (outcome._tag === "Applied") {
-      const completed = yield* ports.persistence.finishApplied(
-        begun.workflowId,
-        begun.inputDigest,
-        outcome.result,
-        outcomeAt,
-      );
-      return yield* settleTerminal(completed);
-    }
-    if (outcome._tag === "AuthorityEnded") {
-      return yield* finishCanceled(begun, "authority-ended", outcomeAt);
-    }
-    if (outcome._tag === "NotApplied") {
-      return yield* finishAfterClaim(begun, "notApplied", "send-not-applied", outcomeAt);
-    }
-    const pending = yield* ports.persistence.markAmbiguous(
-      begun.workflowId,
-      begun.inputDigest,
-      outcomeAt,
-    );
-    yield* ports.recordSendOutcome(pending);
-    return pending;
+    return yield* executeClaimedSend(begun);
   });
 
   const start = Effect.fn("ScheduledEmail.start")(function* (input: StartInput) {
@@ -546,7 +561,8 @@ export const make = Effect.gen(function* () {
     if (existing !== null) {
       if (existing.userId !== userId || existing.inputDigest !== inputDigest) {
         return yield* new Conflict({
-          message: "The Workflow identity was replayed with changed User, content, schedule, or Gmail resource",
+          message:
+            "The Workflow identity was replayed with changed User, content, schedule, or Gmail resource",
           workflowId,
         });
       }
@@ -665,7 +681,8 @@ export const make = Effect.gen(function* () {
       cancelRequestedAt: null,
       terminalAt: null,
     };
-    const limits = currentCapabilityCatalog.planResourceLimits[input.authorization.subscription.plan];
+    const limits =
+      currentCapabilityCatalog.planResourceLimits[input.authorization.subscription.plan];
     const activeWorkflowLimit = isLaunchPolicy(admittedPolicy)
       ? policyFor(admittedPolicy, input.authorization.subscription.plan).liveLimits
           .concurrentWorkflows
@@ -703,10 +720,7 @@ export const make = Effect.gen(function* () {
       yield* settleTerminal(requested);
       return { _tag: "Terminal" as const, email: requested };
     }
-    if (
-      requested.state === "sending" ||
-      requested.state === "send_pending_reconciliation"
-    ) {
+    if (requested.state === "sending" || requested.state === "send_pending_reconciliation") {
       return { _tag: "ReconciliationRequired" as const, email: requested };
     }
     const canceled = yield* finishCanceled(requested, "cancel-requested", requestedAt);
@@ -734,9 +748,9 @@ export const workflowIdFor = (userId: UserId, actionId: ActionId) =>
   );
 
 export const digestRequest = (userId: UserId, request: Request) =>
-  Schema.encodeEffect(Schema.fromJsonString(Schema.Struct({ request: Request, userId: Schema.String })))(
-    { request, userId },
-  ).pipe(Effect.orDie, Effect.flatMap(digest));
+  Schema.encodeEffect(
+    Schema.fromJsonString(Schema.Struct({ request: Request, userId: Schema.String })),
+  )({ request, userId }).pipe(Effect.orDie, Effect.flatMap(digest));
 
 export const cloudflareInstanceIdFor = (workflowId: WorkflowId) =>
   digest(workflowId).pipe(
@@ -759,7 +773,12 @@ export const integrationOperation = (actionId: ActionId) => ({
 });
 
 const payloadFor = (email: Record) =>
-  WorkflowPayload.make({ inputDigest: email.inputDigest, workflowId: email.workflowId });
+  WorkflowPayload.make({
+    agentId: email.agentId,
+    dueAt: email.dueAt,
+    inputDigest: email.inputDigest,
+    workflowId: email.workflowId,
+  });
 
 const isWorkflowAcknowledgementFailure = (failure: Conflict | Denied | NotFound | Unavailable) =>
   Schema.is(Unavailable)(failure) &&
