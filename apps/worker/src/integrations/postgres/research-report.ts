@@ -29,6 +29,7 @@ import {
   emptyLiveResourceFacts,
   OriginatingAuthority,
 } from "../../services/authorization";
+import type { Denied } from "../../services/authorization";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transactions are the PostgreSQL serialization boundary. */
 /* oxlint-disable eslint/no-underscore-dangle -- Persistence outcomes use the standard Effect _tag discriminator. */
@@ -136,11 +137,11 @@ const EncodedRecord = Schema.Struct({
 
 /** PostgreSQL product-state adapter for Research Report admission and cancellation. */
 export const make = (database: Database): ResearchReport.PortInterface["persistence"] => ({
-  admit: (record) =>
+  admit: (record, activeWorkflowLimit) =>
     attempt("admit", () =>
       database.transaction(async (transaction) => {
         await transaction.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${record.workflowId}, 0))`,
+          sql`select pg_advisory_xact_lock(hashtextextended(${`research-report:user:${record.userId}`}, 0))`,
         );
         const [existing] = await transaction
           .select(rowSelection)
@@ -149,6 +150,24 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           .limit(1)
           .for("update");
         if (existing !== undefined) return { _tag: "Existing" as const, row: existing };
+        const active = await transaction
+          .select({ workflowId: researchReports.workflow_id })
+          .from(researchReports)
+          .where(
+            and(
+              eq(researchReports.user_id, record.userId),
+              inArray(researchReports.state, [
+                "admitted",
+                "accepted",
+                "running",
+                "sources_committed",
+                "artifact_stored",
+              ]),
+            ),
+          );
+        if (BigInt(active.length) >= activeWorkflowLimit) {
+          return { _tag: "CapacityExceeded" as const };
+        }
         await transaction.insert(researchReports).values({
           accepted_at: record.acceptedAt,
           action_id: record.actionId,
@@ -191,24 +210,39 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           : { _tag: "Created" as const, row: created };
       }),
     ).pipe(
-      Effect.flatMap((outcome) => {
-        if (outcome._tag === "Missing") {
-          return Effect.fail(unavailable("admit", "PostgreSQL did not return the admitted row"));
-        }
-        return decodeRow(outcome.row).pipe(
-          Effect.flatMap((report) => {
-            if (report.inputDigest !== record.inputDigest || report.userId !== record.userId) {
-              return Effect.fail(
-                new ResearchReport.Conflict({
-                  message: "The Research Report identity already owns different immutable facts",
-                  workflowId: record.workflowId,
-                }),
-              );
-            }
-            return Effect.succeed({ _tag: outcome._tag, report } as const);
-          }),
-        );
-      }),
+      Effect.flatMap(
+        (
+          outcome,
+        ): Effect.Effect<
+          | { readonly _tag: "Created"; readonly report: ResearchReport.Record }
+          | { readonly _tag: "Existing"; readonly report: ResearchReport.Record },
+          ResearchReport.Conflict | Denied | ResearchReport.Unavailable
+        > => {
+          if (outcome._tag === "CapacityExceeded") {
+            return Effect.fail({
+              _tag: "Denied",
+              reason: "liveResourceLimitReached",
+              resetAt: null,
+            } satisfies Denied);
+          }
+          if (outcome._tag === "Missing") {
+            return Effect.fail(unavailable("admit", "PostgreSQL did not return the admitted row"));
+          }
+          return decodeRow(outcome.row).pipe(
+            Effect.flatMap((report) => {
+              if (report.inputDigest !== record.inputDigest || report.userId !== record.userId) {
+                return Effect.fail(
+                  new ResearchReport.Conflict({
+                    message: "The Research Report identity already owns different immutable facts",
+                    workflowId: record.workflowId,
+                  }),
+                );
+              }
+              return Effect.succeed({ _tag: outcome._tag, report } as const);
+            }),
+          );
+        },
+      ),
     ),
   inspect: (workflowId) =>
     attempt("inspect", () =>
@@ -725,6 +759,26 @@ export const makeCurrentAuthorization = (
       ),
     );
   });
+
+/** Count current nonterminal Workflow capacity before a new Research Report admission. */
+export const countActiveForUser = (database: Database, userId: UserId) =>
+  attempt("countActiveForUser", () =>
+    database
+      .select({ workflowId: researchReports.workflow_id })
+      .from(researchReports)
+      .where(
+        and(
+          eq(researchReports.user_id, userId),
+          inArray(researchReports.state, [
+            "admitted",
+            "accepted",
+            "running",
+            "sources_committed",
+            "artifact_stored",
+          ]),
+        ),
+      ),
+  ).pipe(Effect.map((rows) => BigInt(rows.length)));
 
 const inspectAuthority = (database: Database, report: ResearchReport.Record, now: Date) => {
   const origin = report.originatingAuthority;

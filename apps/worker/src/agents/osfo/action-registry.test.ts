@@ -1,3 +1,4 @@
+/* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the @effect/vitest Effect callback. */
 import { expect, it } from "@effect/vitest";
 import { Effect, Result, Schema } from "effect";
 
@@ -15,13 +16,78 @@ import {
   hasExactIntegrationActionInput,
   hasExactPersonalSkillDeleteInput,
   hasExactReminderManageInput,
+  hasExactResearchReportStartInput,
   hasExactSessionDeleteInput,
   presentOsfoAction,
+  researchReportRequiresApproval,
 } from "./action-presentation";
 import { ForgetKnowledgeInput } from "./deletion-actions";
 import { ReminderId } from "./reminders";
 
-/* oxlint-disable vitest/no-standalone-expect -- Assertion executes inside the @effect/vitest Effect callback. */
+it.effect("projects and fences every protected Research Report start fact", () =>
+  Effect.gen(function* () {
+    const input = {
+      consequences: ["externalCommunication" as const],
+      format: "pdf" as const,
+      queries: ["primary source query", "secondary source query"],
+      topic: "Compare the retained primary-source evidence.",
+    };
+    const presentation = yield* presentOsfoAction({
+      descriptor: {
+        action: "startResearchReport",
+        input,
+        kind: "durable-pause",
+        permissions: ["workflows:start"],
+        requestId: "research-request",
+        risk: "high",
+        summary: "Start the protected Research Report",
+        toolCallId: "research-action",
+      },
+      executionId: ActionPresentationId.make("research-execution"),
+      source: "action",
+    });
+
+    expect(presentation).toMatchObject({
+      actionDefinitionVersion: "osfo-research-report-start-v1",
+      actionId: "research-action",
+      operation: "workflow.manage",
+      title: "Start Research Report",
+    });
+    expect(hasExactResearchReportStartInput(presentation, input)).toBe(true);
+    expect(
+      hasExactResearchReportStartInput(presentation, {
+        ...input,
+        queries: ["changed after Approval"],
+      }),
+    ).toBe(false);
+    expect(
+      hasExactResearchReportStartInput(presentation, {
+        ...input,
+        topic: "Changed after Approval.",
+      }),
+    ).toBe(false);
+  }),
+);
+
+it("does not request Approval for an ordinary Research Report start", () => {
+  expect(
+    researchReportRequiresApproval({
+      consequences: [],
+      format: "docx",
+      queries: ["bounded public query"],
+      topic: "Ordinary cited research",
+    }),
+  ).toBe(false);
+  expect(
+    researchReportRequiresApproval({
+      consequences: ["externalCommunication"],
+      format: "docx",
+      queries: ["bounded public query"],
+      topic: "Protected cited research",
+    }),
+  ).toBe(true);
+});
+
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/global-date-in-effect -- Tagged Action fixtures and fixed Approval instants are deliberate. */
 
 it.effect("projects and fences every exact Reminder creation fact", () =>

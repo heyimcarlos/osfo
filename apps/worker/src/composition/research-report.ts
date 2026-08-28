@@ -282,6 +282,30 @@ export const followUpEffect = <Value>(
     ),
   );
 
+/** Run one authenticated Agent control operation against the dedicated service. */
+export const controlEffect = <Value, Failure>(
+  env: Bindings,
+  submit: (notificationId: ResearchReportFollowUp.NotificationId) => Promise<string>,
+  effect: Effect.Effect<Value, Failure, ResearchReport.Service>,
+) =>
+  Effect.scoped(
+    Db.database.pipe(
+      Effect.flatMap((database) =>
+        effect.pipe(
+          Effect.provide(
+            serviceLayerFromDatabase(
+              env.RESEARCH_REPORT_WORKFLOW,
+              database,
+              env.RESEARCH_REPORT_TIMER_WORKFLOW,
+              makeTerminalFollowUpCommitter(database, submit),
+            ),
+          ),
+        ),
+      ),
+      Effect.provide(Db.layer({ db: env.DB })),
+    ),
+  );
+
 /** Cloudflare bindings are structurally narrowed before product composition. */
 export const bindingsFromEnv = (env: CloudflareEnv): Bindings => ({
   AI: env.AI,

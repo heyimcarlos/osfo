@@ -82,6 +82,7 @@ import {
 } from "../../integrations/cloudflare/web";
 import { ChannelLinkAuthorizationPostgres } from "../../integrations/postgres/channel-link-authorization";
 import { SessionRecallAuthorizationPostgres } from "../../integrations/postgres/session-recall-authorization";
+import { ResearchReportPostgres } from "../../integrations/postgres/research-report";
 import { SupermemoryMemoryProvider } from "../../integrations/supermemory/memory-provider";
 import {
   CancelManagedConversationInput,
@@ -215,6 +216,7 @@ import { makeSessionRecallAuthorization } from "../../services/session-recall-au
 import { PromptAssembly } from "../../services/prompt-assembly";
 import { PromptUtilization } from "../../services/prompt-utilization";
 import { ResearchReportFollowUp } from "../../services/research-report-follow-up";
+import { ResearchReport } from "../../services/research-report";
 import { Capabilities } from "../../services/capabilities";
 import { CapabilityTurn } from "./capability-turn";
 import { CapabilityContext } from "./capability-context";
@@ -268,6 +270,10 @@ import {
   artifactDeleteActionName,
   coreMemoryClearActionName,
   documentDeleteActionName,
+  researchReportStartActionName,
+  ResearchReportIdentityInput,
+  researchReportRequiresApproval,
+  ResearchReportStartInput,
   type ForgetKnowledgeInput,
   makeOsfoActions,
   RetainedDocumentInput,
@@ -282,6 +288,7 @@ import {
   hasExactIntegrationActionInput,
   hasExactPersonalSkillDeleteInput,
   hasExactReminderManageInput,
+  hasExactResearchReportStartInput,
   hasExactSessionDeleteInput,
   makeActionPresentationPersistence,
   presentOsfoAction,
@@ -415,6 +422,7 @@ const capabilityActionNames = [
   "generateDocument",
   "generateImage",
   "generatePresentation",
+  researchReportStartActionName,
   "revisePresentation",
   "osfoClearCoreMemory",
   "osfoDeleteSession",
@@ -926,7 +934,8 @@ export class OsfoAgent extends Think<Env> {
         | "memory.forgetKnowledge"
         | "reminder.manage"
         | "session.delete"
-        | "skill.manage";
+        | "skill.manage"
+        | "workflow.manage";
       readonly presentation: ApprovalPresentation;
     }
   >();
@@ -1101,6 +1110,11 @@ export class OsfoAgent extends Think<Env> {
     ...this.#reminderTools.tools,
     ...this.#sessionRecallTools,
     ...this.#webTools,
+    cancelResearchReport: tool({
+      description: "Cancel one owned nonterminal Research Report Workflow.",
+      execute: (input) => this.#cancelResearchReport(input),
+      inputSchema: effectToolSchema(ResearchReportIdentityInput),
+    }),
     exportDocument: tool({
       description: "Export one retained generated PDF or DOCX owned by the current User.",
       execute: (input, context) => this.#exportDocument(input, context.toolCallId),
@@ -1116,6 +1130,12 @@ export class OsfoAgent extends Think<Env> {
         "Load one exact Skill Version from the current turn's validated Skill index. This never grants authority or registers Tools.",
       execute: (input) => this.#loadSkill(input),
       inputSchema: effectToolSchema(CapabilityContext.LoadSkillToolInput),
+    }),
+    inspectResearchReport: tool({
+      description:
+        "Inspect the safe current status of one owned Research Report Workflow without exposing provider state.",
+      execute: (input) => this.#inspectResearchReport(input),
+      inputSchema: effectToolSchema(ResearchReportIdentityInput),
     }),
     skillInspect: tool({
       description: "List active personal Skills or inspect one immutable Skill lineage.",
@@ -1392,6 +1412,19 @@ export class OsfoAgent extends Think<Env> {
         permissions: ["documents:generate"],
         timeoutMs: 90_000,
       }),
+      [researchReportStartActionName]: action({
+        approval: ({ input }) => researchReportRequiresApproval(input),
+        approvalRisk: "high",
+        approvalSummary: "Start a Research Report with protected consequences",
+        description:
+          "Start one bounded Research Report. Ordinary research needs no Approval; declared external, destructive, access, financial, recurring, or escalation consequences require exact Approval.",
+        execute: (input, context) =>
+          this.#startResearchReport(input, ActionId.make(context.toolCallId)),
+        idempotencyKey: ({ ctx }) => `research-report-start:${ctx.toolCallId}`,
+        inputSchema: effectToolSchema(ResearchReportStartInput),
+        kind: "durable-pause",
+        permissions: ["workflows:start"],
+      }),
       generatePresentation: action({
         description: "Generate one validated PPTX with at most 20 slides and 20 MB.",
         execute: (input, context) =>
@@ -1494,6 +1527,7 @@ export class OsfoAgent extends Think<Env> {
         "reminder-store",
         "session-history",
         "skill-store",
+        "workflow-store",
         ...(hasRecognizedWebSearchPrice ? (["web-provider"] as const) : []),
       ],
       availableToolNames: Object.keys(tools),
@@ -3999,7 +4033,8 @@ export class OsfoAgent extends Think<Env> {
                     found.presentation.operation === "session.delete" ||
                     found.presentation.operation === "reminder.manage" ||
                     found.presentation.operation === "skill.manage" ||
-                    found.presentation.operation === "integration.effect")
+                    found.presentation.operation === "integration.effect" ||
+                    found.presentation.operation === "workflow.manage")
                 ) {
                   this.#currentApprovedActions.set(actionId, {
                     actionPresentation: found.presentation,
@@ -4551,6 +4586,149 @@ export class OsfoAgent extends Think<Env> {
     );
     return Effect.runPromise(
       this.#reminders.inspect(metadata.authorityIdentity.userId, input.reminderId),
+    );
+  }
+
+  async #startResearchReport(input: ResearchReport.Request, actionId: ActionId) {
+    const metadata = await Effect.runPromise(
+      Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
+    );
+    const operation = ResearchReport.workflowOperation(actionId, input);
+    const approved = this.#currentApprovedActions.get(actionId);
+    if (
+      input.consequences.length > 0 &&
+      (approved?.operation !== "workflow.manage" ||
+        !hasExactResearchReportStartInput(approved.actionPresentation, input))
+    ) {
+      throw new ResearchReport.Unavailable({
+        cause: actionId,
+        message: "The current Research Report Approval does not match the protected request",
+        operation: "start.exactApproval",
+      });
+    }
+    const current = await Effect.runPromise(
+      this.#currentResearchReportAuthorization(metadata, operation, approved?.presentation),
+    );
+    const effect = ResearchReport.Service.pipe(
+      Effect.flatMap((reports) =>
+        reports.start({
+          actionId,
+          agentId: AgentId.make(this.name),
+          authorization: current,
+          request: input,
+          routeId: metadata.routeId,
+          sessionId: metadata.sessionId,
+        }),
+      ),
+      Effect.map((result) => ({
+        _tag: result._tag,
+        report: projectResearchReportStatus(result.report),
+      })),
+    );
+    return Effect.runPromise(
+      this.#accountDeletionFence.runTracked(
+        () => this.#runResearchReportControl(effect),
+        () => researchReportUnavailable("start.deletionFence"),
+      ),
+    );
+  }
+
+  async #inspectResearchReport(input: typeof ResearchReportIdentityInput.Type) {
+    const metadata = await Effect.runPromise(
+      Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
+    );
+    const effect = ResearchReport.Service.pipe(
+      Effect.flatMap((reports) =>
+        reports.inspect(input.workflowId, metadata.authorityIdentity.userId),
+      ),
+      Effect.map(projectResearchReportStatus),
+    );
+    return Effect.runPromise(
+      this.#accountDeletionFence.run(this.#runResearchReportControl(effect), () =>
+        researchReportUnavailable("inspect.deletionFence"),
+      ),
+    );
+  }
+
+  async #cancelResearchReport(input: typeof ResearchReportIdentityInput.Type) {
+    const metadata = await Effect.runPromise(
+      Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
+    );
+    const effect = ResearchReport.Service.pipe(
+      Effect.flatMap((reports) =>
+        reports.cancel(input.workflowId, metadata.authorityIdentity.userId),
+      ),
+      Effect.map((result) => ({
+        _tag: result._tag,
+        report: projectResearchReportStatus(result.report),
+      })),
+    );
+    return Effect.runPromise(
+      this.#accountDeletionFence.runTracked(
+        () => this.#runResearchReportControl(effect),
+        () => researchReportUnavailable("cancel.deletionFence"),
+      ),
+    );
+  }
+
+  #runResearchReportControl<Value, Failure>(
+    effect: Effect.Effect<Value, Failure, ResearchReport.Service>,
+  ) {
+    return ResearchReportComposition.controlEffect(
+      ResearchReportComposition.bindingsFromEnv(this.env),
+      async (notificationId) => (await this.submitResearchReportFollowUp(notificationId))._tag,
+      effect,
+    );
+  }
+
+  #currentResearchReportAuthorization(
+    metadata: ManagedTurnMetadata,
+    operation: ReturnType<typeof ResearchReport.workflowOperation>,
+    presentation?: ApprovalPresentation,
+  ) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) return Effect.fail(researchReportUnavailable("start.runtime"));
+    return this.#inspectSessionRecallAuthorization(metadata.authorityIdentity).pipe(
+      Effect.flatMap((facts) =>
+        Effect.tryPromise({
+          try: () =>
+            runtime.runPromise(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const database = yield* Db.database;
+                  const [allowance, concurrentWorkflows] = yield* Effect.all([
+                    BillingDb.make(database).admit(facts.user.userId, facts.now),
+                    ResearchReportPostgres.countActiveForUser(database, facts.user.userId),
+                  ]);
+                  const { userId: _userId, ...originatingAuthority } = metadata.authorityIdentity;
+                  return AuthorizationContext.make({
+                    allowance: { _tag: "Metered", ...allowance },
+                    approval:
+                      presentation === undefined
+                        ? null
+                        : approvalFor(facts.user.userId, operation, presentation),
+                    ...facts,
+                    gmailConnection: null,
+                    integrationConnections: [],
+                    liveFacts: {
+                      ...emptyLiveResourceFacts,
+                      concurrentCostlyJobs: concurrentWorkflows,
+                      concurrentWorkflows,
+                    },
+                    originatingAuthority,
+                    requestVendorUsdMicros: 0n,
+                  });
+                }),
+              ),
+            ),
+          catch: (cause) => researchReportUnavailable("start.currentAuthorization", cause),
+        }),
+      ),
+      Effect.mapError((cause) =>
+        Schema.is(ResearchReport.Unavailable)(cause)
+          ? cause
+          : researchReportUnavailable("start.currentAuthorization", cause),
+      ),
     );
   }
 
@@ -6290,6 +6468,22 @@ const readThinkMessage = (
       ),
     ),
   );
+
+const projectResearchReportStatus = (report: ResearchReport.Record) => ({
+  artifactContentId: report.artifactContentId,
+  deadlineAt: report.deadlineAt.toISOString(),
+  safeFailureCode: report.safeFailureCode,
+  state: report.state,
+  terminalAt: report.terminalAt?.toISOString() ?? null,
+  workflowId: report.workflowId,
+});
+
+const researchReportUnavailable = (operation: string, cause: unknown = operation) =>
+  new ResearchReport.Unavailable({
+    cause,
+    message: "The Research Report control is temporarily unavailable",
+    operation,
+  });
 
 const runRpc = <A, E>(effect: Effect.Effect<A, E>): Promise<A | E> =>
   Effect.runPromise(

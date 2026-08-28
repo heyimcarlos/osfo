@@ -6,6 +6,8 @@ import type { Denied } from "../../services/authorization";
 import {
   artifactDeleteActionName,
   documentDeleteActionName,
+  researchReportStartActionName,
+  ResearchReportStartInput,
   RetainedDocumentInput,
 } from "./action-presentation";
 import {
@@ -25,6 +27,7 @@ import {
 } from "./deletion-actions";
 import { personalSkillDeleteActionName, SkillDeleteInput } from "./personal-skill-tools";
 import type { PersonalSkillId } from "../../domain/personal-skill";
+import type { ResearchReport } from "../../services/research-report";
 import {
   CalendarCreateEventInput,
   CalendarDeleteEventInput,
@@ -45,6 +48,7 @@ type SanitizedPendingApprovalInput =
   | Partial<ClearCoreMemoryInput>
   | Partial<ForgetKnowledgeInput>
   | Partial<RetainedDocumentInput>
+  | Partial<ResearchReport.Request>
   | Partial<typeof CalendarCreateEventInput.Type>
   | Partial<typeof CalendarDeleteEventInput.Type>
   | Partial<typeof CalendarUpdateEventInput.Type>
@@ -57,6 +61,10 @@ export {
   artifactDeleteActionName,
   documentDeleteActionName,
   presentOsfoAction,
+  researchReportStartActionName,
+  ResearchReportIdentityInput,
+  researchReportRequiresApproval,
+  ResearchReportStartInput,
   RetainedDocumentInput,
 } from "./action-presentation";
 
@@ -173,6 +181,14 @@ export const sanitizePendingApproval = (approval: PendingApproval): PendingAppro
     return withInput(
       approval,
       Schema.decodeUnknownOption(RetainedDocumentInput)(approval.descriptor.input).pipe(
+        Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
+      ),
+    );
+  }
+  if (approval.descriptor.action === researchReportStartActionName) {
+    return withInput(
+      approval,
+      Schema.decodeUnknownOption(ResearchReportStartInput)(approval.descriptor.input).pipe(
         Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
       ),
     );

@@ -273,6 +273,25 @@ it.effect("stops continuation after the source authority is revoked", () => {
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
+it.effect("rechecks current authority before inspection or cancellation", () => {
+  const fixture = makeFixture({ currentAuthorityRevoked: true });
+
+  return Effect.gen(function* () {
+    const reports = yield* ResearchReport.Service;
+    const started = yield* reports.start(startInput());
+    const inspected = yield* reports.inspect(started.report.workflowId, userId).pipe(Effect.result);
+    const canceled = yield* reports.cancel(started.report.workflowId, userId).pipe(Effect.result);
+
+    expect(inspected).toMatchObject({
+      failure: { _tag: "Denied", reason: "authorityRevoked" },
+    });
+    expect(canceled).toMatchObject({
+      failure: { _tag: "Denied", reason: "authorityRevoked" },
+    });
+    expect(fixture.calls).not.toContain("persist.cancel");
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
 it.effect("records cancellation before best-effort interruption and converges duplicates", () => {
   const fixture = makeFixture();
 
@@ -506,6 +525,7 @@ const authorization = (plan: "adventurer" | "free"): AuthorizationContext => ({
 const makeFixture = (
   options: {
     readonly acceptFailure?: "conflict" | "notFound";
+    readonly currentAuthorityRevoked?: boolean;
     readonly currentPlan?: "adventurer" | "free";
     readonly failCreates?: number;
     readonly failTerminalFollowUps?: number;
@@ -521,6 +541,13 @@ const makeFixture = (
       Effect.succeed({
         ...authorization(options.currentPlan ?? "adventurer"),
         approval: report.approval,
+        authority: options.currentAuthorityRevoked
+          ? {
+              _tag: "RevokedAuthSession" as const,
+              authSessionId: AuthSessionId.make("research-auth-session"),
+              userId,
+            }
+          : authorization(options.currentPlan ?? "adventurer").authority,
       }),
     providerAvailable: Effect.succeed(true),
     commitTerminalFollowUp: () =>

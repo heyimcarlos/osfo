@@ -476,6 +476,71 @@ it.effect("keeps supported direct Tools and narrows a Skill bundle to channel av
   }),
 );
 
+it.effect(
+  "keeps Research Report controls reachable while provider-bound start is unavailable",
+  () =>
+    Effect.gen(function* () {
+      const capabilities = Capabilities.make();
+      const availableToolNames = [
+        ...baseInput.availableToolNames,
+        "cancelResearchReport",
+        "inspectResearchReport",
+        "startResearchReport",
+      ];
+      const index = yield* capabilities.eligibleIndex({
+        ...baseInput,
+        availableRequirements: [...baseInput.availableRequirements, "workflow-store"],
+        availableToolNames,
+        plan: "free",
+        taskDescription: "Research current primary sources and produce a cited report",
+        taskKinds: ["research"],
+      });
+      const bundle = capabilities.assembleToolBundle({
+        availableToolNames,
+        index,
+        loadedSkills: [],
+      });
+
+      expect(index.selectedCapabilityIds).toContain("workflows");
+      expect(index.selectedCapabilityIds).not.toContain("research-report");
+      expect(bundle.activeToolNames).toEqual(["cancelResearchReport", "inspectResearchReport"]);
+    }),
+);
+
+it.effect("adds Research Report start only with every production provider requirement", () =>
+  Effect.gen(function* () {
+    const capabilities = Capabilities.make();
+    const availableToolNames = [
+      ...baseInput.availableToolNames,
+      "cancelResearchReport",
+      "inspectResearchReport",
+      "startResearchReport",
+    ];
+    const index = yield* capabilities.eligibleIndex({
+      ...baseInput,
+      availableRequirements: [...baseInput.availableRequirements, "web-provider", "workflow-store"],
+      availableToolNames,
+      plan: "free",
+      taskDescription: "Research current primary sources and produce a cited report",
+      taskKinds: ["research"],
+    });
+    const bundle = capabilities.assembleToolBundle({
+      availableToolNames,
+      index,
+      loadedSkills: [],
+    });
+
+    expect(index.selectedCapabilityIds).toEqual(
+      expect.arrayContaining(["research-report", "workflows"]),
+    );
+    expect(bundle.activeToolNames).toEqual([
+      "cancelResearchReport",
+      "inspectResearchReport",
+      "startResearchReport",
+    ]);
+  }),
+);
+
 it.effect("publishes only the exact existing file Tool required by the task", () =>
   Effect.gen(function* () {
     const capabilities = Capabilities.make();

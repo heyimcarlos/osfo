@@ -15,7 +15,12 @@ import type { ActionId } from "../domain/action-execution";
 import { ConsequenceClass, currentCapabilityCatalog } from "../domain/capability-catalog";
 import type { ManagedModelRoute } from "../domain/model-access-policy";
 import { launchModelAccessPolicy, selectManagedRoute } from "../domain/model-access-policy";
-import { retainedCatalog } from "../domain/plan-policy";
+import {
+  isLaunchPolicy,
+  policyFor,
+  policyForVersion,
+  retainedCatalog,
+} from "../domain/plan-policy";
 import { currentResourcePriceVersion } from "../domain/usage";
 import {
   type AuthorizationContext,
@@ -158,13 +163,16 @@ export interface PortInterface {
   readonly recordWorkflowStart: (report: Record) => Effect.Effect<void, Unavailable>;
   readonly commitTerminalFollowUp: (report: Record) => Effect.Effect<void, Unavailable>;
   readonly persistence: {
-    readonly admit: (record: Record) => Effect.Effect<
+    readonly admit: (
+      record: Record,
+      activeWorkflowLimit: bigint,
+    ) => Effect.Effect<
       | { readonly _tag: "Created"; readonly report: Record }
       | {
           readonly _tag: "Existing";
           readonly report: Record;
         },
-      Conflict | Unavailable
+      Conflict | Denied | Unavailable
     >;
     readonly inspect: (workflowId: WorkflowId) => Effect.Effect<Record | null, Unavailable>;
     readonly markAccepted: (
@@ -253,7 +261,7 @@ export interface Interface {
   readonly cancel: (
     workflowId: WorkflowId,
     userId: UserId,
-  ) => Effect.Effect<CancelResult, Conflict | NotFound | Unavailable>;
+  ) => Effect.Effect<CancelResult, Conflict | Denied | NotFound | Unavailable>;
   readonly commitSources: (
     payload: WorkflowPayload,
     sourceManifestKey: string,
@@ -262,7 +270,7 @@ export interface Interface {
   readonly inspect: (
     workflowId: WorkflowId,
     userId: UserId,
-  ) => Effect.Effect<Record, NotFound | Unavailable>;
+  ) => Effect.Effect<Record, Denied | NotFound | Unavailable>;
   readonly reconcileAcceptance: (
     workflowId: WorkflowId,
     inputDigest: InputDigest,
@@ -282,13 +290,26 @@ export const make = Effect.gen(function* () {
   const ports = yield* Port;
   const authorization = Authorization.make(retainedCatalog);
 
+  const authorizeControl = Effect.fn("ResearchReport.authorizeControl")(function* (
+    report: Record,
+    kind: "workflow.cancel" | "workflow.inspect",
+  ) {
+    const current = yield* ports.currentAuthorization(report);
+    const result = authorization.recheck(
+      { ...current, approval: null },
+      { actionId: report.actionId, kind },
+    );
+    if (Predicate.isTagged(result, "Denied")) return yield* Effect.fail(result);
+    return report;
+  });
+
   const inspect = Effect.fn("ResearchReport.inspect")(function* (
     workflowId: WorkflowId,
     userId: UserId,
   ) {
     const report = yield* ports.persistence.inspect(workflowId);
     if (report === null || report.userId !== userId) return yield* new NotFound({ workflowId });
-    return report;
+    return yield* authorizeControl(report, "workflow.inspect");
   });
 
   const accept = Effect.fn("ResearchReport.accept")(function* (report: Record) {
@@ -681,7 +702,29 @@ export const make = Effect.gen(function* () {
       cancelRequestedAt: null,
       terminalAt: null,
     };
-    const persisted = yield* ports.persistence.admit(report);
+    const admittedPolicy = yield* policyForVersion(
+      retainedCatalog,
+      input.authorization.subscription.planPolicyVersion,
+    ).pipe(
+      Effect.mapError(
+        (cause) =>
+          new Unavailable({
+            cause,
+            message: "The admitted Research Report Plan policy is unavailable",
+            operation: "start.planPolicy",
+          }),
+      ),
+    );
+    if (!isLaunchPolicy(admittedPolicy)) {
+      return yield* new Unavailable({
+        cause: admittedPolicy.version,
+        message: "Shared Plan Usage Research Reports are not activated",
+        operation: "start.planPolicy",
+      });
+    }
+    const activeWorkflowLimit = policyFor(admittedPolicy, input.authorization.subscription.plan)
+      .liveLimits.concurrentWorkflows;
+    const persisted = yield* ports.persistence.admit(report, activeWorkflowLimit);
     const exact = persisted.report;
     if (exact.userId !== report.userId || exact.inputDigest !== report.inputDigest) {
       return yield* new Conflict({
@@ -705,6 +748,11 @@ export const make = Effect.gen(function* () {
     workflowId: WorkflowId,
     userId: UserId,
   ) {
+    const retained = yield* ports.persistence.inspect(workflowId);
+    if (retained === null || retained.userId !== userId) {
+      return yield* new NotFound({ workflowId });
+    }
+    yield* authorizeControl(retained, "workflow.cancel");
     const requestedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     const requested = yield* ports.persistence.requestCancel(workflowId, userId, requestedAt);
     if (terminalStates.has(requested.state)) {
@@ -798,7 +846,8 @@ const deadlineAfter = (admittedAt: Date) =>
     }),
   );
 
-const workflowOperation = (actionId: ActionId, request: Request) => ({
+/** Exact Authorization operation for one immutable Research Report start. */
+export const workflowOperation = (actionId: ActionId, request: Request) => ({
   actionId,
   change: "start" as const,
   consequences: request.consequences,

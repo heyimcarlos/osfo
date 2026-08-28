@@ -263,7 +263,12 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
       toolRequirements: ["readWebPage"],
     }),
     entry("research-report", "Produce one bounded research report.", "artifact.generate", {
-      availabilityRequirements: ["document-renderer", "file-storage", "web-provider"],
+      availabilityRequirements: [
+        "document-renderer",
+        "file-storage",
+        "web-provider",
+        "workflow-store",
+      ],
       resultBounds: {
         maximumBytes: policyCatalog.operationLimits.generatedDocumentBytes,
         maximumDurationMillis: policyCatalog.operationLimits.researchOperationMilliseconds,
@@ -272,6 +277,7 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
         maximumPixelsPerEdge: null,
         maximumSlides: null,
       },
+      toolRequirements: ["startResearchReport"],
     }),
     entry("presentation-generation", "Generate one bounded presentation.", "artifact.generate", {
       availabilityRequirements: ["document-renderer", "file-storage"],
@@ -304,8 +310,9 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
       availabilityRequirements: ["reminder-store"],
       toolRequirements: ["osfoCancelReminder", "osfoInspectReminder", "osfoManageReminder"],
     }),
-    entry("workflows", "Manage supported durable Workflows.", "workflow.manage", {
+    entry("workflows", "Inspect or cancel supported durable Workflows.", "workflow.inspect", {
       availabilityRequirements: ["workflow-store"],
+      toolRequirements: ["cancelResearchReport", "inspectResearchReport"],
     }),
     integrationEntry("gmail", "Use approved Gmail operations.", "gmail"),
     integrationEntry(
