@@ -5,10 +5,16 @@ import { deadlineDisposition } from "./research-report-follow-up";
 
 const deadline = new Date("2026-08-28T13:00:00.000Z");
 
-it("finishes a claimed publication instead of canceling its readable artifact", () => {
-  expect(deadlineDisposition("artifact_stored", deadline, deadline)).toBe("PublicationPending");
+it("cancels retained bytes until publication commits, then resumes finalization", () => {
+  expect(deadlineDisposition("artifact_stored", deadline, deadline)).toBe("Canceled");
+  expect(deadlineDisposition("publication_committed", deadline, deadline)).toBe(
+    "PublicationPending",
+  );
   expect(
     deadlineDisposition("artifact_stored", new Date("2026-08-28T12:59:59.999Z"), deadline),
+  ).toBe("NotDue");
+  expect(
+    deadlineDisposition("publication_committed", new Date("2026-08-28T12:59:59.999Z"), deadline),
   ).toBe("NotDue");
 });
 

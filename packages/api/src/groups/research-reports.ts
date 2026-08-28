@@ -15,6 +15,7 @@ export const ResearchReportNotificationSummary = Schema.Struct({
     "running",
     "sources_committed",
     "artifact_stored",
+    "publication_committed",
     "cancel_requested",
     "success",
     "failure",

@@ -392,7 +392,9 @@ export const make = Effect.gen(function* () {
     report: ResearchReport.Record,
     collection: Collection,
   ) {
-    if (report.state !== "artifact_stored") yield* authorize(report);
+    if (report.state !== "publication_committed" && report.state !== "success") {
+      yield* authorize(report);
+    }
     if (report.sourceManifestKey === null || report.sourceManifestDigest === null) {
       return yield* new Unavailable({
         cause: report.state,
@@ -451,7 +453,9 @@ export const make = Effect.gen(function* () {
         }),
       { concurrency: 1 },
     );
-    if (report.state !== "artifact_stored") yield* authorize(report);
+    if (report.state !== "publication_committed" && report.state !== "success") {
+      yield* authorize(report);
+    }
     return sources;
   });
 

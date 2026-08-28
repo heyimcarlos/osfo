@@ -41,6 +41,7 @@ const rowSelection = {
   admittedAt: researchReports.admitted_at,
   artifactContentId: researchReports.artifact_content_id,
   artifactStoredAt: researchReports.artifact_stored_at,
+  publicationCommittedAt: researchReports.publication_committed_at,
   agentId: researchReports.agent_id,
   allowancePeriodId: researchReports.allowance_period_id,
   cancelRequestedAt: researchReports.cancel_requested_at,
@@ -74,6 +75,7 @@ type Row = {
   readonly admittedAt: Date;
   readonly artifactContentId: string | null;
   readonly artifactStoredAt: Date | null;
+  readonly publicationCommittedAt: Date | null;
   readonly agentId: string;
   readonly allowancePeriodId: string;
   readonly cancelRequestedAt: Date | null;
@@ -107,6 +109,7 @@ const EncodedRecord = Schema.Struct({
   admittedAt: Schema.Date,
   artifactContentId: Schema.NullOr(Schema.String.check(Schema.isMinLength(1))),
   artifactStoredAt: Schema.NullOr(Schema.Date),
+  publicationCommittedAt: Schema.NullOr(Schema.Date),
   agentId: AgentId,
   allowancePeriodId: AllowancePeriodId,
   cancelRequestedAt: Schema.NullOr(Schema.Date),
@@ -173,6 +176,7 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
                 "running",
                 "sources_committed",
                 "artifact_stored",
+                "publication_committed",
               ]),
             ),
           );
@@ -186,6 +190,7 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           admitted_at: record.admittedAt,
           artifact_content_id: record.artifactContentId,
           artifact_stored_at: record.artifactStoredAt,
+          publication_committed_at: record.publicationCommittedAt,
           agent_id: record.agentId,
           allowance_period_id: record.allowancePeriodId,
           cancel_requested_at: record.cancelRequestedAt,
@@ -334,6 +339,7 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           row.state === "running" ||
           row.state === "sources_committed" ||
           row.state === "artifact_stored" ||
+          row.state === "publication_committed" ||
           row.state === "success"
         ) {
           return row.startedAt === null
@@ -451,6 +457,15 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
       target: "artifact_stored",
       workflowId,
     }),
+  commitArtifactPublication: (workflowId, inputDigest, contentId, committedAt) =>
+    transitionArtifact(database, {
+      claimedAt: committedAt,
+      contentId,
+      inputDigest,
+      operation: "commitArtifactPublication",
+      target: "publication_committed",
+      workflowId,
+    }),
   completeSuccess: (workflowId, inputDigest, contentId, completedAt) =>
     transitionArtifact(database, {
       claimedAt: completedAt,
@@ -542,7 +557,8 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           row.state === "success" ||
           row.state === "failure" ||
           row.state === "canceled" ||
-          row.state === "cancel_requested"
+          row.state === "cancel_requested" ||
+          row.state === "publication_committed"
         ) {
           return row;
         }
@@ -585,8 +601,11 @@ const transitionArtifact = (
     readonly claimedAt: Date;
     readonly contentId: string;
     readonly inputDigest: ResearchReport.InputDigest;
-    readonly operation: "claimArtifactPublication" | "completeSuccess";
-    readonly target: "artifact_stored" | "success";
+    readonly operation:
+      | "claimArtifactPublication"
+      | "commitArtifactPublication"
+      | "completeSuccess";
+    readonly target: "artifact_stored" | "publication_committed" | "success";
     readonly workflowId: ResearchReport.WorkflowId;
   },
 ) =>
@@ -609,7 +628,11 @@ const transitionArtifact = (
         return { _tag: "Conflict" as const };
       }
       if (input.target === "artifact_stored") {
-        if (row.state === "artifact_stored" || row.state === "success") {
+        if (
+          row.state === "artifact_stored" ||
+          row.state === "publication_committed" ||
+          row.state === "success"
+        ) {
           return { _tag: "Found" as const, row };
         }
         if (row.state !== "sources_committed" || row.sourceManifestKey === null) {
@@ -635,8 +658,35 @@ const transitionArtifact = (
           ? { _tag: "Conflict" as const }
           : { _tag: "Found" as const, row: updated };
       }
+      if (input.target === "publication_committed") {
+        if (row.state === "publication_committed" || row.state === "success") {
+          return { _tag: "Found" as const, row };
+        }
+        if (row.state !== "artifact_stored" || row.artifactContentId !== input.contentId) {
+          return { _tag: "Conflict" as const };
+        }
+        const [updated] = await transaction
+          .update(researchReports)
+          .set({
+            publication_committed_at: input.claimedAt,
+            state: "publication_committed",
+            updated_at: input.claimedAt,
+          })
+          .where(
+            and(
+              eq(researchReports.workflow_id, input.workflowId),
+              eq(researchReports.input_digest, input.inputDigest),
+              eq(researchReports.artifact_content_id, input.contentId),
+              eq(researchReports.state, "artifact_stored"),
+            ),
+          )
+          .returning(rowSelection);
+        return updated === undefined
+          ? { _tag: "Conflict" as const }
+          : { _tag: "Found" as const, row: updated };
+      }
       if (row.state === "success") return { _tag: "Found" as const, row };
-      if (row.state !== "artifact_stored" || row.artifactContentId !== input.contentId) {
+      if (row.state !== "publication_committed" || row.artifactContentId !== input.contentId) {
         return { _tag: "Conflict" as const };
       }
       const [updated] = await transaction
@@ -647,7 +697,7 @@ const transitionArtifact = (
             eq(researchReports.workflow_id, input.workflowId),
             eq(researchReports.input_digest, input.inputDigest),
             eq(researchReports.artifact_content_id, input.contentId),
-            eq(researchReports.state, "artifact_stored"),
+            eq(researchReports.state, "publication_committed"),
           ),
         )
         .returning(rowSelection);
@@ -666,7 +716,9 @@ const transitionArtifact = (
             message:
               input.target === "artifact_stored"
                 ? "Artifact publication lost to cancellation or changed immutable facts"
-                : "Research Report success requires the exact published artifact",
+                : input.target === "publication_committed"
+                  ? "Artifact publication commit lost to cancellation or changed immutable facts"
+                  : "Research Report success requires the exact committed publication",
             workflowId: input.workflowId,
           });
         }
@@ -734,6 +786,7 @@ export const makeCurrentAuthorization = (
                   "running",
                   "sources_committed",
                   "artifact_stored",
+                  "publication_committed",
                 ]),
               ),
             ),
@@ -798,6 +851,7 @@ export const countActiveForUser = (database: Database, userId: UserId) =>
             "running",
             "sources_committed",
             "artifact_stored",
+            "publication_committed",
           ]),
         ),
       ),
@@ -836,6 +890,7 @@ export const quiesceForAccountDeletion = (database: Database, userId: UserId, te
               "running",
               "sources_committed",
               "artifact_stored",
+              "publication_committed",
               "cancel_requested",
             ]),
           ),

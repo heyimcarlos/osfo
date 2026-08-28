@@ -39,6 +39,7 @@ const report: ResearchReport.Record = {
   admittedAt: new Date("2026-08-27T12:00:00.000Z"),
   artifactContentId: null,
   artifactStoredAt: null,
+  publicationCommittedAt: null,
   safeFailureCode: null,
   agentId: AgentId.make("synthesis-agent"),
   allowancePeriodId: AllowancePeriodId.make("synthesis-period"),

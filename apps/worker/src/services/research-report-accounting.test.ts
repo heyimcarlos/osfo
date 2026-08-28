@@ -187,6 +187,7 @@ const makeReport = (policy: "launch-v1" | "shared-usage-v1"): ResearchReport.Rec
     admittedAt: new Date("2026-08-27T12:00:00.000Z"),
     artifactContentId: `document:workflow:${workflowId}`,
     artifactStoredAt: new Date("2026-08-27T12:20:00.000Z"),
+    publicationCommittedAt: new Date("2026-08-27T12:20:00.500Z"),
     safeFailureCode: null,
     agentId: AgentId.make("accounting-agent"),
     allowancePeriodId: AllowancePeriodId.make(`original-period-${policy}`),

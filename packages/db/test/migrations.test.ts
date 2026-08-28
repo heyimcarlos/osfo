@@ -503,6 +503,18 @@ describe("Postgres migrations", () => {
           expect(
             Exit.isFailure(
               yield* reject(
+                `UPDATE research_reports SET state = 'publication_committed' WHERE workflow_id = 'report-lifecycle'`,
+              ),
+            ),
+          ).toBe(true);
+          yield* Effect.promise(() =>
+            client.exec(
+              `UPDATE research_reports SET state = 'publication_committed', publication_committed_at = now() WHERE workflow_id = 'report-lifecycle'`,
+            ),
+          );
+          expect(
+            Exit.isFailure(
+              yield* reject(
                 `UPDATE research_reports SET state = 'success', terminal_at = now(), safe_failure_code = 'not-allowed' WHERE workflow_id = 'report-lifecycle'`,
               ),
             ),

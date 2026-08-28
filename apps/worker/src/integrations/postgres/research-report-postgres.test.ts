@@ -1,6 +1,7 @@
 /* oxlint-disable effecttsgo/global-date -- Fixed product timestamps make concurrent admission evidence deterministic. */
 /* oxlint-disable effecttsgo/strict-effect-provide -- This integration test owns its isolated PostgreSQL-compatible database. */
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the @effect/vitest Effect callback. */
+/* oxlint-disable eslint/no-underscore-dangle -- Follow-up outcomes use Effect's canonical _tag discriminator. */
 import { expect, it } from "@effect/vitest";
 import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { users } from "@osfo/db/schema/auth";
@@ -122,6 +123,15 @@ it.effect("cancels a report after artifact retention and rejects late publicatio
       deletionCompletedAt,
     );
     expect(canceled).toMatchObject({ safeFailureCode: "cancel-requested", state: "canceled" });
+    const lateCommit = yield* persistence
+      .commitArtifactPublication(
+        retained.workflowId,
+        retained.inputDigest,
+        retained.artifactContentId ?? "missing",
+        deletionCompletedAt,
+      )
+      .pipe(Effect.result);
+    expect(lateCommit).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
     const lateSuccess = yield* persistence
       .completeSuccess(
         retained.workflowId,
@@ -134,7 +144,7 @@ it.effect("cancels a report after artifact retention and rejects late publicatio
   }).pipe(Effect.scoped),
 );
 
-it.effect("serializes terminal success against cancellation after artifact retention", () =>
+it.effect("serializes publication commit against cancellation after artifact retention", () =>
   Effect.gen(function* () {
     const fixture = yield* makeTestDatabase;
     yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
@@ -144,7 +154,7 @@ it.effect("serializes terminal success against cancellation after artifact reten
     const retained = yield* retainArtifact(persistence, "publication-race");
     const contentId = retained.artifactContentId ?? "missing";
 
-    const [cancellation, success] = yield* Effect.all(
+    const [cancellation, publication] = yield* Effect.all(
       [
         Effect.gen(function* () {
           const requested = yield* persistence.requestCancel(
@@ -162,7 +172,7 @@ it.effect("serializes terminal success against cancellation after artifact reten
           );
         }).pipe(Effect.result),
         persistence
-          .completeSuccess(
+          .commitArtifactPublication(
             retained.workflowId,
             retained.inputDigest,
             contentId,
@@ -172,15 +182,64 @@ it.effect("serializes terminal success against cancellation after artifact reten
       ],
       { concurrency: 2 },
     );
-    const terminal = yield* persistence.inspect(retained.workflowId);
-    expect(terminal?.state === "success" || terminal?.state === "canceled").toBe(true);
-    if (terminal?.state === "success") {
-      expect(success).toMatchObject({ success: { state: "success" } });
-      expect(cancellation).toMatchObject({ success: { state: "success" } });
+    const winner = yield* persistence.inspect(retained.workflowId);
+    expect(winner?.state === "publication_committed" || winner?.state === "canceled").toBe(true);
+    if (winner?.state === "publication_committed") {
+      expect(publication).toMatchObject({ success: { state: "publication_committed" } });
+      expect(cancellation).toMatchObject({ success: { state: "publication_committed" } });
+      const completed = yield* persistence.completeSuccess(
+        retained.workflowId,
+        retained.inputDigest,
+        contentId,
+        deletionCompletedAt,
+      );
+      expect(completed).toMatchObject({ state: "success" });
     } else {
       expect(cancellation).toMatchObject({ success: { state: "canceled" } });
-      expect(success).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
+      expect(publication).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
     }
+  }).pipe(Effect.scoped),
+);
+
+it.effect("claims terminal follow-up exactly once only after publication finalizes", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedUser(fixture.database);
+    const persistence = ResearchReportPostgres.make(fixture.database);
+    const retained = yield* retainArtifact(persistence, "follow-up-publication");
+    const contentId = retained.artifactContentId ?? "missing";
+    const committed = yield* persistence.commitArtifactPublication(
+      retained.workflowId,
+      retained.inputDigest,
+      contentId,
+      artifactStoredAt,
+    );
+    const payload = ResearchReport.WorkflowPayload.make({
+      inputDigest: retained.inputDigest,
+      workflowId: retained.workflowId,
+    });
+    const followUps = ResearchReportFollowUpPostgres.make(fixture.database);
+
+    expect(yield* followUps.claimTerminal(payload, artifactStoredAt)).toEqual({
+      _tag: "NotTerminal",
+    });
+    yield* persistence.completeSuccess(
+      committed.workflowId,
+      committed.inputDigest,
+      contentId,
+      deletionCompletedAt,
+    );
+    const first = yield* followUps.claimTerminal(payload, deletionCompletedAt);
+    const replay = yield* followUps.claimTerminal(payload, deletionCompletedAt);
+    expect(first).toMatchObject({ _tag: "Claimed" });
+    if (first._tag !== "Claimed") return;
+    expect(replay).toMatchObject({
+      _tag: "AlreadyClaimed",
+      notification: { notificationId: first.notification.notificationId },
+    });
+    expect(yield* Effect.promise(() => countRows(fixture.database))).toBe(1);
   }).pipe(Effect.scoped),
 );
 
@@ -199,6 +258,7 @@ it.effect("lists only bounded delivered Research Report notifications for the ow
           accepted_at: executionStartedAt,
           artifact_content_id: "document:workflow:research:dashboard",
           artifact_stored_at: artifactStoredAt,
+          publication_committed_at: artifactStoredAt,
           manifest_version: "research-manifest-v1",
           source_manifest_digest: "d".repeat(64),
           source_manifest_key:
@@ -279,6 +339,7 @@ it.effect("fences admission, terminalizes every private Workflow, and cascades c
           accepted_at: executionStartedAt,
           artifact_content_id: "artifact:success",
           artifact_stored_at: artifactStoredAt,
+          publication_committed_at: artifactStoredAt,
           manifest_version: "research-manifest-v1",
           source_manifest_digest: "d".repeat(64),
           source_manifest_key: "users/concurrent-research-user/research/success/manifest.json",
@@ -482,6 +543,7 @@ const record = (identity: string): ResearchReport.Record => {
     approval: null,
     artifactContentId: null,
     artifactStoredAt: null,
+    publicationCommittedAt: null,
     cancelRequestedAt: null,
     capabilityCatalogVersion: CapabilityCatalogVersion.make("governed-capabilities-v1"),
     cloudflareInstanceId: ResearchReport.CloudflareInstanceId.make(`research-${identity}`),

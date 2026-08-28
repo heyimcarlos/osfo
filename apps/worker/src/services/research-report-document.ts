@@ -64,6 +64,13 @@ export interface PortInterface {
     ResearchReport.Record,
     ResearchReport.Conflict | Denied | ResearchReport.NotFound | ResearchReport.Unavailable
   >;
+  readonly commitPublication: (
+    report: ResearchReport.Record,
+    contentId: ContentId,
+  ) => Effect.Effect<
+    ResearchReport.Record,
+    ResearchReport.Conflict | Denied | ResearchReport.NotFound | ResearchReport.Unavailable
+  >;
   readonly completeSuccess: (
     report: ResearchReport.Record,
     contentId: ContentId,
@@ -165,7 +172,9 @@ export const make = Effect.gen(function* () {
       workflowId: admitted.workflowId,
     });
     const intentDigest = yield* digestIntent(admitted.request.format, source);
-    if (admitted.state !== "artifact_stored") yield* authorize(admitted);
+    if (admitted.state !== "publication_committed" && admitted.state !== "success") {
+      yield* authorize(admitted);
+    }
     const existing = yield* ports.artifacts
       .inspect(contentId)
       .pipe(
@@ -188,7 +197,7 @@ export const make = Effect.gen(function* () {
         );
       }
       const claimed = yield* claimPublication(ports, admitted, contentId);
-      const completed = yield* completeSuccess(ports, claimed, contentId).pipe(
+      const committed = yield* commitPublication(ports, claimed, contentId).pipe(
         Effect.tapError((failure) =>
           Predicate.isTagged(failure.cause, "ResearchReportConflict")
             ? discardArtifact(ports, existing)
@@ -196,8 +205,9 @@ export const make = Effect.gen(function* () {
         ),
       );
       yield* account(ports, contentId);
-      yield* ports.recordRenderCost(completed, existing.cost);
-      yield* ports.recordUsage(completed, existing.artifact, synthesis.companyCost, existing.cost);
+      yield* ports.recordRenderCost(committed, existing.cost);
+      yield* ports.recordUsage(committed, existing.artifact, synthesis.companyCost, existing.cost);
+      const completed = yield* completeSuccess(ports, committed, contentId);
       yield* cleanup(ports, contentId);
       return { artifact: existing.artifact, report: completed };
     }
@@ -324,7 +334,7 @@ export const make = Effect.gen(function* () {
       const claimed = yield* claimPublication(ports, admitted, contentId).pipe(
         Effect.tapError(() => ports.artifacts.delete(retained).pipe(Effect.ignore)),
       );
-      const completed = yield* completeSuccess(ports, claimed, contentId).pipe(
+      const committed = yield* commitPublication(ports, claimed, contentId).pipe(
         Effect.tapError((failure) =>
           Predicate.isTagged(failure.cause, "ResearchReportConflict")
             ? discardArtifact(ports, retained)
@@ -332,8 +342,9 @@ export const make = Effect.gen(function* () {
         ),
       );
       yield* account(ports, contentId);
-      yield* ports.recordRenderCost(completed, computed.cost);
-      yield* ports.recordUsage(completed, artifact, synthesis.companyCost, computed.cost);
+      yield* ports.recordRenderCost(committed, computed.cost);
+      yield* ports.recordUsage(committed, artifact, synthesis.companyCost, computed.cost);
+      const completed = yield* completeSuccess(ports, committed, contentId);
       return { artifact, report: completed };
     }).pipe(Effect.result);
     if (cleanupRequired) yield* cleanup(ports, contentId);
@@ -460,6 +471,19 @@ const completeSuccess = (
     .pipe(
       Effect.mapError((cause) =>
         unavailable("publish", "Report success cannot be committed", cause),
+      ),
+    );
+
+const commitPublication = (
+  ports: PortInterface,
+  report: ResearchReport.Record,
+  contentId: ContentId,
+) =>
+  ports
+    .commitPublication(report, contentId)
+    .pipe(
+      Effect.mapError((cause) =>
+        unavailable("publish", "Artifact publication cannot be committed", cause),
       ),
     );
 

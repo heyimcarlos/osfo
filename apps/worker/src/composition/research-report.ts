@@ -233,6 +233,8 @@ export const executionEffect = <Value>(
           reports.artifactAuthorization(payloadFor(report), researchReportDocumentSandboxUsdMicros),
         claimPublication: (report, contentId) =>
           reports.claimArtifactPublication(payloadFor(report), contentId),
+        commitPublication: (report, contentId) =>
+          reports.commitArtifactPublication(payloadFor(report), contentId),
         completeSuccess: (report, contentId) =>
           reports.completeSuccess(payloadFor(report), contentId),
         compute: DocumentCompute.make(

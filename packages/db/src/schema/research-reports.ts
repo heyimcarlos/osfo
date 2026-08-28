@@ -19,6 +19,7 @@ const workflowStates = [
   "running",
   "sources_committed",
   "artifact_stored",
+  "publication_committed",
   "cancel_requested",
   "success",
   "failure",
@@ -60,6 +61,7 @@ export const researchReports = pgTable(
     started_at: timestamp({ withTimezone: true }),
     sources_committed_at: timestamp({ withTimezone: true }),
     artifact_stored_at: timestamp({ withTimezone: true }),
+    publication_committed_at: timestamp({ withTimezone: true }),
     cancel_requested_at: timestamp({ withTimezone: true }),
     terminal_at: timestamp({ withTimezone: true }),
     milestone_claimed_at: timestamp({ withTimezone: true }),
@@ -109,7 +111,7 @@ export const researchReports = pgTable(
     ),
     check(
       "research_reports_state_check",
-      sql`${table.state} in ('admitted', 'accepted', 'running', 'sources_committed', 'artifact_stored', 'cancel_requested', 'success', 'failure', 'canceled')`,
+      sql`${table.state} in ('admitted', 'accepted', 'running', 'sources_committed', 'artifact_stored', 'publication_committed', 'cancel_requested', 'success', 'failure', 'canceled')`,
     ),
     check(
       "research_reports_lifecycle_check",
@@ -119,15 +121,18 @@ export const researchReports = pgTable(
         and (${table.started_at} is null or ${table.accepted_at} is not null)
         and (${table.sources_committed_at} is null or ${table.sources_committed_at} >= ${table.admitted_at})
         and (${table.artifact_stored_at} is null or ${table.artifact_stored_at} >= ${table.admitted_at})
+        and (${table.publication_committed_at} is null or ${table.publication_committed_at} >= ${table.artifact_stored_at})
         and (${table.cancel_requested_at} is null or ${table.cancel_requested_at} >= ${table.admitted_at})
         and (${table.terminal_at} is null or ${table.terminal_at} >= ${table.admitted_at})
         and ((${table.state} in ('success', 'failure', 'canceled')) = (${table.terminal_at} is not null))
         and ((${table.state} in ('failure', 'canceled')) = (${table.safe_failure_code} is not null))
         and (${table.safe_failure_code} is null or (length(btrim(${table.safe_failure_code})) between 1 and 120))
         and ((${table.source_manifest_key} is null) = (${table.source_manifest_digest} is null))
-        and (${table.state} not in ('running', 'sources_committed', 'artifact_stored', 'success', 'failure') or (${table.accepted_at} is not null and ${table.started_at} is not null))
-        and (${table.state} not in ('sources_committed', 'artifact_stored', 'success') or (${table.source_manifest_key} is not null and ${table.source_manifest_digest} is not null))
-        and (${table.state} not in ('artifact_stored', 'success') or (${table.artifact_content_id} is not null and ${table.artifact_stored_at} is not null))`,
+        and (${table.state} not in ('running', 'sources_committed', 'artifact_stored', 'publication_committed', 'success', 'failure') or (${table.accepted_at} is not null and ${table.started_at} is not null))
+        and (${table.state} not in ('sources_committed', 'artifact_stored', 'publication_committed', 'success') or (${table.source_manifest_key} is not null and ${table.source_manifest_digest} is not null))
+        and (${table.state} not in ('artifact_stored', 'publication_committed', 'success') or (${table.artifact_content_id} is not null and ${table.artifact_stored_at} is not null))
+        and (${table.state} not in ('publication_committed', 'success') or ${table.publication_committed_at} is not null)
+        and (${table.state} in ('publication_committed', 'success', 'canceled') or ${table.publication_committed_at} is null)`,
     ),
   ],
 );

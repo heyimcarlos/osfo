@@ -84,6 +84,7 @@ export const State = Schema.Literals([
   "running",
   "sources_committed",
   "artifact_stored",
+  "publication_committed",
   "cancel_requested",
   "success",
   "failure",
@@ -123,6 +124,7 @@ export interface Record {
   readonly acceptedAt: Date | null;
   readonly startedAt: Date | null;
   readonly artifactStoredAt: Date | null;
+  readonly publicationCommittedAt: Date | null;
   readonly cancelRequestedAt: Date | null;
   readonly terminalAt: Date | null;
 }
@@ -143,6 +145,7 @@ export type StartResult =
 
 export type CancelResult =
   | { readonly _tag: "CancelRequested"; readonly report: Record }
+  | { readonly _tag: "PublicationCommitted"; readonly report: Record }
   | { readonly _tag: "Terminal"; readonly report: Record };
 
 export class Conflict extends Schema.TaggedError<Conflict>()("ResearchReportConflict", {
@@ -204,6 +207,12 @@ export interface PortInterface {
       contentId: string,
       claimedAt: Date,
     ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+    readonly commitArtifactPublication: (
+      workflowId: WorkflowId,
+      inputDigest: InputDigest,
+      contentId: string,
+      committedAt: Date,
+    ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
     readonly completeSuccess: (
       workflowId: WorkflowId,
       inputDigest: InputDigest,
@@ -249,6 +258,10 @@ export interface Interface {
     payload: WorkflowPayload,
   ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
   readonly claimArtifactPublication: (
+    payload: WorkflowPayload,
+    contentId: string,
+  ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
+  readonly commitArtifactPublication: (
     payload: WorkflowPayload,
     contentId: string,
   ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
@@ -436,6 +449,10 @@ export const make = Effect.gen(function* () {
         workflowId: payload.workflowId,
       });
     }
+    // Publication owns company-continuity finalization after this durable boundary.
+    // Current User authority, cancellation, and the admission deadline no longer
+    // revoke the already-useful artifact while its accounting converges.
+    if (report.state === "publication_committed") return report;
     const context = yield* ports.currentAuthorization(report);
     if (context.now.getTime() >= report.deadlineAt.getTime()) {
       yield* ports.persistence.finishTerminal(
@@ -473,7 +490,8 @@ export const make = Effect.gen(function* () {
     if (
       report.state === "running" ||
       report.state === "sources_committed" ||
-      report.state === "artifact_stored"
+      report.state === "artifact_stored" ||
+      report.state === "publication_committed"
     ) {
       if (report.startedAt === null) {
         return yield* new Conflict({
@@ -561,7 +579,11 @@ export const make = Effect.gen(function* () {
         workflowId: payload.workflowId,
       });
     }
-    if (retained.state === "artifact_stored" || retained.state === "success") {
+    if (
+      retained.state === "artifact_stored" ||
+      retained.state === "publication_committed" ||
+      retained.state === "success"
+    ) {
       if (retained.artifactContentId !== contentId) {
         return yield* new Conflict({
           message: "The Research Report already published a different artifact identity",
@@ -579,6 +601,28 @@ export const make = Effect.gen(function* () {
       claimedAt,
     );
   });
+
+  const commitArtifactPublication = Effect.fn("ResearchReport.commitArtifactPublication")(
+    function* (payload: WorkflowPayload, contentId: string) {
+      const retained = yield* authorizeExecution(payload);
+      if (retained.state === "publication_committed" || retained.state === "success") {
+        if (retained.artifactContentId !== contentId) {
+          return yield* new Conflict({
+            message: "The committed publication owns a different artifact identity",
+            workflowId: payload.workflowId,
+          });
+        }
+        return retained;
+      }
+      const committedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+      return yield* ports.persistence.commitArtifactPublication(
+        payload.workflowId,
+        payload.inputDigest,
+        contentId,
+        committedAt,
+      );
+    },
+  );
 
   const completeSuccess = Effect.fn("ResearchReport.completeSuccess")(function* (
     payload: WorkflowPayload,
@@ -720,6 +764,7 @@ export const make = Effect.gen(function* () {
       acceptedAt: null,
       startedAt: null,
       artifactStoredAt: null,
+      publicationCommittedAt: null,
       cancelRequestedAt: null,
       terminalAt: null,
     };
@@ -776,6 +821,9 @@ export const make = Effect.gen(function* () {
       }
       return { _tag: "Terminal" as const, report: requested };
     }
+    if (requested.state === "publication_committed") {
+      return { _tag: "PublicationCommitted" as const, report: requested };
+    }
     const canceled = yield* ports.persistence.finishTerminal(
       requested.workflowId,
       requested.inputDigest,
@@ -798,7 +846,11 @@ export const make = Effect.gen(function* () {
         workflowId: payload.workflowId,
       });
     }
-    if (report.state !== "artifact_stored" && report.state !== "success") {
+    if (
+      report.state !== "artifact_stored" &&
+      report.state !== "publication_committed" &&
+      report.state !== "success"
+    ) {
       return yield* new Conflict({
         message: "Only a claimed publication can enter company-continuity recovery",
         workflowId: payload.workflowId,
@@ -813,6 +865,7 @@ export const make = Effect.gen(function* () {
     beginExecution,
     cancel,
     claimArtifactPublication,
+    commitArtifactPublication,
     commitSources,
     completeSuccess,
     inspect,

@@ -386,7 +386,7 @@ it.effect("cancellation wins after artifact retention but before terminal public
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
-it.effect("terminal success wins a later cancellation", () => {
+it.effect("a durable publication commit wins a later cancellation and converges to success", () => {
   const fixture = makeFixture();
   return Effect.gen(function* () {
     yield* TestClock.setTime(now.getTime());
@@ -403,6 +403,23 @@ it.effect("terminal success wins a later cancellation", () => {
       ResearchReport.InputDigest.make("b".repeat(64)),
     );
     yield* reports.claimArtifactPublication(payload, "document:workflow:success-race");
+    const committed = yield* reports.commitArtifactPublication(
+      payload,
+      "document:workflow:success-race",
+    );
+    expect(committed).toMatchObject({ state: "publication_committed" });
+    const publicationWon = yield* reports.cancel(started.report.workflowId, userId);
+    expect(publicationWon).toMatchObject({
+      _tag: "PublicationCommitted",
+      report: { state: "publication_committed" },
+    });
+    expect(fixture.calls).not.toContain("artifact.discard");
+    expect(yield* reports.resumePublication(payload)).toMatchObject({
+      state: "publication_committed",
+    });
+    expect(yield* reports.authorizeExecution(payload)).toMatchObject({
+      state: "publication_committed",
+    });
     const completed = yield* reports.completeSuccess(payload, "document:workflow:success-race");
     expect(completed).toMatchObject({ safeFailureCode: null, state: "success" });
     const canceled = yield* reports.cancel(started.report.workflowId, userId);
@@ -712,13 +729,33 @@ const makeFixture = (
           };
           return stored;
         }),
+      commitArtifactPublication: (workflowId, inputDigest, contentId, committedAt) =>
+        Effect.gen(function* () {
+          if (stored === null) return yield* new ResearchReport.NotFound({ workflowId });
+          if (stored.inputDigest !== inputDigest || stored.artifactContentId !== contentId) {
+            return yield* new ResearchReport.Conflict({ message: "changed artifact", workflowId });
+          }
+          if (stored.state === "publication_committed" || stored.state === "success") return stored;
+          if (stored.state !== "artifact_stored") {
+            return yield* new ResearchReport.Conflict({
+              message: "publication race lost",
+              workflowId,
+            });
+          }
+          stored = {
+            ...stored,
+            publicationCommittedAt: committedAt,
+            state: "publication_committed",
+          };
+          return stored;
+        }),
       completeSuccess: (workflowId, inputDigest, contentId, completedAt) =>
         Effect.gen(function* () {
           if (stored === null) return yield* new ResearchReport.NotFound({ workflowId });
           if (stored.inputDigest !== inputDigest || stored.artifactContentId !== contentId) {
             return yield* new ResearchReport.Conflict({ message: "changed artifact", workflowId });
           }
-          if (stored.state !== "artifact_stored") {
+          if (stored.state !== "publication_committed") {
             return yield* new ResearchReport.Conflict({
               message: "publication race lost",
               workflowId,
@@ -755,7 +792,12 @@ const makeFixture = (
           if (stored === null || stored.userId !== requestedUserId) {
             return yield* new ResearchReport.NotFound({ workflowId });
           }
-          if (ResearchReport.terminalStates.has(stored.state)) return stored;
+          if (
+            ResearchReport.terminalStates.has(stored.state) ||
+            stored.state === "publication_committed"
+          ) {
+            return stored;
+          }
           stored =
             stored.state === "cancel_requested"
               ? stored

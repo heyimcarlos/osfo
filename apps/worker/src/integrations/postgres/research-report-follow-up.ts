@@ -34,7 +34,7 @@ const milestoneLimit = 3;
 export const deadlineDisposition = (state: ResearchReport.State, now: Date, deadlineAt: Date) => {
   if (ResearchReport.terminalStates.has(state)) return "Terminal" as const;
   if (now.getTime() < deadlineAt.getTime()) return "NotDue" as const;
-  if (state === "artifact_stored") return "PublicationPending" as const;
+  if (state === "publication_committed") return "PublicationPending" as const;
   return "Canceled" as const;
 };
 
@@ -235,7 +235,11 @@ export const make = (database: Database): ResearchReportFollowUp.PortInterface =
             if (ResearchReport.terminalStates.has(ResearchReport.State.make(row.state))) {
               return { _tag: "Terminal" as const };
             }
-            if (row.state !== "sources_committed" && row.state !== "artifact_stored") {
+            if (
+              row.state !== "sources_committed" &&
+              row.state !== "artifact_stored" &&
+              row.state !== "publication_committed"
+            ) {
               return { _tag: "AwaitingSources" as const };
             }
             if (now.getTime() < row.admittedAt.getTime() + milestoneDelayMilliseconds) {
