@@ -9,7 +9,21 @@ import {
   DocumentSource,
   type CostEvidence,
 } from "../../services/document-generation";
-import { makeWithSandbox, type AttemptEvidenceStore, type SandboxClient } from "./document-compute";
+import {
+  makeWithSandbox,
+  sandboxIdFor,
+  type AttemptEvidenceStore,
+  type SandboxClient,
+} from "./document-compute";
+
+it("derives distinct Sandbox-safe identities for long document content IDs", () => {
+  const first = sandboxIdFor(ContentId.make(`document:workflow:research:${"a".repeat(64)}`));
+  const second = sandboxIdFor(ContentId.make(`document:workflow:research:${"b".repeat(64)}`));
+
+  expect(first).toMatch(/^[a-zA-Z0-9_][a-zA-Z0-9-_]*$/u);
+  expect(first).toHaveLength(63);
+  expect(second).not.toBe(first);
+});
 
 it.effect("rechecks protected-effect authority before every attempt-evidence R2 mutation", () => {
   const events: Array<string> = [];
