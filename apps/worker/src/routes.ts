@@ -18,14 +18,17 @@ import { UserId } from "./domain";
 import { ChannelLinks } from "./services/channel-links";
 import type { AccountDeletionComposition } from "./composition/account-deletion";
 import { ResearchReportComposition } from "./composition/research-report";
+import { DocumentBuildComposition } from "./composition/document-build";
 import type { SkillsHandlers } from "./handlers/skills";
 import type { IntegrationHandlers } from "./handlers/integrations";
+import type { FilesHandlers } from "./handlers/files";
 
 /** Cloudflare bindings used by the Worker route tree. */
 export type Bindings = AccountDeletionComposition.Bindings &
   RegistrationCloudflare.Bindings &
   SkillsHandlers.Bindings &
   IntegrationHandlers.Bindings &
+  FilesHandlers.Bindings &
   WebhookHandlers.Bindings & {
     readonly ARTIFACTS?: R2Bucket;
     readonly routeOsfoAgentRequest: (
@@ -49,6 +52,9 @@ export const layer = (options: Options) => {
     Layer.provide(Handlers.layer(options.runtime, options.config, options.env)),
     Layer.provide(
       ResearchReportComposition.followUpLayer.pipe(Layer.provide(options.authDependencies)),
+    ),
+    Layer.provide(
+      DocumentBuildComposition.followUpLayer.pipe(Layer.provide(options.authDependencies)),
     ),
     Layer.provide(ChannelLinks.layerFromConfig(options.config)),
     Layer.provide(Registration.layerWithoutDependencies),

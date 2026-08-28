@@ -8,6 +8,7 @@ import type { AdminActorId, AdminReason } from "../../domain/account-administrat
 import type { ActionId } from "../../domain/action-execution";
 import type { DeletionCaseId } from "../../domain/deletion-case";
 import type { ApprovalPresentation } from "../../services/authorization";
+import { lockWorkflowUser } from "./workflow-serialization";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Exact authority variants use the domain discriminator. */
 /* oxlint-disable effecttsgo/async-function -- Drizzle transaction boundaries require async functions. */
@@ -70,13 +71,7 @@ export const fenceDeletionCaseAccess = (
   candidate: ExactDeletionCaseAuthority,
 ) =>
   database.transaction(async (transaction) => {
-    // User is the canonical first lock for every authoritative User/Deletion Case transaction.
-    const user = await lockDeletionCaseUser(transaction, candidate.userId);
-    if (user === undefined) return false;
-    // Serialize the durable deletion fence with every Research Report admission and callback.
-    await transaction.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${`research-report:user:${candidate.userId}`}, 0))`,
-    );
+    if (!(await lockWorkflowUser(transaction, candidate.userId))) return false;
     if (candidate._tag === "Administrative") {
       // Serialize revocation with the whole fence transaction; the case lock alone cannot
       // keep a distinct Administrative Authority current through session deletion.

@@ -30,6 +30,7 @@ import {
   OriginatingAuthority,
 } from "../../services/authorization";
 import type { Denied } from "../../services/authorization";
+import { countActiveWorkflows, lockWorkflowUser } from "./workflow-serialization";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transactions are the PostgreSQL serialization boundary. */
 /* oxlint-disable eslint/no-underscore-dangle -- Persistence outcomes use the standard Effect _tag discriminator. */
@@ -143,9 +144,7 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
   admit: (record, activeWorkflowLimit) =>
     attempt("admit", () =>
       database.transaction(async (transaction) => {
-        await transaction.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${`research-report:user:${record.userId}`}, 0))`,
-        );
+        await lockWorkflowUser(transaction, record.userId);
         const [existing] = await transaction
           .select(rowSelection)
           .from(researchReports)
@@ -164,23 +163,7 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           )
           .limit(1);
         if (deletion !== undefined) return { _tag: "AccessFenced" as const };
-        const active = await transaction
-          .select({ workflowId: researchReports.workflow_id })
-          .from(researchReports)
-          .where(
-            and(
-              eq(researchReports.user_id, record.userId),
-              inArray(researchReports.state, [
-                "admitted",
-                "accepted",
-                "running",
-                "sources_committed",
-                "artifact_stored",
-                "publication_committed",
-              ]),
-            ),
-          );
-        if (BigInt(active.length) >= activeWorkflowLimit) {
+        if (BigInt(await countActiveWorkflows(transaction, record.userId)) >= activeWorkflowLimit) {
           return { _tag: "CapacityExceeded" as const };
         }
         await transaction.insert(researchReports).values({
@@ -893,9 +876,7 @@ export const countActiveForUser = (database: Database, userId: UserId) =>
 export const quiesceForAccountDeletion = (database: Database, userId: UserId, terminalAt: Date) =>
   attempt("quiesceForAccountDeletion", () =>
     database.transaction(async (transaction) => {
-      await transaction.execute(
-        sql`select pg_advisory_xact_lock(hashtextextended(${`research-report:user:${userId}`}, 0))`,
-      );
+      await lockWorkflowUser(transaction, userId);
       const rows = await transaction
         .select({
           cloudflareInstanceId: researchReports.cloudflare_instance_id,

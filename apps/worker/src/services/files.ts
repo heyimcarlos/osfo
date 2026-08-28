@@ -72,6 +72,7 @@ export class FileComputeFailed extends Schema.TaggedError<FileComputeFailed>()(
   "FileComputeFailed",
   {
     basis: Schema.NullOr(Schema.Literals(["conservative", "observed"])),
+    kind: Schema.Literals(["dependency_unavailable", "task_rejected"]),
     message: Schema.String,
     reason: Schema.Literals(["content_limit", "malicious", "parser_failure"]),
     vendorUsdMicros: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
@@ -464,7 +465,11 @@ export const makeFiles = <AllowanceError, ContextError, ObjectError, Persistence
         .pipe(
           Effect.catchTag("FileComputeFailed", (failure) =>
             Effect.gen(function* () {
-              yield* options.store.failNormalization(input.fileId, acceptedAt, failure.reason);
+              if (failure.kind === "dependency_unavailable") {
+                yield* options.store.releaseNormalization(input.fileId, acceptedAt);
+              } else {
+                yield* options.store.failNormalization(input.fileId, acceptedAt, failure.reason);
+              }
               yield* recordCost(
                 options.allowances,
                 allowancePeriodId,
@@ -488,6 +493,7 @@ export const makeFiles = <AllowanceError, ContextError, ObjectError, Persistence
         yield* options.store.failNormalization(input.fileId, acceptedAt, "parser_failure");
         return yield* new FileComputeFailed({
           basis: null,
+          kind: "task_rejected",
           message: "File normalization provenance does not match trusted source facts",
           reason: "parser_failure",
           vendorUsdMicros: 0n,
@@ -500,6 +506,7 @@ export const makeFiles = <AllowanceError, ContextError, ObjectError, Persistence
           () =>
             new FileComputeFailed({
               basis: null,
+              kind: "task_rejected",
               message: "File normalization returned invalid provenance",
               reason: "parser_failure",
               vendorUsdMicros: 0n,

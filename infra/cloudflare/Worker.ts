@@ -4,6 +4,8 @@ import { Config, Effect, Redacted } from "effect";
 
 import { DatabaseHyperdrive } from "./Db";
 import { ExecutionUnitWorkflow } from "./ExecutionUnitWorkflow";
+import { DocumentBuildTimerWorkflow } from "./DocumentBuildTimerWorkflow";
+import { DocumentBuildWorkflow } from "./DocumentBuildWorkflow";
 import { ResearchReportWorkflow } from "./ResearchReportWorkflow";
 import { ResearchReportTimerWorkflow } from "./ResearchReportTimerWorkflow";
 import { Files } from "./Files";
@@ -44,6 +46,8 @@ const worker = Worker(
           context: "./apps/worker/document-sandbox",
           instanceType: "lite",
         }),
+        DOCUMENT_BUILD_TIMER_WORKFLOW: DocumentBuildTimerWorkflow,
+        DOCUMENT_BUILD_WORKFLOW: DocumentBuildWorkflow,
         EXECUTION_UNIT_WORKFLOW: ExecutionUnitWorkflow,
         RESEARCH_REPORT_WORKFLOW: ResearchReportWorkflow,
         RESEARCH_REPORT_TIMER_WORKFLOW: ResearchReportTimerWorkflow,

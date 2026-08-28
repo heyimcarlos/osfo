@@ -10,6 +10,7 @@ Account deletion permanently removes the authenticated User's account and User-s
 - whole Agent registry and facet deletion, observed through the production Directory RPC;
 - R2 deletion of a run-owned trusted-evidence object under the User prefix;
 - deletion of any Research Report product, provider-operation, notification, source, synthesis, and artifact obligations completed earlier in the same run;
+- deletion of any Document Build product, source File, notification, accounting, compute evidence, artifact, ownership index, and main/timer Workflow obligations completed earlier in the same run;
 - PostgreSQL deletion of the User, session, Agent route, Channel Link, billing, allowance, and pending Deletion Case;
 - survival of unrelated provider and R2 sentinels.
 
@@ -27,7 +28,7 @@ After registration and Telegram channel linking, open `/settings/privacy`, choos
 6. After confirmation, choose `Confirm account deletion` once. Wait for navigation to `/`, then require the signed-out `Sign in` and `Get started` links. Capture `result.png` and record that `Sign in and Get started` are visible.
 7. Run `control-osfo reconcile-account-deletion <run-id>`. This invokes the Worker's production scheduled entry point, which owns durable destructive completion after the HTTP response. Then run `observe account-deletion` and finish the evidence.
 
-PASS requires the generic prefetch state followed by exactly one canonical server consequence; exactly one total and one successful `GET /v1/account/deletion-action`, plus exactly one total and one successful `DELETE /v1/account`, in the actual Worker log; the signed-out home result; no run-owned PostgreSQL User graph, active session, or exact Agent in the production Directory registry/runtime; no target R2 object or target Supermemory container; exactly one target container deletion; and both unrelated sentinels still present. This is explicitly the one-click happy-path proof; use [account-deletion replay](account-deletion-replay.md) for accepted lost-response recovery. The before-state Agent observation must show the exact Agent registered and inspectable through the same RPC.
+PASS requires the generic prefetch state followed by exactly one canonical server consequence; exactly one total and one successful `GET /v1/account/deletion-action`, plus exactly one total and one successful `DELETE /v1/account`, in the actual Worker log; the signed-out home result; no run-owned PostgreSQL User graph, active session, or exact Agent in the production Directory registry/runtime; no target R2 object or target Supermemory container; exactly one target container deletion; and both unrelated sentinels still present. When a Document Build was completed in the same run, its source, artifact, attempt evidence, ownership index, PostgreSQL graph, accounting, and notification must be absent and both Workflow instances terminated. This is explicitly the one-click happy-path proof; use [account-deletion replay](account-deletion-replay.md) for accepted lost-response recovery. The before-state Agent observation must show the exact Agent registered and inspectable through the same RPC.
 
 ## Gotchas
 

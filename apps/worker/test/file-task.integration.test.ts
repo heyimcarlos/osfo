@@ -67,6 +67,12 @@ describe("disposable Python file task", () => {
             reason: "parser_failure",
           });
 
+          writeFileSync(join(workspace, "source.bin"), "a".repeat(2_000_001));
+          expect(runTask(workspace, "text/plain")).toMatchObject({
+            ok: false,
+            reason: "content_limit",
+          });
+
           createFixture(workspace, "malicious-docx");
           expect(
             runTask(

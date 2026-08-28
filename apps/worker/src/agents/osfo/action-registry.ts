@@ -68,6 +68,12 @@ export {
   RetainedDocumentInput,
 } from "./action-presentation";
 
+export {
+  documentBuildStartActionName,
+  DocumentBuildIdentityInput,
+  DocumentBuildStartInput,
+} from "./action-presentation";
+
 /** Name registered with Think for the Core Memory clear Action. */
 export const coreMemoryClearActionName = "osfoClearCoreMemory";
 /** Name registered with Think for approval-gated personal Skill deletion. */

@@ -29,6 +29,7 @@ import { personalSkillDeleteActionName, SkillDeleteInput } from "./personal-skil
 import type { IntegrationToolInput } from "./integration-tools";
 import { ReminderManageInput, reminderManageActionName } from "./reminder-tool-contracts";
 import { ResearchReport } from "../../services/research-report";
+import { DocumentBuild } from "../../services/document-build";
 import {
   CalendarCreateEventInput,
   CalendarDeleteEventInput,
@@ -45,12 +46,17 @@ export const documentDeleteActionName = "deleteDocument";
 export const artifactDeleteActionName = "deleteArtifact";
 /** Name registered with Think for consequence-aware Research Report admission. */
 export const researchReportStartActionName = "startResearchReport";
+/** Ordinary Document Build Action; no Approval presentation is created. */
+export const documentBuildStartActionName = "startDocumentBuild";
 
 /** Model-visible input for one bounded Research Report admission. */
 export const ResearchReportStartInput = ResearchReport.Request;
 
 /** Model-visible identity for Research Report inspection or cancellation. */
 export const ResearchReportIdentityInput = Schema.Struct({ workflowId: ResearchReport.WorkflowId });
+
+export const DocumentBuildStartInput = DocumentBuild.Request;
+export const DocumentBuildIdentityInput = Schema.Struct({ workflowId: DocumentBuild.WorkflowId });
 
 /** Consequence policy used by Think's input-dependent durable Approval gate. */
 export const researchReportRequiresApproval = (input: ResearchReport.Request): boolean =>

@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./config": "./src/config.ts"
+    "./config": "./src/config.ts",
+    "./workflow-contracts": "./src/workflow-contracts.ts"
   },
   "scripts": {
     "agent-db:check": "drizzle-kit check --config drizzle.agent.config.ts",

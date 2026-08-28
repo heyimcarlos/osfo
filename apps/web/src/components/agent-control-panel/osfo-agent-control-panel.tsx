@@ -8,6 +8,7 @@ import {
 } from "./agent-control-preferences";
 import { ConnectedChannels, MessagingSettings } from "./channel-controls";
 import { SettingsShortcuts } from "./settings-shortcuts";
+import { DocumentBuildSourceUpload } from "./document-build-source-upload";
 
 /** Premium self-contained control panel for one personal Osfo Agent. */
 export function OsfoAgentControlPanel() {
@@ -28,6 +29,7 @@ export function OsfoAgentControlPanel() {
         <div className="pointer-events-none absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-white/35 to-transparent" />
         <AgentPanelHeader status={{ kind: "Active" }} />
         <AgentIslandHero />
+        <DocumentBuildSourceUpload />
         <div className="relative z-10 grid gap-3 lg:grid-cols-[0.84fr_1.16fr]">
           <ConnectedChannels
             primaryChannel={preferences.primaryChannel}

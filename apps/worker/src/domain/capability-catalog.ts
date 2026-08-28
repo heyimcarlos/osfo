@@ -12,6 +12,7 @@ const capabilityIdValues = [
   "file-read",
   "file-analysis",
   "document-generation",
+  "document-build",
   "document-read",
   "document-delete",
   "artifact-read",

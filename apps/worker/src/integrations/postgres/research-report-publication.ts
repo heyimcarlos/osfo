@@ -8,6 +8,7 @@ import { BillingDb } from "../../db/billing";
 import { ResearchReport } from "../../services/research-report";
 import type { ResearchReportAccounting } from "../../services/research-report-accounting";
 import { ResearchReportPostgres } from "./research-report";
+import { lockWorkflowUser } from "./workflow-serialization";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle owns the serialized PostgreSQL boundary. */
 /* oxlint-disable eslint/no-await-in-loop -- Launch facts must be retained sequentially inside one transaction. */
@@ -29,9 +30,7 @@ export const complete = (database: Database, input: CompleteInput) =>
   Effect.tryPromise({
     try: () =>
       database.transaction(async (transaction) => {
-        await transaction.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${`research-report:user:${input.report.userId}`}, 0))`,
-        );
+        await lockWorkflowUser(transaction, input.report.userId);
         await transaction.execute(
           sql`select pg_advisory_xact_lock(hashtextextended(${input.report.workflowId}, 0))`,
         );

@@ -6,8 +6,10 @@ import { App } from "./app";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/directory";
 import { loadConfig, WorkerConfigurationError, type CloudflareEnv } from "./config";
 import { DocumentCostReconciliation } from "./document-cost-reconciliation";
+import { DocumentBuildHostReconciliation } from "./document-build-host-reconciliation";
 import { makeWhatsAppAdapter } from "./integrations/whatsapp";
 import { WhatsAppWakeUpComposition } from "./composition/whatsapp-wakeups";
+import { settleScheduledBranches } from "./scheduled-lifecycle";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Cloudflare RPC tags and adapter boundaries require these forms. */
 
@@ -16,6 +18,8 @@ export { CompanyAgent } from "./agents/osfo/company-agent";
 export { OsfoDirectory } from "./agents/osfo/directory";
 export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 export { ExecutionUnitWorkflow } from "./workflows/runtime";
+export { DocumentBuildWorkflow } from "./workflows/document-build";
+export { DocumentBuildTimerWorkflow } from "./workflows/document-build-timer";
 export { ResearchReportWorkflow } from "./workflows/research-report";
 export { ResearchReportTimerWorkflow } from "./workflows/research-report-timer";
 /** Disposable artifact compute has no direct public-network path or injected credentials. */
@@ -73,12 +77,13 @@ const worker = {
     try {
       const config = loadConfig(env);
       context.waitUntil(
-        Promise.all([
-          App.expireChannelLinkInvites(env),
-          App.reconcileAccountDeletions(env),
-          DocumentCostReconciliation.run(env),
-          WhatsAppWakeUpComposition.drainScheduled(env, config),
-        ]).then(() => undefined),
+        settleScheduledBranches([
+          () => App.expireChannelLinkInvites(env).then(() => undefined),
+          () => App.reconcileAccountDeletions(env).then(() => undefined),
+          () => DocumentBuildHostReconciliation.run(env).then(() => undefined),
+          () => DocumentCostReconciliation.run(env).then(() => undefined),
+          () => WhatsAppWakeUpComposition.drainScheduled(env, config).then(() => undefined),
+        ]),
       );
     } catch (error) {
       if (Schema.is(WorkerConfigurationError)(error)) logConfigurationError(error);

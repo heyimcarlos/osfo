@@ -23,6 +23,8 @@ export interface Bindings {
   readonly FILES?: R2Bucket;
   readonly integrationAuthorityDeletion: AccountDeletionComposition.IntegrationAuthorityDeletionCapability;
   readonly DB: Pick<Hyperdrive, "connectionString">;
+  readonly DOCUMENT_BUILD_TIMER_WORKFLOW?: CloudflareEnv["DOCUMENT_BUILD_TIMER_WORKFLOW"];
+  readonly DOCUMENT_BUILD_WORKFLOW?: CloudflareEnv["DOCUMENT_BUILD_WORKFLOW"];
   readonly OSFO_DIRECTORY: Routes.Bindings["OSFO_DIRECTORY"];
   readonly RESEARCH_REPORT_TIMER_WORKFLOW?: CloudflareEnv["RESEARCH_REPORT_TIMER_WORKFLOW"];
   readonly RESEARCH_REPORT_WORKFLOW?: CloudflareEnv["RESEARCH_REPORT_WORKFLOW"];
@@ -126,6 +128,8 @@ const adaptBindings = (env: CloudflareEnv, config: CloudflareConfig): Bindings =
           adapter: ComposioAccountDeletion.make(config.composio.apiKey),
         },
   DB: env.DB,
+  DOCUMENT_BUILD_TIMER_WORKFLOW: env.DOCUMENT_BUILD_TIMER_WORKFLOW,
+  DOCUMENT_BUILD_WORKFLOW: env.DOCUMENT_BUILD_WORKFLOW,
   OSFO_DIRECTORY: {
     getByName: () => {
       const directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
@@ -151,6 +155,8 @@ const adaptBindings = (env: CloudflareEnv, config: CloudflareConfig): Bindings =
           directory.deletePersonalSkillFromSettings(agentId, input),
         quiesceAgentAccountDeletion: (agentId, userId) =>
           directory.quiesceAgentAccountDeletion(agentId, userId),
+        uploadUserTextFile: (input) => directory.uploadUserTextFile(input),
+        inspectUserFile: (input) => directory.inspectUserFile(input),
       };
     },
   },

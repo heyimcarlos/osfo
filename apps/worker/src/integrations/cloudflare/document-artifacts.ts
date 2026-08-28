@@ -133,6 +133,10 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
   readBytes: (metadata) => readBytes(bucket, metadata),
 });
 
+/** Delete only pending artifact bytes; attempt and ownership evidence have an independent lifecycle. */
+export const deletePendingBytes = (bucket: R2Bucket, contentId: ContentId) =>
+  attempt("delete", () => bucket.delete(contentKeyFor(contentId))).pipe(Effect.asVoid);
+
 const decodeMetadata = (object: R2Object, contentId: ContentId) =>
   Effect.gen(function* () {
     const encoded = object.customMetadata?.osfo;

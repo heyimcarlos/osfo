@@ -1,4 +1,6 @@
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { Effect, Schema } from "effect";
 
 import type { FileMediaType } from "../../domain/file-content";
@@ -64,8 +66,12 @@ interface NormalizationTaskInput {
 /** Create disposable, bounded Python file compute from the Cloudflare Sandbox binding. */
 export const makeCloudflareFileCompute = (binding: DurableObjectNamespace<Sandbox>): FileCompute =>
   makeFileCompute((taskId) =>
-    getSandbox(binding, taskId, { enableDefaultSession: false, sleepAfter: "1m" }),
+    getSandbox(binding, sandboxIdFor(taskId), { enableDefaultSession: false, sleepAfter: "1m" }),
   );
+
+/** Bound one durable logical File operation to Cloudflare's Sandbox identifier contract. */
+export const sandboxIdFor = (taskScope: string) =>
+  `file-${bytesToHex(sha256(new TextEncoder().encode(taskScope))).slice(0, 58)}`;
 
 /** Create the narrow file task adapter over one isolated-sandbox resolver. */
 export const makeFileCompute = (sandboxFor: (taskId: string) => FileTaskSandbox): FileCompute => ({
@@ -91,23 +97,38 @@ export const makeFileCompute = (sandboxFor: (taskId: string) => FileTaskSandbox)
             input.bytes,
           );
           const result = yield* executeTask(sandbox).pipe(
-            Effect.catch(() =>
-              readResult(sandbox).pipe(
-                Effect.mapError(
-                  () =>
-                    new FileComputeFailed({
-                      basis: "conservative",
-                      message: "Sandbox normalization outcome could not be reconciled",
-                      reason: "parser_failure",
-                      vendorUsdMicros: input.conservativeVendorUsdMicros,
-                    }),
-                ),
-              ),
+            Effect.catchTag("FileComputeFailed", (failure) =>
+              failure.kind === "task_rejected"
+                ? failure
+                : readResult(sandbox).pipe(
+                    Effect.mapError(
+                      () =>
+                        new FileComputeFailed({
+                          basis: "conservative",
+                          kind: "dependency_unavailable",
+                          message: "Sandbox normalization outcome could not be reconciled",
+                          reason: "parser_failure",
+                          vendorUsdMicros: input.conservativeVendorUsdMicros,
+                        }),
+                    ),
+                  ),
             ),
           );
           if (!result.ok) return yield* taskFailure(result);
           if (result.normalizedText === undefined || result.parser === undefined) {
             return yield* invalidTaskResult("Normalization output is incomplete");
+          }
+          if (
+            new TextEncoder().encode(result.normalizedText).byteLength >
+            input.limits.maximumNormalizedTextBytes
+          ) {
+            return yield* new FileComputeFailed({
+              basis: null,
+              kind: "task_rejected",
+              message: "Normalized file content exceeds the retained text limit",
+              reason: "content_limit",
+              vendorUsdMicros: 0n,
+            });
           }
           const provenance = yield* Schema.decodeEffect(FileNormalizationProvenance)({
             mediaType: input.mediaType,
@@ -189,16 +210,16 @@ const writeTaskFiles = (
 const executeTask = (sandbox: FileTaskSandbox) =>
   dependency("execute", async () => {
     await sandbox.exec("python3 /workspace/file-task.py", { timeout: taskTimeoutMilliseconds });
-    return await readResultPromise(sandbox);
-  });
+  }).pipe(Effect.andThen(readResult(sandbox)));
 
 const readResult = (sandbox: FileTaskSandbox) =>
-  dependency("read", () => readResultPromise(sandbox));
-
-const readResultPromise = async (sandbox: FileTaskSandbox): Promise<TaskResult> => {
-  const result = await sandbox.readFile("/workspace/result.json", { encoding: "utf-8" });
-  return Schema.decodeSync(Schema.fromJsonString(TaskResult))(result.content);
-};
+  dependency("read", () => sandbox.readFile("/workspace/result.json", { encoding: "utf-8" })).pipe(
+    Effect.flatMap(({ content }) =>
+      Schema.decodeEffect(Schema.fromJsonString(TaskResult))(content).pipe(
+        Effect.mapError(() => invalidTaskResult("Sandbox task output is invalid")),
+      ),
+    ),
+  );
 
 const dependency = <A>(operation: string, run: () => Promise<A>) =>
   Effect.tryPromise({
@@ -206,6 +227,7 @@ const dependency = <A>(operation: string, run: () => Promise<A>) =>
     catch: () =>
       new FileComputeFailed({
         basis: null,
+        kind: "dependency_unavailable",
         message: `Disposable file compute could not ${operation} its task`,
         reason: "parser_failure",
         vendorUsdMicros: 0n,
@@ -215,6 +237,7 @@ const dependency = <A>(operation: string, run: () => Promise<A>) =>
 const taskFailure = (result: typeof FailedTask.Type) =>
   new FileComputeFailed({
     basis: null,
+    kind: "task_rejected",
     message: result.message,
     reason: result.reason,
     vendorUsdMicros: 0n,
@@ -223,6 +246,7 @@ const taskFailure = (result: typeof FailedTask.Type) =>
 const invalidTaskResult = (message: string) =>
   new FileComputeFailed({
     basis: null,
+    kind: "task_rejected",
     message,
     reason: "parser_failure",
     vendorUsdMicros: 0n,
@@ -234,6 +258,7 @@ const destroy = (sandbox: FileTaskSandbox) =>
     catch: () =>
       new FileComputeFailed({
         basis: null,
+        kind: "dependency_unavailable",
         message: "Disposable file compute cleanup failed",
         reason: "parser_failure",
         vendorUsdMicros: 0n,

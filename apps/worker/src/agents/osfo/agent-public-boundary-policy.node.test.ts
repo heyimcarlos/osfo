@@ -44,7 +44,9 @@ const publicBoundaryPolicy = {
   initialize: ["initialization", "fencedSessionExecution"],
   inspect: ["read", "none"],
   inspectCoreMemory: ["read", "fencedSessionExecution"],
+  inspectDocumentBuildSourceSnapshot: ["read", "accountDeletionFence"],
   inspectIntegrationConnections: ["read", "none"],
+  inspectUserFile: ["read", "accountDeletionFence"],
   inspectPersonalSkills: ["read", "none"],
   inspectReminderWakeUpSource: ["read", "none"],
   inspectReminderVerificationState: ["read", "none"],
@@ -61,6 +63,7 @@ const publicBoundaryPolicy = {
   readActionPresentation: ["read", "none"],
   readCommittedTurns: ["cancellationReconciliationDeletion", "none"],
   readFile: ["read", "none"],
+  resolveDocumentBuildFiles: ["read", "accountDeletionFence"],
   readRoute: ["read", "none"],
   readSession: ["read", "none"],
   readSessionAuthorizationFacts: ["read", "none"],
@@ -68,8 +71,10 @@ const publicBoundaryPolicy = {
   reconcileModelCallUsage: ["cancellationReconciliationDeletion", "none"],
   settleGatewayModelUsage: ["cancellationReconciliationDeletion", "none"],
   submitManagedConversation: ["ordinaryMutation", "fencedSessionExecution"],
+  submitDocumentBuildFollowUp: ["ordinaryMutation", "fencedSessionExecution"],
   submitResearchReportFollowUp: ["ordinaryMutation", "fencedSessionExecution"],
   uploadFile: ["ordinaryMutation", "accountDeletionFence"],
+  uploadUserTextFile: ["ordinaryMutation", "accountDeletionFence"],
 } as const satisfies Record<string, readonly [BoundaryClass, Protection]>;
 
 const directoryBoundaryPolicy = {
@@ -85,7 +90,9 @@ const directoryBoundaryPolicy = {
   getModel: ["read", "none"],
   initializeAgent: ["initialization", "initializationLifecycle"],
   inspectAgent: ["read", "none"],
+  inspectDocumentBuildSourceSnapshot: ["read", "directoryGate"],
   inspectIntegrationConnections: ["read", "directoryGate"],
+  inspectUserFile: ["read", "directoryGate"],
   inspectPersonalSkills: ["read", "directoryGate"],
   inspectReminderWakeUpSource: ["read", "directoryGate"],
   inspectReminderVerificationState: ["read", "directoryGate"],
@@ -93,8 +100,11 @@ const directoryBoundaryPolicy = {
   onBeforeSubAgent: ["read", "none"],
   pendingReminderWakeUpSources: ["read", "directoryGate"],
   probeAgent: ["read", "none"],
+  resolveDocumentBuildFiles: ["read", "directoryGate"],
   presentPersonalSkillDeletion: ["read", "directoryGate"],
+  submitDocumentBuildFollowUp: ["ordinaryMutation", "directoryGate"],
   submitResearchReportFollowUp: ["ordinaryMutation", "directoryGate"],
+  uploadUserTextFile: ["ordinaryMutation", "directoryGate"],
   quiesceAgentAccountDeletion: ["cancellationReconciliationDeletion", "deletionOrchestration"],
 } as const satisfies Record<string, readonly [BoundaryClass, Protection]>;
 

@@ -53,6 +53,8 @@ describe("Postgres migrations", () => {
             "channel_link_invites",
             "channel_links",
             "deletion_cases",
+            "document_build_notifications",
+            "document_builds",
             "migrations",
             "rate_limits",
             "research_report_notifications",

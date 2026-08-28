@@ -24,6 +24,19 @@ if ! grep -F -q 'ResearchReportWorkflow' "$observer" ||
   printf 'Agent runtime observer must export every configured Research Report Workflow host\n' >&2
   exit 1
 fi
+if ! grep -F -q 'DocumentBuildWorkflow' "$observer" ||
+  ! grep -F -q 'DocumentBuildTimerWorkflow' "$observer"; then
+  printf 'Agent runtime observer must export every configured Document Build Workflow host\n' >&2
+  exit 1
+fi
+if ! grep -F -q 'inspectDocumentBuildSourceSnapshot' "$observer"; then
+  printf 'Document Build verification must use the production-owned immutable source snapshot RPC\n' >&2
+  exit 1
+fi
+if grep -E -q 'normalizedText|objectKey' "$observer"; then
+  printf 'Document Build runtime evidence must not expose source content or storage lifecycle keys\n' >&2
+  exit 1
+fi
 if grep -E -q 'body_snapshot|callback_capability|\.body\b' "$observer"; then
   printf 'Agent runtime evidence must not expose private Reminder bodies or callback capabilities\n' >&2
   exit 1

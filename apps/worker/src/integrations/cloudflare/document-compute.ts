@@ -1,7 +1,7 @@
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { Clock, Effect, Random, Schema } from "effect";
+import { Clock, Effect, Random, Result, Schema } from "effect";
 
 import { ContentId } from "../../domain/client-content";
 import { AllowancePeriodId, UserId } from "../../domain";
@@ -18,18 +18,26 @@ import {
   type ComputeResult,
   type DisposableCompute,
 } from "../../services/document-generation";
-import { attemptKeyFor } from "./document-storage-keys";
+import { attemptKeyFor, ownerKeyFor } from "./document-storage-keys";
 import { DocumentOwnershipIndex } from "./document-ownership-index";
 
-export interface AttemptEvidence {
+export interface ActiveAttemptEvidence {
   readonly cost: Extract<CostEvidence, { _tag: "Incurred" }>;
   readonly executionLeaseExpiresAt: number;
   /** Digest of the immutable document intent that owns this attempt. */
   readonly intentDigest: DocumentIntentDigest;
   readonly renderedPageCount: number | null;
-  readonly status: "claimed" | "started" | "completed";
+  readonly status: "claimed" | "recovery" | "started" | "completed";
   readonly userId?: UserId;
 }
+
+export interface DiscardedAttemptEvidence {
+  readonly cost: Extract<CostEvidence, { _tag: "ProvenNoUse" }>;
+  readonly status: "discarded";
+  readonly userId: UserId;
+}
+
+export type AttemptEvidence = ActiveAttemptEvidence | DiscardedAttemptEvidence;
 
 /** Expected failure when durable attempt evidence cannot be reconciled. */
 export class DocumentAttemptEvidenceUnavailable extends Schema.TaggedError<DocumentAttemptEvidenceUnavailable>()(
@@ -42,31 +50,38 @@ export interface AttemptEvidenceStore {
   readonly claim: (
     contentId: ContentId,
     intentDigest: DocumentIntentDigest,
-    cost: AttemptEvidence["cost"],
+    cost: ActiveAttemptEvidence["cost"],
     executionLeaseExpiresAt: number,
     userId: UserId,
   ) => Promise<
     | {
         readonly _tag: "Claimed";
         readonly created: boolean;
-        readonly evidence: AttemptEvidence;
+        readonly evidence: ActiveAttemptEvidence;
         readonly revision: string;
       }
+    | { readonly _tag: "Discarded" }
     | { readonly _tag: "IntentConflict" }
   >;
   readonly complete: (
     contentId: ContentId,
-    evidence: AttemptEvidence & {
+    evidence: ActiveAttemptEvidence & {
       readonly renderedPageCount: number;
       readonly status: "completed";
     },
-  ) => Promise<void>;
-  readonly inspect: (contentId: ContentId) => Promise<AttemptEvidence | null>;
-  readonly start: (
-    contentId: ContentId,
-    evidence: AttemptEvidence & { readonly status: "started" },
     revision: string,
   ) => Promise<boolean>;
+  readonly inspect: (contentId: ContentId) => Promise<AttemptEvidence | null>;
+  readonly reclaim: (
+    contentId: ContentId,
+    evidence: ActiveAttemptEvidence & { readonly status: "recovery" },
+    revision: string,
+  ) => Promise<string | null>;
+  readonly start: (
+    contentId: ContentId,
+    evidence: ActiveAttemptEvidence & { readonly status: "started" },
+    revision: string,
+  ) => Promise<string | null>;
 }
 
 /** Narrow Sandbox SDK client needed by the generated-document adapter. */
@@ -177,6 +192,7 @@ export const makeWithSandbox = (
     }).pipe(
       Effect.flatMap((evidence) => {
         if (evidence === null) return Effect.succeed(null);
+        if (evidence.status === "discarded") return Effect.succeed(null);
         if (evidence.intentDigest !== intentDigest) {
           return Effect.fail(
             new DocumentIntentConflict({
@@ -242,46 +258,104 @@ const render = async (
     if (claimed._tag === "IntentConflict") {
       return { _tag: "IntentConflict", cost: { _tag: "ProvenNoUse" } };
     }
+    // oxlint-disable-next-line eslint/no-underscore-dangle -- Persisted outcomes use _tag.
+    if (claimed._tag === "Discarded") {
+      return {
+        _tag: "AttemptUnavailable",
+        cost: { _tag: "ProvenNoUse" },
+        evidence: "The terminal Workflow discarded its unused compute claim",
+      };
+    }
     durableAttemptClaimed = true;
     providerOperationId = claimed.evidence.cost.providerOperationId;
     const cost = claimed.evidence.cost;
     let renderedPageCount = claimed.evidence.renderedPageCount;
+    let evidence = claimed.evidence;
+    let revision = claimed.revision;
+    if (evidence.status === "recovery") providerUsePossible = true;
     if (!claimed.created && claimed.evidence.status === "started") {
-      return claimed.evidence.executionLeaseExpiresAt > currentTimeMillis()
-        ? {
-            _tag: "AttemptPending",
-            cost,
-            evidence: "Another caller owns the live Sandbox execution lease",
-          }
-        : interrupted(cost, "The prior Sandbox execution has no verified terminal result");
-    }
-
-    if (claimed.evidence.status === "claimed") {
-      if (!claimed.created) {
+      if (claimed.evidence.executionLeaseExpiresAt > currentTimeMillis()) {
         return {
           _tag: "AttemptPending",
           cost,
-          evidence: "Another caller owns the durable Sandbox execution transition",
+          evidence: "Another caller owns the live Sandbox execution lease",
         };
       }
+      providerUsePossible = true;
+      const cachedOutput = await withDeadline(sandbox.exists(outputPath), deadlines.rpcMs);
+      if (cachedOutput.exists) {
+        const completedEvidence = {
+          ...claimed.evidence,
+          renderedPageCount: input.source.pages.length,
+          status: "completed" as const,
+        };
+        const completed = await withDeadline(
+          attempts.complete(input.contentId, completedEvidence, claimed.revision),
+          deadlines.rpcMs,
+        );
+        if (!completed) {
+          return {
+            _tag: "AttemptPending",
+            cost,
+            evidence: "Another caller reconciled the expired Sandbox execution lease",
+          };
+        }
+        evidence = completedEvidence;
+        renderedPageCount = completedEvidence.renderedPageCount;
+      } else {
+        const reclaimedEvidence = {
+          ...claimed.evidence,
+          executionLeaseExpiresAt: currentTimeMillis() + executionLeaseMs,
+          renderedPageCount: null,
+          status: "recovery" as const,
+        };
+        const reclaimed = await withDeadline(
+          attempts.reclaim(input.contentId, reclaimedEvidence, claimed.revision),
+          deadlines.rpcMs,
+        );
+        if (reclaimed === null) {
+          return {
+            _tag: "AttemptPending",
+            cost,
+            evidence: "Another caller reclaimed the expired Sandbox execution lease",
+          };
+        }
+        return interrupted(
+          cost,
+          "The expired Sandbox execution was reclaimed after its output was missing",
+        );
+      }
+    }
+
+    if (evidence.status === "claimed" || evidence.status === "recovery") {
+      const recoveringIncurredAttempt = evidence.status === "recovery";
       const startAuthorizationFailure = await authorizeWrite();
       if (startAuthorizationFailure !== null) {
-        return { _tag: "AuthorizationFailure", cost, failure: startAuthorizationFailure };
+        return {
+          _tag: "AuthorizationFailure",
+          cost: recoveringIncurredAttempt ? cost : { _tag: "ProvenNoUse" },
+          failure: startAuthorizationFailure,
+        };
       }
       const started = await attempts.start(
         input.contentId,
-        { ...claimed.evidence, status: "started" },
-        claimed.revision,
+        { ...evidence, status: "started" },
+        revision,
       );
-      if (!started) {
+      if (started === null) {
         return {
           _tag: "AttemptPending",
-          cost,
+          cost: recoveringIncurredAttempt ? cost : { _tag: "ProvenNoUse" },
           evidence: "Another caller owns the atomic Sandbox execution transition",
         };
       }
+      evidence = { ...evidence, status: "started" };
+      revision = started;
     }
-    if (claimed.evidence.executionLeaseExpiresAt - currentTimeMillis() < minimumProtectedWindowMs) {
+    if (
+      renderedPageCount === null &&
+      evidence.executionLeaseExpiresAt - currentTimeMillis() < minimumProtectedWindowMs
+    ) {
       return {
         _tag: "AttemptPending",
         cost,
@@ -291,7 +365,7 @@ const render = async (
     providerUsePossible = true;
 
     const cachedOutput = await withDeadline(sandbox.exists(outputPath), deadlines.rpcMs);
-    if (!claimed.created && renderedPageCount !== null && !cachedOutput.exists) {
+    if (renderedPageCount !== null && !cachedOutput.exists) {
       return interrupted(
         cost,
         "Completed compute evidence exists but its Sandbox output is unavailable",
@@ -326,14 +400,21 @@ const render = async (
       if (completionAuthorizationFailure !== null) {
         return { _tag: "AuthorizationFailure", cost, failure: completionAuthorizationFailure };
       }
-      await withDeadline(
-        attempts.complete(input.contentId, {
-          ...claimed.evidence,
-          renderedPageCount,
-          status: "completed",
-        }),
+      const completed = await withDeadline(
+        attempts.complete(
+          input.contentId,
+          { ...evidence, renderedPageCount, status: "completed" },
+          revision,
+        ),
         deadlines.rpcMs,
       );
+      if (!completed) {
+        return {
+          _tag: "AttemptPending",
+          cost,
+          evidence: "Another caller owns the atomic Sandbox completion transition",
+        };
+      }
     }
 
     const file = await withDeadline(sandbox.readStream(outputPath), deadlines.rpcMs);
@@ -378,21 +459,28 @@ const adaptSandbox = (sandbox: Sandbox): SandboxClient => ({
 });
 
 const AttemptEvidenceMetadata = Schema.fromJsonString(
-  Schema.Struct({
-    cost: Schema.TaggedStruct("Incurred", {
-      allowancePeriodId: AllowancePeriodId,
-      basis: Schema.Literals(["conservative", "observed"]),
-      providerOperationId: Schema.String.check(Schema.isMinLength(1)),
-      usdMicros: Schema.BigIntFromString,
+  Schema.Union([
+    Schema.Struct({
+      cost: Schema.TaggedStruct("ProvenNoUse", {}),
+      status: Schema.Literal("discarded"),
+      userId: UserId,
     }),
-    executionLeaseExpiresAt: Schema.Int,
-    intentDigest: DocumentIntentDigest,
-    renderedPageCount: Schema.NullOr(
-      Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(20)),
-    ),
-    status: Schema.Literals(["claimed", "started", "completed"]),
-    userId: Schema.optionalKey(UserId),
-  }),
+    Schema.Struct({
+      cost: Schema.TaggedStruct("Incurred", {
+        allowancePeriodId: AllowancePeriodId,
+        basis: Schema.Literals(["conservative", "observed"]),
+        providerOperationId: Schema.String.check(Schema.isMinLength(1)),
+        usdMicros: Schema.BigIntFromString,
+      }),
+      executionLeaseExpiresAt: Schema.Int,
+      intentDigest: DocumentIntentDigest,
+      renderedPageCount: Schema.NullOr(
+        Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(20)),
+      ),
+      status: Schema.Literals(["claimed", "recovery", "started", "completed"]),
+      userId: Schema.optionalKey(UserId),
+    }),
+  ]),
 );
 
 const DocumentRendererInput = Schema.fromJsonString(
@@ -452,7 +540,7 @@ const incurred = (
   usdMicros: conservativeVendorUsdMicros,
 });
 
-const interrupted = (cost: AttemptEvidence["cost"], evidence: string): ComputeResult => ({
+const interrupted = (cost: ActiveAttemptEvidence["cost"], evidence: string): ComputeResult => ({
   _tag: "Interrupted",
   cost,
   evidence,
@@ -490,6 +578,10 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
       throw new Error("Durable document attempt evidence is missing");
     }
     const evidence = decodeAttemptEvidence(encoded);
+    if (evidence.status === "discarded") {
+      await bucket.delete(ownerKeyFor(userId, contentId));
+      return evidence.userId === userId ? { _tag: "Discarded" } : { _tag: "IntentConflict" };
+    }
     if (evidence.intentDigest !== intentDigest) {
       return { _tag: "IntentConflict" };
     }
@@ -501,10 +593,12 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
     };
   },
   // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
-  complete: async (contentId, evidence) => {
-    await bucket.put(attemptKeyFor(contentId), new Uint8Array(), {
+  complete: async (contentId, evidence, revision) => {
+    const completed = await bucket.put(attemptKeyFor(contentId), new Uint8Array(), {
       customMetadata: { osfo: encodeAttemptEvidence(evidence) },
+      onlyIf: { etagMatches: revision },
     });
+    return completed !== null;
   },
   // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
   inspect: async (contentId) => {
@@ -515,14 +609,109 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
     return decodeAttemptEvidence(encoded);
   },
   // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
+  reclaim: async (contentId, evidence, revision) => {
+    const reclaimed = await bucket.put(attemptKeyFor(contentId), new Uint8Array(), {
+      customMetadata: { osfo: encodeAttemptEvidence(evidence) },
+      onlyIf: { etagMatches: revision },
+    });
+    return reclaimed?.etag ?? null;
+  },
+  // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
   start: async (contentId, evidence, revision) => {
     const started = await bucket.put(attemptKeyFor(contentId), new Uint8Array(), {
       customMetadata: { osfo: encodeAttemptEvidence(evidence) },
       onlyIf: { etagMatches: revision },
     });
-    return started !== null;
+    return started?.etag ?? null;
   },
 });
+
+/**
+ * Remove only proven no-use ownership after terminal cleanup. Recovery, started, and completed
+ * attempts remain durable until the scheduled allowance reconciler has consumed their incurred cost.
+ */
+/* oxlint-disable eslint/no-await-in-loop -- Each CAS attempt must observe the revision produced by the preceding race. */
+export const settleAttemptEvidenceForTerminalCleanup = (
+  bucket: R2Bucket,
+  contentId: ContentId,
+  userId: UserId,
+) =>
+  Effect.tryPromise({
+    // oxlint-disable-next-line effecttsgo/async-function -- R2 ownership checks and deletion share one Promise boundary.
+    try: async () => {
+      const attemptKey = attemptKeyFor(contentId);
+      const ownerKey = ownerKeyFor(userId, contentId);
+      for (;;) {
+        const [attempt, owner] = await Promise.all([
+          bucket.head(attemptKey),
+          bucket.head(ownerKey),
+        ]);
+        if (owner !== null) {
+          const ownership = DocumentOwnershipIndex.decode(owner);
+          if (
+            Result.isFailure(ownership) ||
+            ownership.success.userId !== userId ||
+            ownership.success.contentId !== contentId
+          ) {
+            throw new Error("Document ownership marker does not match the canceled Workflow");
+          }
+        }
+        if (attempt === null) {
+          const discarded = await bucket.put(attemptKey, new Uint8Array(), {
+            customMetadata: {
+              osfo: encodeAttemptEvidence({
+                cost: { _tag: "ProvenNoUse" },
+                status: "discarded",
+                userId,
+              }),
+            },
+            onlyIf: { etagDoesNotMatch: "*" },
+          });
+          if (discarded === null) continue;
+          await bucket.delete(ownerKey);
+          return "discarded" as const;
+        }
+        const encoded = attempt.customMetadata?.osfo;
+        const evidence = encoded === undefined ? null : decodeAttemptEvidence(encoded);
+        if (evidence === null || evidence.userId !== userId) {
+          throw new Error("Document attempt ownership does not match the canceled Workflow");
+        }
+        if (
+          evidence.status === "recovery" ||
+          evidence.status === "started" ||
+          evidence.status === "completed"
+        ) {
+          return "preserved" as const;
+        }
+        if (evidence.status === "discarded") {
+          await bucket.delete(ownerKey);
+          return "discarded" as const;
+        }
+        const discarded = await bucket.put(attemptKey, new Uint8Array(), {
+          customMetadata: {
+            osfo: encodeAttemptEvidence({
+              cost: { _tag: "ProvenNoUse" },
+              status: "discarded",
+              userId,
+            }),
+          },
+          onlyIf: { etagMatches: attempt.etag },
+        });
+        if (discarded !== null) {
+          await bucket.delete(ownerKey);
+          return "discarded" as const;
+        }
+        // A compute claimant won the revision race. Re-read before deciding whether evidence is
+        // incurred and must be retained, or remains an unused claim that can be tombstoned.
+      }
+    },
+    catch: (cause) =>
+      new DocumentAttemptEvidenceUnavailable({
+        cause,
+        message: "R2 document attempt cleanup could not prove and settle owned evidence",
+      }),
+  });
+/* oxlint-enable eslint/no-await-in-loop */
 
 const reconciliationCheckpointKey = "document-reconciliation/checkpoint";
 
@@ -551,7 +740,11 @@ export const readReconciliationBatch = (bucket: R2Bucket) =>
         const encoded = object.customMetadata?.osfo;
         if (encoded === undefined) return [];
         const evidence = decodeAttemptEvidence(encoded);
-        return evidence.status === "claimed" ? [] : [evidence.cost];
+        return evidence.status === "recovery" ||
+          evidence.status === "started" ||
+          evidence.status === "completed"
+          ? [evidence.cost]
+          : [];
       });
       const last = listed.objects.at(-1)?.key;
       return {

@@ -7,6 +7,7 @@ import { Effect, Layer, Option, Redacted, Result, Schema } from "effect";
 
 import { loadConfig } from "../../config";
 import { ResearchReportComposition } from "../../composition/research-report";
+import { DocumentBuildComposition } from "../../composition/document-build";
 import { Db } from "../../db";
 import { makeTelegramChannel } from "../../integrations/telegram";
 import { makeWhatsAppChannel } from "../../integrations/whatsapp";
@@ -15,6 +16,8 @@ import type { RuntimeSecrets } from "../../runtime-secrets";
 import { AgentDirectory } from "../../services/agent-directory";
 import { ChannelLinks } from "../../services/channel-links";
 import { ResearchReportFollowUp } from "../../services/research-report-follow-up";
+import { DocumentBuild } from "../../services/document-build";
+import { DocumentBuildFollowUp } from "../../services/document-build-follow-up";
 import { OsfoAgent } from "./agent";
 import { channelAddressOf, messengerAuthorId } from "./channel-address";
 import { streamTextReply } from "./messenger-stream";
@@ -23,8 +26,10 @@ import type { AgentInitializationEncoded } from "./db/store";
 import { GroupRefusalCopy } from "./persona";
 import { UserId } from "../../domain";
 import { AuthSessionId } from "../../domain/auth-session";
+import { WebFileUpload } from "./web-file-upload";
+import { DocumentBuildFileResolution } from "./document-build-file-resolution";
 
-/* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- Think RPC methods use Promise contracts, this class is the messenger Layer composition root, and Effect results use _tag. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle, osfo/no-unknown-parameters -- Think RPC methods receive untrusted payloads and immediately schema-decode them at this messenger composition root. */
 
 export { OSFO_DIRECTORY_NAME } from "./identity";
 
@@ -140,6 +145,50 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     return agent === null ? [] : agent.pendingReminderWakeUpSources(userId);
   }
 
+  /** Resolve Document Build sources through the User's stable owning Agent route. */
+  async resolveDocumentBuildFiles(encoded: unknown): Promise<DocumentBuild.FileResolutionResult> {
+    const decoded = Schema.decodeUnknownResult(DocumentBuild.FileResolutionRequest)(encoded);
+    if (Result.isFailure(decoded)) return { _tag: "Unavailable", reason: "invalidRequest" };
+    const request = decoded.success;
+    const agent = await this.#agentForUser(request.userId);
+    if (agent === null) return { _tag: "Unavailable", reason: "routeMismatch" };
+    return agent.resolveDocumentBuildFiles(request);
+  }
+
+  /** Route one authenticated browser upload to the stable owning Agent. */
+  async uploadUserTextFile(encoded: unknown): Promise<WebFileUpload.Result> {
+    const decoded = Schema.decodeUnknownResult(WebFileUpload.Request)(encoded);
+    if (Result.isFailure(decoded)) return { _tag: "Rejected", reason: "invalid" };
+    const request = decoded.success;
+    const agent = await this.#agentForUser(request.authority.userId);
+    if (agent === null) return { _tag: "Rejected", reason: "denied" };
+    return agent.uploadUserTextFile(request);
+  }
+
+  /** Read one privacy-safe browser upload status through its stable owning Agent. */
+  async inspectUserFile(encoded: unknown): Promise<WebFileUpload.StatusResult> {
+    const decoded = Schema.decodeUnknownResult(WebFileUpload.StatusRequest)(encoded);
+    if (Result.isFailure(decoded)) return { _tag: "Unavailable" };
+    const request = decoded.success;
+    const agent = await this.#agentForUser(request.userId);
+    if (agent === null) return { _tag: "Unavailable" };
+    return agent.inspectUserFile(request);
+  }
+
+  /** Route a read-only source snapshot inspection through the stable owning Agent. */
+  async inspectDocumentBuildSourceSnapshot(
+    encoded: unknown,
+  ): Promise<DocumentBuildFileResolution.VerificationResult> {
+    const decoded = Schema.decodeUnknownResult(DocumentBuildFileResolution.VerificationRequest)(
+      encoded,
+    );
+    if (Result.isFailure(decoded)) return { _tag: "Unavailable" };
+    const request = decoded.success;
+    const agent = await this.#agentForUser(request.userId);
+    if (agent === null) return { _tag: "Unavailable" };
+    return agent.inspectDocumentBuildSourceSnapshot(request);
+  }
+
   /** Inspect privacy-safe Reminder lifecycle evidence through its owning User Agent. */
   async inspectReminderVerificationState(userId: string) {
     const agent = await this.#agentForUser(userId);
@@ -177,6 +226,26 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     }
     const agent = await this.subAgent(OsfoAgent, notification.agentId);
     return agent.submitResearchReportFollowUp(notificationIdentity);
+  }
+
+  /** Route one opaque, PostgreSQL-authorized Document Build follow-up to its exact Agent. */
+  async submitDocumentBuildFollowUp(notificationIdentity: string) {
+    const decoded = Schema.decodeResult(DocumentBuildFollowUp.NotificationId)(notificationIdentity);
+    if (Result.isFailure(decoded)) return { _tag: "DocumentBuildFollowUpInvalid" as const };
+    const notification = await Effect.runPromise(
+      DocumentBuildComposition.followUpEffect(
+        { DB: this.env.DB },
+        DocumentBuildFollowUp.Service.pipe(
+          Effect.flatMap((followUps) => followUps.inspect(decoded.success)),
+          Effect.orDie,
+        ),
+      ),
+    );
+    if (notification === null || !this.hasSubAgent(OsfoAgent, notification.agentId)) {
+      return { _tag: "DocumentBuildFollowUpUnavailable" as const };
+    }
+    const agent = await this.subAgent(OsfoAgent, notification.agentId);
+    return agent.submitDocumentBuildFollowUp(notificationIdentity);
   }
 
   /** List current personal Skills through one registered User Agent. */

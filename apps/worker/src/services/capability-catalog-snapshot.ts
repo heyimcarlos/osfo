@@ -194,6 +194,24 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
       skillCandidates: ["document-production"],
       toolRequirements: ["generateDocument"],
     }),
+    entry(
+      "document-build",
+      "Build one bounded PDF or DOCX from owned ready files.",
+      "workflow.manage",
+      {
+        availabilityRequirements: ["document-renderer", "file-storage", "workflow-store"],
+        resultBounds: {
+          maximumBytes: policyCatalog.operationLimits.generatedDocumentBytes,
+          maximumDurationMillis: policyCatalog.operationLimits.durableArtifactOperationMilliseconds,
+          maximumItems: 1,
+          maximumPages: policyCatalog.operationLimits.generatedDocumentPages,
+          maximumPixelsPerEdge: null,
+          maximumSlides: null,
+        },
+        skillCandidates: ["document-build"],
+        toolRequirements: ["cancelDocumentBuild", "inspectDocumentBuild", "startDocumentBuild"],
+      },
+    ),
     entry("document-read", "Read or export an owned PDF or DOCX.", "artifact.read", {
       availabilityRequirements: ["file-storage"],
       resultBounds: {

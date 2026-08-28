@@ -169,6 +169,14 @@ export const capabilityIntentPolicy = {
     ),
     taskKinds: ["document"],
   },
+  "document-build": {
+    matches: (task) =>
+      everyIntentGroup(
+        ["build", "convert", "create", "generate", "make"],
+        ["document", "docx", "file", "pdf"],
+      )(task) && anyIntentPhrase("from file", "from my file", "using file", "uploaded file")(task),
+    taskKinds: ["document", "workflow"],
+  },
   "document-read": {
     matches: everyIntentGroup(["download", "export", "open", "read"], ["document", "docx", "pdf"]),
     taskKinds: ["document"],
@@ -246,6 +254,7 @@ export const capabilityIntentPolicy = {
       "recurring",
       "research",
       "research report",
+      "document build",
       "workflow",
     ),
     taskKinds: ["research", "workflow"],

@@ -162,6 +162,20 @@
       "when": 1787906641519,
       "tag": "0022_known_korath",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1787917561284,
+      "tag": "0023_bouncy_carlie_cooper",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1787936519079,
+      "tag": "0024_nasty_clint_barton",
+      "breakpoints": true
     }
   ]
 }
