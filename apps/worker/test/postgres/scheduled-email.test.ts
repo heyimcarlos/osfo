@@ -1,4 +1,4 @@
-/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/global-date-in-effect, effecttsgo/strict-effect-provide, vitest/no-standalone-expect -- These tests own native PostgreSQL clients and deterministic lifecycle timestamps. */
+/* oxlint-disable effecttsgo/any-unknown-in-error-context, effecttsgo/async-function, effecttsgo/global-date, effecttsgo/global-date-in-effect, effecttsgo/run-effect-inside-effect, effecttsgo/strict-effect-provide, osfo/no-reflect-get, osfo/no-unknown-parameters, vitest/no-standalone-expect -- These tests own native PostgreSQL clients and deterministic lifecycle timestamps; the public-boundary journey proxies Cloudflare's generated binding and decodes its unknown RPC input immediately. */
 /* oxlint-disable eslint/no-underscore-dangle -- Assertions inspect canonical tagged outcomes. */
 import { createDb, type Database } from "@osfo/db";
 import { agents } from "@osfo/db/schema/agents";
@@ -13,10 +13,15 @@ import { deletionCases } from "@osfo/db/schema/user-lifecycle";
 import { env } from "cloudflare:workers";
 import { expect, it } from "@effect/vitest";
 import { eq } from "drizzle-orm";
-import { Effect, Layer, Result } from "effect";
+import { Effect, Layer, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import postgres from "postgres";
 
+import {
+  createExecutionContext,
+  createScheduledController,
+  waitOnExecutionContext,
+} from "cloudflare:test";
 import {
   AgentId,
   AllowancePeriodId,
@@ -38,6 +43,8 @@ import { ScheduledEmailFollowUp } from "../../src/services/scheduled-email-follo
 import type { IntegrationEffectCompleted } from "../../src/services/integrations";
 import { makeRecord } from "../../src/services/scheduled-email-test-fixture";
 import { WhatsAppWakeUps } from "../../src/services/whatsapp-wakeups";
+import { OSFO_DIRECTORY_NAME } from "../../src/agents/osfo/identity";
+import worker from "../../src/worker";
 
 const admittedAt = new Date("2026-08-28T11:00:00.000Z");
 const dueAt = new Date("2026-08-28T12:00:00.000Z");
@@ -94,11 +101,264 @@ it.effect("serializes cancel against the irreversible beginSend claim", () =>
         email.inputDigest,
         "canceled",
         null,
+        null,
         "test-cleanup",
         sendAt,
       );
     }),
   ),
+);
+
+it.effect("rejects NULL-hole pending and success lifecycle rows", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "constraint-null-holes");
+      const email = record(seeded, "constraint-null-holes");
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+
+      expect(
+        yield* Effect.tryPromise(() =>
+          database
+            .update(scheduledEmails)
+            .set({
+              send_outcome: null,
+              send_outcome_at: null,
+              state: "send_pending_reconciliation",
+            })
+            .where(eq(scheduledEmails.workflow_id, email.workflowId)),
+        ).pipe(Effect.result),
+      ).toMatchObject({ failure: expect.anything() });
+      expect(
+        yield* Effect.tryPromise(() =>
+          database
+            .update(scheduledEmails)
+            .set({
+              provider_log_id: null,
+              provider_resource_id: null,
+              send_outcome: null,
+              send_outcome_at: sendAt,
+              state: "success",
+              terminal_at: sendAt,
+            })
+            .where(eq(scheduledEmails.workflow_id, email.workflowId)),
+        ).pipe(Effect.result),
+      ).toMatchObject({ failure: expect.anything() });
+      expect(
+        yield* Effect.tryPromise(() =>
+          database
+            .update(scheduledEmails)
+            .set({
+              send_outcome: "ambiguous",
+              send_outcome_at: sendAt,
+              state: "canceled",
+              terminal_at: sendAt,
+            })
+            .where(eq(scheduledEmails.workflow_id, email.workflowId)),
+        ).pipe(Effect.result),
+      ).toMatchObject({ failure: expect.anything() });
+      expect(
+        yield* Effect.tryPromise(() =>
+          database
+            .update(scheduledEmails)
+            .set({
+              provider_log_id: "contradictory-log",
+              provider_resource_id: "contradictory-resource",
+              send_outcome: "applied",
+              send_outcome_at: sendAt,
+              state: "failure",
+              terminal_at: sendAt,
+            })
+            .where(eq(scheduledEmails.workflow_id, email.workflowId)),
+        ).pipe(Effect.result),
+      ).toMatchObject({ failure: expect.anything() });
+    }),
+  ),
+);
+
+it.effect("selects pre-wait hosts and post-commit obligations for minute repair", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "durable-obligations");
+      const persistence = ScheduledEmailPostgres.make(database);
+      const accepted = record(seeded, "accepted-host");
+      const terminalInput = record(seeded, "terminal-obligation");
+      yield* persistence.admit(accepted, 5n);
+      yield* persistence.admit(terminalInput, 5n);
+      yield* persistence.markWaiting(
+        terminalInput.workflowId,
+        terminalInput.inputDigest,
+        admittedAt,
+      );
+      yield* persistence.beginSend(terminalInput.workflowId, terminalInput.inputDigest, sendAt);
+      yield* persistence.finishApplied(
+        terminalInput.workflowId,
+        terminalInput.inputDigest,
+        applied,
+        sendAt,
+      );
+
+      const candidates = yield* ScheduledEmailPostgres.reconciliationBatch(
+        database,
+        new Date("2026-08-28T12:01:00.000Z"),
+        20,
+      );
+      expect(candidates).toContainEqual(
+        expect.objectContaining({ kind: "host", workflowId: accepted.workflowId }),
+      );
+      expect(candidates).toContainEqual(
+        expect.objectContaining({ kind: "settlement", workflowId: terminalInput.workflowId }),
+      );
+    }),
+  ),
+);
+
+it.effect(
+  "repairs durable host and send obligations through the public minute scheduled event",
+  () =>
+    withDatabase((database) =>
+      Effect.gen(function* () {
+        const seeded = yield* seedUser(database, "public-minute-boundary");
+        const persistence = ScheduledEmailPostgres.make(database);
+        const acceptedInput = record(seeded, "public-host");
+        const accepted = {
+          ...acceptedInput,
+          cloudflareInstanceId: yield* ScheduledEmail.cloudflareInstanceIdFor(
+            acceptedInput.workflowId,
+          ),
+        };
+        const claimedInputCandidate = record(seeded, "public-send");
+        const claimedInput = {
+          ...claimedInputCandidate,
+          cloudflareInstanceId: yield* ScheduledEmail.cloudflareInstanceIdFor(
+            claimedInputCandidate.workflowId,
+          ),
+        };
+        yield* persistence.admit(accepted, 5n);
+        yield* persistence.admit(claimedInput, 5n);
+        yield* persistence.markWaiting(
+          claimedInput.workflowId,
+          claimedInput.inputDigest,
+          admittedAt,
+        );
+        yield* persistence.beginSend(claimedInput.workflowId, claimedInput.inputDigest, sendAt);
+
+        let workflowCreates = 0;
+        let providerInspections = 0;
+        const followUps = ScheduledEmailFollowUpPostgres.make(database);
+        const currentAuthorization = ScheduledEmailPostgres.makeCurrentAuthorization(database);
+        const port = ScheduledEmail.Port.of({
+          commitTerminalFollowUp: (email) =>
+            Effect.gen(function* () {
+              const notificationId = ScheduledEmailFollowUp.NotificationId.make(
+                `${email.workflowId}-terminal`,
+              );
+              const claim = yield* followUps.claimTerminal(email, notificationId, sendAt);
+              if (claim._tag !== "Claimed") return;
+              yield* followUps.selectDeliverySession(notificationId, email.sessionId);
+              const submissionId = yield* ScheduledEmailFollowUp.submissionIdFor(notificationId);
+              yield* followUps.markAccepted(notificationId, submissionId, sendAt);
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ScheduledEmail.Unavailable({
+                    cause,
+                    message: "Public journey follow-up failed",
+                    operation: "journey.followUp",
+                  }),
+              ),
+            ),
+          currentAuthorization: (email) =>
+            currentAuthorization(email).pipe(
+              Effect.map((current) => ({
+                ...current,
+                subscription: { ...current.subscription, plan: "adventurer" as const },
+              })),
+            ),
+          persistence,
+          reconcileSend: () =>
+            Effect.sync(() => {
+              providerInspections += 1;
+              return { _tag: "Applied" as const, result: applied };
+            }),
+          recordSendOutcome: () => Effect.void,
+          recordWorkflowStart: () => Effect.void,
+          send: () => Effect.die(new Error("Public repair must not send again")),
+          workflow: {
+            create: () =>
+              Effect.sync(() => {
+                workflowCreates += 1;
+              }),
+            terminate: () => Effect.void,
+          },
+        });
+        const serviceLayer = ScheduledEmail.layerWithoutDependencies.pipe(
+          Layer.provide(Layer.succeed(ScheduledEmail.Port, port)),
+        );
+        const targetWorkflowIds = new Set([accepted.workflowId, claimedInput.workflowId]);
+        const run = async (method: "begin" | "execute" | "recover", encoded: unknown) => {
+          const payload = await Schema.decodeUnknownPromise(ScheduledEmail.WorkflowPayload)(
+            encoded,
+          );
+          if (!targetWorkflowIds.has(payload.workflowId)) return { state: "canceled" as const };
+          if (method === "execute") {
+            throw new Error("Public repair target must not start a new send");
+          }
+          return Effect.runPromise(
+            ScheduledEmail.Service.pipe(
+              Effect.flatMap((emails) =>
+                method === "begin" ? emails.beginWaiting(payload) : emails.recoverClaimed(payload),
+              ),
+              Effect.map((email) => ({ state: email.state })),
+              Effect.provide(serviceLayer),
+            ),
+          );
+        };
+        const originalDirectory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
+        const directory = new Proxy(originalDirectory, {
+          get: (target, property, receiver) => {
+            if (property === "beginScheduledEmail") {
+              return (encoded: unknown) => run("begin", encoded);
+            }
+            if (property === "executeScheduledEmail") {
+              return (encoded: unknown) => run("execute", encoded);
+            }
+            if (property === "recoverScheduledEmail") {
+              return (encoded: unknown) => run("recover", encoded);
+            }
+            return Reflect.get(target, property, receiver);
+          },
+        });
+        const namespace = new Proxy(env.OSFO_DIRECTORY, {
+          get: (target, property, receiver) =>
+            property === "getByName" ? () => directory : Reflect.get(target, property, receiver),
+        });
+        const context = createExecutionContext();
+        worker.scheduled(
+          createScheduledController({ cron: "* * * * *" }),
+          { ...env, OSFO_DIRECTORY: namespace },
+          context,
+        );
+        yield* Effect.promise(() => waitOnExecutionContext(context));
+
+        expect(yield* persistence.inspect(accepted.workflowId)).toMatchObject({
+          state: "waiting",
+          workflowStartAccountedAt: expect.any(Date),
+        });
+        expect(yield* persistence.inspect(claimedInput.workflowId)).toMatchObject({
+          sendAccountedAt: expect.any(Date),
+          state: "success",
+        });
+        const notification = yield* followUps.inspect(
+          ScheduledEmailFollowUp.NotificationId.make(`${claimedInput.workflowId}-terminal`),
+        );
+        expect(notification).toMatchObject({ acceptedAt: expect.any(Date), state: "success" });
+        expect(workflowCreates).toBe(1);
+        expect(providerInspections).toBe(1);
+      }),
+    ),
 );
 
 it.effect("continues claimed reconciliation after deletion fencing and unblocks quiescence", () =>
@@ -206,6 +466,7 @@ it.effect("retargets terminal delivery before acceptance and fences every later 
         email.inputDigest,
         "failure",
         "notApplied",
+        "gmail-rejected-log",
         "send-not-applied",
         sendAt,
       );
@@ -352,7 +613,12 @@ it.effect(
         expect(first).toHaveLength(20);
         expect(first.some(({ workflowId }) => workflowId === emails[20]?.workflowId)).toBe(false);
         expect(second.some(({ workflowId }) => workflowId === emails[20]?.workflowId)).toBe(true);
-        expect(second.every(({ kind }) => kind === "claimed")).toBe(true);
+        const workflowIds = new Set(emails.map(({ workflowId }) => workflowId));
+        expect(
+          second
+            .filter(({ workflowId }) => workflowIds.has(workflowId))
+            .every(({ kind }) => kind === "claimed"),
+        ).toBe(true);
       }),
     ),
 );

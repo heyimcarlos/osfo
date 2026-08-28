@@ -60,7 +60,7 @@ export const ResearchReportIdentityInput = Schema.Struct({ workflowId: ResearchR
 
 export const DocumentBuildStartInput = DocumentBuild.Request;
 export const DocumentBuildIdentityInput = Schema.Struct({ workflowId: DocumentBuild.WorkflowId });
-export const ScheduledEmailStartInput = ScheduledEmail.Request;
+export const ScheduledEmailStartInput = ScheduledEmail.EncodedRequest;
 export type ScheduledEmailStartInput = typeof ScheduledEmailStartInput.Type;
 export const ScheduledEmailIdentityInput = Schema.Struct({ workflowId: ScheduledEmail.WorkflowId });
 
@@ -379,7 +379,7 @@ export const hasExactScheduledEmailStartInput = (
 
 const presentScheduledEmailStartAction = Effect.fn("ActionPresentation.presentScheduledEmailStart")(
   function* (pending: PendingThinkAction) {
-    const input = yield* Schema.decodeUnknownEffect(ScheduledEmail.Request)(
+    const input = yield* Schema.decodeUnknownEffect(ScheduledEmail.EncodedRequest)(
       pending.descriptor.input,
     ).pipe(
       Effect.mapError(

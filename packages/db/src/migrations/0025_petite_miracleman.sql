@@ -59,8 +59,10 @@ CREATE TABLE "scheduled_emails" (
 	"waiting_at" timestamp with time zone,
 	"send_started_at" timestamp with time zone,
 	"send_outcome_at" timestamp with time zone,
+	"send_accounted_at" timestamp with time zone,
 	"cancel_requested_at" timestamp with time zone,
 	"terminal_at" timestamp with time zone,
+	"workflow_start_accounted_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "scheduled_emails_identity_check" CHECK (length(btrim("scheduled_emails"."workflow_id")) > 0
@@ -82,6 +84,31 @@ CREATE TABLE "scheduled_emails" (
         and jsonb_typeof("scheduled_emails"."approval_presentation"::jsonb) = 'object'
         and jsonb_typeof("scheduled_emails"."request_json"::jsonb) = 'object'),
 	CONSTRAINT "scheduled_emails_state_check" CHECK ("scheduled_emails"."state" in ('admitted', 'accepted', 'waiting', 'sending', 'send_pending_reconciliation', 'success', 'failure', 'canceled')),
+	CONSTRAINT "scheduled_emails_outcome_check" CHECK ((
+          "scheduled_emails"."state" in ('admitted', 'accepted', 'waiting', 'sending', 'canceled')
+          and "scheduled_emails"."send_outcome" is null
+          and "scheduled_emails"."send_outcome_at" is null
+          and "scheduled_emails"."provider_resource_id" is null
+        ) or (
+          "scheduled_emails"."state" = 'send_pending_reconciliation'
+          and "scheduled_emails"."send_outcome" is not null
+          and "scheduled_emails"."send_outcome" = 'ambiguous'
+          and "scheduled_emails"."send_outcome_at" is not null
+          and "scheduled_emails"."provider_resource_id" is null
+        ) or (
+          "scheduled_emails"."state" = 'success'
+          and "scheduled_emails"."send_outcome" is not null
+          and "scheduled_emails"."send_outcome" = 'applied'
+          and "scheduled_emails"."send_outcome_at" is not null
+          and "scheduled_emails"."provider_log_id" is not null
+          and "scheduled_emails"."provider_resource_id" is not null
+        ) or (
+          "scheduled_emails"."state" = 'failure'
+          and "scheduled_emails"."send_outcome" is not null
+          and "scheduled_emails"."send_outcome" = 'notApplied'
+          and "scheduled_emails"."send_outcome_at" is not null
+          and "scheduled_emails"."provider_resource_id" is null
+        )),
 	CONSTRAINT "scheduled_emails_lifecycle_check" CHECK ("scheduled_emails"."due_at" > "scheduled_emails"."admitted_at"
         and ("scheduled_emails"."accepted_at" is null or "scheduled_emails"."accepted_at" >= "scheduled_emails"."admitted_at")
         and ("scheduled_emails"."waiting_at" is null or "scheduled_emails"."accepted_at" is not null)
@@ -89,9 +116,11 @@ CREATE TABLE "scheduled_emails" (
         and ("scheduled_emails"."send_outcome_at" is null or "scheduled_emails"."send_started_at" is not null)
         and ("scheduled_emails"."cancel_requested_at" is null or "scheduled_emails"."cancel_requested_at" >= "scheduled_emails"."admitted_at")
         and (("scheduled_emails"."state" in ('success', 'failure', 'canceled')) = ("scheduled_emails"."terminal_at" is not null))
-        and ("scheduled_emails"."state" <> 'send_pending_reconciliation' or ("scheduled_emails"."send_outcome" = 'ambiguous' and "scheduled_emails"."terminal_at" is null))
+        and ("scheduled_emails"."state" <> 'send_pending_reconciliation' or ("scheduled_emails"."send_outcome" is not null and "scheduled_emails"."send_outcome" = 'ambiguous' and "scheduled_emails"."send_outcome_at" is not null and "scheduled_emails"."terminal_at" is null))
         and ("scheduled_emails"."state" not in ('sending', 'send_pending_reconciliation', 'success', 'failure') or "scheduled_emails"."send_started_at" is not null)
-        and ("scheduled_emails"."state" <> 'success' or ("scheduled_emails"."send_outcome" = 'applied' and "scheduled_emails"."provider_log_id" is not null and "scheduled_emails"."provider_resource_id" is not null))
+        and ("scheduled_emails"."state" <> 'success' or ("scheduled_emails"."send_outcome" is not null and "scheduled_emails"."send_outcome" = 'applied' and "scheduled_emails"."send_outcome_at" is not null and "scheduled_emails"."provider_log_id" is not null and "scheduled_emails"."provider_resource_id" is not null))
+        and ("scheduled_emails"."send_accounted_at" is null or "scheduled_emails"."send_outcome" is not null)
+        and ("scheduled_emails"."workflow_start_accounted_at" is null or "scheduled_emails"."accepted_at" is not null)
         and ("scheduled_emails"."safe_failure_code" is null or length(btrim("scheduled_emails"."safe_failure_code")) between 1 and 120))
 );
 --> statement-breakpoint

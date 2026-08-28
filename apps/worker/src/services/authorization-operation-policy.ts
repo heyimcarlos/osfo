@@ -97,6 +97,24 @@ const entitlementByOperation = new Map<AuthorizationOperationName, Capability>([
   ["support.gmSummon", "gmSummon"],
 ]);
 
+/** Launch-v1 maps this canonical manifest effect onto the retained Gmail send policy. */
+const isLaunchGmailSendEffect = (operation: AuthorizationOperation) =>
+  operation.kind === "integration.effect" &&
+  operation.manifestVersion === "gmail-v1" &&
+  operation.toolkit === "gmail" &&
+  operation.providerOperation === "GMAIL_SEND_EMAIL";
+
+export const launchRequiresApproval = (operation: AuthorizationOperation) =>
+  requiresApproval(operation) || isLaunchGmailSendEffect(operation);
+
+export const launchAllowanceKindsFor = (
+  operation: AuthorizationOperation,
+): ReadonlyArray<AllowanceKind> =>
+  isLaunchGmailSendEffect(operation) ? ["gmailSends"] : allowanceKindsFor(operation);
+
+export const launchEntitlementFor = (operation: AuthorizationOperation): Capability | null =>
+  isLaunchGmailSendEffect(operation) ? "gmail" : entitlementFor(operation);
+
 export const requiresApproval = (operation: AuthorizationOperation) =>
   approvalOperations.has(operation.kind) ||
   (operation.kind === "workflow.manage" &&

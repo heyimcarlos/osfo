@@ -28,10 +28,11 @@ import {
 } from "../domain/plan-policy";
 import { CoreMemoryAuthorizationSnapshot } from "../domain/core-memory-authorization";
 import {
-  allowanceKindsFor,
   authorityPermits,
-  entitlementFor,
   isLaunchUnmetered,
+  launchAllowanceKindsFor,
+  launchEntitlementFor,
+  launchRequiresApproval,
   requiresApproval,
   requiresGmailConnection,
   requiresOwnership,
@@ -406,7 +407,7 @@ const authorize = (
   }
 
   const rules = policyFor(subscriptionPolicy, context.subscription.plan);
-  const requiredEntitlement = entitlementFor(operation);
+  const requiredEntitlement = launchEntitlementFor(operation);
   if (requiredEntitlement !== null && !rules.entitlements.includes(requiredEntitlement)) {
     return denied("missingEntitlement");
   }
@@ -425,7 +426,7 @@ const authorize = (
   if (mode === "admission" && exceedsOperationLimit(operation, context, rules, capabilityCatalog)) {
     return denied("operationLimitExceeded");
   }
-  if (requiresApproval(operation) && !hasExactApproval(context, operation)) {
+  if (launchRequiresApproval(operation) && !hasExactApproval(context, operation)) {
     if (mode === "recheck") return denied("approvalRequired");
     return {
       _tag: "ApprovalRequired",
@@ -454,7 +455,7 @@ const authorize = (
     return denied("policyUnavailable");
   }
   const allowanceRules = policyFor(allowancePolicy, allowance.plan);
-  const relevantKinds = [...allowanceKindsFor(operation), "vendorUsdMicros" as const];
+  const relevantKinds = [...launchAllowanceKindsFor(operation), "vendorUsdMicros" as const];
   const allowanceExhausted = relevantKinds.some((allowanceKind) => {
     if (allowanceKind === "planUsageMicros") return false;
     const recorded =

@@ -65,6 +65,12 @@ export const Request = Schema.Struct({
   scheduledAt: Schema.Date,
 });
 export type Request = typeof Request.Type;
+export const EncodedRequest = Schema.Struct({
+  ...GmailMessageInput.fields,
+  gmailResource: Schema.Literal("primary"),
+  scheduledAt: Schema.DateFromString,
+});
+export type EncodedRequest = typeof EncodedRequest.Encoded;
 
 export const WorkflowPayload = Schema.Struct({
   agentId: AgentId,
@@ -73,10 +79,17 @@ export const WorkflowPayload = Schema.Struct({
   workflowId: WorkflowId,
 });
 export type WorkflowPayload = typeof WorkflowPayload.Type;
+export const EncodedWorkflowPayload = Schema.Struct({
+  agentId: AgentId,
+  dueAt: Schema.DateFromString,
+  inputDigest: InputDigest,
+  workflowId: WorkflowId,
+});
+export type EncodedWorkflowPayload = typeof EncodedWorkflowPayload.Encoded;
 
 export const ReconciliationCandidate = Schema.Struct({
   ...WorkflowPayload.fields,
-  kind: Schema.Literals(["claimed", "due"]),
+  kind: Schema.Literals(["claimed", "due", "host", "settlement"]),
 });
 export type ReconciliationCandidate = typeof ReconciliationCandidate.Type;
 
@@ -125,8 +138,10 @@ export interface Record {
   readonly waitingAt: Date | null;
   readonly sendStartedAt: Date | null;
   readonly sendOutcomeAt: Date | null;
+  readonly sendAccountedAt: Date | null;
   readonly cancelRequestedAt: Date | null;
   readonly terminalAt: Date | null;
+  readonly workflowStartAccountedAt: Date | null;
 }
 
 /** Observable SLO intervals; unresolved phases remain null instead of implying completion. */
@@ -233,6 +248,16 @@ export interface PortInterface {
       inputDigest: InputDigest,
       waitingAt: Date,
     ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+    readonly markSendAccounted: (
+      workflowId: WorkflowId,
+      inputDigest: InputDigest,
+      accountedAt: Date,
+    ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+    readonly markWorkflowStartAccounted: (
+      workflowId: WorkflowId,
+      inputDigest: InputDigest,
+      accountedAt: Date,
+    ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
     readonly beginSend: (
       workflowId: WorkflowId,
       inputDigest: InputDigest,
@@ -254,6 +279,7 @@ export interface PortInterface {
       inputDigest: InputDigest,
       state: "canceled" | "failure",
       sendOutcome: "ambiguous" | "notApplied" | null,
+      providerLogId: string | null,
       safeFailureCode: string,
       terminalAt: Date,
     ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
@@ -295,11 +321,13 @@ export interface Interface {
   ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
   readonly recoverClaimed: (
     payload: WorkflowPayload,
-  ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+  ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
   readonly sendDue: (
     payload: WorkflowPayload,
   ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
-  readonly settleTerminal: (email: Record) => Effect.Effect<Record, Conflict | Unavailable>;
+  readonly settleTerminal: (
+    email: Record,
+  ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
   readonly start: (
     input: StartInput,
   ) => Effect.Effect<StartResult, Conflict | Denied | NotFound | Unavailable>;
@@ -311,6 +339,32 @@ export const make = Effect.gen(function* () {
   const ports = yield* Port;
   const authorization = Authorization.make(retainedCatalog);
 
+  const drainWorkflowStartAccounting = Effect.fn("ScheduledEmail.drainWorkflowStartAccounting")(
+    function* (email: Record) {
+      if (email.acceptedAt === null || email.workflowStartAccountedAt !== null) return email;
+      yield* ports.recordWorkflowStart(email);
+      const accountedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+      return yield* ports.persistence.markWorkflowStartAccounted(
+        email.workflowId,
+        email.inputDigest,
+        accountedAt,
+      );
+    },
+  );
+
+  const drainSendAccounting = Effect.fn("ScheduledEmail.drainSendAccounting")(function* (
+    email: Record,
+  ) {
+    if (email.sendOutcome === null || email.sendAccountedAt !== null) return email;
+    yield* ports.recordSendOutcome(email);
+    const accountedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    return yield* ports.persistence.markSendAccounted(
+      email.workflowId,
+      email.inputDigest,
+      accountedAt,
+    );
+  });
+
   const settleTerminal = Effect.fn("ScheduledEmail.settleTerminal")(function* (email: Record) {
     if (!terminalStates.has(email.state)) {
       return yield* new Conflict({
@@ -318,9 +372,9 @@ export const make = Effect.gen(function* () {
         workflowId: email.workflowId,
       });
     }
-    yield* ports.recordSendOutcome(email);
-    yield* ports.commitTerminalFollowUp(email);
-    return email;
+    const accounted = yield* drainSendAccounting(email);
+    yield* ports.commitTerminalFollowUp(accounted);
+    return accounted;
   });
 
   const inspectExecution = Effect.fn("ScheduledEmail.inspectExecution")(function* (
@@ -405,8 +459,10 @@ export const make = Effect.gen(function* () {
 
   const accept = Effect.fn("ScheduledEmail.accept")(function* (email: Record) {
     if (email.state !== "admitted") {
-      if (email.acceptedAt !== null) yield* ports.recordWorkflowStart(email);
-      return email;
+      if (email.state === "accepted") {
+        yield* ports.workflow.create(email.cloudflareInstanceId, payloadFor(email));
+      }
+      return yield* drainWorkflowStartAccounting(email);
     }
     const payload = payloadFor(email);
     yield* ports.workflow.create(email.cloudflareInstanceId, payload);
@@ -416,8 +472,7 @@ export const make = Effect.gen(function* () {
       email.inputDigest,
       acceptedAt,
     );
-    yield* ports.recordWorkflowStart(accepted);
-    return accepted;
+    return yield* drainWorkflowStartAccounting(accepted);
   });
 
   const reconcileAcceptance = Effect.fn("ScheduledEmail.reconcileAcceptance")(function* (
@@ -442,7 +497,7 @@ export const make = Effect.gen(function* () {
   ) {
     const retained = yield* inspectExecution(payload);
     const email =
-      retained.state === "admitted"
+      retained.state === "admitted" || retained.state === "accepted"
         ? yield* reconcileAcceptance(retained.workflowId, retained.inputDigest)
         : retained;
     if (
@@ -463,8 +518,13 @@ export const make = Effect.gen(function* () {
         workflowId: email.workflowId,
       });
     }
+    const accounted = yield* drainWorkflowStartAccounting(email);
     const waitingAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-    return yield* ports.persistence.markWaiting(email.workflowId, email.inputDigest, waitingAt);
+    return yield* ports.persistence.markWaiting(
+      accounted.workflowId,
+      accounted.inputDigest,
+      waitingAt,
+    );
   });
 
   const finishCanceled = (email: Record, safeFailureCode: string, terminalAt: Date) =>
@@ -474,6 +534,7 @@ export const make = Effect.gen(function* () {
         email.inputDigest,
         "canceled",
         null,
+        null,
         safeFailureCode,
         terminalAt,
       )
@@ -482,6 +543,7 @@ export const make = Effect.gen(function* () {
   const finishAfterClaim = (
     email: Record,
     sendOutcome: "notApplied" | null,
+    providerLogId: string | null,
     safeFailureCode: string,
     terminalAt: Date,
   ) =>
@@ -491,6 +553,7 @@ export const make = Effect.gen(function* () {
         email.inputDigest,
         "failure",
         sendOutcome,
+        providerLogId,
         safeFailureCode,
         terminalAt,
       )
@@ -524,34 +587,46 @@ export const make = Effect.gen(function* () {
       return yield* finishCanceled(email, "authority-ended", outcomeAt);
     }
     if (outcome._tag === "NotApplied") {
-      return yield* finishAfterClaim(email, "notApplied", "send-not-applied", outcomeAt);
+      return yield* finishAfterClaim(
+        email,
+        "notApplied",
+        outcome.failure.providerLogId,
+        "send-not-applied",
+        outcomeAt,
+      );
     }
     const pending = yield* ports.persistence.markAmbiguous(
       email.workflowId,
       email.inputDigest,
       outcomeAt,
     );
-    yield* ports.recordSendOutcome(pending);
-    return pending;
+    return yield* drainSendAccounting(pending);
   });
 
   const reconcileClaimedSend = Effect.fn("ScheduledEmail.reconcileClaimedSend")(function* (
     email: Record,
   ) {
-    const reconciliation = yield* ports.reconcileSend(email);
-    if (reconciliation._tag === "NotStarted") return yield* executeClaimedSend(email);
-    if (reconciliation._tag === "Pending") return email;
+    const accounted = yield* drainSendAccounting(email);
+    const reconciliation = yield* ports.reconcileSend(accounted);
+    if (reconciliation._tag === "NotStarted") return yield* executeClaimedSend(accounted);
+    if (reconciliation._tag === "Pending") return accounted;
     const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     if (reconciliation._tag === "Applied") {
       const completed = yield* ports.persistence.finishApplied(
-        email.workflowId,
-        email.inputDigest,
+        accounted.workflowId,
+        accounted.inputDigest,
         reconciliation.result,
         outcomeAt,
       );
       return yield* settleTerminal(completed);
     }
-    return yield* finishAfterClaim(email, "notApplied", "send-not-applied", outcomeAt);
+    return yield* finishAfterClaim(
+      accounted,
+      "notApplied",
+      reconciliation.providerLogId,
+      "send-not-applied",
+      outcomeAt,
+    );
   });
 
   const sendDue = Effect.fn("ScheduledEmail.sendDue")(function* (payload: WorkflowPayload) {
@@ -584,6 +659,10 @@ export const make = Effect.gen(function* () {
   ) {
     const email = yield* inspectExecution(payload);
     if (terminalStates.has(email.state)) return yield* settleTerminal(email);
+    if (email.state === "admitted" || email.state === "accepted") {
+      return yield* beginWaiting(payload);
+    }
+    if (email.state === "waiting") return yield* drainWorkflowStartAccounting(email);
     if (email.state !== "sending" && email.state !== "send_pending_reconciliation") {
       return yield* new Conflict({
         message: "Only an already-claimed Scheduled Email can use deletion-safe recovery",
@@ -719,8 +798,10 @@ export const make = Effect.gen(function* () {
       waitingAt: null,
       sendStartedAt: null,
       sendOutcomeAt: null,
+      sendAccountedAt: null,
       cancelRequestedAt: null,
       terminalAt: null,
+      workflowStartAccountedAt: null,
     };
     const limits =
       currentCapabilityCatalog.planResourceLimits[input.authorization.subscription.plan];

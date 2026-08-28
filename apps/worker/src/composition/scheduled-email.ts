@@ -15,12 +15,12 @@ import type { Integrations } from "../services/integrations";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle, osfo/no-unknown-returns, typescript/consistent-return -- This module is the Scheduled Email application composition root. Cloudflare RPC returns are untrusted and decoded immediately after the Promise boundary. */
 
-type WorkflowInstanceHandle = Pick<WorkflowInstance, "status" | "terminate">;
+type WorkflowInstanceHandle = Pick<WorkflowInstance, "restart" | "status" | "terminate">;
 
 export interface WorkflowBinding {
   readonly create: (options: {
     readonly id: string;
-    readonly params: ScheduledEmail.WorkflowPayload;
+    readonly params: ScheduledEmail.EncodedWorkflowPayload;
   }) => Promise<WorkflowInstanceHandle>;
   readonly get: (id: string) => Promise<WorkflowInstanceHandle>;
 }
@@ -47,19 +47,31 @@ export const makeWorkflowPort = (
   binding: WorkflowBinding,
 ): ScheduledEmail.PortInterface["workflow"] => ({
   create: (instanceId, payload) =>
-    Effect.tryPromise({
-      try: () => binding.create({ id: instanceId, params: payload }).then(() => undefined),
-      catch: (cause) => unavailable("workflow.create", cause),
-    }).pipe(
+    Schema.encodeEffect(ScheduledEmail.EncodedWorkflowPayload)(payload).pipe(
+      Effect.flatMap((params) =>
+        Effect.tryPromise({
+          try: () => binding.create({ id: instanceId, params }).then(() => undefined),
+          catch: (cause) => unavailable("workflow.create", cause),
+        }),
+      ),
+      Effect.mapError((cause) => unavailable("workflow.create", cause)),
       Effect.catchTag("ScheduledEmailUnavailable", (failure) =>
         Effect.tryPromise({
           try: async () => {
             const instance = await binding.get(instanceId);
-            const status = await instance.status();
-            if (status.status === "unknown") throw failure;
+            return { instance, status: await instance.status() };
           },
           catch: (cause) => unavailable("workflow.reconcileCreate", cause),
-        }),
+        }).pipe(
+          Effect.flatMap(({ instance, status }) => {
+            if (status.status === "unknown") return Effect.fail(failure);
+            if (!["complete", "errored", "terminated"].includes(status.status)) return Effect.void;
+            return Effect.tryPromise({
+              try: () => instance.restart(),
+              catch: (cause) => unavailable("workflow.restart", cause),
+            });
+          }),
+        ),
       ),
     ),
   terminate: (instanceId) =>
@@ -106,12 +118,13 @@ export const serviceLayerFromDatabase = (
           actionId: email.actionId,
           identity: integrationIdentity(email),
           input: gmailInput(email),
+          userId: email.userId,
         })
         .pipe(
           Effect.map((inspection): ScheduledEmail.SendReconciliation => {
             if (inspection._tag === "Applied") return inspection;
             if (inspection._tag === "NotApplied") {
-              return { _tag: "NotApplied", providerLogId: email.providerLogId };
+              return { _tag: "NotApplied", providerLogId: inspection.providerLogId };
             }
             if (inspection._tag === "NotStarted") return inspection;
             return { _tag: "Pending" };

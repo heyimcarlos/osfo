@@ -12,6 +12,10 @@ const payload = ScheduledEmail.WorkflowPayload.make({
   inputDigest: ScheduledEmail.InputDigest.make("a".repeat(64)),
   workflowId: ScheduledEmail.WorkflowId.make("scheduled-email:workflow-host"),
 });
+const encodedPayload = {
+  ...payload,
+  dueAt: payload.dueAt.toISOString(),
+};
 
 const encodedResult = (state: ScheduledEmail.State, dueAt = payload.dueAt) => ({
   dueAt: dueAt.toISOString(),
@@ -36,10 +40,14 @@ it("sleeps on authoritative PostgreSQL dueAt when the Workflow payload is stale"
   const instanceId = await Effect.runPromise(
     ScheduledEmail.cloudflareInstanceIdFor(payload.workflowId),
   );
-  const result = await runScheduledEmailHost({ instanceId, payload }, makeStep(sleeps), {
-    beginScheduledEmail: async () => encodedResult("waiting", storedDueAt),
-    executeScheduledEmail: async () => encodedResult("success", storedDueAt),
-  });
+  const result = await runScheduledEmailHost(
+    { instanceId, payload: encodedPayload },
+    makeStep(sleeps),
+    {
+      beginScheduledEmail: async () => encodedResult("waiting", storedDueAt),
+      executeScheduledEmail: async () => encodedResult("success", storedDueAt),
+    },
+  );
 
   expect(sleeps[0]).toEqual(storedDueAt);
   expect(result).toMatchObject({ dueAt: storedDueAt, state: "success" });
@@ -51,13 +59,17 @@ it("bounds in-host ambiguity polling and leaves truthful nonterminal state for m
   const instanceId = await Effect.runPromise(
     ScheduledEmail.cloudflareInstanceIdFor(payload.workflowId),
   );
-  const result = await runScheduledEmailHost({ instanceId, payload }, makeStep(sleeps), {
-    beginScheduledEmail: async () => encodedResult("waiting"),
-    executeScheduledEmail: async () => {
-      executions += 1;
-      return encodedResult("send_pending_reconciliation");
+  const result = await runScheduledEmailHost(
+    { instanceId, payload: encodedPayload },
+    makeStep(sleeps),
+    {
+      beginScheduledEmail: async () => encodedResult("waiting"),
+      executeScheduledEmail: async () => {
+        executions += 1;
+        return encodedResult("send_pending_reconciliation");
+      },
     },
-  });
+  );
 
   expect(executions).toBe(5);
   expect(sleeps).toHaveLength(5);
@@ -71,7 +83,7 @@ it("rejects a Workflow instance that does not match the durable Workflow identit
   };
   await expect(
     runScheduledEmailHost(
-      { instanceId: "scheduled-email-wrong", payload },
+      { instanceId: "scheduled-email-wrong", payload: encodedPayload },
       makeStep([]),
       directory,
     ),

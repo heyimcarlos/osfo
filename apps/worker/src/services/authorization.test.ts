@@ -710,6 +710,21 @@ describe("governed Authorization", () => {
       _tag: "Admitted",
       manifestVersion: "gmail-v1",
     });
+    const sharedAllowance = connected.allowance;
+    if (!Predicate.isTagged(sharedAllowance, "Metered")) throw new Error("fixture is unmetered");
+    expect(
+      authorization.admit(
+        {
+          ...connected,
+          allowance: {
+            ...sharedAllowance,
+            usage: [{ allowanceKind: "gmailSends", quantity: 20n }],
+          },
+          approval: exactApproval,
+        },
+        send,
+      ),
+    ).toMatchObject({ _tag: "Admitted", manifestVersion: "gmail-v1" });
     expect(authorization.recheck({ ...connected, approval: exactApproval }, send)).toEqual({
       _tag: "Permitted",
     });
@@ -750,6 +765,68 @@ describe("governed Authorization", () => {
           providerOperation: "CALENDAR_UPDATE_EVENT",
           toolkit: "googlecalendar",
         },
+      ),
+    ).toMatchObject({ _tag: "ApprovalRequired" });
+  });
+
+  it("maps the exact scheduled Gmail effect to launch Gmail entitlement and allowance", () => {
+    const authorization = make(retainedCatalog);
+    const send = {
+      actionId: "scheduled-gmail-send",
+      kind: "integration.effect",
+      manifestVersion: ManifestVersion.make("gmail-v1"),
+      providerOperation: "GMAIL_SEND_EMAIL",
+      toolkit: "gmail",
+    } as const;
+    const presentation = ApprovalPresentation.make("Send the exact scheduled email");
+    const base = context("adventurer");
+    if (!Predicate.isTagged(base.allowance, "Metered")) throw new Error("fixture is unmetered");
+    const launch = {
+      ...base,
+      allowance: {
+        ...base.allowance,
+        planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+      },
+      approval: approvalFor(userId, send, presentation),
+      gmailConnection: { _tag: "Connected" as const, toolkit: "gmail", userId },
+      subscription: {
+        plan: "adventurer" as const,
+        planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+      },
+    } satisfies AuthorizationContext;
+
+    expect(authorization.admit(launch, send)).toMatchObject({ _tag: "Admitted" });
+    expect(
+      authorization.admit(
+        {
+          ...launch,
+          allowance: {
+            ...launch.allowance,
+            usage: [{ allowanceKind: "gmailSends", quantity: 20n }],
+          },
+        },
+        send,
+      ),
+    ).toMatchObject({ _tag: "Denied", reason: "allowanceExhausted" });
+    expect(
+      authorization.recheck(
+        {
+          ...launch,
+          allowance: {
+            ...launch.allowance,
+            usage: [{ allowanceKind: "gmailSends", quantity: 20n }],
+          },
+        },
+        send,
+      ),
+    ).toEqual({ _tag: "Permitted" });
+    expect(
+      authorization.admit(
+        {
+          ...launch,
+          approval: approvalFor(userId, { ...send, actionId: "different-action" }, presentation),
+        },
+        send,
       ),
     ).toMatchObject({ _tag: "ApprovalRequired" });
   });

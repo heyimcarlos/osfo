@@ -21,6 +21,7 @@ import {
   hasExactSessionDeleteInput,
   presentOsfoAction,
   researchReportRequiresApproval,
+  ScheduledEmailStartInput,
   scheduledEmailStartActionName,
 } from "./action-presentation";
 import { ForgetKnowledgeInput } from "./deletion-actions";
@@ -552,17 +553,18 @@ it.effect(
   "uses one original Action approval receipt for the exact scheduled effect without a milestone submission",
   () =>
     Effect.gen(function* () {
-      const input = {
+      const encodedInput = {
         body: "Exact scheduled body",
         gmailResource: "primary" as const,
         recipients: ["recipient@example.test"] as const,
-        scheduledAt: new Date("2026-09-01T16:00:00.000Z"),
+        scheduledAt: "2026-09-01T16:00:00.000Z",
         subject: "Exact scheduled subject",
       };
+      const input = yield* Schema.decodeEffect(ScheduledEmailStartInput)(encodedInput);
       const pending = {
         descriptor: {
           action: scheduledEmailStartActionName,
-          input,
+          input: encodedInput,
           kind: "durable-pause",
           permissions: ["workflows:start", "integrations:gmail:send"],
           requestId: "request-scheduled-email",
@@ -589,6 +591,7 @@ it.effect(
         { label: "Send at", name: "scheduledAt", value: "2026-09-01T16:00:00.000Z" },
       ]);
       expect(replay).toEqual(presentation);
+      expect(structuredClone(pending.descriptor.input)).toEqual(encodedInput);
       expect(hasExactScheduledEmailStartInput(presentation, input)).toBe(true);
       for (const changed of [
         { ...input, body: "Changed body" },

@@ -3,9 +3,21 @@ import { agents } from "@osfo/db/schema/agents";
 import { sessions } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { channelLinks } from "@osfo/db/schema/channel-links";
-import { scheduledEmails } from "@osfo/db/schema/scheduled-emails";
+import { scheduledEmailNotifications, scheduledEmails } from "@osfo/db/schema/scheduled-emails";
 import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
-import { and, asc, desc, eq, inArray, isNotNull, lte, notExists, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  notExists,
+  or,
+  sql,
+} from "drizzle-orm";
 import { DateTime, Effect, Predicate, Result, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -77,10 +89,12 @@ const EncodedRecord = Schema.Struct({
   safeFailureCode: Schema.NullOr(Schema.String),
   sendOutcome: Schema.NullOr(Schema.Literals(["applied", "ambiguous", "notApplied"])),
   sendOutcomeAt: Schema.NullOr(Schema.Date),
+  sendAccountedAt: Schema.NullOr(Schema.Date),
   sendStartedAt: Schema.NullOr(Schema.Date),
   sessionId: SessionId,
   state: ScheduledEmail.State,
   terminalAt: Schema.NullOr(Schema.Date),
+  workflowStartAccountedAt: Schema.NullOr(Schema.Date),
   userId: UserId,
   waitingAt: Schema.NullOr(Schema.Date),
   workflowId: ScheduledEmail.WorkflowId,
@@ -168,7 +182,15 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
         .returning();
       return updated === undefined ? changed() : found(updated);
     }),
-  finishTerminal: (workflowId, inputDigest, state, sendOutcome, safeFailureCode, terminalAt) =>
+  finishTerminal: (
+    workflowId,
+    inputDigest,
+    state,
+    sendOutcome,
+    providerLogId,
+    safeFailureCode,
+    terminalAt,
+  ) =>
     transition(database, workflowId, inputDigest, "finishTerminal", async (transaction, row) => {
       if (ScheduledEmail.terminalStates.has(row.state)) {
         return row.state === state && row.safe_failure_code === safeFailureCode
@@ -182,6 +204,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
           safe_failure_code: safeFailureCode,
           send_outcome: sendOutcome,
           send_outcome_at: sendOutcome === null ? row.send_outcome_at : terminalAt,
+          provider_log_id: providerLogId ?? row.provider_log_id,
           state,
           terminal_at: terminalAt,
           updated_at: sql`clock_timestamp()`,
@@ -236,6 +259,34 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
         .returning();
       return updated === undefined ? changed() : found(updated);
     }),
+  markSendAccounted: (workflowId, inputDigest, accountedAt) =>
+    transition(database, workflowId, inputDigest, "markSendAccounted", async (transaction, row) => {
+      if (row.send_accounted_at !== null) return found(row);
+      if (row.send_outcome === null) return changed();
+      const [updated] = await transaction
+        .update(scheduledEmails)
+        .set({ send_accounted_at: accountedAt, updated_at: sql`clock_timestamp()` })
+        .where(eq(scheduledEmails.workflow_id, workflowId))
+        .returning();
+      return updated === undefined ? changed() : found(updated);
+    }),
+  markWorkflowStartAccounted: (workflowId, inputDigest, accountedAt) =>
+    transition(
+      database,
+      workflowId,
+      inputDigest,
+      "markWorkflowStartAccounted",
+      async (transaction, row) => {
+        if (row.workflow_start_accounted_at !== null) return found(row);
+        if (row.accepted_at === null) return changed();
+        const [updated] = await transaction
+          .update(scheduledEmails)
+          .set({ workflow_start_accounted_at: accountedAt, updated_at: sql`clock_timestamp()` })
+          .where(eq(scheduledEmails.workflow_id, workflowId))
+          .returning();
+        return updated === undefined ? changed() : found(updated);
+      },
+    ),
   requestCancel: (workflowId, userId, requestedAt) =>
     attempt("requestCancel", () =>
       database.transaction(async (transaction) => {
@@ -461,45 +512,68 @@ export const countActiveForUser = (database: Database, userId: UserId) =>
     database.transaction((transaction) => countActiveWorkflows(transaction, userId)),
   ).pipe(Effect.map(BigInt));
 
-/** Read a bounded batch whose due or claimed send still needs durable reconciliation. */
+/** Read a fair bounded batch whose host, effect, or post-commit obligations need repair. */
 export const reconciliationBatch = (database: Database, now: Date, limit: number) =>
   attempt("reconciliationBatch", () =>
     database.transaction(async (transaction) => {
+      const accessIsAvailable = notExists(
+        transaction
+          .select({ id: deletionCases.deletion_case_id })
+          .from(deletionCases)
+          .where(
+            and(
+              eq(deletionCases.user_id, scheduledEmails.user_id),
+              isNotNull(deletionCases.access_fenced_at),
+            ),
+          ),
+      );
       const rows = await transaction
         .select({
           agentId: scheduledEmails.agent_id,
           dueAt: scheduledEmails.due_at,
           inputDigest: scheduledEmails.input_digest,
-          kind: sql<"claimed" | "due">`case
+          kind: sql<"claimed" | "due" | "host" | "settlement">`case
+            when ${scheduledEmails.state} in ('admitted', 'accepted') then 'host'
+            when ${scheduledEmails.state} = 'waiting' and ${scheduledEmails.workflow_start_accounted_at} is null then 'settlement'
             when ${scheduledEmails.state} = 'waiting' then 'due'
-            else 'claimed'
+            when ${scheduledEmails.state} in ('sending', 'send_pending_reconciliation') then 'claimed'
+            else 'settlement'
           end`,
           workflowId: scheduledEmails.workflow_id,
         })
         .from(scheduledEmails)
+        .leftJoin(
+          scheduledEmailNotifications,
+          eq(scheduledEmailNotifications.workflow_id, scheduledEmails.workflow_id),
+        )
         .where(
           or(
+            and(inArray(scheduledEmails.state, ["admitted", "accepted"]), accessIsAvailable),
             and(
               eq(scheduledEmails.state, "waiting"),
-              lte(scheduledEmails.due_at, now),
-              notExists(
-                transaction
-                  .select({ id: deletionCases.deletion_case_id })
-                  .from(deletionCases)
-                  .where(
-                    and(
-                      eq(deletionCases.user_id, scheduledEmails.user_id),
-                      isNotNull(deletionCases.access_fenced_at),
-                    ),
-                  ),
+              or(
+                lte(scheduledEmails.due_at, now),
+                isNull(scheduledEmails.workflow_start_accounted_at),
               ),
+              accessIsAvailable,
             ),
             inArray(scheduledEmails.state, ["sending", "send_pending_reconciliation"]),
+            and(
+              inArray(scheduledEmails.state, ["success", "failure", "canceled"]),
+              or(
+                and(
+                  isNotNull(scheduledEmails.send_outcome),
+                  isNull(scheduledEmails.send_accounted_at),
+                ),
+                isNull(scheduledEmailNotifications.accepted_at),
+              ),
+              accessIsAvailable,
+            ),
           ),
         )
         .orderBy(asc(scheduledEmails.updated_at), asc(scheduledEmails.due_at))
         .limit(limit)
-        .for("update", { skipLocked: true });
+        .for("update", { of: scheduledEmails, skipLocked: true });
       if (rows.length > 0) {
         await transaction
           .update(scheduledEmails)
@@ -660,10 +734,12 @@ const decodeRow = (row: Row): Effect.Effect<ScheduledEmail.Record, ScheduledEmai
     safeFailureCode: row.safe_failure_code,
     sendOutcome: row.send_outcome,
     sendOutcomeAt: row.send_outcome_at,
+    sendAccountedAt: row.send_accounted_at,
     sendStartedAt: row.send_started_at,
     sessionId: row.session_id,
     state: row.state,
     terminalAt: row.terminal_at,
+    workflowStartAccountedAt: row.workflow_start_accounted_at,
     userId: row.user_id,
     waitingAt: row.waiting_at,
     workflowId: row.workflow_id,
@@ -702,10 +778,12 @@ const encodeInsert = (record: ScheduledEmail.Record): typeof scheduledEmails.$in
   safe_failure_code: record.safeFailureCode,
   send_outcome: record.sendOutcome,
   send_outcome_at: record.sendOutcomeAt,
+  send_accounted_at: record.sendAccountedAt,
   send_started_at: record.sendStartedAt,
   session_id: record.sessionId,
   state: record.state,
   terminal_at: record.terminalAt,
+  workflow_start_accounted_at: record.workflowStartAccountedAt,
   user_id: record.userId,
   waiting_at: record.waitingAt,
   workflow_id: record.workflowId,

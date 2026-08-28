@@ -36,11 +36,11 @@ export interface ScheduledEmailWorkflowStep {
 }
 
 export const runScheduledEmailHost = async (
-  event: Readonly<{ instanceId: string; payload: ScheduledEmail.WorkflowPayload }>,
+  event: Readonly<{ instanceId: string; payload: ScheduledEmail.EncodedWorkflowPayload }>,
   step: ScheduledEmailWorkflowStep,
   directory: ScheduledEmailDirectory,
 ): Promise<ExecutionResult> => {
-  const decoded = Schema.decodeResult(ScheduledEmail.WorkflowPayload)(event.payload);
+  const decoded = Schema.decodeResult(ScheduledEmail.EncodedWorkflowPayload)(event.payload);
   if (Result.isFailure(decoded)) throw new Error("Scheduled Email Workflow payload is invalid");
   const payload = decoded.success;
   const expectedInstanceId = await Effect.runPromise(
@@ -76,10 +76,10 @@ export const runScheduledEmailHost = async (
 /** Durable host for one exact future Gmail effect. */
 export class ScheduledEmailWorkflow extends WorkflowEntrypoint<
   Env,
-  ScheduledEmail.WorkflowPayload
+  ScheduledEmail.EncodedWorkflowPayload
 > {
   override async run(
-    event: Readonly<WorkflowEvent<ScheduledEmail.WorkflowPayload>>,
+    event: Readonly<WorkflowEvent<ScheduledEmail.EncodedWorkflowPayload>>,
     step: WorkflowStep,
   ): Promise<ExecutionResult> {
     const directory = this.env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);

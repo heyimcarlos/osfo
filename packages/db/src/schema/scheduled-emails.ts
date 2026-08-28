@@ -60,8 +60,10 @@ export const scheduledEmails = pgTable(
     waiting_at: timestamp({ withTimezone: true }),
     send_started_at: timestamp({ withTimezone: true }),
     send_outcome_at: timestamp({ withTimezone: true }),
+    send_accounted_at: timestamp({ withTimezone: true }),
     cancel_requested_at: timestamp({ withTimezone: true }),
     terminal_at: timestamp({ withTimezone: true }),
+    workflow_start_accounted_at: timestamp({ withTimezone: true }),
     created_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
     updated_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
   },
@@ -106,6 +108,34 @@ export const scheduledEmails = pgTable(
       sql`${table.state} in ('admitted', 'accepted', 'waiting', 'sending', 'send_pending_reconciliation', 'success', 'failure', 'canceled')`,
     ),
     check(
+      "scheduled_emails_outcome_check",
+      sql`(
+          ${table.state} in ('admitted', 'accepted', 'waiting', 'sending', 'canceled')
+          and ${table.send_outcome} is null
+          and ${table.send_outcome_at} is null
+          and ${table.provider_resource_id} is null
+        ) or (
+          ${table.state} = 'send_pending_reconciliation'
+          and ${table.send_outcome} is not null
+          and ${table.send_outcome} = 'ambiguous'
+          and ${table.send_outcome_at} is not null
+          and ${table.provider_resource_id} is null
+        ) or (
+          ${table.state} = 'success'
+          and ${table.send_outcome} is not null
+          and ${table.send_outcome} = 'applied'
+          and ${table.send_outcome_at} is not null
+          and ${table.provider_log_id} is not null
+          and ${table.provider_resource_id} is not null
+        ) or (
+          ${table.state} = 'failure'
+          and ${table.send_outcome} is not null
+          and ${table.send_outcome} = 'notApplied'
+          and ${table.send_outcome_at} is not null
+          and ${table.provider_resource_id} is null
+        )`,
+    ),
+    check(
       "scheduled_emails_lifecycle_check",
       sql`${table.due_at} > ${table.admitted_at}
         and (${table.accepted_at} is null or ${table.accepted_at} >= ${table.admitted_at})
@@ -114,9 +144,11 @@ export const scheduledEmails = pgTable(
         and (${table.send_outcome_at} is null or ${table.send_started_at} is not null)
         and (${table.cancel_requested_at} is null or ${table.cancel_requested_at} >= ${table.admitted_at})
         and ((${table.state} in ('success', 'failure', 'canceled')) = (${table.terminal_at} is not null))
-        and (${table.state} <> 'send_pending_reconciliation' or (${table.send_outcome} = 'ambiguous' and ${table.terminal_at} is null))
+        and (${table.state} <> 'send_pending_reconciliation' or (${table.send_outcome} is not null and ${table.send_outcome} = 'ambiguous' and ${table.send_outcome_at} is not null and ${table.terminal_at} is null))
         and (${table.state} not in ('sending', 'send_pending_reconciliation', 'success', 'failure') or ${table.send_started_at} is not null)
-        and (${table.state} <> 'success' or (${table.send_outcome} = 'applied' and ${table.provider_log_id} is not null and ${table.provider_resource_id} is not null))
+        and (${table.state} <> 'success' or (${table.send_outcome} is not null and ${table.send_outcome} = 'applied' and ${table.send_outcome_at} is not null and ${table.provider_log_id} is not null and ${table.provider_resource_id} is not null))
+        and (${table.send_accounted_at} is null or ${table.send_outcome} is not null)
+        and (${table.workflow_start_accounted_at} is null or ${table.accepted_at} is not null)
         and (${table.safe_failure_code} is null or length(btrim(${table.safe_failure_code})) between 1 and 120)`,
     ),
   ],

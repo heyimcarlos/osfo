@@ -26,6 +26,10 @@ const encodedResult = (payload: ScheduledEmail.WorkflowPayload, state: Scheduled
 it.effect("keeps due recovery fenced and routes claimed recovery through the narrow bypass", () => {
   const calls = new Array<string>();
   const directory = {
+    beginScheduledEmail: async (payload: ScheduledEmail.WorkflowPayload) => {
+      calls.push(`begin:${payload.workflowId}`);
+      return encodedResult(payload, "waiting");
+    },
     executeScheduledEmail: async (payload: ScheduledEmail.WorkflowPayload) => {
       calls.push(`execute:${payload.workflowId}`);
       return encodedResult(payload, "waiting");
@@ -36,14 +40,32 @@ it.effect("keeps due recovery fenced and routes claimed recovery through the nar
     },
   };
   return Effect.gen(function* () {
-    yield* repair([candidate("a", "due"), candidate("b", "claimed")], directory);
-    expect(calls).toEqual(["execute:scheduled-email:a", "recover:scheduled-email:b"]);
+    yield* repair(
+      [
+        candidate("a", "due"),
+        candidate("b", "claimed"),
+        candidate("c", "host"),
+        candidate("d", "settlement"),
+      ],
+      directory,
+    );
+    expect(calls).toHaveLength(4);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        "execute:scheduled-email:a",
+        "recover:scheduled-email:b",
+        "begin:scheduled-email:c",
+        "recover:scheduled-email:d",
+      ]),
+    );
   });
 });
 
 it.effect("attempts the complete bounded batch before reporting invalid recovery results", () => {
   const calls = new Array<string>();
   const directory = {
+    beginScheduledEmail: async (payload: ScheduledEmail.WorkflowPayload) =>
+      encodedResult(payload, "waiting"),
     executeScheduledEmail: async (payload: ScheduledEmail.WorkflowPayload) => {
       calls.push(payload.workflowId);
       return { state: "not-a-state" };

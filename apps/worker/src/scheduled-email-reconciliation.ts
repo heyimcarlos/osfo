@@ -11,6 +11,7 @@ const maximumRepairsPerRun = 20;
 const ReconciliationResult = Schema.Struct({ state: ScheduledEmail.State });
 
 export interface ReconciliationDirectory {
+  readonly beginScheduledEmail: (payload: ScheduledEmail.WorkflowPayload) => Promise<unknown>;
   readonly executeScheduledEmail: (payload: ScheduledEmail.WorkflowPayload) => Promise<unknown>;
   readonly recoverScheduledEmail: (payload: ScheduledEmail.WorkflowPayload) => Promise<unknown>;
 }
@@ -31,9 +32,9 @@ export const repair = (
             inputDigest: candidate.inputDigest,
             workflowId: candidate.workflowId,
           };
-          return candidate.kind === "claimed"
-            ? await directory.recoverScheduledEmail(payload)
-            : await directory.executeScheduledEmail(payload);
+          if (candidate.kind === "due") return await directory.executeScheduledEmail(payload);
+          if (candidate.kind === "host") return await directory.beginScheduledEmail(payload);
+          return await directory.recoverScheduledEmail(payload);
         },
         catch: (cause) => unavailable(candidate.workflowId, cause),
       }).pipe(

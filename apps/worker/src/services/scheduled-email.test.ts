@@ -290,6 +290,79 @@ describe("ScheduledEmail", () => {
       expect(fixture.followUps).toBe(1);
     }).pipe(Effect.provide(layer(fixture.port)));
   });
+
+  it.effect("drains workflow-start accounting after acceptance committed before an outage", () => {
+    const fixture = makeFixture();
+    fixture.failWorkflowAccounting = true;
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      expect(yield* emails.start(startInput()).pipe(Effect.result)).toMatchObject({
+        failure: { operation: "workflow-accounting" },
+      });
+      const retained = fixture.stored;
+      expect(retained).toMatchObject({ state: "accepted", workflowStartAccountedAt: null });
+      if (retained === null) throw new Error("accepted Scheduled Email was not retained");
+      fixture.failWorkflowAccounting = false;
+      const recovered = yield* emails.recoverClaimed(payloadFor(retained));
+      expect(recovered).toMatchObject({ state: "waiting" });
+      expect(recovered.workflowStartAccountedAt).not.toBeNull();
+      expect(fixture.workflowStartFacts).toBe(1);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect("drains conservative ambiguity accounting after its state commit", () => {
+    const fixture = makeFixture({ sendOutcome: "ambiguous" });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      yield* TestClock.setTime(scheduledAt.getTime());
+      fixture.failSendAccounting = true;
+      expect(yield* emails.sendDue(payload).pipe(Effect.result)).toMatchObject({
+        failure: { operation: "send-accounting" },
+      });
+      expect(fixture.stored).toMatchObject({
+        sendAccountedAt: null,
+        state: "send_pending_reconciliation",
+      });
+      fixture.failSendAccounting = false;
+      const recovered = yield* emails.recoverClaimed(payload);
+      expect(recovered.sendAccountedAt).not.toBeNull();
+      expect(fixture.gmailSendFacts).toBe(1);
+      expect(fixture.sendAttempts).toBe(1);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect("drains terminal accounting and Always delivery after post-commit outages", () => {
+    const fixture = makeFixture();
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      yield* TestClock.setTime(scheduledAt.getTime());
+      fixture.failSendAccounting = true;
+      expect(yield* emails.sendDue(payload).pipe(Effect.result)).toMatchObject({
+        failure: { operation: "send-accounting" },
+      });
+      expect(fixture.stored).toMatchObject({ sendAccountedAt: null, state: "success" });
+      fixture.failSendAccounting = false;
+      fixture.failFollowUp = true;
+      expect(yield* emails.recoverClaimed(payload).pipe(Effect.result)).toMatchObject({
+        failure: { operation: "follow-up" },
+      });
+      expect(fixture.stored?.sendAccountedAt).not.toBeNull();
+      fixture.failFollowUp = false;
+      expect(yield* emails.recoverClaimed(payload)).toMatchObject({ state: "success" });
+      expect(fixture.gmailSendFacts).toBe(1);
+      expect(fixture.followUps).toBe(1);
+      expect(fixture.sendAttempts).toBe(1);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
 });
 
 const startInput = (overrides: Partial<ScheduledEmail.StartInput> = {}) => ({
@@ -353,6 +426,9 @@ const makeFixture = (
   let sendAttempts = 0;
   let currentAuthorization = authorization();
   let reconciliation: ScheduledEmail.SendReconciliation = { _tag: "Pending" };
+  let failWorkflowAccounting = false;
+  let failSendAccounting = false;
+  let failFollowUp = false;
   const calls = new Array<string>();
   const instances = new Array<ScheduledEmail.CloudflareInstanceId>();
   const terminalFacts = new Set<ScheduledEmail.WorkflowId>();
@@ -392,12 +468,14 @@ const makeFixture = (
 
   const port = ScheduledEmail.Port.of({
     commitTerminalFollowUp: (email) =>
-      Effect.sync(() => {
-        if (!followUpFacts.has(email.workflowId)) {
-          followUpFacts.add(email.workflowId);
-          followUps += 1;
-        }
-      }),
+      failFollowUp
+        ? Effect.fail(unavailable("follow-up"))
+        : Effect.sync(() => {
+            if (!followUpFacts.has(email.workflowId)) {
+              followUpFacts.add(email.workflowId);
+              followUps += 1;
+            }
+          }),
     currentAuthorization: () => Effect.succeed(currentAuthorization),
     persistence: {
       admit: (email) =>
@@ -445,11 +523,19 @@ const makeFixture = (
             return stored;
           }),
         ),
-      finishTerminal: (workflowId, digest, state, sendOutcome, safeFailureCode, terminalAt) =>
+      finishTerminal: (
+        workflowId,
+        digest,
+        state,
+        sendOutcome,
+        providerLogId,
+        safeFailureCode,
+        terminalAt,
+      ) =>
         requireStored(workflowId, digest).pipe(
           Effect.map((email) => {
             if (ScheduledEmail.terminalStates.has(email.state)) return email;
-            stored = { ...email, safeFailureCode, sendOutcome, state, terminalAt };
+            stored = { ...email, providerLogId, safeFailureCode, sendOutcome, state, terminalAt };
             return stored;
           }),
         ),
@@ -469,6 +555,23 @@ const makeFixture = (
             return stored;
           }),
         ),
+      markSendAccounted: (workflowId, digest, accountedAt) =>
+        requireStored(workflowId, digest).pipe(
+          Effect.map((email) => {
+            stored = { ...email, sendAccountedAt: email.sendAccountedAt ?? accountedAt };
+            return stored;
+          }),
+        ),
+      markWorkflowStartAccounted: (workflowId, digest, accountedAt) =>
+        requireStored(workflowId, digest).pipe(
+          Effect.map((email) => {
+            stored = {
+              ...email,
+              workflowStartAccountedAt: email.workflowStartAccountedAt ?? accountedAt,
+            };
+            return stored;
+          }),
+        ),
       requestCancel: (workflowId, requestedUserId, requestedAt) => {
         if (stored === null || stored.userId !== requestedUserId) {
           return Effect.fail(new ScheduledEmail.NotFound({ workflowId }));
@@ -482,23 +585,27 @@ const makeFixture = (
       },
     },
     recordSendOutcome: (email) =>
-      Effect.sync(() => {
-        if (
-          (email.sendOutcome === "applied" || email.sendOutcome === "ambiguous") &&
-          !terminalFacts.has(email.workflowId)
-        ) {
-          terminalFacts.add(email.workflowId);
-          gmailSendFacts += 1;
-        }
-      }),
+      failSendAccounting
+        ? Effect.fail(unavailable("send-accounting"))
+        : Effect.sync(() => {
+            if (
+              (email.sendOutcome === "applied" || email.sendOutcome === "ambiguous") &&
+              !terminalFacts.has(email.workflowId)
+            ) {
+              terminalFacts.add(email.workflowId);
+              gmailSendFacts += 1;
+            }
+          }),
     recordWorkflowStart: (email) =>
-      Effect.sync(() => {
-        calls.push("account.workflowStart");
-        if (!workflowFacts.has(email.workflowId)) {
-          workflowFacts.add(email.workflowId);
-          workflowStartFacts += 1;
-        }
-      }),
+      failWorkflowAccounting
+        ? Effect.fail(unavailable("workflow-accounting"))
+        : Effect.sync(() => {
+            calls.push("account.workflowStart");
+            if (!workflowFacts.has(email.workflowId)) {
+              workflowFacts.add(email.workflowId);
+              workflowStartFacts += 1;
+            }
+          }),
     reconcileSend: () => Effect.succeed(reconciliation),
     send: (_email, authorize) => authorize.pipe(Effect.andThen(Effect.suspend(sendResult))),
     workflow: {
@@ -526,6 +633,15 @@ const makeFixture = (
     get followUps() {
       return followUps;
     },
+    set failFollowUp(value: boolean) {
+      failFollowUp = value;
+    },
+    set failSendAccounting(value: boolean) {
+      failSendAccounting = value;
+    },
+    set failWorkflowAccounting(value: boolean) {
+      failWorkflowAccounting = value;
+    },
     get gmailSendFacts() {
       return gmailSendFacts;
     },
@@ -543,8 +659,18 @@ const makeFixture = (
     get workflowStartFacts() {
       return workflowStartFacts;
     },
+    get stored() {
+      return stored;
+    },
   };
 };
+
+const unavailable = (operation: string) =>
+  new ScheduledEmail.Unavailable({
+    cause: operation,
+    message: "Injected Scheduled Email outage",
+    operation,
+  });
 
 const payloadFor = (email: ScheduledEmail.Record) =>
   ScheduledEmail.WorkflowPayload.make({
