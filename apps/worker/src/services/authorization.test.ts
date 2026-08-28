@@ -621,13 +621,15 @@ describe("governed Authorization", () => {
         kind: "reminder.manage",
       }),
     ).toMatchObject({ _tag: "Admitted", executionMode: "unmeteredContinuity" });
-    expect(
-      authorization.admit(context("free"), {
-        actionId: "research-workflow",
-        change: "start",
-        kind: "workflow.manage",
-      }),
-    ).toMatchObject({ _tag: "Admitted", executionMode: "normalPlanUsage" });
+    for (const plan of ["free", "adventurer"] as const) {
+      expect(
+        authorization.admit(context(plan), {
+          actionId: `research-workflow-${plan}`,
+          change: "start",
+          kind: "workflow.manage",
+        }),
+      ).toMatchObject({ _tag: "Admitted", executionMode: "normalPlanUsage" });
+    }
   });
 
   it("selects included Plan Usage through the future grant-source seam", () => {

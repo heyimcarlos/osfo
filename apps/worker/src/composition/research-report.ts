@@ -5,6 +5,8 @@ import { loadConfig, type CloudflareEnv, type ResearchReportProviderConfig } fro
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { Db } from "../db";
 import { BillingDb } from "../db/billing";
+import { ContentId } from "../domain/client-content";
+import { DocumentArtifact } from "../domain/document-artifact";
 import { retainedCatalog } from "../domain/plan-policy";
 import { DocumentArtifactValidation } from "../integrations/cloudflare/document-artifact-validation";
 import { DocumentArtifacts } from "../integrations/cloudflare/document-artifacts";
@@ -139,6 +141,7 @@ export const serviceLayer = (
   binding: WorkflowBinding,
   timerBinding: WorkflowBinding,
   commitTerminalFollowUp: ResearchReport.PortInterface["commitTerminalFollowUp"],
+  artifacts: R2Bucket,
   providerAvailable = false,
 ) => {
   const portLayer = Layer.effect(
@@ -148,6 +151,7 @@ export const serviceLayer = (
         ResearchReport.Port.of({
           currentAuthorization: ResearchReportPostgres.makeCurrentAuthorization(database),
           commitTerminalFollowUp,
+          discardPendingArtifact: makePendingArtifactDiscarder(artifacts),
           persistence: ResearchReportPostgres.make(database),
           providerAvailable: Effect.succeed(providerAvailable),
           recordWorkflowStart: makeWorkflowStartRecorder(database),
@@ -184,6 +188,7 @@ export const executionEffect = <Value>(
           );
         return result._tag;
       }),
+      env.ARTIFACTS,
       ResearchVerificationProvider.isAvailable(env.researchReportProvider),
     );
     return yield* Effect.gen(function* () {
@@ -263,9 +268,10 @@ export const serviceLayerFromDatabase = (
   database: Database,
   timerBinding: WorkflowBinding,
   commitTerminalFollowUp: ResearchReport.PortInterface["commitTerminalFollowUp"],
+  artifacts: R2Bucket,
   providerAvailable = false,
 ) =>
-  serviceLayer(binding, timerBinding, commitTerminalFollowUp, providerAvailable).pipe(
+  serviceLayer(binding, timerBinding, commitTerminalFollowUp, artifacts, providerAvailable).pipe(
     Layer.provide(Db.layerFromDatabase(database)),
   );
 
@@ -307,6 +313,7 @@ export const controlEffect = <Value, Failure>(
               database,
               env.RESEARCH_REPORT_TIMER_WORKFLOW,
               makeTerminalFollowUpCommitter(database, submit),
+              env.ARTIFACTS,
               ResearchVerificationProvider.isAvailable(env.researchReportProvider),
             ),
           ),
@@ -412,6 +419,48 @@ const makeAllowances = (database: Database) =>
     billing: BillingDb.make(database),
     catalog: retainedCatalog,
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
+  });
+
+const makePendingArtifactDiscarder = (
+  bucket: R2Bucket,
+): ResearchReport.PortInterface["discardPendingArtifact"] =>
+  Effect.fn("ResearchReportComposition.discardPendingArtifact")(function* (report) {
+    if (report.artifactContentId === null) return;
+    const contentId = ContentId.make(report.artifactContentId);
+    const artifacts = DocumentArtifacts.make(bucket);
+    const retained = yield* artifacts.inspect(contentId).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ResearchReport.Unavailable({
+            cause,
+            message: "The canceled Research Report artifact could not be inspected",
+            operation: "artifact.discard.inspect",
+          }),
+      ),
+    );
+    if (retained === null) return;
+    const owner = DocumentArtifact.DocumentOwner.make({
+      _tag: "Workflow",
+      workflowId: report.workflowId,
+    });
+    if (retained.userId !== report.userId || !DocumentArtifact.sameOwner(retained.owner, owner)) {
+      // oxlint-disable-next-line typescript/consistent-return -- The typed failure is a definitive generator exit.
+      return yield* new ResearchReport.Unavailable({
+        cause: retained.owner,
+        message: "The canceled Research Report artifact owns different immutable facts",
+        operation: "artifact.discard.identity",
+      });
+    }
+    yield* artifacts.delete(retained).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ResearchReport.Unavailable({
+            cause,
+            message: "The canceled Research Report artifact could not be removed",
+            operation: "artifact.discard.delete",
+          }),
+      ),
+    );
   });
 
 const makeSynthesisCostRecorder =

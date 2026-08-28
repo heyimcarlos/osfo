@@ -87,6 +87,12 @@ export const launchModelAccessPolicy = Schema.decodeSync(ModelAccessPolicy)({
   },
 });
 
+/** Retained shared-Usage route policy, ready without changing the active Plan policy. */
+export const sharedUsageModelAccessPolicy = Schema.decodeSync(ModelAccessPolicy)({
+  planPolicyVersion: "shared-usage-v1",
+  plans: launchModelAccessPolicy.plans,
+});
+
 /** Select the exact managed route pinned by one admitted Plan policy version. */
 export const selectManagedRoute = (
   policy: ModelAccessPolicy,

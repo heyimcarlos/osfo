@@ -14,7 +14,11 @@ import {
 import type { ActionId } from "../domain/action-execution";
 import { ConsequenceClass, currentCapabilityCatalog } from "../domain/capability-catalog";
 import type { ManagedModelRoute } from "../domain/model-access-policy";
-import { launchModelAccessPolicy, selectManagedRoute } from "../domain/model-access-policy";
+import {
+  launchModelAccessPolicy,
+  selectManagedRoute,
+  sharedUsageModelAccessPolicy,
+} from "../domain/model-access-policy";
 import {
   isLaunchPolicy,
   policyFor,
@@ -139,7 +143,6 @@ export type StartResult =
 
 export type CancelResult =
   | { readonly _tag: "CancelRequested"; readonly report: Record }
-  | { readonly _tag: "PublicationCommitted"; readonly report: Record }
   | { readonly _tag: "Terminal"; readonly report: Record };
 
 export class Conflict extends Schema.TaggedError<Conflict>()("ResearchReportConflict", {
@@ -161,6 +164,7 @@ export interface PortInterface {
   readonly currentAuthorization: (
     report: Record,
   ) => Effect.Effect<AuthorizationContext, Unavailable>;
+  readonly discardPendingArtifact: (report: Record) => Effect.Effect<void, Unavailable>;
   readonly providerAvailable: Effect.Effect<boolean>;
   readonly recordWorkflowStart: (report: Record) => Effect.Effect<void, Unavailable>;
   readonly commitTerminalFollowUp: (report: Record) => Effect.Effect<void, Unavailable>;
@@ -656,8 +660,25 @@ export const make = Effect.gen(function* () {
         resetAt: null,
       } satisfies Denied);
     }
+    const admittedAt = input.authorization.now;
+    const admittedPolicy = yield* policyForVersion(
+      retainedCatalog,
+      input.authorization.subscription.planPolicyVersion,
+    ).pipe(
+      Effect.mapError(
+        (cause) =>
+          new Unavailable({
+            cause,
+            message: "The admitted Research Report Plan policy is unavailable",
+            operation: "start.planPolicy",
+          }),
+      ),
+    );
+    const modelAccessPolicy = isLaunchPolicy(admittedPolicy)
+      ? launchModelAccessPolicy
+      : sharedUsageModelAccessPolicy;
     const route = yield* selectManagedRoute(
-      launchModelAccessPolicy,
+      modelAccessPolicy,
       input.authorization.subscription.plan,
       input.authorization.subscription.planPolicyVersion,
     ).pipe(
@@ -670,7 +691,6 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
-    const admittedAt = input.authorization.now;
     const report: Record = {
       workflowId,
       actionId: input.actionId,
@@ -686,9 +706,7 @@ export const make = Effect.gen(function* () {
       allowancePeriodId: admission.allowancePeriod.allowancePeriodId,
       planPolicyVersion: input.authorization.subscription.planPolicyVersion,
       capabilityCatalogVersion: admission.capabilityCatalogVersion,
-      modelAccessPolicyVersion: ModelAccessPolicyVersion.make(
-        launchModelAccessPolicy.planPolicyVersion,
-      ),
+      modelAccessPolicyVersion: ModelAccessPolicyVersion.make(modelAccessPolicy.planPolicyVersion),
       modelRoute: route.route,
       resourcePriceVersion: currentResourcePriceVersion,
       manifestVersion: admission.manifestVersion,
@@ -705,28 +723,13 @@ export const make = Effect.gen(function* () {
       cancelRequestedAt: null,
       terminalAt: null,
     };
-    const admittedPolicy = yield* policyForVersion(
-      retainedCatalog,
-      input.authorization.subscription.planPolicyVersion,
-    ).pipe(
-      Effect.mapError(
-        (cause) =>
-          new Unavailable({
-            cause,
-            message: "The admitted Research Report Plan policy is unavailable",
-            operation: "start.planPolicy",
-          }),
-      ),
-    );
-    if (!isLaunchPolicy(admittedPolicy)) {
-      return yield* new Unavailable({
-        cause: admittedPolicy.version,
-        message: "Shared Plan Usage Research Reports are not activated",
-        operation: "start.planPolicy",
-      });
-    }
-    const activeWorkflowLimit = policyFor(admittedPolicy, input.authorization.subscription.plan)
-      .liveLimits.concurrentWorkflows;
+    const activeWorkflowLimit = isLaunchPolicy(admittedPolicy)
+      ? policyFor(admittedPolicy, input.authorization.subscription.plan).liveLimits
+          .concurrentWorkflows
+      : BigInt(
+          currentCapabilityCatalog.planResourceLimits[input.authorization.subscription.plan]
+            .activeWorkflows,
+        );
     const persisted = yield* ports.persistence.admit(report, activeWorkflowLimit);
     const exact = persisted.report;
     if (exact.userId !== report.userId || exact.inputDigest !== report.inputDigest) {
@@ -758,20 +761,20 @@ export const make = Effect.gen(function* () {
     yield* authorizeControl(retained, "workflow.cancel");
     const requestedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     const requested = yield* ports.persistence.requestCancel(workflowId, userId, requestedAt);
+    const settleCancellation = (report: Record) =>
+      ports
+        .discardPendingArtifact(report)
+        .pipe(
+          Effect.andThen(ports.commitTerminalFollowUp(report)),
+          Effect.ensuring(
+            ports.workflow.terminate(report.cloudflareInstanceId).pipe(Effect.ignore),
+          ),
+        );
     if (terminalStates.has(requested.state)) {
       if (requested.state === "canceled" && requested.safeFailureCode === "cancel-requested") {
-        yield* ports
-          .commitTerminalFollowUp(requested)
-          .pipe(
-            Effect.ensuring(
-              ports.workflow.terminate(requested.cloudflareInstanceId).pipe(Effect.ignore),
-            ),
-          );
+        yield* settleCancellation(requested);
       }
       return { _tag: "Terminal" as const, report: requested };
-    }
-    if (requested.state === "artifact_stored") {
-      return { _tag: "PublicationCommitted" as const, report: requested };
     }
     const canceled = yield* ports.persistence.finishTerminal(
       requested.workflowId,
@@ -780,13 +783,7 @@ export const make = Effect.gen(function* () {
       "cancel-requested",
       requestedAt,
     );
-    yield* ports
-      .commitTerminalFollowUp(canceled)
-      .pipe(
-        Effect.ensuring(
-          ports.workflow.terminate(requested.cloudflareInstanceId).pipe(Effect.ignore),
-        ),
-      );
+    yield* settleCancellation(canceled);
     return { _tag: "CancelRequested" as const, report: canceled };
   });
 

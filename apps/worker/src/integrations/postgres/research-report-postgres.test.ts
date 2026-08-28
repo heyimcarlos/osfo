@@ -99,6 +99,91 @@ it.effect("serializes different Workflow identities against one User capacity", 
   }).pipe(Effect.scoped),
 );
 
+it.effect("cancels a report after artifact retention and rejects late publication", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedUser(fixture.database);
+    const persistence = ResearchReportPostgres.make(fixture.database);
+    const retained = yield* retainArtifact(persistence, "retained-cancel");
+
+    const requested = yield* persistence.requestCancel(
+      retained.workflowId,
+      retained.userId,
+      deletionCompletedAt,
+    );
+    expect(requested).toMatchObject({ state: "cancel_requested" });
+    const canceled = yield* persistence.finishTerminal(
+      retained.workflowId,
+      retained.inputDigest,
+      "canceled",
+      "cancel-requested",
+      deletionCompletedAt,
+    );
+    expect(canceled).toMatchObject({ safeFailureCode: "cancel-requested", state: "canceled" });
+    const lateSuccess = yield* persistence
+      .completeSuccess(
+        retained.workflowId,
+        retained.inputDigest,
+        retained.artifactContentId ?? "missing",
+        deletionCompletedAt,
+      )
+      .pipe(Effect.result);
+    expect(lateSuccess).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
+  }).pipe(Effect.scoped),
+);
+
+it.effect("serializes terminal success against cancellation after artifact retention", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedUser(fixture.database);
+    const persistence = ResearchReportPostgres.make(fixture.database);
+    const retained = yield* retainArtifact(persistence, "publication-race");
+    const contentId = retained.artifactContentId ?? "missing";
+
+    const [cancellation, success] = yield* Effect.all(
+      [
+        Effect.gen(function* () {
+          const requested = yield* persistence.requestCancel(
+            retained.workflowId,
+            retained.userId,
+            deletionCompletedAt,
+          );
+          if (requested.state !== "cancel_requested") return requested;
+          return yield* persistence.finishTerminal(
+            retained.workflowId,
+            retained.inputDigest,
+            "canceled",
+            "cancel-requested",
+            deletionCompletedAt,
+          );
+        }).pipe(Effect.result),
+        persistence
+          .completeSuccess(
+            retained.workflowId,
+            retained.inputDigest,
+            contentId,
+            deletionCompletedAt,
+          )
+          .pipe(Effect.result),
+      ],
+      { concurrency: 2 },
+    );
+    const terminal = yield* persistence.inspect(retained.workflowId);
+    expect(terminal?.state === "success" || terminal?.state === "canceled").toBe(true);
+    if (terminal?.state === "success") {
+      expect(success).toMatchObject({ success: { state: "success" } });
+      expect(cancellation).toMatchObject({ success: { state: "success" } });
+    } else {
+      expect(cancellation).toMatchObject({ success: { state: "canceled" } });
+      expect(success).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
+    }
+  }).pipe(Effect.scoped),
+);
+
 it.effect("lists only bounded delivered Research Report notifications for the owning User", () =>
   Effect.gen(function* () {
     const fixture = yield* makeTestDatabase;
@@ -346,6 +431,37 @@ const seedUser = (database: Parameters<typeof ResearchReportPostgres.make>[0]) =
         starts_at: admittedAt,
         user_id: userId,
       }),
+    );
+  });
+
+const retainArtifact = (
+  persistence: ResearchReport.PortInterface["persistence"],
+  identity: string,
+) =>
+  Effect.gen(function* () {
+    const admitted = yield* persistence.admit(record(identity), 10n);
+    const accepted = yield* persistence.markAccepted(
+      admitted.report.workflowId,
+      admitted.report.inputDigest,
+      executionStartedAt,
+    );
+    yield* persistence.beginExecution(
+      accepted.workflowId,
+      accepted.inputDigest,
+      executionStartedAt,
+    );
+    yield* persistence.markSourcesCommitted(
+      accepted.workflowId,
+      accepted.inputDigest,
+      `users/${accepted.userId}/research-report/manifests/${identity}.json`,
+      ResearchReport.InputDigest.make("c".repeat(64)),
+      executionStartedAt,
+    );
+    return yield* persistence.claimArtifactPublication(
+      accepted.workflowId,
+      accepted.inputDigest,
+      `document:workflow:${accepted.workflowId}`,
+      artifactStoredAt,
     );
   });
 

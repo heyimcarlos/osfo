@@ -479,12 +479,7 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
             ? { _tag: "Found" as const, row }
             : { _tag: "Conflict" as const };
         }
-        if (
-          row.state === "artifact_stored" ||
-          row.state === "success" ||
-          row.state === "failure" ||
-          row.state === "canceled"
-        ) {
+        if (row.state === "success" || row.state === "failure" || row.state === "canceled") {
           return { _tag: "Conflict" as const };
         }
         const [updated] = await transaction
@@ -504,6 +499,7 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
                 "accepted",
                 "running",
                 "sources_committed",
+                "artifact_stored",
                 "cancel_requested",
               ]),
             ),
@@ -546,8 +542,7 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           row.state === "success" ||
           row.state === "failure" ||
           row.state === "canceled" ||
-          row.state === "cancel_requested" ||
-          row.state === "artifact_stored"
+          row.state === "cancel_requested"
         ) {
           return row;
         }
@@ -559,7 +554,17 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
             updated_at: requestedAt,
           })
           .where(
-            and(eq(researchReports.workflow_id, workflowId), eq(researchReports.user_id, userId)),
+            and(
+              eq(researchReports.workflow_id, workflowId),
+              eq(researchReports.user_id, userId),
+              inArray(researchReports.state, [
+                "admitted",
+                "accepted",
+                "running",
+                "sources_committed",
+                "artifact_stored",
+              ]),
+            ),
           )
           .returning(rowSelection);
         return updated ?? null;

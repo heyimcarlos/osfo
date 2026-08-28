@@ -13,6 +13,7 @@ import {
   DocumentIntentDigest,
   DocumentSource,
   type StoredArtifact,
+  type StoredArtifactMetadata,
 } from "./document-generation";
 import type { ResearchReport } from "./research-report";
 import { ResearchSynthesis } from "./research-synthesis";
@@ -187,10 +188,16 @@ export const make = Effect.gen(function* () {
         );
       }
       const claimed = yield* claimPublication(ports, admitted, contentId);
+      const completed = yield* completeSuccess(ports, claimed, contentId).pipe(
+        Effect.tapError((failure) =>
+          Predicate.isTagged(failure.cause, "ResearchReportConflict")
+            ? discardArtifact(ports, existing)
+            : Effect.void,
+        ),
+      );
       yield* account(ports, contentId);
-      yield* ports.recordRenderCost(claimed, existing.cost);
-      yield* ports.recordUsage(claimed, existing.artifact, synthesis.companyCost, existing.cost);
-      const completed = yield* completeSuccess(ports, claimed, contentId);
+      yield* ports.recordRenderCost(completed, existing.cost);
+      yield* ports.recordUsage(completed, existing.artifact, synthesis.companyCost, existing.cost);
       yield* cleanup(ports, contentId);
       return { artifact: existing.artifact, report: completed };
     }
@@ -314,13 +321,19 @@ export const make = Effect.gen(function* () {
             unavailable("retain", "The report artifact cannot be retained", cause),
           ),
         );
-      yield* ports.recordRenderCost(admitted, computed.cost);
       const claimed = yield* claimPublication(ports, admitted, contentId).pipe(
         Effect.tapError(() => ports.artifacts.delete(retained).pipe(Effect.ignore)),
       );
+      const completed = yield* completeSuccess(ports, claimed, contentId).pipe(
+        Effect.tapError((failure) =>
+          Predicate.isTagged(failure.cause, "ResearchReportConflict")
+            ? discardArtifact(ports, retained)
+            : Effect.void,
+        ),
+      );
       yield* account(ports, contentId);
-      yield* ports.recordUsage(claimed, artifact, synthesis.companyCost, computed.cost);
-      const completed = yield* completeSuccess(ports, claimed, contentId);
+      yield* ports.recordRenderCost(completed, computed.cost);
+      yield* ports.recordUsage(completed, artifact, synthesis.companyCost, computed.cost);
       return { artifact, report: completed };
     }).pipe(Effect.result);
     if (cleanupRequired) yield* cleanup(ports, contentId);
@@ -465,6 +478,15 @@ const cleanup = (ports: PortInterface, contentId: ContentId) =>
     .pipe(
       Effect.mapError((cause) =>
         unavailable("cleanup", "Disposable report compute cannot be released", cause),
+      ),
+    );
+
+const discardArtifact = (ports: PortInterface, retained: StoredArtifactMetadata) =>
+  ports.artifacts
+    .delete(retained)
+    .pipe(
+      Effect.mapError((cause) =>
+        unavailable("cleanup", "The canceled report artifact could not be removed", cause),
       ),
     );
 

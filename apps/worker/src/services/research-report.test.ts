@@ -354,7 +354,7 @@ it.effect("terminates both hosts even when the mandatory terminal follow-up need
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
-it.effect("publication wins the cancellation race and terminal reasons replay exactly", () => {
+it.effect("cancellation wins after artifact retention but before terminal publication", () => {
   const fixture = makeFixture();
   return Effect.gen(function* () {
     yield* TestClock.setTime(now.getTime());
@@ -375,11 +375,39 @@ it.effect("publication wins the cancellation race and terminal reasons replay ex
     expect(yield* reports.resumePublication(payload)).toMatchObject({ state: "artifact_stored" });
     const canceled = yield* reports.cancel(started.report.workflowId, userId);
     expect(canceled).toMatchObject({
-      _tag: "PublicationCommitted",
-      report: { state: "artifact_stored" },
+      _tag: "CancelRequested",
+      report: { safeFailureCode: "cancel-requested", state: "canceled" },
     });
-    const completed = yield* reports.completeSuccess(payload, "document:workflow:race");
+    expect(fixture.calls).toContain("artifact.discard");
+    const completed = yield* reports
+      .completeSuccess(payload, "document:workflow:race")
+      .pipe(Effect.result);
+    expect(completed).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
+it.effect("terminal success wins a later cancellation", () => {
+  const fixture = makeFixture();
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(now.getTime());
+    const reports = yield* ResearchReport.Service;
+    const started = yield* reports.start(startInput());
+    const payload = ResearchReport.WorkflowPayload.make({
+      inputDigest: started.report.inputDigest,
+      workflowId: started.report.workflowId,
+    });
+    yield* reports.beginExecution(payload);
+    yield* reports.commitSources(
+      payload,
+      "users/research-user/research-report/manifests/success-race.json",
+      ResearchReport.InputDigest.make("b".repeat(64)),
+    );
+    yield* reports.claimArtifactPublication(payload, "document:workflow:success-race");
+    const completed = yield* reports.completeSuccess(payload, "document:workflow:success-race");
     expect(completed).toMatchObject({ safeFailureCode: null, state: "success" });
+    const canceled = yield* reports.cancel(started.report.workflowId, userId);
+    expect(canceled).toMatchObject({ _tag: "Terminal", report: { state: "success" } });
+    expect(fixture.calls).not.toContain("artifact.discard");
 
     const terminalConflict = yield* reports
       .finishFailure(payload, "changed-after-publication")
@@ -486,6 +514,34 @@ it.effect("keeps retained launch-v1 Free admission fail closed", () => {
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
+for (const [plan, activeWorkflowLimit] of [
+  ["free", 3n],
+  ["adventurer", 25n],
+] as const) {
+  it.effect(`admits ${plan} Research Reports under retained shared Usage policy`, () => {
+    const fixture = makeFixture();
+
+    return Effect.gen(function* () {
+      const reports = yield* ResearchReport.Service;
+      const started = yield* reports.start(
+        startInput({
+          authorization: authorization(plan, PlanPolicyVersion.make("shared-usage-v1")),
+        }),
+      );
+
+      expect(started).toMatchObject({
+        _tag: "Started",
+        report: {
+          modelAccessPolicyVersion: "shared-usage-v1",
+          planPolicyVersion: "shared-usage-v1",
+          state: "accepted",
+        },
+      });
+      expect(fixture.activeWorkflowLimits).toEqual([activeWorkflowLimit]);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+}
+
 const startInput = (overrides: Partial<ResearchReport.StartInput> = {}) => ({
   actionId,
   agentId,
@@ -496,13 +552,16 @@ const startInput = (overrides: Partial<ResearchReport.StartInput> = {}) => ({
   ...overrides,
 });
 
-const authorization = (plan: "adventurer" | "free"): AuthorizationContext => ({
+const authorization = (
+  plan: "adventurer" | "free",
+  planPolicyVersion = PlanPolicyVersion.make("launch-v1"),
+): AuthorizationContext => ({
   allowance: {
     _tag: "Metered",
     allowancePeriodId: AllowancePeriodId.make("research-period"),
     endsAt: periodEndsAt,
     plan,
-    planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+    planPolicyVersion,
     startsAt: now,
     usage: [],
   },
@@ -524,7 +583,7 @@ const authorization = (plan: "adventurer" | "free"): AuthorizationContext => ({
   },
   requestVendorUsdMicros: 0n,
   resourceOwnerUserId: userId,
-  subscription: { plan, planPolicyVersion: PlanPolicyVersion.make("launch-v1") },
+  subscription: { plan, planPolicyVersion },
   user: { _tag: "ActiveUser", userId },
 });
 
@@ -541,6 +600,7 @@ const makeFixture = (
   let remainingCreateFailures = options.failCreates ?? 0;
   let remainingFollowUpFailures = options.failTerminalFollowUps ?? 0;
   const calls = new Array<string>();
+  const activeWorkflowLimits = new Array<bigint>();
   const instances = new Array<ResearchReport.CloudflareInstanceId>();
   const port = ResearchReport.Port.of({
     currentAuthorization: (report) =>
@@ -555,6 +615,12 @@ const makeFixture = (
             }
           : authorization(options.currentPlan ?? "adventurer").authority,
       }),
+    discardPendingArtifact: (report) =>
+      report.artifactContentId === null
+        ? Effect.void
+        : Effect.sync(() => {
+            calls.push("artifact.discard");
+          }),
     providerAvailable: Effect.succeed(true),
     commitTerminalFollowUp: () =>
       Effect.gen(function* () {
@@ -574,9 +640,10 @@ const makeFixture = (
         calls.push("account.workflowStart");
       }),
     persistence: {
-      admit: (record) =>
+      admit: (record, activeWorkflowLimit) =>
         Effect.sync(() => {
           calls.push("persist.admit");
+          activeWorkflowLimits.push(activeWorkflowLimit);
           if (stored !== null) return { _tag: "Existing" as const, report: stored };
           stored = record;
           return { _tag: "Created" as const, report: record };
@@ -651,6 +718,12 @@ const makeFixture = (
           if (stored.inputDigest !== inputDigest || stored.artifactContentId !== contentId) {
             return yield* new ResearchReport.Conflict({ message: "changed artifact", workflowId });
           }
+          if (stored.state !== "artifact_stored") {
+            return yield* new ResearchReport.Conflict({
+              message: "publication race lost",
+              workflowId,
+            });
+          }
           stored = { ...stored, state: "success", terminalAt: completedAt };
           return stored;
         }),
@@ -667,10 +740,7 @@ const makeFixture = (
               workflowId,
             });
           }
-          if (
-            stored.state === "artifact_stored" ||
-            ResearchReport.terminalStates.has(stored.state)
-          ) {
+          if (ResearchReport.terminalStates.has(stored.state)) {
             return yield* new ResearchReport.Conflict({
               message: "terminal race lost",
               workflowId,
@@ -685,8 +755,7 @@ const makeFixture = (
           if (stored === null || stored.userId !== requestedUserId) {
             return yield* new ResearchReport.NotFound({ workflowId });
           }
-          if (ResearchReport.terminalStates.has(stored.state) || stored.state === "artifact_stored")
-            return stored;
+          if (ResearchReport.terminalStates.has(stored.state)) return stored;
           stored =
             stored.state === "cancel_requested"
               ? stored
@@ -719,6 +788,7 @@ const makeFixture = (
     },
   });
   return {
+    activeWorkflowLimits,
     calls,
     instances,
     port,

@@ -18,7 +18,10 @@ import { AuthSessionId } from "../domain/auth-session";
 import { currentCapabilityCatalog } from "../domain/capability-catalog";
 import { ContentId } from "../domain/client-content";
 import { DocumentArtifact } from "../domain/document-artifact";
-import { launchModelAccessPolicy } from "../domain/model-access-policy";
+import {
+  launchModelAccessPolicy,
+  sharedUsageModelAccessPolicy,
+} from "../domain/model-access-policy";
 import { currentResourcePriceVersion } from "../domain/usage";
 import type { UsageEvent } from "../domain/usage-event";
 import { ResearchReport } from "./research-report";
@@ -58,7 +61,7 @@ it.effect(
       expect(fixture.usageEvents).toHaveLength(0);
 
       const conflict = yield* accounting
-        .recordSynthesisCost(report, cost(20_001n))
+        .recordUsefulReport(report, artifact, cost(20_001n), renderCost)
         .pipe(Effect.result);
       expect(conflict._tag).toBe("Failure");
     });
@@ -98,6 +101,36 @@ it.effect("keeps shared Usage as one final useful event and never writes launch 
     expect(conflict._tag).toBe("Failure");
   });
 });
+
+it.effect(
+  "retains failed and canceled provider attempts as Company Cost without User usage",
+  () => {
+    const fixture = makeFixture();
+    const accounting = ResearchReportAccounting.make(fixture.port);
+    const attempted = [
+      {
+        ...makeReport("launch-v1"),
+        safeFailureCode: "invalid-synthesis-evidence",
+        state: "failure" as const,
+      },
+      {
+        ...makeReport("launch-v1"),
+        safeFailureCode: "authority-ended",
+        state: "canceled" as const,
+      },
+    ];
+
+    return Effect.gen(function* () {
+      for (const report of attempted) {
+        yield* accounting.recordSynthesisCost(report, cost(20_000n));
+        yield* accounting.recordRenderCost(report, render(10_000n));
+      }
+
+      expect(fixture.legacyFacts).toEqual([]);
+      expect(fixture.usageEvents).toEqual([]);
+    });
+  },
+);
 
 const makeFixture = () => {
   const legacy = new Map<string, string>();
@@ -164,10 +197,11 @@ const makeReport = (policy: "launch-v1" | "shared-usage-v1"): ResearchReport.Rec
     deadlineAt: new Date("2026-08-27T13:00:00.000Z"),
     inputDigest: ResearchReport.InputDigest.make("a".repeat(64)),
     manifestVersion: policy === "launch-v1" ? null : "composio-manifest-v1",
-    modelAccessPolicyVersion: ModelAccessPolicyVersion.make(
-      launchModelAccessPolicy.planPolicyVersion,
-    ),
-    modelRoute: launchModelAccessPolicy.plans.free.route,
+    modelAccessPolicyVersion: ModelAccessPolicyVersion.make(policy),
+    modelRoute:
+      policy === "launch-v1"
+        ? launchModelAccessPolicy.plans.free.route
+        : sharedUsageModelAccessPolicy.plans.free.route,
     originatingAuthority: {
       _tag: "AuthSession",
       authSessionId: AuthSessionId.make("accounting-auth-session"),
@@ -184,9 +218,9 @@ const makeReport = (policy: "launch-v1" | "shared-usage-v1"): ResearchReport.Rec
     sessionId: SessionId.make("accounting-session"),
     sourceManifestKey: "users/accounting/manifest.json",
     sourceManifestDigest: ResearchReport.InputDigest.make("e".repeat(64)),
-    state: "artifact_stored",
+    state: "success",
     startedAt: new Date("2026-08-27T12:00:01.000Z"),
-    terminalAt: null,
+    terminalAt: new Date("2026-08-27T12:20:01.000Z"),
     userId: UserId.make("accounting-user"),
     workflowId,
   };

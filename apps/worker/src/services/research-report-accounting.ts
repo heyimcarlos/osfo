@@ -55,41 +55,56 @@ export interface Interface {
 
 /** Interpret retained launch and inactive shared-Usage accounting without mixing their ledgers. */
 export const make = (port: Port): Interface => ({
-  recordRenderCost: (report, cost) => {
-    if (
-      report.planPolicyVersion !== "launch-v1" ||
-      cost._tag !== "Incurred" ||
-      cost.usdMicros === 0n
-    ) {
-      return Effect.void;
-    }
-    return recordLegacy(
-      port,
-      report,
-      { sourceId: cost.providerOperationId, sourceType: "documentProviderOperation" },
-      [{ allowanceKind: "vendorUsdMicros", basis: cost.basis, quantity: cost.usdMicros }],
-      "renderCost",
-    );
-  },
-  recordSynthesisCost: (report, cost) => {
-    if (report.planPolicyVersion !== "launch-v1" || cost.usdMicros === 0n) return Effect.void;
-    return recordLegacy(
-      port,
-      report,
-      { sourceId: cost.providerOperationId, sourceType: "researchModelOperation" },
-      [{ allowanceKind: "vendorUsdMicros", basis: cost.basis, quantity: cost.usdMicros }],
-      "synthesisCost",
-    );
-  },
+  // Provider-owned durable evidence retains Company Cost. User allowance changes only after useful success.
+  recordRenderCost: () => Effect.void,
+  recordSynthesisCost: () => Effect.void,
   recordUsefulReport: (report, artifact, synthesisCost, renderCost) => {
     if (report.planPolicyVersion === "launch-v1") {
-      return recordLegacy(
-        port,
-        report,
-        { sourceId: report.workflowId, sourceType: "workflow" },
-        [{ allowanceKind: "researchReports", basis: "observed", quantity: 1n }],
-        "usefulReport",
-      );
+      return Effect.gen(function* () {
+        if (synthesisCost.usdMicros > 0n) {
+          yield* recordLegacy(
+            port,
+            report,
+            {
+              sourceId: synthesisCost.providerOperationId,
+              sourceType: "researchModelOperation",
+            },
+            [
+              {
+                allowanceKind: "vendorUsdMicros",
+                basis: synthesisCost.basis,
+                quantity: synthesisCost.usdMicros,
+              },
+            ],
+            "synthesisCost",
+          );
+        }
+        if (renderCost._tag === "Incurred" && renderCost.usdMicros > 0n) {
+          yield* recordLegacy(
+            port,
+            report,
+            {
+              sourceId: renderCost.providerOperationId,
+              sourceType: "documentProviderOperation",
+            },
+            [
+              {
+                allowanceKind: "vendorUsdMicros",
+                basis: renderCost.basis,
+                quantity: renderCost.usdMicros,
+              },
+            ],
+            "renderCost",
+          );
+        }
+        yield* recordLegacy(
+          port,
+          report,
+          { sourceId: report.workflowId, sourceType: "workflow" },
+          [{ allowanceKind: "researchReports", basis: "observed", quantity: 1n }],
+          "usefulReport",
+        );
+      });
     }
     if (report.artifactStoredAt === null) {
       return Effect.fail(
