@@ -8,7 +8,7 @@ import { ResearchReportComposition } from "./research-report";
 const instanceId = ResearchReport.CloudflareInstanceId.make("research-stable-instance");
 const payload = ResearchReport.WorkflowPayload.make({
   inputDigest: ResearchReport.InputDigest.make("a".repeat(64)),
-  workflowId: ResearchReport.WorkflowId.make(instanceId),
+  workflowId: ResearchReport.WorkflowId.make("research:stable-workflow"),
 });
 
 it.effect("treats a failed create as accepted only when the stable instance exists", () => {
