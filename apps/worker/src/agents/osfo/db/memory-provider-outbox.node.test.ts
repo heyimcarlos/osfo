@@ -125,8 +125,8 @@ it.effect("activates an Agent that slept before the conversation processing migr
       const result = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
       expect(result).toEqual({
-        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17],
-        currentVersion: 17,
+        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+        currentVersion: 18,
       });
       expect(
         database

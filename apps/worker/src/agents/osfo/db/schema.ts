@@ -14,12 +14,16 @@ import type {
   AgentInitializationId,
   AllowancePeriodId,
   AssistantMessageId,
+  ChannelLinkId,
   ConversationRouteId,
+  Plan,
+  PlanPolicyVersion,
   SessionId,
   ThinkSubmissionId,
   ThinkRequestId,
   UserId,
 } from "../../../domain";
+import type { ActionId } from "../../../domain/action-execution";
 import type { ModelCallAttemptId } from "../../../domain/model-call-attempt";
 import type { FileDigest, FileMediaType } from "../../../domain/file-content";
 import type {
@@ -38,6 +42,7 @@ import type {
   SkillLearningModelAttemptId,
 } from "../../../domain/personal-skill";
 import type { DbTimestamp } from "../../../db";
+import type { ReminderId } from "../reminders";
 
 const agentId = customType<{ data: AgentId; driverData: string }>({
   dataType: () => "text",
@@ -105,6 +110,17 @@ const skillLearningModelAttemptId = customType<{
   data: SkillLearningModelAttemptId;
   driverData: string;
 }>({ dataType: () => "text" });
+const reminderId = customType<{ data: ReminderId; driverData: string }>({
+  dataType: () => "text",
+});
+const actionId = customType<{ data: ActionId; driverData: string }>({ dataType: () => "text" });
+const channelLinkId = customType<{ data: ChannelLinkId; driverData: string }>({
+  dataType: () => "text",
+});
+const planPolicyVersion = customType<{ data: PlanPolicyVersion; driverData: string }>({
+  dataType: () => "text",
+});
+const plan = customType<{ data: Plan; driverData: string }>({ dataType: () => "text" });
 
 /** Ordered provider work retained until its external effect is confirmed. */
 export const memoryProviderOutbox = sqliteTable(
@@ -550,6 +566,132 @@ export const webResults = sqliteTable(
       table.owner_user_id,
       table.retained_at_epoch_millis,
       table.result_set_id,
+    ),
+  ],
+);
+
+/** Complete private Reminder authority owned by one User Agent. */
+export const reminders = sqliteTable(
+  "osfo_reminders",
+  {
+    body: text().notNull(),
+    created_at: timestamp().notNull(),
+    creation_action_id: actionId().notNull().unique(),
+    first_due_at: timestamp().notNull(),
+    interval_milliseconds: integer(),
+    next_due_at: timestamp(),
+    original_period_id: allowancePeriodId().notNull(),
+    owner_user_id: userId().notNull(),
+    plan: plan().notNull(),
+    policy_version: planPolicyVersion().notNull(),
+    reminder_id: reminderId().primaryKey(),
+    revision: integer().notNull(),
+    schedule_kind: text({ enum: ["oneTime", "recurring"] }).notNull(),
+    scheduler_id: text(),
+    state: text({ enum: ["active", "paused", "canceled", "completed"] }).notNull(),
+    updated_at: timestamp().notNull(),
+  },
+  (table) => [
+    check("osfo_reminder_revision", sql`${table.revision} > 0`),
+    check("osfo_reminder_schedule_kind", sql`${table.schedule_kind} IN ('oneTime', 'recurring')`),
+    check(
+      "osfo_reminder_schedule_shape",
+      sql`(${table.schedule_kind} = 'oneTime' AND ${table.interval_milliseconds} IS NULL) OR (${table.schedule_kind} = 'recurring' AND ${table.interval_milliseconds} >= 86400000)`,
+    ),
+    check(
+      "osfo_reminder_state",
+      sql`${table.state} IN ('active', 'paused', 'canceled', 'completed')`,
+    ),
+    check(
+      "osfo_reminder_due_state",
+      sql`(${table.state} IN ('active', 'paused') AND ${table.next_due_at} IS NOT NULL) OR (${table.state} IN ('canceled', 'completed') AND ${table.next_due_at} IS NULL)`,
+    ),
+    index("osfo_reminders_by_owner_state").on(
+      table.owner_user_id,
+      table.state,
+      table.created_at,
+      table.reminder_id,
+    ),
+  ],
+);
+
+/** Exact approved Reminder mutations retained for idempotent Action replay. */
+export const reminderActions = sqliteTable(
+  "osfo_reminder_actions",
+  {
+    action_id: actionId().primaryKey(),
+    fingerprint_json: text().notNull(),
+    reminder_id: reminderId()
+      .notNull()
+      .references(() => reminders.reminder_id, { onDelete: "cascade", onUpdate: "restrict" }),
+    revision: integer().notNull(),
+  },
+  (table) => [
+    check("osfo_reminder_action_revision", sql`${table.revision} > 0`),
+    index("osfo_reminder_actions_by_reminder").on(table.reminder_id, table.revision),
+  ],
+);
+
+/** Durable occurrence ledger committed before accounting or Wake-up effects. */
+export const reminderOccurrences = sqliteTable(
+  "osfo_reminder_occurrences",
+  {
+    accounting_recorded_at: timestamp(),
+    blocked_at: timestamp(),
+    body_snapshot: text().notNull(),
+    canceled_at: timestamp(),
+    channel_link_id: channelLinkId(),
+    committed_at: timestamp(),
+    disposition_reason: text(),
+    exposed_at: timestamp(),
+    nominal_due_at: timestamp().notNull(),
+    original_period_id: allowancePeriodId().notNull(),
+    owner_user_id: userId().notNull(),
+    policy_version: planPolicyVersion().notNull(),
+    reminder_id: reminderId()
+      .notNull()
+      .references(() => reminders.reminder_id, { onDelete: "cascade", onUpdate: "restrict" }),
+    revision: integer().notNull(),
+    schedule_kind: text({ enum: ["oneTime", "recurring"] }).notNull(),
+    source_identity: text().notNull().unique(),
+    source_revoked_at: timestamp(),
+    think_presented_at: timestamp(),
+    think_submission_id: text(),
+    wakeup_prompted_at: timestamp(),
+    wakeup_requested_at: timestamp(),
+  },
+  (table) => [
+    check("osfo_reminder_occurrence_revision", sql`${table.revision} > 0`),
+    check(
+      "osfo_reminder_occurrence_schedule_kind",
+      sql`${table.schedule_kind} IN ('oneTime', 'recurring')`,
+    ),
+    check(
+      "osfo_reminder_occurrence_disposition",
+      sql`((${table.committed_at} IS NOT NULL) + (${table.blocked_at} IS NOT NULL) + (${table.canceled_at} IS NOT NULL)) = 1`,
+    ),
+    check(
+      "osfo_reminder_occurrence_delivery",
+      sql`(${table.committed_at} IS NOT NULL AND ${table.channel_link_id} IS NOT NULL) OR (${table.committed_at} IS NULL AND ${table.channel_link_id} IS NULL AND ${table.accounting_recorded_at} IS NULL AND ${table.wakeup_requested_at} IS NULL AND ${table.wakeup_prompted_at} IS NULL AND ${table.exposed_at} IS NULL AND ${table.think_presented_at} IS NULL)`,
+    ),
+    check(
+      "osfo_reminder_occurrence_think_presentation",
+      sql`(${table.think_presented_at} IS NULL AND ${table.think_submission_id} IS NULL) OR (${table.think_presented_at} IS NOT NULL AND ${table.think_submission_id} IS NOT NULL)`,
+    ),
+    check(
+      "osfo_reminder_occurrence_source_revocation",
+      sql`${table.source_revoked_at} IS NULL OR ${table.committed_at} IS NOT NULL`,
+    ),
+    uniqueIndex("osfo_reminder_occurrence_identity").on(
+      table.reminder_id,
+      table.revision,
+      table.nominal_due_at,
+    ),
+    index("osfo_reminder_occurrences_pending_source").on(
+      table.owner_user_id,
+      table.exposed_at,
+      table.committed_at,
+      table.source_identity,
     ),
   ],
 );

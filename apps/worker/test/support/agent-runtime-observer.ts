@@ -21,6 +21,9 @@ interface DirectoryObserver {
   readonly listAgents: () => Promise<
     ReadonlyArray<{ readonly className: string; readonly name: string }>
   >;
+  readonly pendingReminderWakeUpSources: (
+    userId: string,
+  ) => Promise<ReadonlyArray<{ readonly committedAt: string; readonly sourceIdentity: string }>>;
 }
 
 interface ObserverBindings {
@@ -42,9 +45,14 @@ const worker = {
       return Response.json({ error: "Invalid Agent ID" }, { status: 400 });
     }
     const directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
-    const [inspection, agents] = await Promise.all([
+    const userId = url.searchParams.get("userId");
+    if (userId !== null && !/^[A-Za-z0-9_-]+$/u.test(userId)) {
+      return Response.json({ error: "Invalid User ID" }, { status: 400 });
+    }
+    const [inspection, agents, reminderSources] = await Promise.all([
       directory.inspectAgent(agentId),
       directory.listAgents(),
+      userId === null ? Promise.resolve([]) : directory.pendingReminderWakeUpSources(userId),
     ]);
     return Response.json({
       agentId,
@@ -52,6 +60,7 @@ const worker = {
       registered: agents.some(
         ({ className, name }) => className === "OsfoAgent" && name === agentId,
       ),
+      reminderSources,
     });
   },
 } satisfies ExportedHandler<ObserverBindings>;

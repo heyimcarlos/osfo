@@ -125,7 +125,10 @@ export const AuthorizationOperation = Schema.Union([
     change: Schema.Literals([
       "oneTimeCreate",
       "recurringCreate",
+      "oneTimeMaterialChange",
       "recurringMaterialChange",
+      "oneTimeReactivate",
+      "recurringReactivate",
       "cancel",
     ]),
     kind: Schema.Literal("reminder.manage"),

@@ -3,7 +3,7 @@ import { Think, type StreamCallback, type ThinkChannels } from "@cloudflare/thin
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import type { UIMessage } from "ai";
 import type { SkillChangeRequest, SkillDeletionRequest } from "@osfo/api";
-import { Effect, Layer, Option, Redacted } from "effect";
+import { Effect, Layer, Option, Redacted, Schema } from "effect";
 
 import { loadConfig } from "../../config";
 import { Db } from "../../db";
@@ -124,6 +124,29 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
           routeId: result.routeId,
         }
       : null;
+  }
+
+  /** Inspect one committed Reminder source through its owning User Agent. */
+  async inspectReminderWakeUpSource(userId: string, sourceIdentity: string) {
+    const agent = await this.#agentForUser(userId);
+    return agent === null ? null : agent.inspectReminderWakeUpSource(userId, sourceIdentity);
+  }
+
+  /** List Reminder source identities awaiting the User's normal inbound turn. */
+  async pendingReminderWakeUpSources(userId: string) {
+    const agent = await this.#agentForUser(userId);
+    return agent === null ? [] : agent.pendingReminderWakeUpSources(userId);
+  }
+
+  /** Commit an exact Reminder source exposure snapshot in its owning User Agent. */
+  async exposeReminderWakeUpSources(
+    userId: string,
+    // oxlint-disable-next-line osfo/no-unknown-parameters -- The owning Agent schema-decodes this Directory RPC payload before use.
+    committed: unknown,
+  ): Promise<void> {
+    const agent = await this.#agentForUser(userId);
+    if (agent === null) return;
+    await agent.exposeReminderWakeUpSources(userId, committed);
   }
 
   /** List current personal Skills through one registered User Agent. */
@@ -252,6 +275,21 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     if (!this.hasSubAgent(OsfoAgent, agentId)) return;
     const agent = await this.subAgent(OsfoAgent, agentId);
     await agent.quiesceAccountDeletion(userId);
+  }
+
+  async #agentForUser(encodedUserId: string) {
+    const userId = await Effect.runPromise(Schema.decodeEffect(UserId)(encodedUserId));
+    const route = await Effect.runPromise(
+      Effect.scoped(
+        AgentDirectory.Service.pipe(
+          Effect.flatMap((directory) => directory.resolve(userId)),
+          Effect.option,
+          Effect.provide(directoryMessengerLayer(this.env)),
+        ),
+      ),
+    );
+    if (Option.isNone(route) || !this.hasSubAgent(OsfoAgent, route.value.agentId)) return null;
+    return this.subAgent(OsfoAgent, route.value.agentId);
   }
 
   #resolveMessengerAddress = Effect.fn("OsfoDirectory.resolveMessengerAddress")(

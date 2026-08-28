@@ -256,6 +256,12 @@ it.effect("requires both task kind and task language before selecting a capabili
     const index = yield* Capabilities.make().eligibleIndex({
       ...baseInput,
       availableRequirements: [...baseInput.availableRequirements, "reminder-store"],
+      availableToolNames: [
+        ...baseInput.availableToolNames,
+        "osfoCancelReminder",
+        "osfoInspectReminder",
+        "osfoManageReminder",
+      ],
       plan: "free",
       taskDescription: "Create a reminder for tomorrow",
       taskKinds: ["reminder"],

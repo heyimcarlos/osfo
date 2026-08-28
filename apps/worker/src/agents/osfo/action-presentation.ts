@@ -1,6 +1,7 @@
 import { Effect, Option, Schema } from "effect";
 
 import { ActionId } from "../../domain/action-execution";
+import type { UserId } from "../../domain";
 import { ContentId } from "../../domain/client-content";
 import type { ActionPresentationPersistence } from "../../services/action-approvals";
 import { ApprovalPresentation } from "../../services/authorization";
@@ -26,6 +27,7 @@ import {
 } from "./think-action-approvals";
 import { personalSkillDeleteActionName, SkillDeleteInput } from "./personal-skill-tools";
 import type { IntegrationToolInput } from "./integration-tools";
+import { ReminderManageInput, reminderManageActionName } from "./reminder-tool-contracts";
 import {
   CalendarCreateEventInput,
   CalendarDeleteEventInput,
@@ -33,6 +35,8 @@ import {
   DriveDeliverArtifactInput,
   GmailMessageInput,
 } from "../../domain/integration-manifest";
+
+/* oxlint-disable eslint/no-underscore-dangle -- Registered Action inputs use their canonical _tag discriminator. */
 
 /** Name registered with Think for retained-document deletion. */
 export const documentDeleteActionName = "deleteDocument";
@@ -49,7 +53,11 @@ export type RetainedDocumentInput = typeof RetainedDocumentInput.Type;
 export const presentOsfoAction = Effect.fn("ActionPresentation.present")(function* (
   pending: PendingThinkAction,
   inspectCurrentCoreMemory?: Effect.Effect<CoreMemoryInspected, CoreMemoryUnavailable>,
+  ownerUserId?: UserId,
 ) {
+  if (pending.descriptor.action === reminderManageActionName) {
+    return yield* presentReminderManageAction(pending, ownerUserId);
+  }
   if (pending.descriptor.action === "osfoClearCoreMemory") {
     return yield* presentCoreMemoryClearAction(pending);
   }
@@ -88,6 +96,20 @@ export const presentOsfoAction = Effect.fn("ActionPresentation.present")(functio
     message: "The Action has no safe presentation projection",
   });
 });
+
+/** Verify every protected Reminder fact against the immutable approved projection. */
+export const hasExactReminderManageInput = (
+  presentation: ActionPresentation,
+  input: ReminderManageInput,
+  ownerUserId: UserId,
+  actionId: ActionId,
+): boolean =>
+  hasExactFields(
+    presentation,
+    "reminder.manage",
+    "osfo-reminder-manage-v1",
+    reminderPresentationFields(input, ownerUserId, actionId),
+  );
 
 const encodeActionPresentation = Schema.encodeSync(ActionPresentation);
 
@@ -319,6 +341,44 @@ const presentGmailSendAction = Effect.fn("ActionPresentation.presentGmailSend")(
     title: "Send Gmail message",
   });
 });
+
+const presentReminderManageAction = Effect.fn("ActionPresentation.presentReminderManage")(
+  function* (pending: PendingThinkAction, ownerUserId?: UserId) {
+    if (ownerUserId === undefined) {
+      return yield* new ActionPresentationUnavailable({
+        action: pending.descriptor.action,
+        message: "The Reminder owner cannot be bound to the presentation",
+      });
+    }
+    const input = yield* Schema.decodeUnknownEffect(ReminderManageInput)(
+      pending.descriptor.input,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "The Reminder input cannot be projected safely",
+          }),
+      ),
+    );
+    const actionId = ActionId.make(pending.descriptor.toolCallId);
+    return ActionPresentation.make({
+      actionDefinitionVersion: "osfo-reminder-manage-v1",
+      actionId,
+      consequences: [
+        input._tag.startsWith("Create")
+          ? "Create and activate this exact Reminder."
+          : "Replace the current Reminder facts and activate this exact revision.",
+        "At each due occurrence, ask the User to return through the fixed WhatsApp Wake-up template.",
+      ],
+      description: "Commit the exact private Reminder body and fixed schedule shown here.",
+      fields: reminderPresentationFields(input, ownerUserId, actionId),
+      operation: "reminder.manage",
+      presentationId: ActionPresentationId.make(pending.executionId),
+      title: input._tag.startsWith("Create") ? "Create Reminder" : "Change Reminder",
+    });
+  },
+);
 
 const presentCalendarUpdateAction = Effect.fn("ActionPresentation.presentCalendarUpdate")(
   function* (pending: PendingThinkAction) {
@@ -673,6 +733,40 @@ const driveDeliveryPresentationFields = (input: typeof DriveDeliverArtifactInput
   { label: "Bytes", name: "expectedBytes", value: String(input.expectedBytes) },
   { label: "Folder", name: "targetFolderId", value: input.targetFolderId ?? "My Drive" },
 ];
+
+const reminderPresentationFields = (
+  input: ReminderManageInput,
+  ownerUserId: UserId,
+  actionId: ActionId,
+) => {
+  const creating = input._tag === "CreateOneTime" || input._tag === "CreateRecurring";
+  const intervalMilliseconds = "intervalMilliseconds" in input ? input.intervalMilliseconds : null;
+  const reminderId = creating ? actionId : input.reminderId;
+  const expectedRevision = creating ? "none" : String(input.expectedRevision);
+  return [
+    { label: "User", name: "ownerUserId", value: ownerUserId },
+    { label: "Reminder", name: "reminderId", value: reminderId },
+    { label: "Body", name: "body", value: input.body },
+    {
+      label: "Schedule",
+      name: "scheduleKind",
+      value: intervalMilliseconds === null ? "oneTime" : "recurring",
+    },
+    { label: "First due", name: "firstDueAt", value: input.firstDueAt.toISOString() },
+    {
+      label: "Interval milliseconds",
+      name: "intervalMilliseconds",
+      value: intervalMilliseconds === null ? "none" : String(intervalMilliseconds),
+    },
+    { label: "Enabled", name: "enabled", value: "true" },
+    { label: "Expected revision", name: "expectedRevision", value: expectedRevision },
+    {
+      label: "Resulting revision",
+      name: "revision",
+      value: String(creating ? 1 : input.expectedRevision + 1),
+    },
+  ];
+};
 
 const presentationFieldValueLimit = 2_000;
 
