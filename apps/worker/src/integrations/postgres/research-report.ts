@@ -466,15 +466,68 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
       target: "publication_committed",
       workflowId,
     }),
-  completeSuccess: (workflowId, inputDigest, contentId, completedAt) =>
-    transitionArtifact(database, {
-      claimedAt: completedAt,
-      contentId,
-      inputDigest,
-      operation: "completeSuccess",
-      target: "success",
-      workflowId,
-    }),
+  enforceDeadline: (workflowId, inputDigest, checkedAt) =>
+    attempt("enforceDeadline", () =>
+      database.transaction(async (transaction) => {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${workflowId}, 0))`,
+        );
+        const [row] = await transaction
+          .select(rowSelection)
+          .from(researchReports)
+          .where(eq(researchReports.workflow_id, workflowId))
+          .for("update")
+          .limit(1);
+        if (row === undefined) return { _tag: "Missing" as const };
+        if (row.inputDigest !== inputDigest) return { _tag: "Conflict" as const };
+        if (
+          ResearchReport.terminalStates.has(ResearchReport.State.make(row.state)) ||
+          checkedAt.getTime() < row.deadlineAt.getTime()
+        ) {
+          return { _tag: "Found" as const, row };
+        }
+        const [updated] = await transaction
+          .update(researchReports)
+          .set({
+            safe_failure_code: "deadline-exceeded",
+            state: "canceled",
+            terminal_at: row.deadlineAt,
+            updated_at: checkedAt,
+          })
+          .where(
+            and(
+              eq(researchReports.workflow_id, workflowId),
+              eq(researchReports.input_digest, inputDigest),
+              inArray(researchReports.state, [
+                "admitted",
+                "accepted",
+                "running",
+                "sources_committed",
+                "artifact_stored",
+                "publication_committed",
+                "cancel_requested",
+              ]),
+            ),
+          )
+          .returning(rowSelection);
+        return updated === undefined
+          ? { _tag: "Conflict" as const }
+          : { _tag: "Found" as const, row: updated };
+      }),
+    ).pipe(
+      Effect.flatMap((outcome) =>
+        Effect.gen(function* () {
+          if (outcome._tag === "Missing") return yield* new ResearchReport.NotFound({ workflowId });
+          if (outcome._tag === "Conflict") {
+            return yield* new ResearchReport.Conflict({
+              message: "The Research Report deadline lost its exact product identity",
+              workflowId,
+            });
+          }
+          return yield* decodeRow(outcome.row);
+        }),
+      ),
+    ),
   finishTerminal: (workflowId, inputDigest, state, safeFailureCode, terminalAt) =>
     attempt("finishTerminal", () =>
       database.transaction(async (transaction) => {
@@ -601,11 +654,8 @@ const transitionArtifact = (
     readonly claimedAt: Date;
     readonly contentId: string;
     readonly inputDigest: ResearchReport.InputDigest;
-    readonly operation:
-      | "claimArtifactPublication"
-      | "commitArtifactPublication"
-      | "completeSuccess";
-    readonly target: "artifact_stored" | "publication_committed" | "success";
+    readonly operation: "claimArtifactPublication" | "commitArtifactPublication";
+    readonly target: "artifact_stored" | "publication_committed";
     readonly workflowId: ResearchReport.WorkflowId;
   },
 ) =>
@@ -685,25 +735,7 @@ const transitionArtifact = (
           ? { _tag: "Conflict" as const }
           : { _tag: "Found" as const, row: updated };
       }
-      if (row.state === "success") return { _tag: "Found" as const, row };
-      if (row.state !== "publication_committed" || row.artifactContentId !== input.contentId) {
-        return { _tag: "Conflict" as const };
-      }
-      const [updated] = await transaction
-        .update(researchReports)
-        .set({ state: "success", terminal_at: input.claimedAt, updated_at: input.claimedAt })
-        .where(
-          and(
-            eq(researchReports.workflow_id, input.workflowId),
-            eq(researchReports.input_digest, input.inputDigest),
-            eq(researchReports.artifact_content_id, input.contentId),
-            eq(researchReports.state, "publication_committed"),
-          ),
-        )
-        .returning(rowSelection);
-      return updated === undefined
-        ? { _tag: "Conflict" as const }
-        : { _tag: "Found" as const, row: updated };
+      return { _tag: "Conflict" as const };
     }),
   ).pipe(
     Effect.flatMap((outcome) =>
@@ -718,7 +750,7 @@ const transitionArtifact = (
                 ? "Artifact publication lost to cancellation or changed immutable facts"
                 : input.target === "publication_committed"
                   ? "Artifact publication commit lost to cancellation or changed immutable facts"
-                  : "Research Report success requires the exact committed publication",
+                  : "Artifact publication requires the exact retained artifact",
             workflowId: input.workflowId,
           });
         }

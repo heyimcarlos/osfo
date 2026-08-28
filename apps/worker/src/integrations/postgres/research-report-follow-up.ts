@@ -34,7 +34,6 @@ const milestoneLimit = 3;
 export const deadlineDisposition = (state: ResearchReport.State, now: Date, deadlineAt: Date) => {
   if (ResearchReport.terminalStates.has(state)) return "Terminal" as const;
   if (now.getTime() < deadlineAt.getTime()) return "NotDue" as const;
-  if (state === "publication_committed") return "PublicationPending" as const;
   return "Canceled" as const;
 };
 
@@ -136,7 +135,7 @@ export const make = (database: Database): ResearchReportFollowUp.PortInterface =
 
   const readReport = (
     workflowId: ResearchReport.WorkflowId,
-    result: "Canceled" | "NotDue" | "PublicationPending" | "Terminal",
+    result: "Canceled" | "NotDue" | "Terminal",
   ) =>
     reports.inspect(workflowId).pipe(
       Effect.flatMap((report) =>
@@ -387,7 +386,7 @@ export const make = (database: Database): ResearchReportFollowUp.PortInterface =
             .set({
               safe_failure_code: "deadline-exceeded",
               state: "canceled",
-              terminal_at: now,
+              terminal_at: row.deadlineAt,
               updated_at: now,
             })
             .where(eq(researchReports.workflow_id, payload.workflowId));

@@ -213,11 +213,10 @@ export interface PortInterface {
       contentId: string,
       committedAt: Date,
     ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
-    readonly completeSuccess: (
+    readonly enforceDeadline: (
       workflowId: WorkflowId,
       inputDigest: InputDigest,
-      contentId: string,
-      completedAt: Date,
+      checkedAt: Date,
     ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
     readonly finishTerminal: (
       workflowId: WorkflowId,
@@ -265,10 +264,6 @@ export interface Interface {
     payload: WorkflowPayload,
     contentId: string,
   ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
-  readonly completeSuccess: (
-    payload: WorkflowPayload,
-    contentId: string,
-  ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
   readonly finishCanceled: (
     payload: WorkflowPayload,
     safeFailureCode: string,
@@ -449,24 +444,19 @@ export const make = Effect.gen(function* () {
         workflowId: payload.workflowId,
       });
     }
-    // Publication owns company-continuity finalization after this durable boundary.
-    // Current User authority, cancellation, and the admission deadline no longer
-    // revoke the already-useful artifact while its accounting converges.
-    if (report.state === "publication_committed") return report;
     const context = yield* ports.currentAuthorization(report);
-    if (context.now.getTime() >= report.deadlineAt.getTime()) {
-      yield* ports.persistence.finishTerminal(
-        report.workflowId,
-        report.inputDigest,
-        "canceled",
-        "deadline-exceeded",
-        context.now,
-      );
+    const deadlineChecked = yield* ports.persistence.enforceDeadline(
+      report.workflowId,
+      report.inputDigest,
+      context.now,
+    );
+    if (deadlineChecked.state === "canceled") {
       return yield* new Conflict({
         message: "The Research Report deadline ended execution",
         workflowId: payload.workflowId,
       });
     }
+    if (report.state === "publication_committed") return deadlineChecked;
     yield* authorizeContinuation(report, context).pipe(
       Effect.catch((denied) =>
         ports.persistence
@@ -623,19 +613,6 @@ export const make = Effect.gen(function* () {
       );
     },
   );
-
-  const completeSuccess = Effect.fn("ResearchReport.completeSuccess")(function* (
-    payload: WorkflowPayload,
-    contentId: string,
-  ) {
-    const completedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-    return yield* ports.persistence.completeSuccess(
-      payload.workflowId,
-      payload.inputDigest,
-      contentId,
-      completedAt,
-    );
-  });
 
   const finishTerminal = (
     payload: WorkflowPayload,
@@ -867,7 +844,6 @@ export const make = Effect.gen(function* () {
     claimArtifactPublication,
     commitArtifactPublication,
     commitSources,
-    completeSuccess,
     inspect,
     finishCanceled: (payload, safeFailureCode) =>
       finishTerminal(payload, "canceled", safeFailureCode),

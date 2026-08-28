@@ -71,13 +71,6 @@ export interface PortInterface {
     ResearchReport.Record,
     ResearchReport.Conflict | Denied | ResearchReport.NotFound | ResearchReport.Unavailable
   >;
-  readonly completeSuccess: (
-    report: ResearchReport.Record,
-    contentId: ContentId,
-  ) => Effect.Effect<
-    ResearchReport.Record,
-    ResearchReport.Conflict | ResearchReport.NotFound | ResearchReport.Unavailable
-  >;
   readonly compute: DisposableCompute;
   readonly maximumComputeUsdMicros: bigint;
   readonly recordRenderCost: (
@@ -89,7 +82,7 @@ export interface PortInterface {
     artifact: DocumentArtifact.ArtifactRef,
     synthesisCost: ResearchSynthesis.CompanyCost,
     renderCost: CostEvidence,
-  ) => Effect.Effect<void, Unavailable>;
+  ) => Effect.Effect<ResearchReport.Record, Unavailable>;
   readonly validator: ArtifactValidator;
 }
 
@@ -98,6 +91,7 @@ export class Port extends Context.Service<Port, PortInterface>()(
 ) {}
 
 export interface Interface {
+  readonly discard: (report: ResearchReport.Record) => Effect.Effect<void, Unavailable>;
   readonly generate: (
     report: ResearchReport.Record,
     collection: ResearchCollector.Collection,
@@ -146,6 +140,36 @@ export const make = Effect.gen(function* () {
           unavailable("authorize", "Research Report authority ended", cause, "authorizationEnded"),
         ),
       );
+
+  const discard = Effect.fn("ResearchReportDocument.discard")(function* (
+    report: ResearchReport.Record,
+  ) {
+    const contentId = ContentId.make(`document:workflow:${report.workflowId}`);
+    const retained = yield* ports.artifacts
+      .inspect(contentId)
+      .pipe(
+        Effect.mapError((cause) =>
+          unavailable("inspect", "The canceled report artifact cannot be inspected", cause),
+        ),
+      );
+    if (retained !== null) {
+      const owner = DocumentArtifact.DocumentOwner.make({
+        _tag: "Workflow",
+        workflowId: report.workflowId,
+      });
+      if (retained.userId !== report.userId || !DocumentArtifact.sameOwner(retained.owner, owner)) {
+        return yield* unavailable(
+          "inspect",
+          "The canceled report artifact owns different immutable facts",
+          retained.owner,
+          "intentConflict",
+        );
+      }
+      yield* discardArtifact(ports, retained);
+    }
+    yield* cleanup(ports, contentId);
+    return undefined;
+  });
 
   const generate = Effect.fn("ResearchReportDocument.generate")(function* (
     admitted: ResearchReport.Record,
@@ -206,9 +230,22 @@ export const make = Effect.gen(function* () {
       );
       yield* account(ports, contentId);
       yield* ports.recordRenderCost(committed, existing.cost);
-      yield* ports.recordUsage(committed, existing.artifact, synthesis.companyCost, existing.cost);
-      const completed = yield* completeSuccess(ports, committed, contentId);
       yield* cleanup(ports, contentId);
+      const completed = yield* ports.recordUsage(
+        committed,
+        existing.artifact,
+        synthesis.companyCost,
+        existing.cost,
+      );
+      if (completed.state !== "success") {
+        yield* discardArtifact(ports, existing);
+        return yield* unavailable(
+          "recordUsage",
+          "Research Report publication lost to its deadline or deletion fence",
+          completed.state,
+          "authorizationEnded",
+        );
+      }
       return { artifact: existing.artifact, report: completed };
     }
 
@@ -343,8 +380,23 @@ export const make = Effect.gen(function* () {
       );
       yield* account(ports, contentId);
       yield* ports.recordRenderCost(committed, computed.cost);
-      yield* ports.recordUsage(committed, artifact, synthesis.companyCost, computed.cost);
-      const completed = yield* completeSuccess(ports, committed, contentId);
+      cleanupRequired = false;
+      yield* cleanup(ports, contentId);
+      const completed = yield* ports.recordUsage(
+        committed,
+        artifact,
+        synthesis.companyCost,
+        computed.cost,
+      );
+      if (completed.state !== "success") {
+        yield* discardArtifact(ports, retained);
+        return yield* unavailable(
+          "recordUsage",
+          "Research Report publication lost to its deadline or deletion fence",
+          completed.state,
+          "authorizationEnded",
+        );
+      }
       return { artifact, report: completed };
     }).pipe(Effect.result);
     if (cleanupRequired) yield* cleanup(ports, contentId);
@@ -352,7 +404,7 @@ export const make = Effect.gen(function* () {
     return generated.success;
   });
 
-  return Service.of({ generate });
+  return Service.of({ discard, generate });
 });
 
 export const layerWithoutDependencies = Layer.effect(Service, make);
@@ -458,19 +510,6 @@ const claimPublication = (
     .pipe(
       Effect.mapError((cause) =>
         unavailable("publish", "Artifact publication cannot be claimed", cause),
-      ),
-    );
-
-const completeSuccess = (
-  ports: PortInterface,
-  report: ResearchReport.Record,
-  contentId: ContentId,
-) =>
-  ports
-    .completeSuccess(report, contentId)
-    .pipe(
-      Effect.mapError((cause) =>
-        unavailable("publish", "Report success cannot be committed", cause),
       ),
     );
 

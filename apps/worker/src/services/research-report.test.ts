@@ -379,14 +379,13 @@ it.effect("cancellation wins after artifact retention but before terminal public
       report: { safeFailureCode: "cancel-requested", state: "canceled" },
     });
     expect(fixture.calls).toContain("artifact.discard");
-    const completed = yield* reports
-      .completeSuccess(payload, "document:workflow:race")
-      .pipe(Effect.result);
-    expect(completed).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
+    expect(yield* reports.resumePublication(payload).pipe(Effect.result)).toMatchObject({
+      failure: { _tag: "ResearchReportConflict" },
+    });
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
-it.effect("a durable publication commit wins a later cancellation and converges to success", () => {
+it.effect("a durable publication commit wins later User cancellation for bounded recovery", () => {
   const fixture = makeFixture();
   return Effect.gen(function* () {
     yield* TestClock.setTime(now.getTime());
@@ -420,10 +419,11 @@ it.effect("a durable publication commit wins a later cancellation and converges 
     expect(yield* reports.authorizeExecution(payload)).toMatchObject({
       state: "publication_committed",
     });
-    const completed = yield* reports.completeSuccess(payload, "document:workflow:success-race");
-    expect(completed).toMatchObject({ safeFailureCode: null, state: "success" });
-    const canceled = yield* reports.cancel(started.report.workflowId, userId);
-    expect(canceled).toMatchObject({ _tag: "Terminal", report: { state: "success" } });
+    const replay = yield* reports.cancel(started.report.workflowId, userId);
+    expect(replay).toMatchObject({
+      _tag: "PublicationCommitted",
+      report: { state: "publication_committed" },
+    });
     expect(fixture.calls).not.toContain("artifact.discard");
 
     const terminalConflict = yield* reports
@@ -749,19 +749,23 @@ const makeFixture = (
           };
           return stored;
         }),
-      completeSuccess: (workflowId, inputDigest, contentId, completedAt) =>
+      enforceDeadline: (workflowId, inputDigest, checkedAt) =>
         Effect.gen(function* () {
           if (stored === null) return yield* new ResearchReport.NotFound({ workflowId });
-          if (stored.inputDigest !== inputDigest || stored.artifactContentId !== contentId) {
-            return yield* new ResearchReport.Conflict({ message: "changed artifact", workflowId });
+          if (stored.inputDigest !== inputDigest) {
+            return yield* new ResearchReport.Conflict({ message: "changed digest", workflowId });
           }
-          if (stored.state !== "publication_committed") {
-            return yield* new ResearchReport.Conflict({
-              message: "publication race lost",
-              workflowId,
-            });
+          if (
+            !ResearchReport.terminalStates.has(stored.state) &&
+            checkedAt.getTime() >= stored.deadlineAt.getTime()
+          ) {
+            stored = {
+              ...stored,
+              safeFailureCode: "deadline-exceeded",
+              state: "canceled",
+              terminalAt: stored.deadlineAt,
+            };
           }
-          stored = { ...stored, state: "success", terminalAt: completedAt };
           return stored;
         }),
       finishTerminal: (workflowId, inputDigest, state, safeFailureCode, terminalAt) =>
@@ -780,6 +784,12 @@ const makeFixture = (
           if (ResearchReport.terminalStates.has(stored.state)) {
             return yield* new ResearchReport.Conflict({
               message: "terminal race lost",
+              workflowId,
+            });
+          }
+          if (stored.state === "publication_committed") {
+            return yield* new ResearchReport.Conflict({
+              message: "publication race lost",
               workflowId,
             });
           }

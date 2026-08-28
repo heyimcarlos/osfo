@@ -6,10 +6,10 @@ import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { ResearchReportComposition } from "../composition/research-report";
 import { decodeOsfoStage, type OsfoStage } from "../config";
 import { makeWorkflowRuntime } from "../layers";
-import { ResearchCollector } from "../services/research-collector";
 import { ResearchReport } from "../services/research-report";
 import { ResearchReportDocument } from "../services/research-report-document";
 import { ResearchReportFollowUp } from "../services/research-report-follow-up";
+import { settleDeadlineOutcome } from "./research-report-timer-outcome";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare WorkflowEntrypoint and WorkflowStep are Promise-only host APIs. */
 /* oxlint-disable eslint/no-underscore-dangle -- Effect and product outcomes use the canonical _tag discriminator. */
@@ -100,22 +100,16 @@ export class ResearchReportTimerWorkflow extends WorkflowEntrypoint<
     }
 
     await step.sleepUntil("wait for hard report deadline", schedule.deadlineAt);
-    let deadline = await step.do("enforce hard report deadline", () =>
+    const deadline = await step.do("enforce hard report deadline", () =>
       this.#run(event.instanceId, stage.value, (followUps) => followUps.enforceDeadline(payload)),
     );
-    if (deadline._tag === "PublicationPending") {
-      await step.do("finish claimed report publication", () =>
-        this.#recoverPublication(event.instanceId, stage.value, payload),
-      );
-      deadline = await step.do("confirm publication terminal outcome", () =>
-        this.#run(event.instanceId, stage.value, (followUps) => followUps.enforceDeadline(payload)),
-      );
-    }
-    const terminalFollowUp = await this.#claimAndSubmitTerminal(
-      step,
-      event.instanceId,
-      stage.value,
-      payload,
+    const terminalFollowUp = await settleDeadlineOutcome(
+      deadline,
+      (report) =>
+        step.do("discard canceled report publication", () =>
+          this.#discardPublication(event.instanceId, stage.value, report),
+        ),
+      () => this.#claimAndSubmitTerminal(step, event.instanceId, stage.value, payload),
     );
     return {
       deadline:
@@ -146,24 +140,15 @@ export class ResearchReportTimerWorkflow extends WorkflowEntrypoint<
     return "claimed";
   }
 
-  #recoverPublication(
-    instanceId: string,
-    stage: OsfoStage,
-    payload: ResearchReport.WorkflowPayload,
-  ) {
+  #discardPublication(instanceId: string, stage: OsfoStage, report: ResearchReport.Record) {
     return runInvocationEffect(
       makeWorkflowRuntime(instanceId, stage),
       ResearchReportComposition.executionEffect(
         ResearchReportComposition.bindingsFromEnv(this.env),
         Effect.gen(function* () {
-          const reports = yield* ResearchReport.Service;
-          const collector = yield* ResearchCollector.Service;
           const documents = yield* ResearchReportDocument.Service;
-          const publication = yield* reports.resumePublication(payload);
-          if (publication.state === "success") return { state: publication.state };
-          const collection = yield* collector.resumeCommitted(publication);
-          const completed = yield* documents.generate(publication, collection);
-          return { state: completed.report.state };
+          yield* documents.discard(report);
+          return { state: report.state };
         }).pipe(Effect.orDie),
       ),
     );

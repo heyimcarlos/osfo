@@ -2,8 +2,11 @@
 /* oxlint-disable effecttsgo/strict-effect-provide -- This integration test owns its isolated PostgreSQL-compatible database. */
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the @effect/vitest Effect callback. */
 /* oxlint-disable eslint/no-underscore-dangle -- Follow-up outcomes use Effect's canonical _tag discriminator. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/new-promise, effecttsgo/run-effect-inside-effect -- The test coordinates two real Drizzle transactions around one PostgreSQL advisory lock. */
+/* oxlint-disable effecttsgo/global-date-in-effect -- Fixed boundary offsets are deterministic product evidence. */
+/* oxlint-disable unicorn/consistent-function-scoping -- Each deferred resolver belongs to one isolated database race. */
 import { expect, it } from "@effect/vitest";
-import { allowancePeriods } from "@osfo/db/schema/allowances";
+import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
 import { users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import {
@@ -14,7 +17,7 @@ import {
 } from "@osfo/db/schema/research-reports";
 import { deletionCases } from "@osfo/db/schema/user-lifecycle";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Effect, Result } from "effect";
 
 import {
@@ -32,9 +35,11 @@ import { ActionId } from "../../domain/action-execution";
 import { AuthSessionId } from "../../domain/auth-session";
 import { ManagedModelRoute } from "../../domain/model-access-policy";
 import { ResearchReport } from "../../services/research-report";
+import type { UsefulReportAccounting } from "../../services/research-report-accounting";
 import { ResearchReportFollowUp } from "../../services/research-report-follow-up";
 import { ResearchReportFollowUpPostgres } from "./research-report-follow-up";
 import { ResearchReportPostgres } from "./research-report";
+import { ResearchReportPublicationPostgres } from "./research-report-publication";
 
 const admittedAt = new Date("2026-08-28T12:00:00.000Z");
 const periodEndsAt = new Date("2026-09-28T12:00:00.000Z");
@@ -132,15 +137,7 @@ it.effect("cancels a report after artifact retention and rejects late publicatio
       )
       .pipe(Effect.result);
     expect(lateCommit).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
-    const lateSuccess = yield* persistence
-      .completeSuccess(
-        retained.workflowId,
-        retained.inputDigest,
-        retained.artifactContentId ?? "missing",
-        deletionCompletedAt,
-      )
-      .pipe(Effect.result);
-    expect(lateSuccess).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
+    expect(yield* persistence.inspect(retained.workflowId)).toMatchObject({ state: "canceled" });
   }).pipe(Effect.scoped),
 );
 
@@ -187,12 +184,13 @@ it.effect("serializes publication commit against cancellation after artifact ret
     if (winner?.state === "publication_committed") {
       expect(publication).toMatchObject({ success: { state: "publication_committed" } });
       expect(cancellation).toMatchObject({ success: { state: "publication_committed" } });
-      const completed = yield* persistence.completeSuccess(
-        retained.workflowId,
-        retained.inputDigest,
+      const committed = winner;
+      const completed = yield* ResearchReportPublicationPostgres.complete(fixture.database, {
+        accounting: usefulAccounting(committed),
+        completedAt: deletionCompletedAt,
         contentId,
-        deletionCompletedAt,
-      );
+        report: committed,
+      });
       expect(completed).toMatchObject({ state: "success" });
     } else {
       expect(cancellation).toMatchObject({ success: { state: "canceled" } });
@@ -225,12 +223,23 @@ it.effect("claims terminal follow-up exactly once only after publication finaliz
     expect(yield* followUps.claimTerminal(payload, artifactStoredAt)).toEqual({
       _tag: "NotTerminal",
     });
-    yield* persistence.completeSuccess(
-      committed.workflowId,
-      committed.inputDigest,
+    const completed = yield* ResearchReportPublicationPostgres.complete(fixture.database, {
+      accounting: usefulAccounting(committed),
+      completedAt: deletionCompletedAt,
       contentId,
-      deletionCompletedAt,
-    );
+      report: committed,
+    });
+    const replayed = yield* ResearchReportPublicationPostgres.complete(fixture.database, {
+      accounting: usefulAccounting(committed),
+      completedAt: deletionCompletedAt,
+      contentId,
+      report: committed,
+    });
+    expect(completed).toMatchObject({ state: "success" });
+    expect(replayed).toMatchObject({ state: "success" });
+    expect(
+      yield* Effect.promise(() => usageForWorkflow(fixture.database, committed.workflowId)),
+    ).toHaveLength(1);
     const first = yield* followUps.claimTerminal(payload, deletionCompletedAt);
     const replay = yield* followUps.claimTerminal(payload, deletionCompletedAt);
     expect(first).toMatchObject({ _tag: "Claimed" });
@@ -240,6 +249,167 @@ it.effect("claims terminal follow-up exactly once only after publication finaliz
       notification: { notificationId: first.notification.notificationId },
     });
     expect(yield* Effect.promise(() => countRows(fixture.database))).toBe(1);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("cancels publication at the deadline without retaining useful User Usage", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedUser(fixture.database);
+    const persistence = ResearchReportPostgres.make(fixture.database);
+    const retained = yield* retainArtifact(persistence, "deadline-publication");
+    const contentId = retained.artifactContentId ?? "missing";
+    const committed = yield* persistence.commitArtifactPublication(
+      retained.workflowId,
+      retained.inputDigest,
+      contentId,
+      artifactStoredAt,
+    );
+
+    const completed = yield* ResearchReportPublicationPostgres.complete(fixture.database, {
+      accounting: usefulAccounting(committed),
+      completedAt: committed.deadlineAt,
+      contentId,
+      report: committed,
+    });
+
+    expect(completed).toMatchObject({
+      safeFailureCode: "deadline-exceeded",
+      state: "canceled",
+      terminalAt: committed.deadlineAt,
+    });
+    expect(
+      yield* Effect.promise(() => usageForWorkflow(fixture.database, committed.workflowId)),
+    ).toEqual([]);
+    const followUps = ResearchReportFollowUpPostgres.make(fixture.database);
+    const deadline = yield* followUps.enforceDeadline(
+      ResearchReport.WorkflowPayload.make({
+        inputDigest: committed.inputDigest,
+        workflowId: committed.workflowId,
+      }),
+      new Date(committed.deadlineAt.getTime() + 1),
+    );
+    expect(deadline).toMatchObject({ _tag: "Terminal", report: { state: "canceled" } });
+  }).pipe(Effect.scoped),
+);
+
+it.effect("rechecks the database clock after a publication lock wait crosses the deadline", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedUser(fixture.database);
+    const persistence = ResearchReportPostgres.make(fixture.database);
+    const retained = yield* retainArtifact(persistence, "lock-deadline-publication");
+    const contentId = retained.artifactContentId ?? "missing";
+    const committed = yield* persistence.commitArtifactPublication(
+      retained.workflowId,
+      retained.inputDigest,
+      contentId,
+      artifactStoredAt,
+    );
+    yield* Effect.promise(() =>
+      fixture.database
+        .update(researchReports)
+        .set({
+          accepted_at: sql`clock_timestamp() - interval '1 minute'`,
+          admitted_at: sql`clock_timestamp() - interval '1 hour'`,
+          artifact_stored_at: sql`clock_timestamp() - interval '1 minute'`,
+          deadline_at: sql`clock_timestamp() + interval '200 milliseconds'`,
+          publication_committed_at: sql`clock_timestamp() - interval '1 minute'`,
+          sources_committed_at: sql`clock_timestamp() - interval '1 minute'`,
+          started_at: sql`clock_timestamp() - interval '1 minute'`,
+          updated_at: sql`clock_timestamp()`,
+        })
+        .where(eq(researchReports.workflow_id, committed.workflowId)),
+    );
+    const locked = deferred();
+    const crossDeadline = deferred();
+    const blocker = fixture.database.transaction(async (transaction) => {
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`research-report:user:${userId}`}, 0))`,
+      );
+      locked.resolve();
+      await crossDeadline.promise;
+      await transaction.execute(sql`select pg_sleep(0.4)`);
+    });
+    yield* Effect.promise(() => locked.promise);
+    const completion = Effect.runPromise(
+      ResearchReportPublicationPostgres.complete(fixture.database, {
+        accounting: usefulAccounting(committed),
+        completedAt: artifactStoredAt,
+        contentId,
+        report: committed,
+      }),
+    );
+    crossDeadline.resolve();
+    yield* Effect.promise(() => blocker);
+    const completed = yield* Effect.promise(() => completion);
+
+    expect(completed).toMatchObject({ safeFailureCode: "deadline-exceeded", state: "canceled" });
+    expect(
+      yield* Effect.promise(() => usageForWorkflow(fixture.database, committed.workflowId)),
+    ).toEqual([]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("serializes useful Usage behind the deletion fence and leaves no late charge", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedUser(fixture.database);
+    const persistence = ResearchReportPostgres.make(fixture.database);
+    const retained = yield* retainArtifact(persistence, "deletion-publication");
+    const contentId = retained.artifactContentId ?? "missing";
+    const committed = yield* persistence.commitArtifactPublication(
+      retained.workflowId,
+      retained.inputDigest,
+      contentId,
+      artifactStoredAt,
+    );
+    yield* Effect.promise(() =>
+      fixture.database.insert(deletionCases).values({
+        approval_action_id: "delete-publication-action",
+        approval_presentation: "Delete Account",
+        deletion_case_id: "delete-publication-case",
+        reason: "User requested account deletion",
+        requested_by_user_id: userId,
+        user_id: userId,
+      }),
+    );
+    const locked = deferred();
+    const writeFence = deferred();
+    const fencing = fixture.database.transaction(async (transaction) => {
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`research-report:user:${userId}`}, 0))`,
+      );
+      locked.resolve();
+      await writeFence.promise;
+      await transaction
+        .update(deletionCases)
+        .set({ access_fenced_at: deletionCompletedAt })
+        .where(eq(deletionCases.deletion_case_id, "delete-publication-case"));
+    });
+    yield* Effect.promise(() => locked.promise);
+    const completion = Effect.runPromise(
+      ResearchReportPublicationPostgres.complete(fixture.database, {
+        accounting: usefulAccounting(committed),
+        completedAt: deletionCompletedAt,
+        contentId,
+        report: committed,
+      }),
+    );
+    writeFence.resolve();
+    yield* Effect.promise(() => fencing);
+    const completed = yield* Effect.promise(() => completion);
+
+    expect(completed).toMatchObject({ safeFailureCode: "account-deletion", state: "canceled" });
+    expect(
+      yield* Effect.promise(() => usageForWorkflow(fixture.database, committed.workflowId)),
+    ).toEqual([]);
   }).pipe(Effect.scoped),
 );
 
@@ -532,6 +702,29 @@ const countRows = (database: Parameters<typeof ResearchReportPostgres.make>[0]) 
     .from(researchReportNotifications)
     .then((rows) => rows.length);
 
+const usefulAccounting = (report: ResearchReport.Record): UsefulReportAccounting => ({
+  _tag: "Launch",
+  facts: [
+    {
+      items: [{ allowanceKind: "researchReports", basis: "observed", quantity: 1n }],
+      source: { sourceId: report.workflowId, sourceType: "workflow" },
+    },
+  ],
+});
+
+const usageForWorkflow = (
+  database: Parameters<typeof ResearchReportPostgres.make>[0],
+  workflowId: ResearchReport.WorkflowId,
+) => database.select().from(allowanceUsage).where(eq(allowanceUsage.source_id, workflowId));
+
+const deferred = () => {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((complete) => {
+    resolve = () => complete();
+  });
+  return { promise, resolve };
+};
+
 const record = (identity: string): ResearchReport.Record => {
   const workflowId = ResearchReport.WorkflowId.make(`research:${identity}`);
   return {
@@ -547,7 +740,7 @@ const record = (identity: string): ResearchReport.Record => {
     cancelRequestedAt: null,
     capabilityCatalogVersion: CapabilityCatalogVersion.make("governed-capabilities-v1"),
     cloudflareInstanceId: ResearchReport.CloudflareInstanceId.make(`research-${identity}`),
-    deadlineAt: new Date("2026-08-28T13:00:00.000Z"),
+    deadlineAt: new Date("2036-08-28T13:00:00.000Z"),
     inputDigest: ResearchReport.InputDigest.make((identity === "one" ? "a" : "b").repeat(64)),
     manifestVersion: null,
     modelAccessPolicyVersion: ModelAccessPolicyVersion.make("launch-v1"),

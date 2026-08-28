@@ -16,6 +16,7 @@ import { ResearchVerificationProvider } from "../integrations/cloudflare/researc
 import { ResearchCollectorPostgres } from "../integrations/postgres/research-collector";
 import { ResearchReportPostgres } from "../integrations/postgres/research-report";
 import { ResearchReportFollowUpPostgres } from "../integrations/postgres/research-report-follow-up";
+import { ResearchReportPublicationPostgres } from "../integrations/postgres/research-report-publication";
 import { ResearchSynthesisPostgres } from "../integrations/postgres/research-synthesis";
 import { ResearchCollector } from "../services/research-collector";
 import { Allowances } from "../services/allowances";
@@ -235,8 +236,6 @@ export const executionEffect = <Value>(
           reports.claimArtifactPublication(payloadFor(report), contentId),
         commitPublication: (report, contentId) =>
           reports.commitArtifactPublication(payloadFor(report), contentId),
-        completeSuccess: (report, contentId) =>
-          reports.completeSuccess(payloadFor(report), contentId),
         compute: DocumentCompute.make(
           env.DOCUMENT_SANDBOX,
           env.ARTIFACTS,
@@ -396,9 +395,21 @@ const makeTerminalFollowUpCommitter =
 const makeUsageRecorder =
   (database: Database): ResearchReportDocument.PortInterface["recordUsage"] =>
   (report, artifact, synthesisCost, renderCost) =>
-    makeAccounting(database)
-      .recordUsefulReport(report, artifact, synthesisCost, renderCost)
-      .pipe(Effect.mapError(documentAccountingUnavailable));
+    Effect.gen(function* () {
+      const accounting = yield* ResearchReportAccounting.usefulReportAccountingFor(
+        report,
+        artifact,
+        synthesisCost,
+        renderCost,
+      );
+      const completedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+      return yield* ResearchReportPublicationPostgres.complete(database, {
+        accounting,
+        completedAt,
+        contentId: artifact.content.contentId,
+        report,
+      });
+    }).pipe(Effect.mapError(documentAccountingUnavailable));
 
 const makeWorkflowStartRecorder =
   (database: Database): ResearchReport.PortInterface["recordWorkflowStart"] =>
@@ -510,10 +521,10 @@ const makeAccounting = (database: Database) =>
         ),
   });
 
-const documentAccountingUnavailable = (cause: ResearchReportAccounting.Unavailable) =>
+const documentAccountingUnavailable = (cause: unknown) =>
   new ResearchReportDocument.Unavailable({
     cause,
-    message: cause.message,
+    message: "Useful Research Report accounting could not be committed",
     operation: "recordUsage",
     reason: "storageUnavailable",
   });

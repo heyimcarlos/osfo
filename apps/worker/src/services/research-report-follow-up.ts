@@ -76,7 +76,6 @@ export type TerminalResult =
 export type DeadlineResult =
   | { readonly _tag: "Canceled"; readonly report: ResearchReport.Record }
   | { readonly _tag: "NotDue"; readonly report: ResearchReport.Record }
-  | { readonly _tag: "PublicationPending"; readonly report: ResearchReport.Record }
   | { readonly _tag: "Terminal"; readonly report: ResearchReport.Record };
 
 export class Conflict extends Schema.TaggedError<Conflict>()("ResearchReportFollowUpConflict", {

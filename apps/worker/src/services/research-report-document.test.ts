@@ -24,6 +24,7 @@ import { emptyLiveResourceFacts, type AuthorizationContext } from "./authorizati
 import {
   ArtifactIntegrityFailure,
   ArtifactStoreUnavailable,
+  DocumentCleanupUnavailable,
   type StoredArtifactMetadata,
 } from "./document-generation";
 import { ResearchCollector } from "./research-collector";
@@ -190,14 +191,14 @@ it.effect("retries Usage after readable publication and commits it exactly once"
   }).pipe(Effect.provide(fixture.layer));
 });
 
-it.effect("replays a completed Usage fact when terminal success persistence is unavailable", () => {
+it.effect("rolls Usage back when atomic terminal success persistence is unavailable", () => {
   const fixture = publicationFixture({ successFailures: 1 });
   return Effect.gen(function* () {
     const documents = yield* ResearchReportDocument.Service;
     const first = yield* documents.generate(fixture.report(), collection).pipe(Effect.result);
-    expect(first).toMatchObject({ failure: { operation: "publish" } });
+    expect(first).toMatchObject({ failure: { operation: "recordUsage" } });
     expect(fixture.report().state).toBe("publication_committed");
-    expect(fixture.usageFacts()).toHaveLength(1);
+    expect(fixture.usageFacts()).toHaveLength(0);
 
     const retried = yield* documents.generate(fixture.report(), collection);
     expect(retried.report.state).toBe("success");
@@ -205,6 +206,49 @@ it.effect("replays a completed Usage fact when terminal success persistence is u
     expect(fixture.usageFacts()).toHaveLength(1);
   }).pipe(Effect.provide(fixture.layer));
 });
+
+it.effect("retries disposable cleanup before Success and useful Usage", () => {
+  const fixture = publicationFixture({ cleanupFailures: 1 });
+  return Effect.gen(function* () {
+    const documents = yield* ResearchReportDocument.Service;
+    const first = yield* documents.generate(fixture.report(), collection).pipe(Effect.result);
+    expect(first).toMatchObject({ failure: { operation: "cleanup" } });
+    expect(fixture.report().state).toBe("publication_committed");
+    expect(fixture.cleanupCompletions()).toBe(0);
+    expect(fixture.usageFacts()).toHaveLength(0);
+
+    const retried = yield* documents.generate(fixture.report(), collection);
+    expect(retried.report.state).toBe("success");
+    expect(fixture.computeCalls()).toBe(1);
+    expect(fixture.cleanupAttempts()).toBe(2);
+    expect(fixture.cleanupCompletions()).toBe(1);
+    expect(fixture.usageFacts()).toHaveLength(1);
+  }).pipe(Effect.provide(fixture.layer));
+});
+
+it.effect(
+  "discards an accounted publication and disposable compute after deadline cancellation",
+  () => {
+    const fixture = publicationFixture({ usageFailures: 1 });
+    return Effect.gen(function* () {
+      const documents = yield* ResearchReportDocument.Service;
+      yield* documents.generate(fixture.report(), collection).pipe(Effect.result);
+      expect(fixture.report().state).toBe("publication_committed");
+      expect(fixture.stored()?.retention).toBe("accounted");
+
+      yield* documents.discard({
+        ...fixture.report(),
+        safeFailureCode: "deadline-exceeded",
+        state: "canceled",
+        terminalAt: fixture.report().deadlineAt,
+      });
+
+      expect(fixture.stored()).toBeNull();
+      expect(fixture.cleanupCompletions()).toBe(2);
+      expect(fixture.usageFacts()).toEqual([]);
+    }).pipe(Effect.provide(fixture.layer));
+  },
+);
 
 function claim(statement: string): ResearchSynthesis.MaterialClaim {
   return {
@@ -241,16 +285,20 @@ const collection: ResearchCollector.Collection = {
 
 const publicationFixture = (options: {
   readonly accountFailures?: number;
+  readonly cleanupFailures?: number;
   readonly successFailures?: number;
   readonly usageFailures?: number;
 }) => {
   let accountFailures = options.accountFailures ?? 0;
+  let cleanupFailures = options.cleanupFailures ?? 0;
   let successFailures = options.successFailures ?? 0;
   let usageFailures = options.usageFailures ?? 0;
   let current = reportRecord();
   let retainedArtifact: StoredArtifactMetadata | null = null;
   let renders = 0;
   let accounts = 0;
+  let cleanupAttempts = 0;
+  let cleanupCompletions = 0;
   let usageAttempts = 0;
   const usageFacts = new Set<string>();
   const bytes = new Uint8Array([1, 2, 3]);
@@ -318,21 +366,21 @@ const publicationFixture = (options: {
         };
         return current;
       }),
-    completeSuccess: (report) =>
-      Effect.gen(function* () {
-        if (successFailures > 0) {
-          successFailures -= 1;
-          return yield* new ResearchReport.Unavailable({
-            cause: "PostgreSQL unavailable",
-            message: "PostgreSQL unavailable",
-            operation: "completeSuccess",
-          });
-        }
-        current = { ...report, state: "success", terminalAt: reportNow };
-        return current;
-      }),
     compute: {
-      dispose: () => Effect.void,
+      dispose: () =>
+        Effect.gen(function* () {
+          cleanupAttempts += 1;
+          if (cleanupFailures > 0) {
+            cleanupFailures -= 1;
+            return yield* new DocumentCleanupUnavailable({
+              cause: "Sandbox unavailable",
+              contentId: reportContentId,
+              message: "Sandbox unavailable",
+            });
+          }
+          cleanupCompletions += 1;
+          return undefined;
+        }),
       generate: () =>
         Effect.sync(() => {
           renders += 1;
@@ -359,8 +407,18 @@ const publicationFixture = (options: {
             reason: "storageUnavailable",
           });
         }
+        if (successFailures > 0) {
+          successFailures -= 1;
+          return yield* new ResearchReportDocument.Unavailable({
+            cause: "PostgreSQL unavailable",
+            message: "PostgreSQL unavailable",
+            operation: "recordUsage",
+            reason: "storageUnavailable",
+          });
+        }
         usageFacts.add(`${report.workflowId}:${artifact.content.sha256}`);
-        return undefined;
+        current = { ...report, state: "success", terminalAt: reportNow };
+        return current;
       }),
     validator: {
       validate: (contentId, format, generated, pageCount) =>
@@ -391,6 +449,8 @@ const publicationFixture = (options: {
   });
   return {
     accountAttempts: () => accounts,
+    cleanupAttempts: () => cleanupAttempts,
+    cleanupCompletions: () => cleanupCompletions,
     computeCalls: () => renders,
     layer: ResearchReportDocument.layerWithoutDependencies.pipe(
       Layer.provide(Layer.succeed(ResearchReportDocument.Port, port)),
