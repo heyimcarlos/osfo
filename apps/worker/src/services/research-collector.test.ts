@@ -129,6 +129,8 @@ it.effect("never fetches or manifests credential-bearing discovery URLs", () => 
       `https://example.com/report?redirect=${encodeURIComponent(encodeURIComponent(nestedSignedUrl))}`,
       `https://example.com/report?redirect=${encodeURIComponent(encodeURIComponent(encodeURIComponent(encodeURIComponent(nestedSignedUrl))))}`,
       `https://example.com/report?next=${encodeURIComponent("auth_token=private")}`,
+      "https://example.com/report?next=auth_token%253Dprivate%25",
+      "https://example.com/report?next=https%253A%252F%252Fcdn.example.com%252Freport%253FX-Amz-Signature%253Dprivate%25",
     ],
   });
   return Effect.gen(function* () {

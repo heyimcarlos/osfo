@@ -721,7 +721,7 @@ const hasUnsafeNestedQueryValue = (value: string, depth: number) => {
     try {
       next = decodeURIComponent(decoded);
     } catch {
-      break;
+      return true;
     }
     if (next === decoded) break;
     candidates.push(next);
@@ -730,7 +730,7 @@ const hasUnsafeNestedQueryValue = (value: string, depth: number) => {
   try {
     if (decodeURIComponent(decoded) !== decoded) return true;
   } catch {
-    // Malformed residual escapes are handled by the bounded candidates already collected.
+    return true;
   }
   return candidates.some((candidate) => {
     let nestedUrl: URL | undefined;
