@@ -68,6 +68,11 @@
       "name": "osfo-test-execution-unit",
       "class_name": "ExecutionUnitWorkflow",
     },
+    {
+      "binding": "RESEARCH_REPORT_WORKFLOW",
+      "name": "osfo-test-research-report",
+      "class_name": "ResearchReportWorkflow",
+    },
   ],
   "observability": {
     "enabled": true,

@@ -16,6 +16,7 @@ export { CompanyAgent } from "./agents/osfo/company-agent";
 export { OsfoDirectory } from "./agents/osfo/directory";
 export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 export { ExecutionUnitWorkflow } from "./workflows/runtime";
+export { ResearchReportWorkflow } from "./workflows/research-report";
 /** Disposable artifact compute has no direct public-network path or injected credentials. */
 class ArtifactSandbox extends Sandbox {
   override enableInternet = false;
