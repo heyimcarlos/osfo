@@ -302,6 +302,7 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
     }),
     entry("reminders", "Manage bounded reminders.", "reminder.manage", {
       availabilityRequirements: ["reminder-store"],
+      toolRequirements: ["osfoCancelReminder", "osfoInspectReminder", "osfoManageReminder"],
     }),
     entry("workflows", "Manage supported durable Workflows.", "workflow.manage", {
       availabilityRequirements: ["workflow-store"],

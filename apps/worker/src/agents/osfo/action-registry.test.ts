@@ -2,6 +2,8 @@ import { expect, it } from "@effect/vitest";
 import { Effect, Result, Schema } from "effect";
 
 import type { GmailMessageInput } from "../../domain/integration-manifest";
+import { UserId } from "../../domain";
+import { ActionId } from "../../domain/action-execution";
 import {
   ActionPresentationId,
   ActionPresentationUnavailable,
@@ -12,12 +14,186 @@ import {
   hasExactForgetKnowledgeInput,
   hasExactIntegrationActionInput,
   hasExactPersonalSkillDeleteInput,
+  hasExactReminderManageInput,
   hasExactSessionDeleteInput,
   presentOsfoAction,
 } from "./action-presentation";
 import { ForgetKnowledgeInput } from "./deletion-actions";
+import { ReminderId } from "./reminders";
 
 /* oxlint-disable vitest/no-standalone-expect -- Assertion executes inside the @effect/vitest Effect callback. */
+/* oxlint-disable eslint/no-underscore-dangle, effecttsgo/global-date-in-effect -- Tagged Action fixtures and fixed Approval instants are deliberate. */
+
+it.effect("projects and fences every exact Reminder creation fact", () =>
+  Effect.gen(function* () {
+    const ownerUserId = UserId.make("reminder-owner");
+    const input = {
+      _tag: "CreateRecurring" as const,
+      body: "Review the household budget.",
+      firstDueAt: new Date("2026-08-29T12:00:00.000Z"),
+      intervalMilliseconds: 86_400_000,
+    };
+    const pending: PendingThinkAction = {
+      descriptor: {
+        action: "osfoManageReminder",
+        input: {
+          ...input,
+          firstDueAt: input.firstDueAt.toISOString(),
+        },
+        kind: "durable-pause",
+        permissions: ["reminders:manage"],
+        requestId: "reminder-request",
+        risk: "medium",
+        summary: "Create the exact Reminder",
+        toolCallId: "reminder-action",
+      },
+      executionId: ActionPresentationId.make("reminder-execution"),
+      source: "action",
+    };
+    const presentation = yield* presentOsfoAction(pending, undefined, ownerUserId);
+
+    expect(presentation).toMatchObject({
+      actionDefinitionVersion: "osfo-reminder-manage-v1",
+      actionId: "reminder-action",
+      operation: "reminder.manage",
+      title: "Create Reminder",
+    });
+    expect(
+      hasExactReminderManageInput(
+        presentation,
+        input,
+        ownerUserId,
+        ActionId.make("reminder-action"),
+      ),
+    ).toBe(true);
+    expect(
+      hasExactReminderManageInput(
+        presentation,
+        { ...input, body: "Changed after Approval." },
+        ownerUserId,
+        ActionId.make("reminder-action"),
+      ),
+    ).toBe(false);
+    expect(
+      hasExactReminderManageInput(
+        presentation,
+        input,
+        UserId.make("another-owner"),
+        ActionId.make("reminder-action"),
+      ),
+    ).toBe(false);
+    expect(
+      yield* presentOsfoAction(
+        {
+          ...pending,
+          descriptor: {
+            ...pending.descriptor,
+            input: { ...input, firstDueAt: "tomorrow morning" },
+          },
+        },
+        undefined,
+        ownerUserId,
+      ).pipe(
+        Effect.flip,
+        Effect.map((failure) => failure._tag),
+      ),
+    ).toBe("ActionPresentationUnavailable");
+  }),
+);
+
+it.effect("projects the exact material Reminder revision without mutating its Approval", () =>
+  Effect.gen(function* () {
+    const ownerUserId = UserId.make("reminder-owner");
+    const input = {
+      _tag: "ChangeRecurring" as const,
+      body: "Use the revised private facts.",
+      expectedRevision: 3,
+      firstDueAt: new Date("2026-08-30T12:00:00.000Z"),
+      intervalMilliseconds: 172_800_000,
+      reminderId: ReminderId.make("reminder-existing"),
+    };
+    const pending: PendingThinkAction = {
+      descriptor: {
+        action: "osfoManageReminder",
+        input: { ...input, firstDueAt: input.firstDueAt.toISOString() },
+        kind: "durable-pause",
+        permissions: ["reminders:manage"],
+        requestId: "reminder-change-request",
+        risk: "medium",
+        summary: "Change the exact Reminder",
+        toolCallId: "reminder-change-action",
+      },
+      executionId: ActionPresentationId.make("reminder-change-execution"),
+      source: "action",
+    };
+    const presentation = yield* presentOsfoAction(pending, undefined, ownerUserId);
+
+    expect(presentation).toMatchObject({
+      actionId: "reminder-change-action",
+      operation: "reminder.manage",
+      title: "Change Reminder",
+    });
+    expect(presentation.fields).toContainEqual({
+      label: "Expected revision",
+      name: "expectedRevision",
+      value: "3",
+    });
+    expect(presentation.fields).toContainEqual({
+      label: "Resulting revision",
+      name: "revision",
+      value: "4",
+    });
+    expect(
+      hasExactReminderManageInput(
+        presentation,
+        input,
+        ownerUserId,
+        ActionId.make("reminder-change-action"),
+      ),
+    ).toBe(true);
+    expect(
+      hasExactReminderManageInput(
+        presentation,
+        { ...input, expectedRevision: 4 },
+        ownerUserId,
+        ActionId.make("reminder-change-action"),
+      ),
+    ).toBe(false);
+    expect(
+      hasExactReminderManageInput(
+        presentation,
+        { ...input, _tag: "ReactivateRecurring" },
+        ownerUserId,
+        ActionId.make("reminder-change-action"),
+      ),
+    ).toBe(false);
+
+    const reactivation = yield* presentOsfoAction(
+      {
+        ...pending,
+        descriptor: {
+          ...pending.descriptor,
+          input: {
+            ...input,
+            _tag: "ReactivateRecurring",
+            firstDueAt: input.firstDueAt.toISOString(),
+          },
+        },
+      },
+      undefined,
+      ownerUserId,
+    );
+    expect(reactivation.title).toBe("Reactivate Reminder");
+    expect(
+      hasExactReminderManageInput(
+        reactivation,
+        input,
+        ownerUserId,
+        ActionId.make("reminder-change-action"),
+      ),
+    ).toBe(false);
+  }),
+);
 
 it.effect("projects the exact retained-document deletion presented for Approval", () =>
   Effect.gen(function* () {

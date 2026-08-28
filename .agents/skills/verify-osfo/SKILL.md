@@ -1,6 +1,6 @@
 ---
 name: verify-osfo
-description: Verify Osfo registration, SMS phone authentication, Telegram channel linking, the Free billing summary, permanent account deletion, or retained deletion replay in Chrome with a disposable verified User, local provider boundaries, committed state, and durable evidence. Use after implementing or reviewing one of those browser paths.
+description: Verify Osfo registration, SMS phone authentication, Telegram or WhatsApp channel linking, Reminder Approval and due delivery, the Free billing summary, permanent account deletion, or retained deletion replay in Chrome with a disposable verified User, local provider boundaries, committed state, and durable evidence. Use after implementing or reviewing one of those browser paths.
 ---
 
 # Verify Osfo
@@ -44,6 +44,11 @@ Run the read-only doctor before browser work and whenever a page or request look
 Doctor rejects a changed commit, reused PID, missing run label, unhealthy local provider, stopped Worker, or stopped UI. Read `artifacts/verification/osfo/<run-id>/logs/` before restarting. Cleanup the failed run, choose a new run ID, and start again.
 
 `identity` prints the run-owned preferred name, valid fictional Canadian phone number, OTP, and web origin. The local Twilio adapter accepts `424242`; production Twilio does not.
+
+The WhatsApp Reminder drive uses `whatsapp-invite` to deliver one signed run-owned provider
+message and extract its real browser invitation, then `whatsapp-reply` for the authorized reply
+after the fixed-template assertion. These commands exercise the production webhook adapter; they
+do not insert Channel Links, Reminders, occurrences, or Wake-up rows.
 
 ## Drive in Chrome
 

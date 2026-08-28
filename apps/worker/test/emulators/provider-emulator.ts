@@ -35,6 +35,7 @@ export interface WhatsAppLedgerEntry {
   readonly body: string;
   readonly method: string;
   readonly path: string;
+  readonly recordedAt: string;
 }
 
 interface TelegramPayload {
@@ -179,8 +180,22 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         respondJson(response, 200, whatsAppLedger);
         return;
       }
+      if (request.method === "POST" && pathname === "/_test/whatsapp/reset") {
+        whatsAppLedger.length = 0;
+        whatsAppNextResponseStatus = null;
+        whatsAppTemplateOnly = false;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
       if (request.method === "POST" && pathname === "/_test/whatsapp/template-only") {
         whatsAppTemplateOnly = true;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      if (request.method === "POST" && pathname === "/_test/whatsapp/allow-messages") {
+        whatsAppTemplateOnly = false;
         response.statusCode = 204;
         response.end();
         return;
@@ -231,7 +246,12 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
       if (request.method === "POST" && pathname.endsWith("/messages")) {
         readTextBody(request)
           .then((body) => {
-            whatsAppLedger.push({ body, method: request.method ?? "POST", path: pathname });
+            whatsAppLedger.push({
+              body,
+              method: request.method ?? "POST",
+              path: pathname,
+              recordedAt: new Date().toISOString(),
+            });
             const decoded = Schema.decodeOption(UnknownFromJsonString)(body);
             if (
               whatsAppTemplateOnly &&

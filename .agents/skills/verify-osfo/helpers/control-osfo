@@ -20,6 +20,11 @@ usage() {
     '  control-osfo record <run-id> <registration|channel-linking|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> <action|result> <summary>' \
     '  control-osfo observe <run-id> <registration|channel-linking|billing|whatsapp-wakeup|account-deletion|account-deletion-replay>' \
     '  control-osfo channel-invite <run-id>' \
+    '  control-osfo whatsapp-invite <run-id>' \
+    '  control-osfo record-reminder-due <run-id> <rfc3339-instant>' \
+    '  control-osfo capture-reminder-occurrence <run-id>' \
+    '  control-osfo capture-reminder-think <run-id>' \
+    '  control-osfo whatsapp-reply <run-id> <message>' \
     '  control-osfo seed-account-deletion <run-id>' \
     '  control-osfo reconcile-account-deletion <run-id>' \
     '  control-osfo evidence <run-id> <registration|channel-linking|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> finish' \
@@ -238,10 +243,11 @@ start_worker_process() {
 }
 
 inspect_agent_runtime() {
-  local run_id agent_id state_dir artifact_dir observer_origin observer_port inspector_port
+  local run_id agent_id user_id state_dir artifact_dir observer_origin observer_port inspector_port
   local observer_pid observation status
   run_id="$1"
   agent_id="$2"
+  user_id="${3:-}"
   state_dir="$(state_dir_for "$run_id")"
   artifact_dir="$(artifact_dir_for "$run_id")"
   observer_port="$(pick_port)"
@@ -267,10 +273,17 @@ inspect_agent_runtime() {
     status=1
   fi
   observation=''
-  if [[ "$status" == '0' ]] && \
-    ! observation="$(curl --fail --silent --show-error --get \
+  if [[ "$status" == '0' ]]; then
+    if [[ -n "$user_id" ]]; then
+      if ! observation="$(curl --fail --silent --show-error --get \
+        --data-urlencode "agentId=$agent_id" --data-urlencode "userId=$user_id" \
+        "$observer_origin/agent")"; then
+        status=1
+      fi
+    elif ! observation="$(curl --fail --silent --show-error --get \
       --data-urlencode "agentId=$agent_id" "$observer_origin/agent")"; then
-    status=1
+      status=1
+    fi
   fi
   if ! stop_process "$state_dir" agent-observer; then
     status=1
@@ -545,6 +558,8 @@ evidence_start() {
   if [[ "$feature" == whatsapp-wakeup ]]; then
     provider_origin="$(state_value "$run_id" provider-origin)"
     curl --fail --silent --show-error --request POST \
+      "$provider_origin/_test/whatsapp/reset" >/dev/null
+    curl --fail --silent --show-error --request POST \
       "$provider_origin/_test/whatsapp/template-only" >/dev/null
     printf 'provider_template_policy=fixed-variable-free-only\n' \
       >>"$feature_dir/metadata.txt"
@@ -638,6 +653,7 @@ channel_invite() {
   run_id="$1"
   doctor_run "$run_id" >/dev/null
   state_dir="$(state_dir_for "$run_id")"
+  "$script_dir/claim-single-attempt" "$state_dir/channel-invite-attempted"
   provider_origin="$(state_value "$run_id" provider-origin)"
   worker_origin="$(state_value "$run_id" worker-origin)"
   web_origin="$(state_value "$run_id" web-origin)"
@@ -675,6 +691,231 @@ channel_invite() {
   fi
   printf '%s\n' "$invite_url" >"$state_dir/channel-invite-url"
   printf 'invite_ready url=%s author=%s\n' "$invite_url" "$telegram_author"
+}
+
+deliver_whatsapp_message() {
+  local run_id message state_dir worker_origin sender payload signature response_path http_status
+  run_id="$1"
+  message="$2"
+  state_dir="$(state_dir_for "$run_id")"
+  worker_origin="$(state_value "$run_id" worker-origin)"
+  sender="$(state_value "$run_id" phone-national)"
+  payload="$(jq --null-input --compact-output \
+    --arg sender "$sender" \
+    --arg message "$message" \
+    --arg messageId "wamid.verify.$(date +%s%N)" \
+    --arg timestamp "$(date +%s)" \
+    '{
+      object: "whatsapp_business_account",
+      entry: [{
+        id: "verification-business",
+        changes: [{
+          field: "messages",
+          value: {
+            messaging_product: "whatsapp",
+            metadata: {
+              display_phone_number: "15550000000",
+              phone_number_id: "123456789"
+            },
+            contacts: [{ profile: { name: "Verification" }, wa_id: $sender }],
+            messages: [{
+              from: $sender,
+              id: $messageId,
+              timestamp: $timestamp,
+              text: { body: $message },
+              type: "text"
+            }]
+          }
+        }]
+      }]
+    }')"
+  signature="$(printf '%s' "$payload" | \
+    WHATSAPP_APP_SECRET='test-only-whatsapp-app-secret' bun -e '
+      import { createHmac } from "node:crypto";
+      const body = await Bun.stdin.text();
+      process.stdout.write(`sha256=${createHmac("sha256", process.env.WHATSAPP_APP_SECRET).update(body).digest("hex")}`);
+    ')"
+  response_path="$state_dir/whatsapp-webhook-response.txt"
+  http_status="$(curl --silent --show-error --max-time 90 \
+    --output "$response_path" --write-out '%{http_code}' \
+    --header 'content-type: application/json' \
+    --header "x-hub-signature-256: $signature" \
+    --data-binary "$payload" "$worker_origin/webhooks/whatsapp")"
+  if [[ "$http_status" != '200' ]]; then
+    printf 'WhatsApp delivery failed with HTTP %s: %s\n' \
+      "$http_status" "$(<"$response_path")" >&2
+    return 1
+  fi
+  printf 'whatsapp_delivered sender=%s\n' "$sender"
+}
+
+whatsapp_invite() {
+  local run_id state_dir provider_origin web_origin ledger_path invite_url attempt
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  state_dir="$(state_dir_for "$run_id")"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  web_origin="$(state_value "$run_id" web-origin)"
+  deliver_whatsapp_message "$run_id" 'I want to try Osfo' >/dev/null
+  ledger_path="$state_dir/whatsapp-ledger.json"
+  invite_url=''
+  for attempt in {1..60}; do
+    curl --fail --silent --show-error "$provider_origin/_test/whatsapp/ledger" \
+      | jq . >"$ledger_path"
+    invite_url="$(jq --raw-output '.[].body | fromjson? | .. | strings' "$ledger_path" \
+      | grep -E -o "${web_origin//./\\.}/verify/[A-Za-z0-9_-]+" \
+      | tail -n 1 || true)"
+    if [[ -n "$invite_url" ]]; then
+      break
+    fi
+    sleep 0.5
+  done
+  if [[ -z "$invite_url" ]]; then
+    printf 'The local WhatsApp path produced no invitation. See %s and %s\n' \
+      "$state_dir/whatsapp-webhook-response.txt" "$ledger_path" >&2
+    exit 1
+  fi
+  printf '%s\n' "$invite_url" >"$state_dir/whatsapp-invite-url"
+  printf 'whatsapp_invite_ready url=%s sender=%s\n' \
+    "$invite_url" "$(state_value "$run_id" phone-national)"
+}
+
+whatsapp_reply() {
+  local run_id provider_origin
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  curl --fail --silent --show-error --request POST \
+    "$provider_origin/_test/whatsapp/allow-messages" >/dev/null
+  deliver_whatsapp_message "$run_id" "$2"
+}
+
+record_reminder_due() {
+  local run_id due feature_dir normalized now_milliseconds due_milliseconds remaining
+  run_id="$1"
+  due="$2"
+  doctor_run "$run_id" >/dev/null
+  feature_dir="$(feature_artifact_dir_for "$run_id" whatsapp-wakeup)"
+  if [[ ! -s "$feature_dir/metadata.txt" ]]; then
+    printf 'Start whatsapp-wakeup evidence before recording the approved due time\n' >&2
+    exit 1
+  fi
+  if [[ -e "$feature_dir/nominal-due-at.txt" ]]; then
+    printf 'The one-time Reminder nominal due is already recorded\n' >&2
+    exit 1
+  fi
+  normalized="$(bun "$script_dir/reminder-slo.mjs" normalize "$due")"
+  now_milliseconds="$(($(date +%s) * 1000))"
+  due_milliseconds="$(bun -e 'process.stdout.write(String(Date.parse(process.argv[1])))' "$normalized")"
+  remaining="$((due_milliseconds - now_milliseconds))"
+  if (( remaining < 30000 || remaining > 600000 )); then
+    printf 'Approved one-time Reminder due must be 30 seconds to 10 minutes ahead; got %sms\n' \
+      "$remaining" >&2
+    exit 1
+  fi
+  printf '%s\n' "$normalized" >"$feature_dir/nominal-due-at.txt"
+  printf 'reminder_due_recorded nominal_due_at=%s remaining_ms=%s\n' "$normalized" "$remaining"
+}
+
+capture_reminder_occurrence() {
+  local run_id feature_dir container_id phone identity user_id agent_id runtime nominal_due_at
+  local committed_at handler_slo
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  feature_dir="$(feature_artifact_dir_for "$run_id" whatsapp-wakeup)"
+  if [[ ! -s "$feature_dir/nominal-due-at.txt" ]]; then
+    printf 'Record the approved one-time nominal due before capturing its occurrence\n' >&2
+    exit 1
+  fi
+  if [[ -e "$feature_dir/reminder-handler-slo.json" ]]; then
+    printf 'The due Reminder occurrence is already captured\n' >&2
+    exit 1
+  fi
+  container_id="$(state_value "$run_id" container-id)"
+  phone="$(state_value "$run_id" phone-e164)"
+  identity="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object('userId', u.id, 'agentId', a.agent_id)
+      from users u join agents a on a.user_id = u.id where u.phone_number = '$phone';")"
+  if [[ -z "$identity" ]]; then
+    printf 'No registered User and Agent exist for the run-owned phone\n' >&2
+    exit 1
+  fi
+  user_id="$(jq --exit-status --raw-output '.userId' <<<"$identity")"
+  agent_id="$(jq --exit-status --raw-output '.agentId' <<<"$identity")"
+  require_owned_identifier 'User ID' "$user_id"
+  require_owned_identifier 'Agent ID' "$agent_id"
+  runtime="$(inspect_agent_runtime "$run_id" "$agent_id" "$user_id")"
+  nominal_due_at="$(<"$feature_dir/nominal-due-at.txt")"
+  jq --exit-status --arg due "$nominal_due_at" \
+    '. as $runtime |
+      [.reminderVerification.occurrences[] | select(.nominalDueAt == $due)] as $occurrences |
+      $occurrences | length == 1 and
+      $occurrences[0].committedAt != null and
+      $occurrences[0].exposedAt == null and
+      $occurrences[0].thinkPresentedAt == null and
+      $occurrences[0].thinkSubmissionId == null and
+      $occurrences[0].sourceRevokedAt == null and
+      $runtime.reminderVerification.activeScheduleBindingCount == 0 and
+      $runtime.reminderVerification.agentScheduleCount == 0' \
+    <<<"$runtime" >/dev/null
+  committed_at="$(jq --exit-status --raw-output --arg suffix ":$nominal_due_at" \
+    '[.reminderSources[] | select(.sourceIdentity | endswith($suffix))] |
+      if length == 1 then .[0].committedAt else error("expected one exact due Reminder source") end' \
+    <<<"$runtime")"
+  handler_slo="$(bun "$script_dir/reminder-slo.mjs" assert-handler \
+    "$nominal_due_at" "$committed_at")"
+  jq . <<<"$runtime" >"$feature_dir/reminder-runtime.json"
+  jq . <<<"$handler_slo" >"$feature_dir/reminder-handler-slo.json"
+  printf 'reminder_occurrence_captured committed_at=%s handler_elapsed_ms=%s\n' \
+    "$committed_at" "$(jq --raw-output '.elapsedMilliseconds' <<<"$handler_slo")"
+}
+
+capture_reminder_think() {
+  local run_id feature_dir container_id phone identity user_id agent_id runtime nominal_due_at
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  feature_dir="$(feature_artifact_dir_for "$run_id" whatsapp-wakeup)"
+  if [[ ! -s "$feature_dir/reminder-runtime.json" ]]; then
+    printf 'Capture the committed Reminder occurrence before its Think exposure\n' >&2
+    exit 1
+  fi
+  if [[ -e "$feature_dir/reminder-think-runtime.json" ]]; then
+    printf 'The Reminder Think exposure is already captured\n' >&2
+    exit 1
+  fi
+  container_id="$(state_value "$run_id" container-id)"
+  phone="$(state_value "$run_id" phone-e164)"
+  identity="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object('userId', u.id, 'agentId', a.agent_id)
+      from users u join agents a on a.user_id = u.id where u.phone_number = '$phone';")"
+  if [[ -z "$identity" ]]; then
+    printf 'No registered User and Agent exist for the run-owned phone\n' >&2
+    exit 1
+  fi
+  user_id="$(jq --exit-status --raw-output '.userId' <<<"$identity")"
+  agent_id="$(jq --exit-status --raw-output '.agentId' <<<"$identity")"
+  require_owned_identifier 'User ID' "$user_id"
+  require_owned_identifier 'Agent ID' "$agent_id"
+  runtime="$(inspect_agent_runtime "$run_id" "$agent_id" "$user_id")"
+  nominal_due_at="$(<"$feature_dir/nominal-due-at.txt")"
+  jq --exit-status --arg due "$nominal_due_at" \
+    '. as $runtime |
+      [.reminderVerification.occurrences[] | select(.nominalDueAt == $due)] as $occurrences |
+      $occurrences | length == 1 and
+      $occurrences[0].committedAt != null and
+      $occurrences[0].exposedAt != null and
+      $occurrences[0].thinkPresentedAt != null and
+      $occurrences[0].thinkSubmissionId != null and
+      $occurrences[0].sourceRevokedAt == null and
+      $runtime.reminderSources == []' \
+    <<<"$runtime" >/dev/null
+  jq . <<<"$runtime" >"$feature_dir/reminder-think-runtime.json"
+  printf 'reminder_think_captured submission_id=%s\n' \
+    "$(jq --raw-output --arg due "$nominal_due_at" \
+      '.reminderVerification.occurrences[] | select(.nominalDueAt == $due) | .thinkSubmissionId' \
+      <<<"$runtime")"
 }
 
 r2_object_exists() {
@@ -752,9 +993,14 @@ seed_account_deletion() {
   printf '%s\n' "$agent_id" >"$state_dir/account-deletion-agent-id"
   printf '%s\n' "$channel_link_id" >"$state_dir/account-deletion-channel-link-id"
 
-  agent_runtime="$(inspect_agent_runtime "$run_id" "$agent_id")"
+  agent_runtime="$(inspect_agent_runtime "$run_id" "$agent_id" "$user_id")"
   jq --exit-status \
-    '.inspectable == true and .registered == true' <<<"$agent_runtime" >/dev/null
+    '.inspectable == true and .registered == true and
+      .reminderVerification.reminderCount >= 1 and
+      .reminderVerification.occurrenceCount >= 1 and
+      .reminderVerification.agentScheduleCount >= 0 and
+      .reminderVerification.activeScheduleBindingCount >= 0' \
+    <<<"$agent_runtime" >/dev/null
   jq . <<<"$agent_runtime" >"$state_dir/account-deletion-agent-runtime-before.json"
 
   target_seed="$(curl --fail --silent --show-error \
@@ -913,6 +1159,8 @@ observe_billing() {
 
 observe_whatsapp_wakeup() {
   local run_id state_dir feature_dir container_id provider_origin user_id state_json
+  local nominal_due_at accepted_at reminder_slo handler_slo agent_id
+  local think_runtime deletion_runtime_before agent_runtime_after
   run_id="$1"
   state_dir="$(state_dir_for "$run_id")"
   feature_dir="$(feature_artifact_dir_for "$run_id" whatsapp-wakeup)"
@@ -920,6 +1168,7 @@ observe_whatsapp_wakeup() {
   container_id="$(state_value "$run_id" container-id)"
   provider_origin="$(state_value "$run_id" provider-origin)"
   user_id="$(state_value "$run_id" account-deletion-user-id)"
+  agent_id="$(state_value "$run_id" account-deletion-agent-id)"
   require_owned_identifier 'User ID' "$user_id"
   state_json="$(docker exec --env PGPASSWORD=osfo "$container_id" \
     psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
@@ -933,20 +1182,59 @@ observe_whatsapp_wakeup() {
       ),
       'usageCount', (select count(*) from allowance_usage where user_id = '$user_id')
     );")"
-  printf '%s\n' "$state_json" | jq . >"$feature_dir/state.json"
   curl --fail --silent --show-error "$provider_origin/_test/whatsapp/ledger" \
     | jq . >"$feature_dir/provider.json"
+  nominal_due_at="$(<"$feature_dir/nominal-due-at.txt")"
+  accepted_at="$(jq --exit-status --raw-output \
+    '[.[] | select((.body | fromjson).type == "template")][0].recordedAt' \
+    "$feature_dir/provider.json")"
+  reminder_slo="$(bun "$script_dir/reminder-slo.mjs" assert "$nominal_due_at" "$accepted_at")"
+  handler_slo="$(<"$feature_dir/reminder-handler-slo.json")"
+  think_runtime="$(<"$feature_dir/reminder-think-runtime.json")"
+  deletion_runtime_before="$(<"$state_dir/account-deletion-agent-runtime-before.json")"
+  agent_runtime_after="$(inspect_agent_runtime "$run_id" "$agent_id")"
+  jq --null-input \
+    --argjson postgres "$state_json" \
+    --argjson handlerSlo "$handler_slo" \
+    --argjson reminderSlo "$reminder_slo" \
+    --argjson thinkRuntime "$think_runtime" \
+    --argjson deletionRuntimeBefore "$deletion_runtime_before" \
+    --argjson agentRuntimeAfter "$agent_runtime_after" \
+    '$postgres + {
+      handlerSlo: $handlerSlo,
+      reminderSlo: $reminderSlo,
+      thinkRuntime: $thinkRuntime,
+      deletionRuntimeBefore: $deletionRuntimeBefore,
+      agentRuntimeAfter: $agentRuntimeAfter
+    }' \
+    >"$feature_dir/state.json"
   jq --exit-status \
-    '.userExists == false and .wakeUpCount == 0 and .sourceCount == 0 and .usageCount == 0' \
+    '.userExists == false and .wakeUpCount == 0 and .sourceCount == 0 and .usageCount == 0 and
+      .reminderSlo.elapsedMilliseconds >= 0 and
+      .reminderSlo.elapsedMilliseconds <= 90000 and
+      .handlerSlo.elapsedMilliseconds >= 0 and
+      .handlerSlo.elapsedMilliseconds <= 60000 and
+      .thinkRuntime.reminderVerification.occurrenceCount >= 1 and
+      ([.thinkRuntime.reminderVerification.occurrences[] |
+        select(.exposedAt != null and .thinkPresentedAt != null and .thinkSubmissionId != null)] |
+        length) >= 1 and
+      .deletionRuntimeBefore.reminderVerification.reminderCount >= 1 and
+      .deletionRuntimeBefore.reminderVerification.occurrenceCount >= 1 and
+      .deletionRuntimeBefore.reminderVerification.agentScheduleCount >= 0 and
+      .deletionRuntimeBefore.reminderVerification.activeScheduleBindingCount >= 0 and
+      .agentRuntimeAfter.inspectable == false and
+      .agentRuntimeAfter.registered == false and
+      .agentRuntimeAfter.reminderVerification == null' \
     "$feature_dir/state.json" >/dev/null
   jq --exit-status \
-    'length == 1 and
-      (.[0].body | fromjson) as $body |
-      $body.type == "template" and
+    '[.[] | select((.body | fromjson).type == "template")] as $templates |
+      $templates | length == 1 and
+      ($templates[0].body | fromjson) as $body |
       $body.template.name == "osfo_update" and
       ($body.template.language.code == "en" or $body.template.language.code == "es") and
       ($body.template | has("components") | not) and
-      ($body | has("text") | not)' \
+      ($body | has("text") | not) and
+      ($templates[0].recordedAt | fromdateiso8601) > 0' \
     "$feature_dir/provider.json" >/dev/null
   complete_observation "$run_id" "$feature_dir"
   printf 'observed whatsapp-wakeup state=%s provider=%s\n' \
@@ -1061,7 +1349,11 @@ observe_account_deletion() {
       .targetR2Exists == false and .unrelatedR2Exists == true' \
     "$feature_dir/state.json" >/dev/null
   jq --exit-status \
-    '.inspectable == true and .registered == true' \
+    '.inspectable == true and .registered == true and
+      .reminderVerification.reminderCount >= 1 and
+      .reminderVerification.occurrenceCount >= 1 and
+      .reminderVerification.agentScheduleCount >= 0 and
+      .reminderVerification.activeScheduleBindingCount >= 0' \
     "$feature_dir/agent-runtime-before.json" >/dev/null
   jq --exit-status --arg target "$target_tag" --arg unrelated "$unrelated_tag" \
     '(.containers | index($target)) == null and
@@ -1103,6 +1395,14 @@ evidence_finish() {
       exit 1
     fi
   done
+  if [[ "$feature" == whatsapp-wakeup ]] && \
+    { [[ ! -s "$feature_dir/nominal-due-at.txt" ]] || \
+      [[ ! -s "$feature_dir/reminder-handler-slo.json" ]] || \
+      [[ ! -s "$feature_dir/reminder-runtime.json" ]] || \
+      [[ ! -s "$feature_dir/reminder-think-runtime.json" ]]; }; then
+    printf 'WhatsApp Wake-up evidence needs the approved nominal due, occurrence SLO, and Think claim\n' >&2
+    exit 1
+  fi
   if ! grep -q 'phase=action ' "$feature_dir/browser-actions.txt" || \
     ! grep -q 'phase=result ' "$feature_dir/browser-actions.txt"; then
     printf 'Evidence needs both action and result browser records\n' >&2
@@ -1131,13 +1431,15 @@ evidence_finish() {
   if [[ "$feature" == whatsapp-wakeup ]] && \
     { ! grep -F -q 'WhatsApp Channel Link accepted' \
         "$feature_dir/browser-actions.txt" || \
-      ! grep -F -q 'committed sources exposed in commit order before normal response' \
+      ! grep -F -q 'one-time Reminder Approval accepted' \
+        "$feature_dir/browser-actions.txt" || \
+      ! grep -F -q 'exact Reminder body exposed before normal response' \
         "$feature_dir/browser-actions.txt" || \
       ! grep -F -q 'Channel Link revoked and later source produced no template' \
         "$feature_dir/browser-actions.txt" || \
       ! grep -F -q 'permanent account deletion completed' \
         "$feature_dir/browser-actions.txt"; }; then
-    printf 'WhatsApp Wake-up evidence needs linked authority, ordered owner exposure, revocation no-send, and permanent deletion browser records\n' >&2
+    printf 'WhatsApp Wake-up evidence needs linked authority, exact Reminder Approvals and exposure, revocation no-send, and permanent deletion browser records\n' >&2
     exit 1
   fi
   printf 'completed_at=%s\nresult=PASS\ncommit=%s\n' \
@@ -1223,6 +1525,34 @@ case "$command_name" in
   channel-invite)
     require_run_id "${2:-}"
     channel_invite "$2"
+    ;;
+  whatsapp-invite)
+    require_run_id "${2:-}"
+    whatsapp_invite "$2"
+    ;;
+  record-reminder-due)
+    require_run_id "${2:-}"
+    if [[ -z "${3:-}" ]]; then
+      printf 'An RFC 3339 nominal due instant is required\n' >&2
+      exit 2
+    fi
+    record_reminder_due "$2" "$3"
+    ;;
+  capture-reminder-occurrence)
+    require_run_id "${2:-}"
+    capture_reminder_occurrence "$2"
+    ;;
+  capture-reminder-think)
+    require_run_id "${2:-}"
+    capture_reminder_think "$2"
+    ;;
+  whatsapp-reply)
+    require_run_id "${2:-}"
+    if [[ -z "${3:-}" ]]; then
+      printf 'WhatsApp reply text is required\n' >&2
+      exit 2
+    fi
+    whatsapp_reply "$2" "$3"
     ;;
   seed-account-deletion)
     require_run_id "${2:-}"

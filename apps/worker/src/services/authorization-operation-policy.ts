@@ -102,7 +102,10 @@ export const requiresApproval = (operation: AuthorizationOperation) =>
   (operation.kind === "reminder.manage" &&
     (operation.change === "oneTimeCreate" ||
       operation.change === "recurringCreate" ||
-      operation.change === "recurringMaterialChange"));
+      operation.change === "oneTimeMaterialChange" ||
+      operation.change === "recurringMaterialChange" ||
+      operation.change === "oneTimeReactivate" ||
+      operation.change === "recurringReactivate"));
 
 export const isSharedUnmetered = (operation: AuthorizationOperation) =>
   sharedUnmeteredOperations.has(operation.kind) ||
@@ -134,7 +137,7 @@ export const entitlementFor = (operation: AuthorizationOperation): Capability | 
   }
   if (operation.kind === "reminder.manage") {
     if (operation.change === "cancel") return null;
-    return operation.change === "oneTimeCreate" ? "oneTimeReminders" : "recurringReminders";
+    return operation.change.startsWith("oneTime") ? "oneTimeReminders" : "recurringReminders";
   }
   if (operation.kind === "reminder.deliver") {
     return operation.schedule === "oneTime" ? "oneTimeReminders" : "recurringReminders";

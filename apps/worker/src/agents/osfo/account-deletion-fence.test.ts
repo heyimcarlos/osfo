@@ -48,6 +48,69 @@ it.effect("drains an in-flight document writer and prevents resurrection after R
   }),
 );
 
+it.effect("drains an admitted Reminder delivery before deletion and rejects a late callback", () =>
+  Effect.gen(function* () {
+    const fence = makeAccountDeletionFence();
+    const sessionExecution = makeSessionExecution({ hasPendingOrRunning: Effect.succeed(false) });
+    const execution = makeAccountDeletionFencedSessionExecution(sessionExecution, fence);
+    const thinkStarted = yield* Deferred.make<void>();
+    const releaseThink = yield* Deferred.make<void>();
+    const authorized = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const events = new Array<string>();
+    const think = yield* sessionExecution
+      .run(
+        Deferred.succeed(thinkStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseThink)),
+        ),
+      )
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(thinkStarted);
+
+    const delivery = yield* fence
+      .run(
+        Deferred.succeed(authorized, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(
+            Effect.sync(() => events.push("accounting", "wakeup-request", "wakeup-prompt")),
+          ),
+        ),
+        () => "account deletion fenced" as const,
+      )
+      .pipe(Effect.forkChild);
+
+    yield* Deferred.await(authorized);
+    // Reminder delivery must not wait behind an unrelated slow Think turn.
+    const deletion = yield* execution
+      .closeAfter(Effect.sync(() => events.push("quiesce")))
+      .pipe(Effect.andThen(Effect.sync(() => events.push("erase-reminders"))), Effect.forkChild);
+    yield* Deferred.succeed(releaseThink, undefined);
+    yield* Fiber.join(think);
+    yield* Effect.yieldNow;
+    expect(events).toEqual(["quiesce"]);
+
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(delivery);
+    yield* Fiber.join(deletion);
+    expect(events).toEqual([
+      "quiesce",
+      "accounting",
+      "wakeup-request",
+      "wakeup-prompt",
+      "erase-reminders",
+    ]);
+
+    const late = yield* fence
+      .run(
+        Effect.sync(() => events.push("late-wakeup")),
+        () => "account deletion fenced" as const,
+      )
+      .pipe(Effect.flip);
+    expect(late).toBe("account deletion fenced");
+    expect(events).not.toContain("late-wakeup");
+  }),
+);
+
 it.effect("cancels an admitted messenger turn after its allowance write before closing", () =>
   Effect.gen(function* () {
     const fence = makeAccountDeletionFence();

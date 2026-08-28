@@ -11,6 +11,14 @@ import { WhatsAppWakeUps } from "../../src/services/whatsapp-wakeups";
 const Ledger = Schema.Array(
   Schema.Struct({ body: Schema.String, method: Schema.String, path: Schema.String }),
 );
+const TimestampedLedger = Schema.Array(
+  Schema.Struct({
+    body: Schema.String,
+    method: Schema.String,
+    path: Schema.String,
+    recordedAt: Schema.DateFromString,
+  }),
+);
 const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 it.effect("uses only the fixed variable-free Meta template shape for en and es", () =>
@@ -104,6 +112,60 @@ it.effect("rejects every excess field at the local Meta boundary", () =>
         ).pipe(Effect.map((response) => response.status)),
     );
     expect(statuses).toEqual([422, 422, 422]);
+  }),
+);
+
+it.effect("scopes verifier resets and allows normal replies after timestamped template proof", () =>
+  Effect.gen(function* () {
+    const providerOrigin = loadConfig(env).whatsApp.apiBaseURL ?? "";
+    const ordinaryMessage = encodeUnknownJson({
+      messaging_product: "whatsapp",
+      text: { body: "Normal reply" },
+      to: "15551234567",
+      type: "text",
+    });
+    yield* Effect.promise(() =>
+      fetch(`${providerOrigin}/_test/whatsapp/reset`, { method: "POST" }),
+    );
+    yield* Effect.promise(() =>
+      fetch(`${providerOrigin}/_test/whatsapp/template-only`, { method: "POST" }),
+    );
+    expect(
+      (yield* Effect.promise(() =>
+        fetch(`${providerOrigin}/v25.0/123456789/messages`, {
+          body: ordinaryMessage,
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+      )).status,
+    ).toBe(422);
+    yield* Effect.promise(() =>
+      fetch(`${providerOrigin}/_test/whatsapp/allow-messages`, { method: "POST" }),
+    );
+    expect(
+      (yield* Effect.promise(() =>
+        fetch(`${providerOrigin}/v25.0/123456789/messages`, {
+          body: ordinaryMessage,
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+      )).status,
+    ).toBe(200);
+    const ledgerResponse = yield* Effect.promise(() =>
+      fetch(`${providerOrigin}/_test/whatsapp/ledger`),
+    );
+    const ledger = yield* Effect.promise(() => ledgerResponse.json()).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(TimestampedLedger)),
+    );
+    expect(ledger).toHaveLength(2);
+    expect(ledger.every(({ recordedAt }) => recordedAt.getTime() > 0)).toBe(true);
+    yield* Effect.promise(() =>
+      fetch(`${providerOrigin}/_test/whatsapp/reset`, { method: "POST" }),
+    );
+    const resetResponse = yield* Effect.promise(() =>
+      fetch(`${providerOrigin}/_test/whatsapp/ledger`),
+    );
+    expect(yield* Effect.promise(() => resetResponse.json())).toEqual([]);
   }),
 );
 

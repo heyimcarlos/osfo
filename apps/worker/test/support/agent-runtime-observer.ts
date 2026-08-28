@@ -16,11 +16,34 @@ interface AgentInspection {
   readonly routeId: string;
 }
 
+interface ReminderVerificationState {
+  readonly activeScheduleBindingCount: number;
+  readonly agentScheduleCount: number;
+  readonly occurrenceCount: number;
+  readonly occurrences: ReadonlyArray<{
+    readonly callbackCapabilityRevokedAt: string | null;
+    readonly committedAt: string | null;
+    readonly exposedAt: string | null;
+    readonly nominalDueAt: string;
+    readonly sourceIdentity: string;
+    readonly sourceRevokedAt: string | null;
+    readonly thinkPresentedAt: string | null;
+    readonly thinkSubmissionId: string | null;
+  }>;
+  readonly reminderCount: number;
+}
+
 interface DirectoryObserver {
   readonly inspectAgent: (agentId: string) => Promise<AgentInspection | null>;
   readonly listAgents: () => Promise<
     ReadonlyArray<{ readonly className: string; readonly name: string }>
   >;
+  readonly pendingReminderWakeUpSources: (
+    userId: string,
+  ) => Promise<ReadonlyArray<{ readonly committedAt: string; readonly sourceIdentity: string }>>;
+  readonly inspectReminderVerificationState: (
+    userId: string,
+  ) => Promise<ReminderVerificationState | null>;
 }
 
 interface ObserverBindings {
@@ -42,9 +65,15 @@ const worker = {
       return Response.json({ error: "Invalid Agent ID" }, { status: 400 });
     }
     const directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
-    const [inspection, agents] = await Promise.all([
+    const userId = url.searchParams.get("userId");
+    if (userId !== null && !/^[A-Za-z0-9_-]+$/u.test(userId)) {
+      return Response.json({ error: "Invalid User ID" }, { status: 400 });
+    }
+    const [inspection, agents, reminderSources, reminderVerification] = await Promise.all([
       directory.inspectAgent(agentId),
       directory.listAgents(),
+      userId === null ? Promise.resolve([]) : directory.pendingReminderWakeUpSources(userId),
+      userId === null ? Promise.resolve(null) : directory.inspectReminderVerificationState(userId),
     ]);
     return Response.json({
       agentId,
@@ -52,6 +81,8 @@ const worker = {
       registered: agents.some(
         ({ className, name }) => className === "OsfoAgent" && name === agentId,
       ),
+      reminderSources,
+      reminderVerification,
     });
   },
 } satisfies ExportedHandler<ObserverBindings>;

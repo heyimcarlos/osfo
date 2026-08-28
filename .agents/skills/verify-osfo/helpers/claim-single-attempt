@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+marker="${1:-}"
+if [[ -z "$marker" ]]; then
+  printf 'A single-attempt marker path is required\n' >&2
+  exit 2
+fi
+if ! mkdir -- "$marker" 2>/dev/null; then
+  printf 'The run already used its single Telegram-link attempt\n' >&2
+  exit 1
+fi

@@ -592,20 +592,35 @@ describe("governed Authorization", () => {
     );
   });
 
-  it("requires Approval for a one-time reminder but not for a Workflow start", () => {
+  it("requires Approval for every Reminder creation, material change, and reactivation", () => {
     const authorization = make(retainedCatalog);
-
+    for (const change of [
+      "oneTimeCreate",
+      "recurringCreate",
+      "oneTimeMaterialChange",
+      "recurringMaterialChange",
+      "oneTimeReactivate",
+      "recurringReactivate",
+    ] as const) {
+      expect(
+        authorization.admit(context("adventurer"), {
+          actionId: change,
+          change,
+          kind: "reminder.manage",
+        }),
+      ).toEqual({
+        _tag: "ApprovalRequired",
+        actionId: change,
+        operation: "reminder.manage",
+      });
+    }
     expect(
       authorization.admit(context("free"), {
-        actionId: "one-time-reminder",
-        change: "oneTimeCreate",
+        actionId: "cancel-reminder",
+        change: "cancel",
         kind: "reminder.manage",
       }),
-    ).toEqual({
-      _tag: "ApprovalRequired",
-      actionId: "one-time-reminder",
-      operation: "reminder.manage",
-    });
+    ).toMatchObject({ _tag: "Admitted", executionMode: "unmeteredContinuity" });
     expect(
       authorization.admit(context("free"), {
         actionId: "research-workflow",
