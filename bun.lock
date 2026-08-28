@@ -81,6 +81,7 @@
         "postgres": "3.4.9",
         "stripe": "22.5.0",
         "supermemory": "4.25.4",
+        "workers-ai-provider": "4.0.0",
       },
       "devDependencies": {
         "@cloudflare/vitest-plugin": "catalog:",

@@ -1,6 +1,12 @@
 import { Effect, Schema } from "effect";
 
-import { isSafePublicUrl, limits, type DiscoveryResult, type PageFetch } from "../../services/web";
+import {
+  canonicalPublicUrl,
+  isSafePublicUrl,
+  limits,
+  type DiscoveryResult,
+  type PageFetch,
+} from "../../services/web";
 
 const providerText = (maximumLength: number) =>
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(maximumLength));
@@ -40,6 +46,7 @@ export class WebProviderUnavailable extends Schema.TaggedError<WebProviderUnavai
   {
     message: Schema.String,
     operation: Schema.Literals(["discover", "fetch", "readBody", "redirect"]),
+    retry: Schema.Literals(["ambiguous", "never", "transient"]),
   },
 ) {}
 
@@ -48,7 +55,12 @@ export const makeDiscovery = (binding: SearchBinding) =>
   Effect.fn("CloudflareWeb.discover")(function* (query: string, limit: number) {
     const response = yield* Effect.tryPromise({
       try: () => binding.search({ limit, query }),
-      catch: () => providerUnavailable("discover", "Public-web discovery is unavailable."),
+      catch: () =>
+        providerUnavailable(
+          "discover",
+          "Public-web discovery acceptance is ambiguous.",
+          "ambiguous",
+        ),
     });
     const decoded = yield* Schema.decodeEffect(DiscoveryResponse)(response).pipe(
       Effect.mapError(() =>
@@ -80,6 +92,7 @@ export const makePageFetch = (fetcher: Fetcher = fetch) =>
       if (!isSafePublicUrl(currentUrl)) {
         return yield* providerUnavailable("redirect", "The page redirect target is unsafe.");
       }
+      currentUrl = canonicalPublicUrl(currentUrl);
       response = yield* Effect.tryPromise({
         try: () =>
           fetcher(currentUrl, {
@@ -90,7 +103,8 @@ export const makePageFetch = (fetcher: Fetcher = fetch) =>
             redirect: "manual",
             signal: AbortSignal.timeout(limits.providerDeadlineMilliseconds),
           }),
-        catch: () => providerUnavailable("fetch", "The public page could not be fetched."),
+        catch: () =>
+          providerUnavailable("fetch", "The public page could not be fetched.", "transient"),
       });
       if (!redirectStatus(response.status)) break;
       const location = response.headers.get("location");
@@ -101,13 +115,17 @@ export const makePageFetch = (fetcher: Fetcher = fetch) =>
       if (!isSafePublicUrl(target)) {
         return yield* providerUnavailable("redirect", "The page redirect target is unsafe.");
       }
-      redirects.push(target);
-      currentUrl = target;
+      const canonicalTarget = canonicalPublicUrl(target);
+      redirects.push(canonicalTarget);
+      currentUrl = canonicalTarget;
     }
     if (response === undefined) {
       return yield* providerUnavailable("fetch", "The public page could not be fetched.");
     }
-    const contentType = response.headers.get("content-type") ?? "application/octet-stream";
+    const contentType = boundedHeader(
+      response.headers.get("content-type") ?? "application/octet-stream",
+      512,
+    );
     const declaredLength = boundedContentLength(response.headers.get("content-length"));
     if (declaredLength !== null && declaredLength > limits.fetchedPageBytes) {
       yield* Effect.promise(
@@ -166,7 +184,8 @@ const readBoundedBody = (response: Response) =>
       }
       return { bytes, oversized: false };
     },
-    catch: () => providerUnavailable("readBody", "The public page body could not be read."),
+    catch: () =>
+      providerUnavailable("readBody", "The public page body could not be read.", "transient"),
   });
 
 const normalizePage = (source: string, contentType: string) => {
@@ -174,7 +193,13 @@ const normalizePage = (source: string, contentType: string) => {
     return { content: source.replaceAll(/\s+/gu, " ").trim(), title: null };
   }
   const titleMatch = /<title(?:\s[^>]*)?>([\s\S]*?)<\/title>/iu.exec(source);
-  const title = titleMatch === null ? null : decodeEntities(stripTags(titleMatch[1] ?? "")).trim();
+  const title =
+    titleMatch === null
+      ? null
+      : decodeEntities(stripTags(titleMatch[1] ?? ""))
+          .replaceAll(/\s+/gu, " ")
+          .trim()
+          .slice(0, 2_000);
   const visible = source
     .replaceAll(/<!--([\s\S]*?)-->/gu, " ")
     .replaceAll(
@@ -219,6 +244,12 @@ const boundedContentLength = (value: string | null): bigint | null => {
   }
 };
 
+const boundedHeader = (value: string, maximum: number) =>
+  value
+    .replaceAll(/[\r\n]/gu, " ")
+    .trim()
+    .slice(0, maximum) || "application/octet-stream";
+
 const basePage = (
   response: Response,
   finalUrl: string,
@@ -242,5 +273,8 @@ const oversizedPage = (
 const redirectStatus = (status: number) =>
   status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 
-const providerUnavailable = (operation: WebProviderUnavailable["operation"], message: string) =>
-  new WebProviderUnavailable({ message, operation });
+const providerUnavailable = (
+  operation: WebProviderUnavailable["operation"],
+  message: string,
+  retry: WebProviderUnavailable["retry"] = "never",
+) => new WebProviderUnavailable({ message, operation, retry });

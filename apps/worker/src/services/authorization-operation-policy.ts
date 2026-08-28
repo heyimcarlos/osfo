@@ -6,6 +6,7 @@ import type {
   AuthorizationOperationName,
 } from "../domain/authorization-operation";
 import type { Capability } from "../domain/plan-policy";
+import { hasProtectedConsequence } from "../domain/capability-catalog";
 import type { AuthorizationContext } from "./authorization";
 
 const approvalOperations = new Set<AuthorizationOperationName>([
@@ -98,6 +99,9 @@ const entitlementByOperation = new Map<AuthorizationOperationName, Capability>([
 
 export const requiresApproval = (operation: AuthorizationOperation) =>
   approvalOperations.has(operation.kind) ||
+  (operation.kind === "workflow.manage" &&
+    operation.change !== "stop" &&
+    hasProtectedConsequence(operation.consequences ?? [])) ||
   (operation.kind === "skill.manage" && operation.change === "delete") ||
   (operation.kind === "reminder.manage" &&
     (operation.change === "oneTimeCreate" ||

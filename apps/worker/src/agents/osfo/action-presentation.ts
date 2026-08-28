@@ -28,6 +28,7 @@ import {
 import { personalSkillDeleteActionName, SkillDeleteInput } from "./personal-skill-tools";
 import type { IntegrationToolInput } from "./integration-tools";
 import { ReminderManageInput, reminderManageActionName } from "./reminder-tool-contracts";
+import { ResearchReport } from "../../services/research-report";
 import {
   CalendarCreateEventInput,
   CalendarDeleteEventInput,
@@ -42,6 +43,18 @@ import {
 export const documentDeleteActionName = "deleteDocument";
 /** Name registered with Think for retained visual-artifact deletion. */
 export const artifactDeleteActionName = "deleteArtifact";
+/** Name registered with Think for consequence-aware Research Report admission. */
+export const researchReportStartActionName = "startResearchReport";
+
+/** Model-visible input for one bounded Research Report admission. */
+export const ResearchReportStartInput = ResearchReport.Request;
+
+/** Model-visible identity for Research Report inspection or cancellation. */
+export const ResearchReportIdentityInput = Schema.Struct({ workflowId: ResearchReport.WorkflowId });
+
+/** Consequence policy used by Think's input-dependent durable Approval gate. */
+export const researchReportRequiresApproval = (input: ResearchReport.Request): boolean =>
+  input.consequences.length > 0;
 
 /** Exact retained-document identity shown before deletion Approval. */
 export const RetainedDocumentInput = Schema.Struct({ contentId: ContentId });
@@ -66,6 +79,9 @@ export const presentOsfoAction = Effect.fn("ActionPresentation.present")(functio
   }
   if (pending.descriptor.action === artifactDeleteActionName) {
     return yield* presentArtifactDeleteAction(pending);
+  }
+  if (pending.descriptor.action === researchReportStartActionName) {
+    return yield* presentResearchReportStartAction(pending);
   }
   if (pending.descriptor.action === forgetKnowledgeActionName) {
     return yield* presentForgetKnowledgeAction(pending, inspectCurrentCoreMemory);
@@ -318,6 +334,22 @@ const presentCoreMemoryClearAction = Effect.fn("ActionPresentation.presentCoreMe
   },
 );
 
+/** Verify that a protected Research Report start still matches its approved request. */
+export const hasExactResearchReportStartInput = (
+  presentation: ActionPresentation,
+  input: ResearchReport.Request,
+): boolean => {
+  const fields = researchReportPresentationFields(input);
+  return (
+    presentation.operation === "workflow.manage" &&
+    presentation.actionDefinitionVersion === "osfo-research-report-start-v1" &&
+    presentation.fields.length === fields.length &&
+    presentation.fields.every(
+      (field, index) => field.name === fields[index]?.name && field.value === fields[index]?.value,
+    )
+  );
+};
+
 const presentGmailSendAction = Effect.fn("ActionPresentation.presentGmailSend")(function* (
   pending: PendingThinkAction,
 ) {
@@ -514,6 +546,45 @@ const presentDocumentDeleteAction = Effect.fn("ActionPresentation.presentDocumen
     });
   },
 );
+
+const presentResearchReportStartAction = Effect.fn("ActionPresentation.presentResearchReportStart")(
+  function* (pending: PendingThinkAction) {
+    const input = yield* Schema.decodeUnknownEffect(ResearchReportStartInput)(
+      pending.descriptor.input,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "The Research Report request cannot be projected safely",
+          }),
+      ),
+    );
+    return ActionPresentation.make({
+      actionDefinitionVersion: "osfo-research-report-start-v1",
+      actionId: ActionId.make(pending.descriptor.toolCallId),
+      consequences: input.consequences.map(
+        (consequence) => `Allow this Research Report to perform: ${consequence}.`,
+      ),
+      description: "Start the exact bounded Research Report shown here.",
+      fields: researchReportPresentationFields(input),
+      operation: "workflow.manage",
+      presentationId: ActionPresentationId.make(pending.executionId),
+      title: "Start Research Report",
+    });
+  },
+);
+
+const researchReportPresentationFields = (input: ResearchReport.Request) => [
+  { label: "Topic", name: "topic", value: input.topic },
+  { label: "Queries", name: "queries", value: JSON.stringify(input.queries) },
+  { label: "Format", name: "format", value: input.format },
+  {
+    label: "Consequences",
+    name: "consequences",
+    value: JSON.stringify(input.consequences),
+  },
+];
 
 const presentArtifactDeleteAction = Effect.fn("ActionPresentation.presentArtifactDelete")(
   function* (pending: PendingThinkAction) {

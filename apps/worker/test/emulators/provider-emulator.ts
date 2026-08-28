@@ -18,6 +18,15 @@ export interface StripeLedgerEntry {
   readonly path: string;
 }
 
+interface StripeCheckoutState {
+  readonly clientReferenceId: string;
+  readonly customerId: string;
+  readonly metadata: Readonly<Record<string, string>>;
+  readonly successUrl: string;
+  readonly subscriptionId: string;
+  state: "complete" | "open";
+}
+
 /** One observed Supermemory request. */
 export interface SupermemoryLedgerEntry {
   readonly method: string;
@@ -36,6 +45,13 @@ export interface WhatsAppLedgerEntry {
   readonly method: string;
   readonly path: string;
   readonly recordedAt: string;
+}
+
+/** One observed deterministic Research Report provider operation. */
+export interface ResearchLedgerEntry {
+  readonly kind: "agent" | "discover" | "page" | "synthesize";
+  readonly operationId: string | null;
+  readonly subject: string;
 }
 
 interface TelegramPayload {
@@ -69,6 +85,45 @@ const SupermemoryDeleteFailuresFromJson = Schema.fromJsonString(
   Schema.Struct({ count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)) }),
 );
 const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
+const ResearchRequest = Schema.Struct({
+  limit: Schema.optional(Schema.Int),
+  messages: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        content: Schema.optional(Schema.Json),
+        name: Schema.optional(Schema.String),
+        role: Schema.optional(Schema.String),
+        tool_call_id: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+  operationId: Schema.optional(Schema.String),
+  query: Schema.optional(Schema.String),
+  sources: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        content: Schema.String,
+        sourceId: Schema.String,
+        title: Schema.NullOr(Schema.String),
+      }),
+    ),
+  ),
+  topic: Schema.optional(Schema.String),
+  tools: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        function: Schema.optional(Schema.Struct({ name: Schema.String })),
+      }),
+    ),
+  ),
+  url: Schema.optional(Schema.String),
+});
+type ResearchRequest = typeof ResearchRequest.Type;
+const ResearchRequestFromJson = Schema.fromJsonString(ResearchRequest);
+
+const researchSourceUrl = "https://research.verify.osfo.test/durable-workflows";
+const researchSourceContent =
+  "Deterministic Research Report verification preserves canonical public source evidence across durable Workflow recovery.";
 
 /** Local HTTP providers and their request ledgers for composed Worker journeys. */
 export interface ProviderEmulator {
@@ -79,12 +134,14 @@ export interface ProviderEmulator {
 export const startProviderEmulator = (): Promise<ProviderEmulator> =>
   new Promise((resolve, reject) => {
     const stripeLedger: Array<StripeLedgerEntry> = [];
+    const stripeCheckouts = new Map<string, StripeCheckoutState>();
     const supermemoryContainers = new Set<string>();
     let supermemoryDeleteFailuresRemaining = 0;
     const supermemoryLedger: Array<SupermemoryLedgerEntry> = [];
     const telegramLedger: Array<TelegramLedgerEntry> = [];
     const twilioLedger: Array<TwilioLedgerEntry> = [];
     const whatsAppLedger: Array<WhatsAppLedgerEntry> = [];
+    const researchLedger: Array<ResearchLedgerEntry> = [];
     let whatsAppNextResponseStatus: number | null = null;
     let whatsAppTemplateOnly = false;
     const server = createServer((request, response) => {
@@ -93,12 +150,14 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
       const pathname = url.pathname;
       if (request.method === "POST" && pathname === "/_test/reset") {
         stripeLedger.length = 0;
+        stripeCheckouts.clear();
         supermemoryContainers.clear();
         supermemoryDeleteFailuresRemaining = 0;
         supermemoryLedger.length = 0;
         telegramLedger.length = 0;
         twilioLedger.length = 0;
         whatsAppLedger.length = 0;
+        researchLedger.length = 0;
         whatsAppNextResponseStatus = null;
         whatsAppTemplateOnly = false;
         response.statusCode = 204;
@@ -176,6 +235,14 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         respondJson(response, 200, telegramLedger);
         return;
       }
+      if (request.method === "GET" && pathname === "/_test/research/ledger") {
+        respondJson(response, 200, researchLedger);
+        return;
+      }
+      if (request.method === "POST" && pathname.startsWith("/_local/research/")) {
+        handleResearch(request, response, pathname, researchLedger);
+        return;
+      }
       if (request.method === "GET" && pathname === "/_test/whatsapp/ledger") {
         respondJson(response, 200, whatsAppLedger);
         return;
@@ -232,7 +299,32 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         request.method === "POST" &&
         (pathname === "/v1/customers" || pathname === "/v1/checkout/sessions")
       ) {
-        handleStripe(request, response, pathname, stripeLedger);
+        handleStripe(request, response, pathname, stripeLedger, stripeCheckouts);
+        return;
+      }
+      if (request.method === "GET" && pathname.startsWith("/v1/checkout/sessions/")) {
+        handleStripeCheckoutRead(response, pathname, stripeCheckouts);
+        return;
+      }
+      if (request.method === "GET" && pathname.startsWith("/v1/subscriptions/")) {
+        handleStripeSubscriptionRead(response, pathname, stripeCheckouts);
+        return;
+      }
+      if (request.method === "GET" && pathname === "/v1/invoice_payments") {
+        respondJson(response, 200, {
+          data: [],
+          has_more: false,
+          object: "list",
+          url: "/v1/invoice_payments",
+        });
+        return;
+      }
+      if (request.method === "GET" && pathname.startsWith("/_local/stripe/checkout/")) {
+        handleStripeCheckoutPage(response, pathname, stripeCheckouts);
+        return;
+      }
+      if (request.method === "POST" && pathname.startsWith("/_local/stripe/checkout/")) {
+        handleStripeCheckoutCompletion(response, pathname, stripeCheckouts);
         return;
       }
       if (request.method === "POST" && pathname.startsWith("/v2/Services/")) {
@@ -343,11 +435,154 @@ const handleSupermemorySeed = (
     .catch((cause: unknown) => respondJson(response, 400, { error: String(cause) }));
 };
 
+const handleResearch = (
+  request: IncomingMessage,
+  response: ServerResponse,
+  pathname: string,
+  ledger: Array<ResearchLedgerEntry>,
+): void => {
+  readTextBody(request)
+    .then(Schema.decodeUnknownPromise(ResearchRequestFromJson))
+    .then((input) => {
+      if (pathname.endsWith("/agent")) {
+        const toolNames = availableToolNames(input);
+        const lastMessage = lastMessageText(input);
+        ledger.push({ kind: "agent", operationId: null, subject: lastMessage.slice(0, 500) });
+        if (toolNames.includes("present_link") && lastMessageRole(input) === "user") {
+          respondJson(response, 200, toolResponse("present_link", {}));
+          return;
+        }
+        const workflowId = /research[:\w-]{8,300}/iu.exec(lastMessage)?.[0];
+        if (
+          workflowId !== undefined &&
+          toolNames.includes("inspectResearchReport") &&
+          lastMessageRole(input) === "user" &&
+          /(?:inspect|status|check)/iu.test(lastMessage)
+        ) {
+          respondJson(response, 200, toolResponse("inspectResearchReport", { workflowId }));
+          return;
+        }
+        if (
+          workflowId !== undefined &&
+          toolNames.includes("cancelResearchReport") &&
+          lastMessageRole(input) === "user" &&
+          /cancel/iu.test(lastMessage)
+        ) {
+          respondJson(response, 200, toolResponse("cancelResearchReport", { workflowId }));
+          return;
+        }
+        if (
+          toolNames.includes("startResearchReport") &&
+          lastMessageRole(input) === "user" &&
+          /(?:investigate|research|sources)/iu.test(lastMessage)
+        ) {
+          respondJson(
+            response,
+            200,
+            toolResponse("startResearchReport", {
+              consequences: [],
+              format: "pdf",
+              queries: ["durable workflow verification"],
+              topic: "Durable Workflow verification",
+            }),
+          );
+          return;
+        }
+        respondJson(response, 200, {
+          finish_reason: "stop",
+          response: `Committed Osfo result: ${lastMessageContent(input).slice(0, 1_800)}`,
+          usage: { completion_tokens: 1, prompt_tokens: 1 },
+        });
+        return;
+      }
+      if (pathname.endsWith("/discover") && input.query !== undefined) {
+        ledger.push({ kind: "discover", operationId: null, subject: input.query });
+        respondJson(response, 200, {
+          requestId: `research-discover-${ledger.length}`,
+          results: [{ title: "Durable Workflow verification", url: researchSourceUrl }],
+        });
+        return;
+      }
+      if (pathname.endsWith("/page") && input.url === researchSourceUrl) {
+        ledger.push({ kind: "page", operationId: null, subject: input.url });
+        respondJson(response, 200, {
+          content: researchSourceContent,
+          contentType: "text/plain; charset=utf-8",
+          finalUrl: researchSourceUrl,
+          status: 200,
+          title: "Durable Workflow verification",
+        });
+        return;
+      }
+      const source = input.sources?.[0];
+      if (
+        pathname.endsWith("/synthesize") &&
+        input.operationId !== undefined &&
+        input.topic !== undefined &&
+        source !== undefined &&
+        source.content.includes(researchSourceContent)
+      ) {
+        ledger.push({
+          kind: "synthesize",
+          operationId: input.operationId,
+          subject: input.topic,
+        });
+        const claim = {
+          evidence: [{ quote: researchSourceContent, sourceId: source.sourceId }],
+          statement: researchSourceContent,
+        };
+        respondJson(response, 200, {
+          result: {
+            conclusion: [claim],
+            sections: [{ heading: "Verified evidence", materialClaims: [claim] }],
+            summary: [claim],
+            title: "Deterministic Research Report verification",
+          },
+        });
+        return;
+      }
+      respondJson(response, 400, { error: "Invalid Research Report provider request" });
+    })
+    .catch((cause: unknown) => respondJson(response, 400, { error: String(cause) }));
+};
+
+const toolResponse = (name: string, arguments_: JsonObject) => ({
+  finish_reason: "tool_calls",
+  response: "",
+  tool_calls: [{ arguments: arguments_, id: `verification-${name}`, name }],
+  usage: { completion_tokens: 1, prompt_tokens: 1 },
+});
+
+const availableToolNames = (input: ResearchRequest): ReadonlyArray<string> =>
+  input.tools?.flatMap((tool) => (tool.function === undefined ? [] : [tool.function.name])) ?? [];
+
+const lastMessageRole = (input: ResearchRequest): string | null => {
+  const message = lastMessage(input);
+  return message?.role ?? null;
+};
+
+const lastMessageText = (input: ResearchRequest): string => {
+  const message = lastMessage(input);
+  return message === null ? "" : JSON.stringify(message);
+};
+
+const lastMessageContent = (input: ResearchRequest): string => {
+  const message = lastMessage(input);
+  if (message?.content !== undefined) {
+    if (typeof message.content === "string") return message.content;
+    return JSON.stringify(message.content);
+  }
+  return lastMessageText(input);
+};
+
+const lastMessage = (input: ResearchRequest) => input.messages?.at(-1) ?? null;
+
 const handleStripe = (
   request: IncomingMessage,
   response: ServerResponse,
   pathname: string,
   ledger: Array<StripeLedgerEntry>,
+  checkouts: Map<string, StripeCheckoutState>,
 ): void => {
   readTextBody(request)
     .then((body) => {
@@ -360,15 +595,148 @@ const handleStripe = (
         respondJson(response, 200, { id: "cus_emulated", object: "customer" });
         return;
       }
+      const parameters = Object.fromEntries(new URLSearchParams(body));
+      const checkoutId = "cs_test_emulated";
+      const checkout = {
+        clientReferenceId: parameters.client_reference_id ?? "",
+        customerId: parameters.customer ?? "",
+        metadata: stripeMetadata(parameters),
+        state: "open" as const,
+        subscriptionId: "sub_emulated",
+        successUrl: parameters.success_url ?? "",
+      };
+      checkouts.set(checkoutId, checkout);
+      const host = headerValue(request.headers.host);
+      const origin = host === null ? "http://127.0.0.1" : `http://${host}`;
       respondJson(response, 200, {
         expires_at: Math.floor(Date.now() / 1_000) + 60 * 60,
-        id: "cs_test_emulated",
+        id: checkoutId,
         object: "checkout.session",
         status: "open",
-        url: "https://checkout.stripe.test/cs_test_emulated",
+        url: `${origin}/_local/stripe/checkout/${checkoutId}`,
       });
     })
     .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
+};
+
+const stripeMetadata = (
+  parameters: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> =>
+  Object.fromEntries(
+    Object.entries(parameters).flatMap(([key, value]) => {
+      if (!key.startsWith("metadata[") || !key.endsWith("]")) return [];
+      const name = key.slice("metadata[".length, -1);
+      return name.length === 0 ? [] : [[name, value]];
+    }),
+  );
+
+const handleStripeCheckoutRead = (
+  response: ServerResponse,
+  pathname: string,
+  checkouts: ReadonlyMap<string, StripeCheckoutState>,
+): void => {
+  const checkoutId = pathname.slice("/v1/checkout/sessions/".length);
+  const checkout = checkouts.get(checkoutId);
+  if (checkout === undefined) {
+    respondJson(response, 404, { error: { message: "Checkout Session not found" } });
+    return;
+  }
+  respondJson(response, 200, {
+    client_reference_id: checkout.clientReferenceId,
+    customer: checkout.customerId,
+    expires_at: Math.floor(Date.now() / 1_000) + 60 * 60,
+    id: checkoutId,
+    metadata: checkout.metadata,
+    object: "checkout.session",
+    status: checkout.state,
+    subscription: checkout.state === "complete" ? checkout.subscriptionId : null,
+    url: null,
+  });
+};
+
+const handleStripeSubscriptionRead = (
+  response: ServerResponse,
+  pathname: string,
+  checkouts: ReadonlyMap<string, StripeCheckoutState>,
+): void => {
+  const subscriptionId = pathname.slice("/v1/subscriptions/".length);
+  const checkout = [...checkouts.values()].find(
+    (candidate) => candidate.subscriptionId === subscriptionId && candidate.state === "complete",
+  );
+  if (checkout === undefined) {
+    respondJson(response, 404, { error: { message: "Subscription not found" } });
+    return;
+  }
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  respondJson(response, 200, {
+    cancel_at_period_end: false,
+    customer: checkout.customerId,
+    id: checkout.subscriptionId,
+    items: {
+      data: [
+        {
+          current_period_end: nowSeconds + 30 * 24 * 60 * 60,
+          current_period_start: nowSeconds,
+          price: {
+            id: checkout.metadata.priceId,
+            product: checkout.metadata.productId,
+          },
+          quantity: 1,
+        },
+      ],
+    },
+    latest_invoice: { id: "in_emulated", status: "paid" },
+    metadata: { userId: checkout.metadata.userId },
+    object: "subscription",
+    status: "active",
+  });
+};
+
+const handleStripeCheckoutPage = (
+  response: ServerResponse,
+  pathname: string,
+  checkouts: ReadonlyMap<string, StripeCheckoutState>,
+): void => {
+  const checkoutId = pathname.slice("/_local/stripe/checkout/".length);
+  const checkout = checkouts.get(checkoutId);
+  if (checkout === undefined) {
+    respondJson(response, 404, { error: "Checkout Session not found" });
+    return;
+  }
+  response.statusCode = 200;
+  response.setHeader("content-type", "text/html; charset=utf-8");
+  response.end(`<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Local Stripe verification</title></head>
+  <body>
+    <main>
+      <h1>Local Stripe verification</h1>
+      <p>This deterministic checkout exercises Osfo's production billing reconciliation path.</p>
+      <p>Adventurer · CA$25 monthly</p>
+      <form method="post" action="/_local/stripe/checkout/${checkoutId}">
+        <button type="submit">Complete verification checkout</button>
+      </form>
+    </main>
+  </body>
+</html>`);
+};
+
+const handleStripeCheckoutCompletion = (
+  response: ServerResponse,
+  pathname: string,
+  checkouts: Map<string, StripeCheckoutState>,
+): void => {
+  const checkoutId = pathname.slice("/_local/stripe/checkout/".length);
+  const checkout = checkouts.get(checkoutId);
+  if (checkout === undefined) {
+    respondJson(response, 404, { error: "Checkout Session not found" });
+    return;
+  }
+  checkout.state = "complete";
+  const location = checkout.successUrl.replace("{CHECKOUT_SESSION_ID}", checkoutId);
+  response.statusCode = 303;
+  response.setHeader("location", location);
+  response.end();
 };
 
 const handleTelegram = (

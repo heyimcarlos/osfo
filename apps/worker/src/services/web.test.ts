@@ -10,6 +10,7 @@ import {
   type PageFetch,
   type RankedResult,
   type WebState,
+  isSafePublicUrl,
 } from "./web";
 
 /* oxlint-disable effecttsgo/global-date-in-effect, eslint/no-underscore-dangle, vitest/no-standalone-expect -- Fixed evidence times and tagged assertions execute inside Effect Vitest generators. */
@@ -18,6 +19,77 @@ const userId = UserId.make("user-1");
 const turnId = ThinkSubmissionId.make("turn-1");
 
 describe("Web", () => {
+  it("rejects credential-bearing query keys while preserving ordinary public queries", () => {
+    const credentialKeys = [
+      "access_token",
+      "%61ccess_token",
+      "auth_token",
+      "auth_code",
+      "%61uth_token",
+      "api-token",
+      "private_key",
+      "PrIvAtE_KeY",
+      "signing-key",
+      "access_key_id",
+      "key",
+      "key_id",
+      "client-key-id",
+      "TOKEN",
+      "api_key",
+      "apikey",
+      "secret",
+      "password",
+      "credential",
+      "signature",
+      "sig",
+      "Authorization",
+      "auth",
+      "X-Amz-Credential",
+      "X-Amz-Signature",
+      "X-Amz-Security-Token",
+      "X-Goog-Signature",
+      "X-Goog-Credential",
+    ];
+
+    for (const key of credentialKeys) {
+      expect(isSafePublicUrl(`https://example.com/report?${key}=retained-secret`)).toBe(false);
+    }
+    for (const key of ["topic", "page", "query", "sort", "filter", "locale"]) {
+      expect(isSafePublicUrl(`https://example.com/report?${key}=public`)).toBe(true);
+    }
+  });
+
+  it("rejects bounded nested credential URLs while preserving public nested values", () => {
+    const signedUrl = "https://cdn.example.com/report?X-Amz-Signature=retained-secret";
+    const ambiguousSignedUrl = "https://[broken?auth_token=retained-secret";
+    const unsafeUrls = [
+      `https://example.com/report?redirect=${encodeURIComponent(signedUrl)}`,
+      `https://example.com/report?redirect=${encodeURIComponent(encodeURIComponent(signedUrl))}`,
+      `https://example.com/report?redirect=${encodeURIComponent(encodeURIComponent(encodeURIComponent(encodeURIComponent(signedUrl))))}`,
+      `https://example.com/report?redirect=${encodeURIComponent(ambiguousSignedUrl)}`,
+      `https://example.com/report?next=${encodeURIComponent("auth_token=retained-secret")}`,
+      "https://example.com/report?next=auth_token%253Dretained-secret%25",
+      "https://example.com/report?next=https%253A%252F%252Fcdn.example.com%252Freport%253FX-Amz-Signature%253Dretained-secret%25",
+    ];
+
+    for (const url of unsafeUrls) expect(isSafePublicUrl(url)).toBe(false);
+    expect(
+      isSafePublicUrl(`https://example.com/report?next=${encodeURIComponent("topic=public")}`),
+    ).toBe(true);
+    expect(isSafePublicUrl("https://example.com/report?next=ordinary+plain+text")).toBe(true);
+    expect(isSafePublicUrl("https://example.com/report?next=malformed%25")).toBe(false);
+    expect(
+      isSafePublicUrl(
+        `https://example.com/report?next=${encodeURIComponent(encodeURIComponent("public research"))}`,
+      ),
+    ).toBe(true);
+    expect(
+      isSafePublicUrl(
+        `https://example.com/report?redirect=${encodeURIComponent("https://cdn.example.com/report?topic=public&page=2")}`,
+      ),
+    ).toBe(true);
+  });
+
   it.effect("keeps ranked result identities stable and grounds search in fetched pages", () =>
     Effect.gen(function* () {
       const state = memoryState();

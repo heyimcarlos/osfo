@@ -65,6 +65,12 @@ export const inspectBilling = Effect.gen(function* () {
   return yield* client.billing.inspect();
 });
 
+/** Inspect delivered safe Research Report follow-ups for the authenticated User. */
+export const inspectResearchReportNotifications = Effect.gen(function* () {
+  const client = yield* apiClient;
+  return yield* client.researchReports.notifications();
+});
+
 /** Inspect the authenticated User's safe Integration Connection state. */
 export const inspectIntegrations = Effect.gen(function* () {
   const client = yield* apiClient;

@@ -23,6 +23,34 @@ const deletionEvidence = (
   reconciledArtifactProviderOperationIds: ReadonlySet<string> = new Set(),
 ) => Effect.succeed({ allowancePeriodIds, reconciledArtifactProviderOperationIds });
 
+it.effect(
+  "erases every Research Report source, manifest, and synthesis object by User prefix",
+  () => {
+    const deleted = new Array<string>();
+    const prefix = "users/user-1/";
+    const reportKeys = [
+      `${prefix}research-report/sources/workflow-1-page-1.json`,
+      `${prefix}research-report/manifests/workflow-1.json`,
+      `${prefix}research-report/syntheses/workflow-1.json`,
+    ];
+    const files = bucketStub({
+      deleted,
+      objectsByPrefix: { [prefix]: reportKeys.map((key) => ({ key })) },
+    });
+    const artifacts = bucketStub({ deleted });
+
+    return make(files, artifacts, () => deletionEvidence())
+      .remove(UserId.make("user-1"), Effect.void)
+      .pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            expect(deleted).toEqual(reportKeys);
+          }),
+        ),
+      );
+  },
+);
+
 it.effect("removes immutable artifact cost evidence owned by the target user", () => {
   const deleted: Array<string> = [];
   const contentId = ContentId.make("artifact:toolCall:cost-evidence");

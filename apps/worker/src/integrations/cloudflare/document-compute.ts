@@ -1,4 +1,6 @@
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { Clock, Effect, Random, Schema } from "effect";
 
 import { ContentId } from "../../domain/client-content";
@@ -106,7 +108,7 @@ export const make = (
   makeWithSandbox(
     (contentId) =>
       adaptSandbox(
-        getSandbox(binding, contentId, {
+        getSandbox(binding, sandboxIdFor(contentId), {
           enableDefaultSession: false,
           keepAlive: false,
           normalizeId: true,
@@ -117,6 +119,10 @@ export const make = (
     makeAttemptEvidenceStore(bucket),
     conservativeVendorUsdMicros,
   );
+
+/** Derive one collision-resistant identity within the Sandbox SDK's 63-character limit. */
+export const sandboxIdFor = (contentId: ContentId) =>
+  `doc-${bytesToHex(sha256(new TextEncoder().encode(contentId))).slice(0, 59)}`;
 
 /** Construct the adapter at its Sandbox SDK boundary for deterministic contract tests. */
 export const makeWithSandbox = (

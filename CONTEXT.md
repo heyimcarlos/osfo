@@ -790,17 +790,17 @@ Submission lifecycle.
 _Avoid_: Think Submission, Agent Queue Task, Scheduled Task, long model response
 
 **Research Report Workflow**:
-The Adventurer Workflow that gathers bounded web sources and produces one cited
+The Workflow that gathers bounded web sources and produces one cited
 Research Report.
 _Avoid_: Web search ToolCall, general research agent
 
 **Document Build Workflow**:
-The Adventurer Workflow that analyzes supplied content and produces one PDF or
+The Workflow that analyzes supplied content and produces one PDF or
 DOCX artifact.
 _Avoid_: File analysis ToolCall, general document editor
 
 **Scheduled Email Workflow**:
-The Adventurer Workflow that prepares, receives Approval for, waits for, and
+The Workflow that prepares, receives Approval for, waits for, and
 sends one exact Gmail message.
 _Avoid_: Reminder, automatic reply, recurring email campaign
 

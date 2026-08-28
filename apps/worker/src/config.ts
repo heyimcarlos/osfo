@@ -26,6 +26,7 @@ type RawConfigBinding =
   | "COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT"
   | "COMPOSIO_API_KEY"
   | "OSFO_STAGE"
+  | "RESEARCH_REPORT_PROVIDER_BASE_URL"
   | "STRIPE_ADVENTURER_PRICE_ID"
   | "STRIPE_ADVENTURER_PRODUCT_ID"
   | "STRIPE_API_BASE_URL"
@@ -66,6 +67,7 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT?: string;
   readonly COMPOSIO_API_KEY?: string;
   readonly OSFO_STAGE?: string;
+  readonly RESEARCH_REPORT_PROVIDER_BASE_URL?: string;
   readonly STRIPE_ADVENTURER_PRICE_ID?: string;
   readonly STRIPE_ADVENTURER_PRODUCT_ID?: string;
   readonly STRIPE_API_BASE_URL?: string;
@@ -181,11 +183,17 @@ export interface ComposioConfig {
   readonly apiKey: Redacted.Redacted;
 }
 
+/** Dedicated provider selection for bounded Research Report execution. */
+export type ResearchReportProviderConfig =
+  | { readonly _tag: "Cloudflare" }
+  | { readonly _tag: "LocalVerification"; readonly baseURL: string };
+
 /** Parsed configuration used by one request application. */
 export interface CloudflareConfig {
   readonly auth: AuthConfig;
   readonly companyConversation: CompanyConversationConfig;
   readonly composio: ComposioConfig | null;
+  readonly researchReportProvider: ResearchReportProviderConfig;
   readonly stage: OsfoStage;
   readonly stripe: StripeConfig;
   readonly supermemory: SupermemoryConfig;
@@ -246,6 +254,7 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
       env.COMPOSIO_API_KEY === undefined || env.COMPOSIO_API_KEY.trim().length === 0
         ? null
         : { apiKey: Redacted.make(env.COMPOSIO_API_KEY) },
+    researchReportProvider: parseResearchReportProvider(stage, env),
     stage,
     stripe: {
       adventurerPriceId: required(env, "STRIPE_ADVENTURER_PRICE_ID").trim(),
@@ -288,6 +297,7 @@ type RequiredBinding = Exclude<
   | "BETTER_AUTH_API_URL"
   | "COMPOSIO_API_KEY"
   | "OSFO_STAGE"
+  | "RESEARCH_REPORT_PROVIDER_BASE_URL"
   | "STRIPE_API_BASE_URL"
   | "SUPERMEMORY_API_BASE_URL"
   | "TELEGRAM_API_BASE_URL"
@@ -351,6 +361,24 @@ const parseWhatsAppWakeUp = (env: CloudflareEnv): WhatsAppConfig["wakeUp"] => {
   }
   return { _tag: "Active", templateName, templatePolicyVersion: policyVersion };
 };
+
+const parseResearchReportProvider = (
+  stage: OsfoStage,
+  env: CloudflareEnv,
+): ResearchReportProviderConfig => {
+  const value = env.RESEARCH_REPORT_PROVIDER_BASE_URL?.trim();
+  if (value === undefined || value.length === 0) return { _tag: "Cloudflare" };
+  if (stage !== "development" && stage !== "test") {
+    return invalid("RESEARCH_REPORT_PROVIDER_BASE_URL is restricted to local verification");
+  }
+  const baseURL = parseUrl("RESEARCH_REPORT_PROVIDER_BASE_URL", value);
+  if (!loopbackHosts.has(baseURL.hostname)) {
+    return invalid("RESEARCH_REPORT_PROVIDER_BASE_URL must use a loopback host");
+  }
+  return { _tag: "LocalVerification", baseURL: baseURL.href };
+};
+
+const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
 
 const parseTrustedOrigins = (value: string): ReadonlyArray<string> => {
   const parsed = Schema.decodeOption(TrustedOrigins)(value);

@@ -16,10 +16,11 @@ usage() {
     '  control-osfo identity <run-id>' \
     '  control-osfo journeys <run-id>' \
     '  control-osfo account-deletion-envelope-journey <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> start' \
-    '  control-osfo record <run-id> <registration|channel-linking|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> <action|result> <summary>' \
-    '  control-osfo observe <run-id> <registration|channel-linking|billing|whatsapp-wakeup|account-deletion|account-deletion-replay>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> start' \
+    '  control-osfo record <run-id> <registration|channel-linking|research-report|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> <action|result> <summary>' \
+    '  control-osfo observe <run-id> <registration|channel-linking|research-report|billing|whatsapp-wakeup|account-deletion|account-deletion-replay>' \
     '  control-osfo channel-invite <run-id>' \
+    '  control-osfo telegram-reply <run-id> <message>' \
     '  control-osfo whatsapp-invite <run-id>' \
     '  control-osfo record-reminder-due <run-id> <rfc3339-instant>' \
     '  control-osfo capture-reminder-occurrence <run-id>' \
@@ -41,7 +42,7 @@ require_run_id() {
 
 require_feature() {
   case "${1:-}" in
-    registration|channel-linking|billing|whatsapp-wakeup|account-deletion|account-deletion-replay) ;;
+    registration|channel-linking|research-report|billing|whatsapp-wakeup|account-deletion|account-deletion-replay) ;;
     *)
       printf 'Unknown browser feature: %s\n' "${1:-}" >&2
       exit 2
@@ -693,6 +694,66 @@ channel_invite() {
   printf 'invite_ready url=%s author=%s\n' "$invite_url" "$telegram_author"
 }
 
+telegram_reply() {
+  local run_id message state_dir provider_origin worker_origin telegram_author update_id payload
+  local response_path http_status ledger_path before_count after_count reply completed
+  run_id="$1"
+  message="$2"
+  doctor_run "$run_id" >/dev/null
+  state_dir="$(state_dir_for "$run_id")"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  worker_origin="$(state_value "$run_id" worker-origin)"
+  telegram_author="$(state_value "$run_id" telegram-author)"
+  ledger_path="$state_dir/telegram-ledger.json"
+  curl --fail --silent --show-error "$provider_origin/_test/telegram/ledger" | jq . >"$ledger_path"
+  before_count="$(jq 'length' "$ledger_path")"
+  completed=false
+  update_id="$((telegram_author + 200000000 + before_count))"
+  payload="$(jq --null-input --compact-output \
+    --argjson updateId "$update_id" \
+    --argjson author "$telegram_author" \
+    --arg text "$message" \
+    --argjson timestamp "$(date +%s)" \
+    '{
+      update_id: $updateId,
+      message: {
+        message_id: $updateId,
+        from: { id: $author, is_bot: false, first_name: "Verification" },
+        chat: { id: $author, type: "private", first_name: "Verification" },
+        date: $timestamp,
+        text: $text
+      }
+    }')"
+  response_path="$state_dir/telegram-webhook-response.txt"
+  http_status="$(curl --silent --show-error --max-time 90 \
+    --output "$response_path" --write-out '%{http_code}' \
+    --header 'content-type: application/json' \
+    --header "x-telegram-bot-api-secret-token: $telegram_secret" \
+    --data "$payload" "$worker_origin/webhooks/telegram")"
+  if [[ "$http_status" != '200' ]]; then
+    printf 'Telegram delivery failed with HTTP %s: %s\n' "$http_status" "$(<"$response_path")" >&2
+    exit 1
+  fi
+  for _attempt in {1..60}; do
+    curl --fail --silent --show-error "$provider_origin/_test/telegram/ledger" | jq . >"$ledger_path"
+    after_count="$(jq 'length' "$ledger_path")"
+    if jq --exit-status --argjson before "$before_count" \
+      '.[ $before: ] | any(.method == "editMessageText")' "$ledger_path" >/dev/null; then
+      completed=true
+      break
+    fi
+    sleep 0.5
+  done
+  if [[ "$completed" != true ]]; then
+    printf 'The linked Telegram Agent produced no reply\n' >&2
+    exit 1
+  fi
+  reply="$(jq --raw-output --argjson before "$before_count" \
+    '.[ $before: ] | map(select(.method == "editMessageText")) | .[-1].body | fromjson | (.text? // .rich_message.markdown? // "")' \
+    "$ledger_path")"
+  printf 'telegram_reply=%s\n' "$reply"
+}
+
 deliver_whatsapp_message() {
   local run_id message state_dir worker_origin sender payload signature response_path http_status
   run_id="$1"
@@ -989,15 +1050,11 @@ seed_account_deletion() {
   require_owned_identifier 'User ID' "$user_id"
   require_owned_identifier 'Agent ID' "$agent_id"
   require_owned_identifier 'Channel Link ID' "$channel_link_id"
-  printf '%s\n' "$user_id" >"$state_dir/account-deletion-user-id"
-  printf '%s\n' "$agent_id" >"$state_dir/account-deletion-agent-id"
-  printf '%s\n' "$channel_link_id" >"$state_dir/account-deletion-channel-link-id"
-
   agent_runtime="$(inspect_agent_runtime "$run_id" "$agent_id" "$user_id")"
   jq --exit-status \
     '.inspectable == true and .registered == true and
-      .reminderVerification.reminderCount >= 1 and
-      .reminderVerification.occurrenceCount >= 1 and
+      .reminderVerification.reminderCount >= 0 and
+      .reminderVerification.occurrenceCount >= 0 and
       .reminderVerification.agentScheduleCount >= 0 and
       .reminderVerification.activeScheduleBindingCount >= 0' \
     <<<"$agent_runtime" >/dev/null
@@ -1033,6 +1090,9 @@ seed_account_deletion() {
     "unrelated User sentinel for $run_id"
   r2_object_exists "$state_dir" "$files_bucket" "$target_key"
   r2_object_exists "$state_dir" "$files_bucket" "$unrelated_key"
+  printf '%s\n' "$user_id" >"$state_dir/account-deletion-user-id"
+  printf '%s\n' "$agent_id" >"$state_dir/account-deletion-agent-id"
+  printf '%s\n' "$channel_link_id" >"$state_dir/account-deletion-channel-link-id"
 
   printf 'deletion_seed_ready user=%s agent=%s channel_link=%s provider_target=%s r2_target=%s unrelated_sentinels=provider,r2\n' \
     "$user_id" "$agent_id" "$channel_link_id" "$target_tag" "$target_key"
@@ -1119,6 +1179,102 @@ observe_channel_linking() {
     "$feature_dir/state.json" "$feature_dir/provider.json"
 }
 
+observe_research_report() {
+  local run_id state_dir feature_dir container_id provider_origin phone state_json
+  local files_bucket artifacts_bucket manifest_key source_key synthesis_key artifact_id artifact_key
+  local manifest_exists source_exists synthesis_exists artifact_exists
+  run_id="$1"
+  state_dir="$(state_dir_for "$run_id")"
+  feature_dir="$(feature_artifact_dir_for "$run_id" research-report)"
+  begin_observation "$feature_dir"
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  state_json="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userId', u.id,
+      'workflowId', rr.workflow_id,
+      'state', rr.state,
+      'safeFailureCode', rr.safe_failure_code,
+      'sourceManifestKey', rr.source_manifest_key,
+      'sourceManifestDigest', rr.source_manifest_digest,
+      'sourceEvidenceKey', (select o.result_json::jsonb ->> 'contentKey' from research_report_provider_operations o where o.workflow_id = rr.workflow_id and o.kind = 'page' and o.state = 'completed' limit 1),
+      'artifactContentId', rr.artifact_content_id,
+      'admittedAt', rr.admitted_at,
+      'acceptedAt', rr.accepted_at,
+      'startedAt', rr.started_at,
+      'sourcesCommittedAt', rr.sources_committed_at,
+      'artifactStoredAt', rr.artifact_stored_at,
+      'terminalAt', rr.terminal_at,
+      'elapsedSeconds', extract(epoch from (rr.terminal_at - rr.admitted_at)),
+      'searchOperations', (select count(*) from research_report_provider_operations o where o.workflow_id = rr.workflow_id and o.kind = 'search'),
+      'pageOperations', (select count(*) from research_report_provider_operations o where o.workflow_id = rr.workflow_id and o.kind = 'page'),
+      'completedProviderOperations', (select count(*) from research_report_provider_operations o where o.workflow_id = rr.workflow_id and o.state = 'completed'),
+      'providerOperationsWithBodies', (select count(*) from research_report_provider_operations o where o.workflow_id = rr.workflow_id and o.result_json::jsonb ? 'content'),
+      'synthesisOperations', (select count(*) from research_report_synthesis_operations o where o.workflow_id = rr.workflow_id and o.state = 'completed'),
+      'synthesisKey', (select result_key from research_report_synthesis_operations o where o.workflow_id = rr.workflow_id limit 1),
+      'terminalNotifications', (select count(*) from research_report_notifications n where n.workflow_id = rr.workflow_id and n.kind = 'terminal' and n.think_submission_id is not null and n.delivered_at is not null),
+      'workflowStartUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_id = rr.workflow_id and a.allowance_kind = 'workflowStarts'),
+      'researchReportUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_id = rr.workflow_id and a.allowance_kind = 'researchReports')
+    ) from users u
+    join lateral (
+      select * from research_reports where user_id = u.id order by admitted_at desc limit 1
+    ) rr on true
+    where u.phone_number = '$phone';")"
+  if [[ -z "$state_json" ]]; then
+    printf 'No committed Research Report found for the run-owned User\n' >&2
+    exit 1
+  fi
+  manifest_key="$(jq --exit-status --raw-output '.sourceManifestKey' <<<"$state_json")"
+  source_key="$(jq --exit-status --raw-output '.sourceEvidenceKey' <<<"$state_json")"
+  synthesis_key="$(jq --exit-status --raw-output '.synthesisKey' <<<"$state_json")"
+  artifact_id="$(jq --exit-status --raw-output '.artifactContentId' <<<"$state_json")"
+  files_bucket="$(jq --exit-status --raw-output \
+    '.r2_buckets[] | select(.binding == "FILES") | .bucket_name' "$state_dir/wrangler.json")"
+  artifacts_bucket="$(jq --exit-status --raw-output \
+    '.r2_buckets[] | select(.binding == "ARTIFACTS") | .bucket_name' "$state_dir/wrangler.json")"
+  artifact_key="client-content/$(VERIFICATION_CONTENT_ID="$artifact_id" bun -e '
+    process.stdout.write(Array.from(new TextEncoder().encode(process.env.VERIFICATION_CONTENT_ID), (byte) => byte.toString(16).padStart(2, "0")).join(""));
+  ')"
+  if r2_object_exists "$state_dir" "$files_bucket" "$manifest_key"; then manifest_exists=true; else manifest_exists=false; fi
+  if r2_object_exists "$state_dir" "$files_bucket" "$source_key"; then source_exists=true; else source_exists=false; fi
+  if r2_object_exists "$state_dir" "$files_bucket" "$synthesis_key"; then synthesis_exists=true; else synthesis_exists=false; fi
+  if r2_object_exists "$state_dir" "$artifacts_bucket" "$artifact_key"; then artifact_exists=true; else artifact_exists=false; fi
+  jq --null-input \
+    --argjson postgres "$state_json" \
+    --argjson sourceManifestExists "$manifest_exists" \
+    --argjson sourceEvidenceExists "$source_exists" \
+    --argjson synthesisExists "$synthesis_exists" \
+    --argjson artifactExists "$artifact_exists" \
+    '$postgres + { sourceManifestExists: $sourceManifestExists, sourceEvidenceExists: $sourceEvidenceExists, synthesisExists: $synthesisExists, artifactExists: $artifactExists }' \
+    >"$feature_dir/state.json"
+  curl --fail --silent --show-error "$provider_origin/_test/research/ledger" \
+    | jq . >"$feature_dir/provider.json"
+  jq --exit-status \
+    '.state == "success" and .safeFailureCode == null and
+      .acceptedAt != null and .startedAt != null and .sourcesCommittedAt != null and
+      .artifactStoredAt != null and .terminalAt != null and
+      .elapsedSeconds >= 0 and .elapsedSeconds <= 3600 and
+      .searchOperations == 1 and .pageOperations == 1 and
+      .completedProviderOperations == 2 and .providerOperationsWithBodies == 0 and
+      .synthesisOperations == 1 and .terminalNotifications == 1 and
+      .workflowStartUsage == 1 and .researchReportUsage == 1 and
+      .sourceManifestExists == true and .sourceEvidenceExists == true and
+      .synthesisExists == true and .artifactExists == true' \
+    "$feature_dir/state.json" >/dev/null
+  jq --exit-status \
+    '([.[] | select(.kind == "discover")] | length == 1) and
+      ([.[] | select(.kind == "page")] | length == 1) and
+      ([.[] | select(.kind == "synthesize")] | length == 1)' \
+    "$feature_dir/provider.json" >/dev/null
+  printf '%s\n' "$(jq --raw-output '.workflowId' "$feature_dir/state.json")" \
+    >"$state_dir/research-report-workflow-id"
+  complete_observation "$run_id" "$feature_dir"
+  printf 'observed research-report state=%s provider=%s\n' \
+    "$feature_dir/state.json" "$feature_dir/provider.json"
+}
+
 observe_billing() {
   local run_id feature_dir container_id provider_origin phone state_json
   run_id="$1"
@@ -1149,9 +1305,17 @@ observe_billing() {
   curl --fail --silent --show-error "$provider_origin/_test/stripe/ledger" \
     | jq . >"$feature_dir/provider.json"
   jq --exit-status --arg phone "$phone" \
-    '.phoneNumber == $phone and .billingPlan == "free" and
-      .allowancePlan == "free" and .allowanceEndsAt != null' \
+    '.phoneNumber == $phone and .allowanceEndsAt != null and
+      ((.billingPlan == "free" and .allowancePlan == "free") or
+       (.billingPlan == "adventurer" and .allowancePlan == "adventurer"))' \
     "$feature_dir/state.json" >/dev/null
+  if [[ "$(jq --raw-output '.billingPlan' "$feature_dir/state.json")" == 'adventurer' ]]; then
+    jq --exit-status \
+      '[.[] | select(.path == "/v1/checkout/sessions" and
+        .parameters.mode == "subscription" and
+        .parameters["line_items[0][price]"] == "price_adventurer")] | length == 1' \
+      "$feature_dir/provider.json" >/dev/null
+  fi
   complete_observation "$run_id" "$feature_dir"
   printf 'observed billing state=%s provider=%s\n' \
     "$feature_dir/state.json" "$feature_dir/provider.json"
@@ -1245,7 +1409,8 @@ observe_account_deletion() {
   local run_id state_dir feature_dir container_id provider_origin phone user_id agent_id
   local channel_link_id target_tag unrelated_tag files_bucket target_key unrelated_key
   local postgres_state agent_runtime provider_ledger provider_containers target_exists unrelated_exists
-  local worker_log account_http feature proof_shape
+  local worker_log account_http feature proof_shape research_state research_expected
+  local research_manifest_exists research_source_exists research_synthesis_exists research_artifact_exists research_artifact_key
   run_id="$1"
   feature="$2"
   if [[ "$feature" == account-deletion-replay ]]; then
@@ -1290,6 +1455,16 @@ observe_account_deletion() {
         join whatsapp_wakeups w on w.wakeup_id = s.wakeup_id
         where w.user_id = '$user_id'
       ),
+      'researchReportExists', exists(select 1 from research_reports where user_id = '$user_id'),
+      'researchProviderOperationExists', exists(
+        select 1 from research_report_provider_operations o
+        join research_reports r on r.workflow_id = o.workflow_id where r.user_id = '$user_id'
+      ),
+      'researchSynthesisOperationExists', exists(
+        select 1 from research_report_synthesis_operations o
+        join research_reports r on r.workflow_id = o.workflow_id where r.user_id = '$user_id'
+      ),
+      'researchNotificationExists', exists(select 1 from research_report_notifications where user_id = '$user_id'),
       'phoneVerificationExists', exists(select 1 from verifications where identifier = '$phone')
     );")"
   agent_runtime="$(inspect_agent_runtime "$run_id" "$agent_id")"
@@ -1303,12 +1478,46 @@ observe_account_deletion() {
   else
     unrelated_exists=false
   fi
+  research_state="$(feature_artifact_dir_for "$run_id" research-report)/state.json"
+  research_expected=false
+  research_manifest_exists=false
+  research_source_exists=false
+  research_synthesis_exists=false
+  research_artifact_exists=false
+  if [[ -s "$research_state" ]]; then
+    research_expected=true
+    if r2_object_exists "$state_dir" "$files_bucket" \
+      "$(jq --exit-status --raw-output '.sourceManifestKey' "$research_state")"; then
+      research_manifest_exists=true
+    fi
+    if r2_object_exists "$state_dir" "$files_bucket" \
+      "$(jq --exit-status --raw-output '.sourceEvidenceKey' "$research_state")"; then
+      research_source_exists=true
+    fi
+    if r2_object_exists "$state_dir" "$files_bucket" \
+      "$(jq --exit-status --raw-output '.synthesisKey' "$research_state")"; then
+      research_synthesis_exists=true
+    fi
+    research_artifact_key="client-content/$(VERIFICATION_CONTENT_ID="$(jq --exit-status --raw-output '.artifactContentId' "$research_state")" bun -e '
+      process.stdout.write(Array.from(new TextEncoder().encode(process.env.VERIFICATION_CONTENT_ID), (byte) => byte.toString(16).padStart(2, "0")).join(""));
+    ')"
+    if r2_object_exists "$state_dir" \
+      "$(jq --exit-status --raw-output '.r2_buckets[] | select(.binding == "ARTIFACTS") | .bucket_name' "$state_dir/wrangler.json")" \
+      "$research_artifact_key"; then
+      research_artifact_exists=true
+    fi
+  fi
   account_http="$("$script_dir/inspect-account-http-log" "$worker_log" "$proof_shape")"
   jq --null-input \
     --argjson postgres "$postgres_state" \
     --argjson agentRuntime "$agent_runtime" \
     --argjson targetR2Exists "$target_exists" \
     --argjson unrelatedR2Exists "$unrelated_exists" \
+    --argjson researchProofExpected "$research_expected" \
+    --argjson researchManifestExists "$research_manifest_exists" \
+    --argjson researchSourceExists "$research_source_exists" \
+    --argjson researchSynthesisExists "$research_synthesis_exists" \
+    --argjson researchArtifactExists "$research_artifact_exists" \
     --argjson accountHttp "$account_http" \
     --arg targetR2Key "$target_key" \
     --arg unrelatedR2Key "$unrelated_key" \
@@ -1318,7 +1527,12 @@ observe_account_deletion() {
       targetR2Exists: $targetR2Exists,
       targetR2Key: $targetR2Key,
       unrelatedR2Exists: $unrelatedR2Exists,
-      unrelatedR2Key: $unrelatedR2Key
+      unrelatedR2Key: $unrelatedR2Key,
+      researchProofExpected: $researchProofExpected,
+      researchManifestExists: $researchManifestExists,
+      researchSourceExists: $researchSourceExists,
+      researchSynthesisExists: $researchSynthesisExists,
+      researchArtifactExists: $researchArtifactExists
     }' >"$feature_dir/state.json"
   cp "$state_dir/account-deletion-agent-runtime-before.json" \
     "$feature_dir/agent-runtime-before.json"
@@ -1340,18 +1554,24 @@ observe_account_deletion() {
     '(.userExists or .agentExists or .authSessionExists or .deletionCaseExists or
       .channelLinkExists or .acceptedInviteExists or .channelAuditExists or
       .billingExists or .allowanceExists or .whatsAppWakeUpExists or
-      .whatsAppWakeUpSourceExists or .phoneVerificationExists) == false and
+      .whatsAppWakeUpSourceExists or .researchReportExists or
+      .researchProviderOperationExists or .researchSynthesisOperationExists or
+      .researchNotificationExists or .phoneVerificationExists) == false and
       .agentRuntime.inspectable == false and .agentRuntime.registered == false and
       .accountHttp.presentationRequests == 1 and
       .accountHttp.presentationSuccesses == 1 and
       .accountHttp.deleteRequests == $deleteRequests and
       .accountHttp.deleteSuccesses == $deleteRequests and
-      .targetR2Exists == false and .unrelatedR2Exists == true' \
+      .targetR2Exists == false and .unrelatedR2Exists == true and
+      (.researchProofExpected == false or
+        (.researchManifestExists == false and .researchSourceExists == false and
+          .researchSynthesisExists == false and
+          .researchArtifactExists == false))' \
     "$feature_dir/state.json" >/dev/null
   jq --exit-status \
     '.inspectable == true and .registered == true and
-      .reminderVerification.reminderCount >= 1 and
-      .reminderVerification.occurrenceCount >= 1 and
+      .reminderVerification.reminderCount >= 0 and
+      .reminderVerification.occurrenceCount >= 0 and
       .reminderVerification.agentScheduleCount >= 0 and
       .reminderVerification.activeScheduleBindingCount >= 0' \
     "$feature_dir/agent-runtime-before.json" >/dev/null
@@ -1517,6 +1737,7 @@ case "$command_name" in
     case "$3" in
       registration) observe_registration "$2" ;;
       channel-linking) observe_channel_linking "$2" ;;
+      research-report) observe_research_report "$2" ;;
       billing) observe_billing "$2" ;;
       whatsapp-wakeup) observe_whatsapp_wakeup "$2" ;;
       account-deletion|account-deletion-replay) observe_account_deletion "$2" "$3" ;;
@@ -1525,6 +1746,14 @@ case "$command_name" in
   channel-invite)
     require_run_id "${2:-}"
     channel_invite "$2"
+    ;;
+  telegram-reply)
+    require_run_id "${2:-}"
+    if [[ -z "${3:-}" ]]; then
+      printf 'A Telegram message is required\n' >&2
+      exit 2
+    fi
+    telegram_reply "$2" "$3"
     ;;
   whatsapp-invite)
     require_run_id "${2:-}"

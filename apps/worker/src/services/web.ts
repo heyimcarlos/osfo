@@ -422,7 +422,7 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
                 rank: index + 1,
                 resultId: options.makeId(),
                 title: boundedText(result.title, 500),
-                url: canonicalUrl(result.url),
+                url: canonicalPublicUrl(result.url),
               };
               return ranked;
             }),
@@ -468,7 +468,7 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
     if (!isSafePublicUrl(suppliedUrl)) {
       return yield* unavailable("unsafeUrl", "The URL is not public HTTPS.");
     }
-    const url = canonicalUrl(suppliedUrl);
+    const url = canonicalPublicUrl(suppliedUrl);
     if (input.reference._tag === "Url" && !requestContainsPublicUrl(input.requestText, url)) {
       return yield* unavailable(
         "unsafeUrl",
@@ -580,7 +580,7 @@ const deduplicateResults = (results: ReadonlyArray<DiscoveryResultItem>) => {
   const seen = new Set<string>();
   return results.flatMap((result) => {
     if (!isSafePublicUrl(result.url)) return [];
-    const url = canonicalUrl(result.url);
+    const url = canonicalPublicUrl(result.url);
     if (seen.has(url)) return [];
     seen.add(url);
     return [{ ...result, url }];
@@ -618,7 +618,7 @@ export const publicQueryIsExplicit = (query: string, requestText: string) => {
 const requestContainsPublicUrl = (requestText: string, expected: string) =>
   (requestText.match(/https:\/\/[^\s<>"']+/giu) ?? []).some((candidate) => {
     const trimmed = candidate.replace(/[),.;!?\]}]+$/gu, "");
-    return isSafePublicUrl(trimmed) && canonicalUrl(trimmed) === expected;
+    return isSafePublicUrl(trimmed) && canonicalPublicUrl(trimmed) === expected;
   });
 
 const isReadableContentType = (value: string) => {
@@ -631,14 +631,21 @@ const isReadableContentType = (value: string) => {
   );
 };
 
-const canonicalUrl = (value: string) => {
+/** Serialize one already-validated public HTTPS URL into its stable page identity. */
+export const canonicalPublicUrl = (value: string) => {
   const url = new URL(value);
   url.hash = "";
   return url.href;
 };
 
 /** Reject non-public schemes, credentials, hostnames, IP literals, and non-standard ports. */
-export const isSafePublicUrl = (value: string): boolean => {
+export const isSafePublicUrl = (value: string): boolean => isSafePublicUrlAtDepth(value, 0);
+
+const maxNestedUrlDepth = 2;
+const maxNestedQueryValueLength = 4_096;
+const maxNestedDecodePasses = 2;
+
+const isSafePublicUrlAtDepth = (value: string, depth: number): boolean => {
   let url: URL;
   try {
     url = new URL(value);
@@ -647,6 +654,14 @@ export const isSafePublicUrl = (value: string): boolean => {
   }
   if (url.protocol !== "https:" || url.username.length > 0 || url.password.length > 0) return false;
   if (url.port !== "" && url.port !== "443") return false;
+  if (
+    Array.from(url.searchParams).some(
+      ([key, queryValue]) =>
+        isCredentialQueryKey(key) || hasUnsafeNestedQueryValue(queryValue, depth),
+    )
+  ) {
+    return false;
+  }
   const hostname = url.hostname.toLowerCase().replace(/\.$/u, "");
   if (
     hostname.length === 0 ||
@@ -660,6 +675,86 @@ export const isSafePublicUrl = (value: string): boolean => {
   }
   return !isUnsafeIpLiteral(hostname);
 };
+
+const exactCredentialQueryKeys = new Set(["auth", "authorization", "jwt", "oauth", "sig"]);
+
+const strongCredentialQueryMarkers = [
+  "token",
+  "credential",
+  "password",
+  "secret",
+  "signature",
+] as const;
+
+const credentialKeyFamilies = ["apikey", "privatekey", "accesskey", "signingkey"] as const;
+const structuredAuthQueryKeys = [
+  "authcode",
+  "authheader",
+  "authkey",
+  "authnonce",
+  "authparam",
+  "oauth",
+] as const;
+
+const isCredentialQueryKey = (value: string) => {
+  const normalized = value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]/gu, "");
+  return (
+    exactCredentialQueryKeys.has(normalized) ||
+    normalized === "key" ||
+    normalized.endsWith("keyid") ||
+    normalized.endsWith("keyidentifier") ||
+    strongCredentialQueryMarkers.some((marker) => normalized.includes(marker)) ||
+    credentialKeyFamilies.some((family) => normalized.includes(family)) ||
+    structuredAuthQueryKeys.some((family) => normalized.startsWith(family))
+  );
+};
+
+const hasUnsafeNestedQueryValue = (value: string, depth: number) => {
+  if (value.length > maxNestedQueryValueLength) return true;
+  const candidates = [value];
+  let decoded = value;
+  for (let pass = 0; pass < maxNestedDecodePasses; pass += 1) {
+    let next: string;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      return true;
+    }
+    if (next === decoded) break;
+    candidates.push(next);
+    decoded = next;
+  }
+  try {
+    if (decodeURIComponent(decoded) !== decoded) return true;
+  } catch {
+    return true;
+  }
+  return candidates.some((candidate) => {
+    let nestedUrl: URL | undefined;
+    try {
+      nestedUrl = new URL(candidate);
+    } catch {
+      return hasCredentialAssignment(candidate);
+    }
+    if (depth >= maxNestedUrlDepth) return true;
+    return !isSafePublicUrlAtDepth(nestedUrl.href, depth + 1);
+  });
+};
+
+const hasCredentialAssignment = (value: string) =>
+  value.split(/[?&#;]/u).some((part) => {
+    const separator = part.indexOf("=");
+    if (separator <= 0) return false;
+    const key = part.slice(0, separator);
+    try {
+      return isCredentialQueryKey(decodeURIComponent(key));
+    } catch {
+      return isCredentialQueryKey(key);
+    }
+  });
 
 const isUnsafeIpLiteral = (hostname: string) => {
   const normalized =

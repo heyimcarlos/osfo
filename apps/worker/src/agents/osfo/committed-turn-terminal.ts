@@ -11,7 +11,9 @@ import {
 /** Minimal trusted authority retained for post-commit conversation projection. */
 export const CommittedTurnAttribution = Schema.Struct({
   allowancePeriodId: AllowancePeriodId,
-  executionMode: Schema.optionalKey(Schema.Literals(["exhaustedConversation", "normalPlanUsage"])),
+  executionMode: Schema.optionalKey(
+    Schema.Literals(["companyContinuity", "exhaustedConversation", "normalPlanUsage"]),
+  ),
   sessionId: SessionId,
   userId: UserId,
 });
@@ -31,6 +33,17 @@ export const CommittedTurnTerminal = Schema.Struct({
 
 /** Durable Think terminal evidence used to recover capture after a Worker restart. */
 export interface CommittedTurnTerminal extends Schema.Schema.Type<typeof CommittedTurnTerminal> {}
+
+/** Company-continuity and exhausted turns must never enter the User conversation projection. */
+export const shouldProjectCommittedConversation = (
+  status: CommittedTurnTerminal["status"],
+  executionMode: Option.Option<CommittedTurnAttribution["executionMode"]>,
+) =>
+  status === "completed" &&
+  Option.match(executionMode, {
+    onNone: () => true,
+    onSome: (mode) => mode !== "companyContinuity" && mode !== "exhaustedConversation",
+  });
 
 /** Expected dependency failure while persisting Think's terminal message. */
 export class ThinkTerminalPersistenceUnavailable extends Schema.TaggedError<ThinkTerminalPersistenceUnavailable>()(

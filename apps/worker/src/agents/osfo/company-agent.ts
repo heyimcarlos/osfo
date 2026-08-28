@@ -7,6 +7,7 @@ import { DateTime, Effect, Layer, Option, Schema } from "effect";
 import { loadConfig } from "../../config";
 import { Db } from "../../db";
 import { hasRecognizedWebSearchPrice, makeDiscovery } from "../../integrations/cloudflare/web";
+import { ResearchVerificationProvider } from "../../integrations/cloudflare/research-verification-provider";
 import type { RuntimeSecrets } from "../../runtime-secrets";
 import { ChannelLinks } from "../../services/channel-links";
 import { isSafePublicUrl, publicQueryIsExplicit, SearchInput } from "../../services/web";
@@ -128,6 +129,14 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
   /** Serve the fixed company route; configuration may pin an alternate Workers AI slug. */
   override getModel() {
     return loadConfig(this.env).companyConversation.modelRoute;
+  }
+
+  /** Keep the verification model boundary local without weakening production AI bindings. */
+  override getAIBinding() {
+    const provider = loadConfig(this.env).researchReportProvider;
+    return provider._tag === "LocalVerification"
+      ? ResearchVerificationProvider.makeAiBinding(provider)
+      : super.getAIBinding();
   }
 
   /** Speak with the shared Osfo persona under the pre-registration contract. */

@@ -128,7 +128,7 @@ export type ModelTurnResult = Result & { readonly messages: globalThis.Array<Mod
 
 /** Select the provider recall shape for the current managed execution mode. */
 export const policyForManagedExecution = (executionMode: ManagedTurnMetadata["executionMode"]) =>
-  executionMode === "exhaustedConversation"
+  executionMode === "exhaustedConversation" || executionMode === "companyContinuity"
     ? ({ recallMode: "exhausted" } as const)
     : ({ recallMode: "normal" } as const);
 

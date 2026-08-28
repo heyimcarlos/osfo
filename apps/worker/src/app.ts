@@ -24,6 +24,8 @@ export interface Bindings {
   readonly integrationAuthorityDeletion: AccountDeletionComposition.IntegrationAuthorityDeletionCapability;
   readonly DB: Pick<Hyperdrive, "connectionString">;
   readonly OSFO_DIRECTORY: Routes.Bindings["OSFO_DIRECTORY"];
+  readonly RESEARCH_REPORT_TIMER_WORKFLOW?: CloudflareEnv["RESEARCH_REPORT_TIMER_WORKFLOW"];
+  readonly RESEARCH_REPORT_WORKFLOW?: CloudflareEnv["RESEARCH_REPORT_WORKFLOW"];
   readonly routeOsfoAgentRequest: Routes.Bindings["routeOsfoAgentRequest"];
 }
 
@@ -152,6 +154,8 @@ const adaptBindings = (env: CloudflareEnv, config: CloudflareConfig): Bindings =
       };
     },
   },
+  RESEARCH_REPORT_TIMER_WORKFLOW: env.RESEARCH_REPORT_TIMER_WORKFLOW,
+  RESEARCH_REPORT_WORKFLOW: env.RESEARCH_REPORT_WORKFLOW,
   routeOsfoAgentRequest: async (request, agentId, childPath) => {
     const { camelCaseToKebabCase, routeSubAgentRequest } = await import("agents");
     const { OsfoAgent } = await import("./agents/osfo/agent");

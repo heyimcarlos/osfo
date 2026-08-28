@@ -5,6 +5,7 @@ import { AccountHandlers } from "./handlers/account";
 import { ChannelLinksHandlers } from "./handlers/channel-links";
 import { HealthHandlers } from "./handlers/health";
 import { RegistrationHandlers } from "./handlers/registration";
+import { ResearchReportHandlers } from "./handlers/research-reports";
 import { SkillsHandlers } from "./handlers/skills";
 import { IntegrationHandlers } from "./handlers/integrations";
 import type { ExecutionUnit } from "./layers";
@@ -33,6 +34,7 @@ export const layer = (
       new URL("/settings/integrations", publicWebBaseUrl(config.auth)),
     ),
     RegistrationHandlers.layer,
+    ResearchReportHandlers.layer,
     SkillsHandlers.layer(bindings),
   );
 

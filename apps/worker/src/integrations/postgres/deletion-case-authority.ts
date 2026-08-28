@@ -73,6 +73,10 @@ export const fenceDeletionCaseAccess = (
     // User is the canonical first lock for every authoritative User/Deletion Case transaction.
     const user = await lockDeletionCaseUser(transaction, candidate.userId);
     if (user === undefined) return false;
+    // Serialize the durable deletion fence with every Research Report admission and callback.
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`research-report:user:${candidate.userId}`}, 0))`,
+    );
     if (candidate._tag === "Administrative") {
       // Serialize revocation with the whole fence transaction; the case lock alone cannot
       // keep a distinct Administrative Authority current through session deletion.

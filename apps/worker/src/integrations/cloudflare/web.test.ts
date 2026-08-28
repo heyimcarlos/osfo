@@ -83,6 +83,29 @@ describe("Cloudflare web adapters", () => {
     }),
   );
 
+  it.effect("does not follow a redirect carrying signed credentials", () =>
+    Effect.gen(function* () {
+      const requested: Array<string> = [];
+      const fetchPage = makePageFetch((input) => {
+        const url = input instanceof Request ? input.url : String(input);
+        requested.push(url);
+        return Promise.resolve(
+          new Response(null, {
+            headers: {
+              location: "https://cdn.example.com/report?X-Amz-Signature=private-signature",
+            },
+            status: 302,
+          }),
+        );
+      });
+
+      expect((yield* Effect.exit(fetchPage({ url: "https://example.com/start" })))._tag).toBe(
+        "Failure",
+      );
+      expect(requested).toEqual(["https://example.com/start"]);
+    }),
+  );
+
   it.effect("stops before a fourth public redirect", () =>
     Effect.gen(function* () {
       const requested: Array<string> = [];
@@ -127,6 +150,26 @@ describe("Cloudflare web adapters", () => {
       expect(result.title).toBe("Useful & safe");
       expect(result.content).toBe("Useful & safe Public evidence");
       expect(result.redirects).toEqual([]);
+    }),
+  );
+
+  it.effect("canonicalizes page identity and bounds hostile title and content-type metadata", () =>
+    Effect.gen(function* () {
+      const fetchPage = makePageFetch(() =>
+        Promise.resolve(
+          new Response(`<title>${"T".repeat(3_000)}</title><main>Evidence</main>`, {
+            headers: { "content-type": `text/html; x=${"a".repeat(1_000)}` },
+          }),
+        ),
+      );
+
+      const result = yield* fetchPage({
+        url: "https://EXAMPLE.com:443/report#private-fragment",
+      });
+
+      expect(result.finalUrl).toBe("https://example.com/report");
+      expect(result.title).toHaveLength(2_000);
+      expect(result.contentType).toHaveLength(512);
     }),
   );
 

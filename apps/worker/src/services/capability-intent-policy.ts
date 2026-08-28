@@ -240,8 +240,15 @@ export const capabilityIntentPolicy = {
   },
   reminders: { matches: anyIntentPhrase("remind", "reminder"), taskKinds: ["reminder"] },
   workflows: {
-    matches: anyIntentPhrase("automate", "automation", "recurring", "workflow"),
-    taskKinds: ["workflow"],
+    matches: anyIntentPhrase(
+      "automate",
+      "automation",
+      "recurring",
+      "research",
+      "research report",
+      "workflow",
+    ),
+    taskKinds: ["research", "workflow"],
   },
   gmail: {
     matches: matchesClosedIntent(

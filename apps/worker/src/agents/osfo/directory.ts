@@ -3,9 +3,10 @@ import { Think, type StreamCallback, type ThinkChannels } from "@cloudflare/thin
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import type { UIMessage } from "ai";
 import type { SkillChangeRequest, SkillDeletionRequest } from "@osfo/api";
-import { Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Effect, Layer, Option, Redacted, Result, Schema } from "effect";
 
 import { loadConfig } from "../../config";
+import { ResearchReportComposition } from "../../composition/research-report";
 import { Db } from "../../db";
 import { makeTelegramChannel } from "../../integrations/telegram";
 import { makeWhatsAppChannel } from "../../integrations/whatsapp";
@@ -13,6 +14,7 @@ import { invalidOsfoEnvironment, type RuntimeProbeResult } from "../../layers";
 import type { RuntimeSecrets } from "../../runtime-secrets";
 import { AgentDirectory } from "../../services/agent-directory";
 import { ChannelLinks } from "../../services/channel-links";
+import { ResearchReportFollowUp } from "../../services/research-report-follow-up";
 import { OsfoAgent } from "./agent";
 import { channelAddressOf, messengerAuthorId } from "./channel-address";
 import { streamTextReply } from "./messenger-stream";
@@ -153,6 +155,28 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     const agent = await this.#agentForUser(userId);
     if (agent === null) return;
     await agent.exposeReminderWakeUpSources(userId, committed);
+  }
+
+  /** Route one opaque, PostgreSQL-authorized Research Report follow-up to its exact Agent. */
+  async submitResearchReportFollowUp(notificationIdentity: string) {
+    const decoded = Schema.decodeResult(ResearchReportFollowUp.NotificationId)(
+      notificationIdentity,
+    );
+    if (Result.isFailure(decoded)) return { _tag: "ResearchReportFollowUpInvalid" as const };
+    const notification = await Effect.runPromise(
+      ResearchReportComposition.followUpEffect(
+        { DB: this.env.DB },
+        ResearchReportFollowUp.Service.pipe(
+          Effect.flatMap((followUps) => followUps.inspect(decoded.success)),
+          Effect.orDie,
+        ),
+      ),
+    );
+    if (notification === null || !this.hasSubAgent(OsfoAgent, notification.agentId)) {
+      return { _tag: "ResearchReportFollowUpUnavailable" as const };
+    }
+    const agent = await this.subAgent(OsfoAgent, notification.agentId);
+    return agent.submitResearchReportFollowUp(notificationIdentity);
   }
 
   /** List current personal Skills through one registered User Agent. */
