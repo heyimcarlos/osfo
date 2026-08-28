@@ -308,6 +308,11 @@ const recognizedModelPrices = Schema.decodeSync(Schema.Array(ManagedModelPrice))
   },
 ]);
 
+/** Retained routine managed-model rate used by owned model adapters. */
+export const managedModelRoutinePrice = Schema.decodeUnknownSync(ManagedModelPrice)(
+  recognizedModelPrices.find(({ priceEntryId }) => priceEntryId === "managed-model-routine"),
+);
+
 /** Current retained price authority pinned by newly admitted operations. */
 export const currentResourcePriceVersion = ResourcePriceVersion.make("resource-prices-2026-08-22");
 

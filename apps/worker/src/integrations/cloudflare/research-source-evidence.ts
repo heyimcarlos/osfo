@@ -24,6 +24,46 @@ const EncodedManifest = Schema.fromJsonString(ResearchCollector.SourceManifest);
 
 /** Store fetched source bodies in immutable, User-owned R2 objects. */
 export const make = (bucket: R2Bucket): ResearchCollector.PortInterface["sourceEvidence"] => ({
+  readManifest: (userId, key, manifestDigest) =>
+    Effect.gen(function* () {
+      const prefix = `users/${encodeURIComponent(userId)}/research-report/manifests/`;
+      if (!key.startsWith(prefix)) {
+        return yield* unavailable("readManifest", "The source-manifest key is not User-owned");
+      }
+      const encoded = yield* readText(bucket, key);
+      if (encoded === null) {
+        return yield* unavailable("readManifest", "The committed source manifest is missing");
+      }
+      const retainedDigest = yield* digest(encoded);
+      if (retainedDigest !== manifestDigest) {
+        return yield* unavailable("readManifest", "The source manifest digest does not match");
+      }
+      return yield* Schema.decodeEffect(EncodedManifest)(encoded).pipe(
+        Effect.mapError((cause) =>
+          unavailable("readManifest", "The committed source manifest is invalid", cause),
+        ),
+      );
+    }),
+  readPage: (userId, page) =>
+    Effect.gen(function* () {
+      const prefix = `users/${encodeURIComponent(userId)}/research-report/sources/`;
+      if (!page.contentKey.startsWith(prefix)) {
+        return yield* unavailable("readPage", "The source-evidence key is not User-owned");
+      }
+      const retained = yield* read(bucket, page.contentKey);
+      if (
+        retained === null ||
+        retained.userId !== userId ||
+        retained.contentDigest !== page.contentDigest ||
+        retained.finalUrl !== page.finalUrl
+      ) {
+        return yield* unavailable(
+          "readPage",
+          "The retained source body does not match its immutable page reference",
+        );
+      }
+      return retained.content;
+    }),
   removeManifest: (userId, workflowId) =>
     request("removeManifest", () => bucket.delete(manifestKey(userId, workflowId))),
   removePage: (userId, contentKey) => {
@@ -46,6 +86,7 @@ export const make = (bucket: R2Bucket): ResearchCollector.PortInterface["sourceE
           unavailable("putManifest", "The source manifest cannot be encoded", cause),
         ),
       );
+      const manifestDigest = yield* digest(encoded);
       const created = yield* request("putManifest", () =>
         bucket.put(key, encoded, {
           customMetadata: {
@@ -55,7 +96,7 @@ export const make = (bucket: R2Bucket): ResearchCollector.PortInterface["sourceE
           onlyIf: { etagDoesNotMatch: "*" },
         }),
       );
-      if (created !== null) return key;
+      if (created !== null) return { manifestDigest, manifestKey: key };
       const retained = yield* readText(bucket, key);
       if (retained === null) {
         return yield* unavailable(
@@ -79,7 +120,7 @@ export const make = (bucket: R2Bucket): ResearchCollector.PortInterface["sourceE
           "The immutable source-manifest identity already contains different facts",
         );
       }
-      return key;
+      return { manifestDigest, manifestKey: key };
     }),
   put: (input) =>
     Effect.gen(function* () {

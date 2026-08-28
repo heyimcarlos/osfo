@@ -51,8 +51,17 @@ it.effect(
         version: "research-source-manifest-v1",
         workflowId,
       });
-      const manifestKey = yield* evidence.putManifest(userId, manifest);
-      expect(manifestKey).toMatch(new RegExp(`^users/${userId}/research-report/manifests/`, "u"));
+      const retainedManifest = yield* evidence.putManifest(userId, manifest);
+      expect(retainedManifest.manifestKey).toMatch(
+        new RegExp(`^users/${userId}/research-report/manifests/`, "u"),
+      );
+      expect(
+        yield* evidence.readManifest(
+          userId,
+          retainedManifest.manifestKey,
+          retainedManifest.manifestDigest,
+        ),
+      ).toEqual(manifest);
       yield* evidence.putManifest(userId, manifest);
 
       const changed = yield* evidence

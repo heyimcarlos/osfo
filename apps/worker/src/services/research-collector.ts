@@ -4,12 +4,13 @@ import { currentCapabilityCatalog } from "../domain/capability-catalog";
 import type { Denied } from "./authorization";
 import { ResearchReport } from "./research-report";
 import type { DiscoveryResult, PageFetch } from "./web";
-import { isSafePublicUrl, limits } from "./web";
+import { canonicalPublicUrl, isSafePublicUrl, limits } from "./web";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Provider outcomes use the standard Effect _tag discriminator. */
 
 const boundedText = (maximum: number) =>
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(maximum));
+const providerAttemptLeaseMilliseconds = limits.providerDeadlineMilliseconds * 2 + 5_000;
 
 export const OperationId = boundedText(300).pipe(Schema.brand("ResearchReportOperationId"));
 export type OperationId = typeof OperationId.Type;
@@ -37,10 +38,10 @@ export const OperationResult = Schema.Union([
   Schema.TaggedStruct("Page", {
     contentKey: boundedText(1_024),
     contentDigest: ResearchReport.InputDigest,
-    contentType: Schema.String,
+    contentType: boundedText(512),
     fetchedAt: Schema.DateFromString,
     finalUrl: boundedText(4_096),
-    title: Schema.NullOr(Schema.String),
+    title: Schema.NullOr(boundedText(2_000)),
   }),
   Schema.TaggedStruct("PageUnavailable", {
     reason: Schema.Literals(["inaccessible", "oversized", "unsafeUrl", "unsupportedContent"]),
@@ -67,6 +68,7 @@ export interface Operation {
   readonly attemptCount: number;
   readonly state: OperationState;
   readonly result: OperationResult | null;
+  readonly startedAt: Date | null;
 }
 
 export const ManifestSource = Schema.Struct({
@@ -74,7 +76,7 @@ export const ManifestSource = Schema.Struct({
   contentKey: boundedText(1_024),
   fetchedAt: Schema.DateFromString,
   sourceId: boundedText(300),
-  title: Schema.NullOr(Schema.String),
+  title: Schema.NullOr(boundedText(2_000)),
   url: boundedText(4_096),
 });
 export type ManifestSource = typeof ManifestSource.Type;
@@ -91,8 +93,14 @@ export type SourceManifest = typeof SourceManifest.Type;
 
 export interface Collection {
   readonly manifest: SourceManifest;
+  readonly manifestDigest: ResearchReport.InputDigest;
   readonly manifestKey: string;
   readonly pages: ReadonlyArray<Extract<OperationResult, { readonly _tag: "Page" }>>;
+}
+
+export interface RetainedSource {
+  readonly content: string;
+  readonly source: ManifestSource;
 }
 
 export class Conflict extends Schema.TaggedError<Conflict>()("ResearchCollectorConflict", {
@@ -137,6 +145,10 @@ export interface PortInterface {
       state: "canceled" | "failed" | "unknown",
       safeFailureCode: string,
     ) => Effect.Effect<void, Unavailable>;
+    readonly expireAmbiguous: (
+      operation: Operation,
+      expiredBefore: Date,
+    ) => Effect.Effect<boolean, Unavailable>;
     readonly recordAttempt: (
       operationId: OperationId,
       expectedAttemptCount: number,
@@ -159,7 +171,18 @@ export interface PortInterface {
     readonly putManifest: (
       userId: ResearchReport.Record["userId"],
       manifest: SourceManifest,
-    ) => Effect.Effect<string, Unavailable>;
+    ) => Effect.Effect<
+      {
+        readonly manifestDigest: ResearchReport.InputDigest;
+        readonly manifestKey: string;
+      },
+      Unavailable
+    >;
+    readonly readManifest: (
+      userId: ResearchReport.Record["userId"],
+      manifestKey: string,
+      manifestDigest: ResearchReport.InputDigest,
+    ) => Effect.Effect<SourceManifest, Unavailable>;
     readonly removeManifest: (
       userId: ResearchReport.Record["userId"],
       workflowId: ResearchReport.WorkflowId,
@@ -182,6 +205,10 @@ export interface PortInterface {
       userId: ResearchReport.Record["userId"],
       operationId: OperationId,
     ) => Effect.Effect<Extract<OperationResult, { readonly _tag: "Page" }> | null, Unavailable>;
+    readonly readPage: (
+      userId: ResearchReport.Record["userId"],
+      page: Extract<OperationResult, { readonly _tag: "Page" }>,
+    ) => Effect.Effect<string, Unavailable>;
   };
 }
 
@@ -195,6 +222,10 @@ export interface Interface {
     report: ResearchReport.Record,
     collection: Collection,
   ) => Effect.Effect<void, Unavailable>;
+  readonly read: (
+    report: ResearchReport.Record,
+    collection: Collection,
+  ) => Effect.Effect<ReadonlyArray<RetainedSource>, Unavailable>;
 }
 
 export class Service extends Context.Service<Service, Interface>()("@osfo/ResearchCollector") {}
@@ -231,6 +262,21 @@ export const make = Effect.gen(function* () {
     if (claim.operation.state === "completed" && claim.operation.result !== null) {
       return claim.operation.result;
     }
+    if (
+      claim._tag === "Existing" &&
+      claim.operation.attemptCount > 0 &&
+      Predicate.isTagged(operation.input, "Page") &&
+      (claim.operation.state === "pending" || claim.operation.state === "unknown")
+    ) {
+      const reconciled = yield* ports.sourceEvidence.reconcile(
+        report.userId,
+        operation.operationId,
+      );
+      if (reconciled !== null) {
+        const completed = yield* ports.persistence.complete(claim.operation, reconciled);
+        if (completed.result !== null) return completed.result;
+      }
+    }
     if (claim._tag === "Existing" && claim.operation.state !== "pending") {
       return yield* new Unavailable({
         cause: claim.operation.state,
@@ -239,18 +285,17 @@ export const make = Effect.gen(function* () {
       });
     }
     if (claim._tag === "Existing" && claim.operation.attemptCount > 0) {
-      if (Predicate.isTagged(operation.input, "Page")) {
-        const reconciled = yield* ports.sourceEvidence.reconcile(
-          report.userId,
-          operation.operationId,
-        );
-        if (reconciled !== null) {
-          const completed = yield* ports.persistence.complete(operation, reconciled);
-          if (completed.result !== null) return completed.result;
-        }
-      }
+      const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+      const expired = yield* ports.persistence.expireAmbiguous(
+        claim.operation,
+        DateTime.toDateUtc(
+          DateTime.subtract(DateTime.makeUnsafe(now), {
+            milliseconds: providerAttemptLeaseMilliseconds,
+          }),
+        ),
+      );
       return yield* new Unavailable({
-        cause: claim.operation.state,
+        cause: expired ? "expired-provider-attempt" : claim.operation.state,
         message: "A prior provider operation has no safely replayable result",
         reason: "ambiguousOperation",
       });
@@ -290,6 +335,7 @@ export const make = Effect.gen(function* () {
       .filter(isSearchResult)
       .flatMap(({ results }) => results.map(({ url }) => url))
       .filter(isSafePublicUrl)
+      .map(canonicalPublicUrl)
       .filter((url, index, all) => all.indexOf(url) === index)
       .slice(0, currentCapabilityCatalog.operationLimits.researchRetrievedPages);
     const pageResults = yield* Effect.forEach(
@@ -315,7 +361,7 @@ export const make = Effect.gen(function* () {
         contentDigest: page.contentDigest,
         contentKey: page.contentKey,
         fetchedAt: page.fetchedAt,
-        sourceId: `${report.workflowId}:source:${index}`,
+        sourceId: `S${index + 1}`,
         title: page.title,
         url: page.finalUrl,
       })),
@@ -323,8 +369,8 @@ export const make = Effect.gen(function* () {
       workflowId: report.workflowId,
     });
     yield* authorize(report);
-    const manifestKey = yield* ports.sourceEvidence.putManifest(report.userId, manifest);
-    return { manifest, manifestKey, pages };
+    const retained = yield* ports.sourceEvidence.putManifest(report.userId, manifest);
+    return { manifest, ...retained, pages };
   });
 
   const discard = Effect.fn("ResearchCollector.discard")(function* (
@@ -339,7 +385,74 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  return Service.of({ collect, discard });
+  const read = Effect.fn("ResearchCollector.read")(function* (
+    report: ResearchReport.Record,
+    collection: Collection,
+  ) {
+    yield* authorize(report);
+    if (report.sourceManifestKey === null || report.sourceManifestDigest === null) {
+      return yield* new Unavailable({
+        cause: report.state,
+        message: "The Research Report has no committed source-manifest identity",
+        reason: "insufficientEvidence",
+      });
+    }
+    if (
+      report.sourceManifestKey !== collection.manifestKey ||
+      report.sourceManifestDigest !== collection.manifestDigest
+    ) {
+      return yield* new Unavailable({
+        cause: collection.manifestKey,
+        message: "The resumed collection does not match committed product truth",
+        reason: "insufficientEvidence",
+      });
+    }
+    const manifest = yield* ports.sourceEvidence
+      .readManifest(report.userId, report.sourceManifestKey, report.sourceManifestDigest)
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new Unavailable({
+              cause,
+              message: "The committed source manifest is missing or corrupt",
+              reason: "insufficientEvidence",
+            }),
+        ),
+      );
+    if (manifest.workflowId !== report.workflowId) {
+      return yield* new Unavailable({
+        cause: manifest.workflowId,
+        message: "The committed source manifest belongs to another Workflow",
+        reason: "insufficientEvidence",
+      });
+    }
+    const sources = yield* Effect.forEach(
+      manifest.sources,
+      (source) =>
+        Effect.gen(function* () {
+          const page = collection.pages.find(
+            (candidate) =>
+              candidate.contentKey === source.contentKey &&
+              candidate.contentDigest === source.contentDigest &&
+              candidate.finalUrl === source.url,
+          );
+          if (page === undefined) {
+            return yield* new Unavailable({
+              cause: source.contentKey,
+              message: "The retained source manifest does not match its fetched page evidence",
+              reason: "insufficientEvidence",
+            });
+          }
+          const content = yield* ports.sourceEvidence.readPage(report.userId, page);
+          return { content, source };
+        }),
+      { concurrency: 1 },
+    );
+    yield* authorize(report);
+    return sources;
+  });
+
+  return Service.of({ collect, discard, read });
 });
 
 export const layerWithoutDependencies = Layer.effect(Service, make);
@@ -502,6 +615,7 @@ const makeOperation = (
       operationId: OperationId.make(`${workflowId}:provider:${sequence}`),
       result: null,
       sequence,
+      startedAt: null,
       state: "pending" as const,
       workflowId,
     })),

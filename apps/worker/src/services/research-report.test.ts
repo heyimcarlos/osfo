@@ -59,7 +59,12 @@ it.effect("starts an ordinary report without Approval and persists before Workfl
     });
     expect(started.report.workflowId).toBe(started.report.cloudflareInstanceId);
     expect(started.report.deadlineAt).toEqual(deadline);
-    expect(fixture.calls).toEqual(["persist.admit", "workflow.create", "persist.accept"]);
+    expect(fixture.calls).toEqual([
+      "persist.admit",
+      "workflow.create",
+      "persist.accept",
+      "account.workflowStart",
+    ]);
     expect(fixture.instances).toEqual([started.report.cloudflareInstanceId]);
   }).pipe(Effect.provide(layer(fixture.port)));
 });
@@ -91,6 +96,33 @@ it.effect("continues exact admitted work after a Plan downgrade and rejects chan
       expect(conflict.failure).toMatchObject({ _tag: "ResearchReportConflict" });
     }
     expect(fixture.instances).toHaveLength(1);
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
+it.effect("serializes the first execution claim and replays its exact start time", () => {
+  const fixture = makeFixture();
+
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(now.getTime());
+    const reports = yield* ResearchReport.Service;
+    const started = yield* reports.start(startInput());
+    const payload = ResearchReport.WorkflowPayload.make({
+      inputDigest: started.report.inputDigest,
+      workflowId: started.report.workflowId,
+    });
+    fixture.calls.length = 0;
+    const [first, replay] = yield* Effect.all(
+      [reports.beginExecution(payload), reports.beginExecution(payload)],
+      { concurrency: "unbounded" },
+    );
+
+    expect(first).toMatchObject({ startedAt: now, state: "running" });
+    expect(replay).toMatchObject({ startedAt: now, state: "running" });
+    expect(fixture.calls).toEqual([
+      "persist.beginExecution",
+      "account.workflowStart",
+      "account.workflowStart",
+    ]);
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
@@ -266,6 +298,61 @@ it.effect("records cancellation before best-effort interruption and converges du
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
+it.effect("publication wins the cancellation race and terminal reasons replay exactly", () => {
+  const fixture = makeFixture();
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(now.getTime());
+    const reports = yield* ResearchReport.Service;
+    const started = yield* reports.start(startInput());
+    const payload = ResearchReport.WorkflowPayload.make({
+      inputDigest: started.report.inputDigest,
+      workflowId: started.report.workflowId,
+    });
+    yield* reports.beginExecution(payload);
+    yield* reports.commitSources(
+      payload,
+      "users/research-user/research-report/manifests/race.json",
+      ResearchReport.InputDigest.make("b".repeat(64)),
+    );
+    const claimed = yield* reports.claimArtifactPublication(payload, "document:workflow:race");
+    expect(claimed).toMatchObject({ state: "artifact_stored" });
+    const canceled = yield* reports.cancel(started.report.workflowId, userId);
+    expect(canceled).toMatchObject({
+      _tag: "PublicationCommitted",
+      report: { state: "artifact_stored" },
+    });
+    const completed = yield* reports.completeSuccess(payload, "document:workflow:race");
+    expect(completed).toMatchObject({ safeFailureCode: null, state: "success" });
+
+    const terminalConflict = yield* reports
+      .finishFailure(payload, "changed-after-publication")
+      .pipe(Effect.result);
+    expect(terminalConflict).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
+it.effect("retains one bounded safe terminal reason and rejects changed replay", () => {
+  const fixture = makeFixture();
+  return Effect.gen(function* () {
+    const reports = yield* ResearchReport.Service;
+    const started = yield* reports.start(startInput());
+    const payload = ResearchReport.WorkflowPayload.make({
+      inputDigest: started.report.inputDigest,
+      workflowId: started.report.workflowId,
+    });
+    yield* reports.beginExecution(payload);
+    const failed = yield* reports.finishFailure(payload, "invalid-synthesis-evidence");
+    const replay = yield* reports.finishFailure(payload, "invalid-synthesis-evidence");
+    expect(failed).toMatchObject({
+      safeFailureCode: "invalid-synthesis-evidence",
+      state: "failure",
+    });
+    expect(replay).toEqual(failed);
+    const conflict = yield* reports.finishFailure(payload, "different-code").pipe(Effect.result);
+    expect(conflict).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
 it.effect(
   "commits one exact source manifest only while current execution authority remains",
   () => {
@@ -281,6 +368,7 @@ it.effect(
       const committed = yield* reports.commitSources(
         payload,
         `users/${userId}/research-report/manifests/${started.report.workflowId}.json`,
+        ResearchReport.InputDigest.make("b".repeat(64)),
       );
       expect(committed).toMatchObject({
         sourceManifestKey: `users/${userId}/research-report/manifests/${started.report.workflowId}.json`,
@@ -288,7 +376,11 @@ it.effect(
       });
 
       const changed = yield* reports
-        .commitSources(payload, "users/changed-manifest.json")
+        .commitSources(
+          payload,
+          "users/changed-manifest.json",
+          ResearchReport.InputDigest.make("c".repeat(64)),
+        )
         .pipe(Effect.result);
       expect(changed).toMatchObject({ failure: { _tag: "ResearchReportConflict" } });
     }).pipe(Effect.provide(layer(fixture.port)));
@@ -371,6 +463,10 @@ const makeFixture = (
         approval: report.approval,
       }),
     providerAvailable: Effect.succeed(true),
+    recordWorkflowStart: () =>
+      Effect.sync(() => {
+        calls.push("account.workflowStart");
+      }),
     persistence: {
       admit: (record) =>
         Effect.sync(() => {
@@ -396,7 +492,23 @@ const makeFixture = (
           stored = { ...stored, acceptedAt, state: "accepted" };
           return stored;
         }),
-      markSourcesCommitted: (workflowId, inputDigest, sourceManifestKey) =>
+      beginExecution: (workflowId, inputDigest, startedAt) =>
+        Effect.gen(function* () {
+          if (stored === null) return yield* new ResearchReport.NotFound({ workflowId });
+          if (stored.inputDigest !== inputDigest) {
+            return yield* new ResearchReport.Conflict({ message: "changed digest", workflowId });
+          }
+          if (stored.startedAt !== null) return stored;
+          calls.push("persist.beginExecution");
+          stored = {
+            ...stored,
+            acceptedAt: stored.acceptedAt ?? startedAt,
+            startedAt,
+            state: "running",
+          };
+          return stored;
+        }),
+      markSourcesCommitted: (workflowId, inputDigest, sourceManifestKey, sourceManifestDigest) =>
         Effect.gen(function* () {
           if (stored === null) return yield* new ResearchReport.NotFound({ workflowId });
           if (stored.inputDigest !== inputDigest) {
@@ -405,7 +517,60 @@ const makeFixture = (
           if (stored.sourceManifestKey !== null && stored.sourceManifestKey !== sourceManifestKey) {
             return yield* new ResearchReport.Conflict({ message: "changed manifest", workflowId });
           }
-          stored = { ...stored, sourceManifestKey, state: "sources_committed" };
+          stored = {
+            ...stored,
+            sourceManifestDigest,
+            sourceManifestKey,
+            state: "sources_committed",
+          };
+          return stored;
+        }),
+      claimArtifactPublication: (workflowId, inputDigest, contentId, claimedAt) =>
+        Effect.gen(function* () {
+          if (stored === null) return yield* new ResearchReport.NotFound({ workflowId });
+          if (stored.inputDigest !== inputDigest) {
+            return yield* new ResearchReport.Conflict({ message: "changed digest", workflowId });
+          }
+          stored = {
+            ...stored,
+            artifactContentId: contentId,
+            artifactStoredAt: claimedAt,
+            state: "artifact_stored",
+          };
+          return stored;
+        }),
+      completeSuccess: (workflowId, inputDigest, contentId, completedAt) =>
+        Effect.gen(function* () {
+          if (stored === null) return yield* new ResearchReport.NotFound({ workflowId });
+          if (stored.inputDigest !== inputDigest || stored.artifactContentId !== contentId) {
+            return yield* new ResearchReport.Conflict({ message: "changed artifact", workflowId });
+          }
+          stored = { ...stored, state: "success", terminalAt: completedAt };
+          return stored;
+        }),
+      finishTerminal: (workflowId, inputDigest, state, safeFailureCode, terminalAt) =>
+        Effect.gen(function* () {
+          if (stored === null) return yield* new ResearchReport.NotFound({ workflowId });
+          if (stored.inputDigest !== inputDigest) {
+            return yield* new ResearchReport.Conflict({ message: "changed digest", workflowId });
+          }
+          if (stored.state === state) {
+            if (stored.safeFailureCode === safeFailureCode) return stored;
+            return yield* new ResearchReport.Conflict({
+              message: "changed terminal code",
+              workflowId,
+            });
+          }
+          if (
+            stored.state === "artifact_stored" ||
+            ResearchReport.terminalStates.has(stored.state)
+          ) {
+            return yield* new ResearchReport.Conflict({
+              message: "terminal race lost",
+              workflowId,
+            });
+          }
+          stored = { ...stored, safeFailureCode, state, terminalAt };
           return stored;
         }),
       requestCancel: (workflowId, requestedUserId, requestedAt) =>
@@ -414,7 +579,8 @@ const makeFixture = (
           if (stored === null || stored.userId !== requestedUserId) {
             return yield* new ResearchReport.NotFound({ workflowId });
           }
-          if (ResearchReport.terminalStates.has(stored.state)) return stored;
+          if (ResearchReport.terminalStates.has(stored.state) || stored.state === "artifact_stored")
+            return stored;
           stored =
             stored.state === "cancel_requested"
               ? stored

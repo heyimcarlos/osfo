@@ -51,6 +51,7 @@ export const researchReports = pgTable(
     manifest_version: text(),
     cloudflare_instance_id: text().notNull(),
     source_manifest_key: text(),
+    source_manifest_digest: text(),
     artifact_content_id: text(),
     safe_failure_code: text(),
     admitted_at: timestamp({ withTimezone: true }).notNull(),
@@ -88,6 +89,7 @@ export const researchReports = pgTable(
         and length(btrim(${table.route_id})) > 0
         and length(btrim(${table.session_id})) > 0
         and ${table.input_digest} ~ '^[0-9a-f]{64}$'
+        and (${table.source_manifest_digest} is null or ${table.source_manifest_digest} ~ '^[0-9a-f]{64}$')
         and length(btrim(${table.cloudflare_instance_id})) > 0`,
     ),
     check(
@@ -114,12 +116,18 @@ export const researchReports = pgTable(
       sql`${table.deadline_at} > ${table.admitted_at}
         and (${table.accepted_at} is null or ${table.accepted_at} >= ${table.admitted_at})
         and (${table.started_at} is null or ${table.started_at} >= ${table.admitted_at})
+        and (${table.started_at} is null or ${table.accepted_at} is not null)
         and (${table.sources_committed_at} is null or ${table.sources_committed_at} >= ${table.admitted_at})
         and (${table.artifact_stored_at} is null or ${table.artifact_stored_at} >= ${table.admitted_at})
         and (${table.cancel_requested_at} is null or ${table.cancel_requested_at} >= ${table.admitted_at})
         and (${table.terminal_at} is null or ${table.terminal_at} >= ${table.admitted_at})
         and ((${table.state} in ('success', 'failure', 'canceled')) = (${table.terminal_at} is not null))
-        and (${table.state} <> 'success' or (${table.source_manifest_key} is not null and ${table.artifact_content_id} is not null))`,
+        and ((${table.state} in ('failure', 'canceled')) = (${table.safe_failure_code} is not null))
+        and (${table.safe_failure_code} is null or (length(btrim(${table.safe_failure_code})) between 1 and 120))
+        and ((${table.source_manifest_key} is null) = (${table.source_manifest_digest} is null))
+        and (${table.state} not in ('running', 'sources_committed', 'artifact_stored', 'success', 'failure') or (${table.accepted_at} is not null and ${table.started_at} is not null))
+        and (${table.state} not in ('sources_committed', 'artifact_stored', 'success') or (${table.source_manifest_key} is not null and ${table.source_manifest_digest} is not null))
+        and (${table.state} not in ('artifact_stored', 'success') or (${table.artifact_content_id} is not null and ${table.artifact_stored_at} is not null))`,
     ),
   ],
 );
@@ -166,6 +174,55 @@ export const researchReportProviderOperations = pgTable(
       sql`${table.state} in ('pending', 'completed', 'unknown', 'failed', 'canceled')
         and (${table.result_json} is null or jsonb_typeof(${table.result_json}::jsonb) = 'object')
         and (${table.state} <> 'completed' or (${table.result_json} is not null and ${table.completed_at} is not null))`,
+    ),
+  ],
+);
+
+const synthesisOperationStates = ["pending", "completed", "unknown", "failed", "canceled"] as const;
+
+/** Stable model-operation and Company Cost evidence for one report synthesis. */
+export const researchReportSynthesisOperations = pgTable(
+  "research_report_synthesis_operations",
+  {
+    operation_id: text().primaryKey(),
+    workflow_id: text()
+      .notNull()
+      .references(() => researchReports.workflow_id, { onDelete: "cascade" }),
+    input_digest: text().notNull(),
+    state: text({ enum: synthesisOperationStates }).notNull(),
+    model_route: text().notNull(),
+    model_access_policy_version: text().notNull(),
+    resource_price_version: text().notNull(),
+    result_key: text(),
+    result_digest: text(),
+    company_cost_json: text(),
+    safe_failure_code: text(),
+    attempt_count: integer().default(0).notNull(),
+    started_at: timestamp({ withTimezone: true }),
+    completed_at: timestamp({ withTimezone: true }),
+    created_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("research_report_synthesis_workflow_unique").on(table.workflow_id),
+    index("research_report_synthesis_workflow_state_index").on(table.workflow_id, table.state),
+    check(
+      "research_report_synthesis_identity_check",
+      sql`length(btrim(${table.operation_id})) > 0
+        and ${table.input_digest} ~ '^[0-9a-f]{64}$'
+        and length(btrim(${table.model_route})) > 0
+        and length(btrim(${table.model_access_policy_version})) > 0
+        and length(btrim(${table.resource_price_version})) > 0
+        and ${table.attempt_count} >= 0`,
+    ),
+    check(
+      "research_report_synthesis_state_check",
+      sql`${table.state} in ('pending', 'completed', 'unknown', 'failed', 'canceled')
+        and (${table.company_cost_json} is null or jsonb_typeof(${table.company_cost_json}::jsonb) = 'object')
+        and (${table.state} <> 'completed' or (${table.result_key} is not null
+          and ${table.result_digest} ~ '^[0-9a-f]{64}$'
+          and ${table.company_cost_json} is not null
+          and ${table.completed_at} is not null))`,
     ),
   ],
 );

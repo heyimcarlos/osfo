@@ -57,6 +57,7 @@ describe("Postgres migrations", () => {
             "rate_limits",
             "research_report_notifications",
             "research_report_provider_operations",
+            "research_report_synthesis_operations",
             "research_reports",
             "sessions",
             "usage_event_components",
@@ -416,6 +417,100 @@ describe("Postgres migrations", () => {
               INSERT INTO channel_links (channel_link_id, channel_id, author_id, user_id)
               VALUES ('link-2', 'telegram:bot-1', 'author-2', 'channel-user-2');
             `),
+          );
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("enforces Research Report running, manifest, artifact, and safe-terminal truth", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      ({ client }) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(client);
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO users (id, name, email, updated_at, registration_completed_at)
+              VALUES ('report-user', 'Report User', 'report@example.test', now(), now());
+              INSERT INTO billing_subscriptions (
+                billing_subscription_id, plan, plan_policy_version, user_id
+              ) VALUES ('report-subscription', 'free', 'launch-v1', 'report-user');
+              INSERT INTO allowance_periods (
+                allowance_period_id, billing_subscription_id, ends_at, plan,
+                plan_policy_version, starts_at, user_id
+              ) VALUES (
+                'report-period', 'report-subscription', now() + interval '30 days',
+                'free', 'launch-v1', now() - interval '1 minute', 'report-user'
+              );
+              INSERT INTO research_reports (
+                workflow_id, action_id, user_id, agent_id, route_id, session_id,
+                originating_authority_json, input_digest, request_json, state,
+                allowance_period_id, plan_policy_version, capability_catalog_version,
+                model_access_policy_version, model_route, resource_price_version,
+                cloudflare_instance_id, admitted_at, deadline_at, accepted_at
+              ) VALUES (
+                'report-lifecycle', 'report-action', 'report-user', 'report-agent',
+                'report-route', 'report-session', '{}', repeat('a', 64), '{}', 'accepted',
+                'report-period', 'launch-v1', 'capability-v1', 'model-v1', 'route-v1',
+                'prices-v1', 'report-lifecycle', now(), now() + interval '1 hour', now()
+              );
+            `),
+          );
+
+          const reject = (statement: string) =>
+            Effect.tryPromise({
+              try: () => client.exec(statement),
+              catch: (cause) => new MigrationConstraintRejected({ cause }),
+            }).pipe(Effect.exit);
+
+          expect(
+            Exit.isFailure(
+              yield* reject(
+                `UPDATE research_reports SET state = 'running' WHERE workflow_id = 'report-lifecycle'`,
+              ),
+            ),
+          ).toBe(true);
+          yield* Effect.promise(() =>
+            client.exec(
+              `UPDATE research_reports SET state = 'running', started_at = now() WHERE workflow_id = 'report-lifecycle'`,
+            ),
+          );
+          expect(
+            Exit.isFailure(
+              yield* reject(
+                `UPDATE research_reports SET state = 'sources_committed' WHERE workflow_id = 'report-lifecycle'`,
+              ),
+            ),
+          ).toBe(true);
+          yield* Effect.promise(() =>
+            client.exec(
+              `UPDATE research_reports SET state = 'sources_committed', source_manifest_key = 'users/report/manifest.json', source_manifest_digest = repeat('b', 64), sources_committed_at = now() WHERE workflow_id = 'report-lifecycle'`,
+            ),
+          );
+          expect(
+            Exit.isFailure(
+              yield* reject(
+                `UPDATE research_reports SET state = 'artifact_stored', artifact_content_id = 'document:report' WHERE workflow_id = 'report-lifecycle'`,
+              ),
+            ),
+          ).toBe(true);
+          yield* Effect.promise(() =>
+            client.exec(
+              `UPDATE research_reports SET state = 'artifact_stored', artifact_content_id = 'document:report', artifact_stored_at = now() WHERE workflow_id = 'report-lifecycle'`,
+            ),
+          );
+          expect(
+            Exit.isFailure(
+              yield* reject(
+                `UPDATE research_reports SET state = 'success', terminal_at = now(), safe_failure_code = 'not-allowed' WHERE workflow_id = 'report-lifecycle'`,
+              ),
+            ),
+          ).toBe(true);
+          yield* Effect.promise(() =>
+            client.exec(
+              `UPDATE research_reports SET state = 'success', terminal_at = now() WHERE workflow_id = 'report-lifecycle'`,
+            ),
           );
         }),
       closeTestDatabase,

@@ -1,5 +1,5 @@
 import { researchReportProviderOperations } from "@osfo/db/schema/research-reports";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, lte, ne, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -16,6 +16,7 @@ const selection = {
   operationId: researchReportProviderOperations.operation_id,
   resultJson: researchReportProviderOperations.result_json,
   sequence: researchReportProviderOperations.sequence,
+  startedAt: researchReportProviderOperations.started_at,
   state: researchReportProviderOperations.state,
   workflowId: researchReportProviderOperations.workflow_id,
 };
@@ -27,6 +28,7 @@ type Row = {
   readonly operationId: string;
   readonly resultJson: string | null;
   readonly sequence: number;
+  readonly startedAt: Date | null;
   readonly state: ResearchCollector.OperationState;
   readonly workflowId: string;
 };
@@ -36,6 +38,7 @@ const OperationFacts = Schema.Struct({
   inputDigest: ResearchReport.InputDigest,
   operationId: ResearchCollector.OperationId,
   sequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  startedAt: Schema.NullOr(Schema.Date),
   state: ResearchCollector.OperationState,
   workflowId: ResearchReport.WorkflowId,
 });
@@ -109,7 +112,9 @@ export const make = (database: Database): ResearchCollector.PortInterface["persi
         if (row === undefined) return { _tag: "Missing" as const };
         if (row.inputDigest !== operation.inputDigest) return { _tag: "Conflict" as const };
         if (row.state === "completed") return { _tag: "Found" as const, row };
-        if (row.state !== "pending") return { _tag: "Conflict" as const };
+        if (row.state !== "pending" && row.state !== "unknown") {
+          return { _tag: "Conflict" as const };
+        }
         const [updated] = await transaction
           .update(researchReportProviderOperations)
           .set({
@@ -122,7 +127,7 @@ export const make = (database: Database): ResearchCollector.PortInterface["persi
             and(
               eq(researchReportProviderOperations.operation_id, operation.operationId),
               eq(researchReportProviderOperations.input_digest, operation.inputDigest),
-              eq(researchReportProviderOperations.state, "pending"),
+              inArray(researchReportProviderOperations.state, ["pending", "unknown"]),
             ),
           )
           .returning(selection);
@@ -158,6 +163,28 @@ export const make = (database: Database): ResearchCollector.PortInterface["persi
           ),
         ),
     ).pipe(Effect.asVoid),
+  expireAmbiguous: (operation, expiredBefore) => {
+    if (operation.startedAt === null) return Effect.succeed(false);
+    return attempt("expireAmbiguous", () =>
+      database
+        .update(researchReportProviderOperations)
+        .set({
+          safe_failure_code: "expired-ambiguous-provider-attempt",
+          state: "unknown",
+          updated_at: sql`clock_timestamp()`,
+        })
+        .where(
+          and(
+            eq(researchReportProviderOperations.operation_id, operation.operationId),
+            eq(researchReportProviderOperations.input_digest, operation.inputDigest),
+            eq(researchReportProviderOperations.state, "pending"),
+            eq(researchReportProviderOperations.attempt_count, operation.attemptCount),
+            lte(researchReportProviderOperations.started_at, expiredBefore),
+          ),
+        )
+        .returning({ operationId: researchReportProviderOperations.operation_id }),
+    ).pipe(Effect.map(([updated]) => updated !== undefined));
+  },
   recordAttempt: (operationId, expectedAttemptCount) =>
     attempt("recordAttempt", () =>
       database.transaction(async (transaction) => {

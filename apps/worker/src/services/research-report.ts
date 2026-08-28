@@ -103,10 +103,15 @@ export interface Record {
   readonly resourcePriceVersion: ResourcePriceVersion;
   readonly manifestVersion: string | null;
   readonly sourceManifestKey: string | null;
+  readonly sourceManifestDigest: InputDigest | null;
+  readonly artifactContentId: string | null;
+  readonly safeFailureCode: string | null;
   readonly cloudflareInstanceId: CloudflareInstanceId;
   readonly admittedAt: Date;
   readonly deadlineAt: Date;
   readonly acceptedAt: Date | null;
+  readonly startedAt: Date | null;
+  readonly artifactStoredAt: Date | null;
   readonly cancelRequestedAt: Date | null;
   readonly terminalAt: Date | null;
 }
@@ -127,6 +132,7 @@ export type StartResult =
 
 export type CancelResult =
   | { readonly _tag: "CancelRequested"; readonly report: Record }
+  | { readonly _tag: "PublicationCommitted"; readonly report: Record }
   | { readonly _tag: "Terminal"; readonly report: Record };
 
 export class Conflict extends Schema.TaggedError<Conflict>()("ResearchReportConflict", {
@@ -149,6 +155,7 @@ export interface PortInterface {
     report: Record,
   ) => Effect.Effect<AuthorizationContext, Unavailable>;
   readonly providerAvailable: Effect.Effect<boolean>;
+  readonly recordWorkflowStart: (report: Record) => Effect.Effect<void, Unavailable>;
   readonly persistence: {
     readonly admit: (record: Record) => Effect.Effect<
       | { readonly _tag: "Created"; readonly report: Record }
@@ -164,11 +171,36 @@ export interface PortInterface {
       inputDigest: InputDigest,
       acceptedAt: Date,
     ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+    readonly beginExecution: (
+      workflowId: WorkflowId,
+      inputDigest: InputDigest,
+      startedAt: Date,
+    ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
     readonly markSourcesCommitted: (
       workflowId: WorkflowId,
       inputDigest: InputDigest,
       sourceManifestKey: string,
+      sourceManifestDigest: InputDigest,
       committedAt: Date,
+    ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+    readonly claimArtifactPublication: (
+      workflowId: WorkflowId,
+      inputDigest: InputDigest,
+      contentId: string,
+      claimedAt: Date,
+    ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+    readonly completeSuccess: (
+      workflowId: WorkflowId,
+      inputDigest: InputDigest,
+      contentId: string,
+      completedAt: Date,
+    ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+    readonly finishTerminal: (
+      workflowId: WorkflowId,
+      inputDigest: InputDigest,
+      state: "canceled" | "failure",
+      safeFailureCode: string,
+      terminalAt: Date,
     ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
     readonly requestCancel: (
       workflowId: WorkflowId,
@@ -188,9 +220,35 @@ export interface PortInterface {
 export class Port extends Context.Service<Port, PortInterface>()("@osfo/ResearchReport/Port") {}
 
 export interface Interface {
+  readonly beginExecution: (
+    payload: WorkflowPayload,
+  ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
+  readonly artifactAuthorization: (
+    payload: WorkflowPayload,
+    requestVendorUsdMicros: bigint,
+  ) => Effect.Effect<
+    { readonly authorization: AuthorizationContext; readonly report: Record },
+    Conflict | Denied | NotFound | Unavailable
+  >;
   readonly authorizeExecution: (
     payload: WorkflowPayload,
   ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
+  readonly claimArtifactPublication: (
+    payload: WorkflowPayload,
+    contentId: string,
+  ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
+  readonly completeSuccess: (
+    payload: WorkflowPayload,
+    contentId: string,
+  ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+  readonly finishCanceled: (
+    payload: WorkflowPayload,
+    safeFailureCode: string,
+  ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+  readonly finishFailure: (
+    payload: WorkflowPayload,
+    safeFailureCode: string,
+  ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
   readonly cancel: (
     workflowId: WorkflowId,
     userId: UserId,
@@ -198,6 +256,7 @@ export interface Interface {
   readonly commitSources: (
     payload: WorkflowPayload,
     sourceManifestKey: string,
+    sourceManifestDigest: InputDigest,
   ) => Effect.Effect<Record, Conflict | Denied | NotFound | Unavailable>;
   readonly inspect: (
     workflowId: WorkflowId,
@@ -229,14 +288,23 @@ export const make = Effect.gen(function* () {
   });
 
   const accept = Effect.fn("ResearchReport.accept")(function* (report: Record) {
-    if (report.state !== "admitted") return report;
+    if (report.state !== "admitted") {
+      if (report.acceptedAt !== null) yield* ports.recordWorkflowStart(report);
+      return report;
+    }
     const payload = WorkflowPayload.make({
       inputDigest: report.inputDigest,
       workflowId: report.workflowId,
     });
     yield* ports.workflow.create(report.cloudflareInstanceId, payload);
     const acceptedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-    return yield* ports.persistence.markAccepted(report.workflowId, report.inputDigest, acceptedAt);
+    const accepted = yield* ports.persistence.markAccepted(
+      report.workflowId,
+      report.inputDigest,
+      acceptedAt,
+    );
+    yield* ports.recordWorkflowStart(accepted);
+    return accepted;
   });
 
   const authorizeContinuation = Effect.fn("ResearchReport.authorizeContinuation")(function* (
@@ -316,20 +384,94 @@ export const make = Effect.gen(function* () {
         workflowId: payload.workflowId,
       });
     }
-    if (report.state === "cancel_requested" || terminalStates.has(report.state)) {
+    if (report.state === "cancel_requested") {
+      const terminalAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+      yield* ports.persistence.finishTerminal(
+        report.workflowId,
+        report.inputDigest,
+        "canceled",
+        "cancel-requested",
+        terminalAt,
+      );
+      return yield* new Conflict({
+        message: "The Research Report was canceled before further execution",
+        workflowId: payload.workflowId,
+      });
+    }
+    if (terminalStates.has(report.state)) {
       return yield* new Conflict({
         message: "The Research Report is no longer executable",
         workflowId: payload.workflowId,
       });
     }
     const context = yield* ports.currentAuthorization(report);
-    yield* authorizeContinuation(report, context);
+    if (context.now.getTime() >= report.deadlineAt.getTime()) {
+      yield* ports.persistence.finishTerminal(
+        report.workflowId,
+        report.inputDigest,
+        "canceled",
+        "deadline-exceeded",
+        context.now,
+      );
+      return yield* new Conflict({
+        message: "The Research Report deadline ended execution",
+        workflowId: payload.workflowId,
+      });
+    }
+    yield* authorizeContinuation(report, context).pipe(
+      Effect.catch((denied) =>
+        ports.persistence
+          .finishTerminal(
+            report.workflowId,
+            report.inputDigest,
+            "canceled",
+            "authority-ended",
+            context.now,
+          )
+          .pipe(Effect.andThen(Effect.fail(denied))),
+      ),
+    );
     return report;
+  });
+
+  const beginExecution = Effect.fn("ResearchReport.beginExecution")(function* (
+    payload: WorkflowPayload,
+  ) {
+    const report = yield* authorizeExecution(payload);
+    if (
+      report.state === "running" ||
+      report.state === "sources_committed" ||
+      report.state === "artifact_stored"
+    ) {
+      if (report.startedAt === null) {
+        return yield* new Conflict({
+          message: "Executable Research Report state is missing its durable start time",
+          workflowId: report.workflowId,
+        });
+      }
+      yield* ports.recordWorkflowStart(report);
+      return report;
+    }
+    if (report.state !== "admitted" && report.state !== "accepted") {
+      return yield* new Conflict({
+        message: "The Research Report cannot begin execution from its current state",
+        workflowId: report.workflowId,
+      });
+    }
+    const startedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    const running = yield* ports.persistence.beginExecution(
+      report.workflowId,
+      report.inputDigest,
+      startedAt,
+    );
+    yield* ports.recordWorkflowStart(running);
+    return running;
   });
 
   const commitSources = Effect.fn("ResearchReport.commitSources")(function* (
     payload: WorkflowPayload,
     sourceManifestKey: string,
+    sourceManifestDigest: InputDigest,
   ) {
     const report = yield* authorizeExecution(payload);
     const committedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
@@ -337,9 +479,103 @@ export const make = Effect.gen(function* () {
       report.workflowId,
       report.inputDigest,
       sourceManifestKey,
+      sourceManifestDigest,
       committedAt,
     );
   });
+
+  const artifactAuthorization = Effect.fn("ResearchReport.artifactAuthorization")(function* (
+    payload: WorkflowPayload,
+    requestVendorUsdMicros: bigint,
+  ) {
+    const report = yield* authorizeExecution(payload);
+    const current = yield* ports.currentAuthorization(report);
+    yield* authorizeContinuation(report, current);
+    const authority = {
+      _tag: "DurableTrigger" as const,
+      triggerId: report.workflowId,
+      triggerType: "workflow" as const,
+      userId: report.userId,
+    };
+    return {
+      authorization: {
+        ...current,
+        allowance:
+          current.allowance._tag === "Metered"
+            ? { ...current.allowance, allowancePeriodId: report.allowancePeriodId }
+            : current.allowance,
+        authority,
+        originatingAuthority: {
+          _tag: "DurableTrigger" as const,
+          triggerId: report.workflowId,
+          triggerType: "workflow" as const,
+        },
+        requestVendorUsdMicros,
+        resourceOwnerUserId: report.userId,
+      },
+      report,
+    };
+  });
+
+  const claimArtifactPublication = Effect.fn("ResearchReport.claimArtifactPublication")(function* (
+    payload: WorkflowPayload,
+    contentId: string,
+  ) {
+    const retained = yield* ports.persistence.inspect(payload.workflowId);
+    if (retained === null) return yield* new NotFound({ workflowId: payload.workflowId });
+    if (retained.inputDigest !== payload.inputDigest) {
+      return yield* new Conflict({
+        message: "Artifact publication named a changed Research Report input",
+        workflowId: payload.workflowId,
+      });
+    }
+    if (retained.state === "artifact_stored" || retained.state === "success") {
+      if (retained.artifactContentId !== contentId) {
+        return yield* new Conflict({
+          message: "The Research Report already published a different artifact identity",
+          workflowId: payload.workflowId,
+        });
+      }
+      return retained;
+    }
+    const report = yield* authorizeExecution(payload);
+    const claimedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    return yield* ports.persistence.claimArtifactPublication(
+      report.workflowId,
+      report.inputDigest,
+      contentId,
+      claimedAt,
+    );
+  });
+
+  const completeSuccess = Effect.fn("ResearchReport.completeSuccess")(function* (
+    payload: WorkflowPayload,
+    contentId: string,
+  ) {
+    const completedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    return yield* ports.persistence.completeSuccess(
+      payload.workflowId,
+      payload.inputDigest,
+      contentId,
+      completedAt,
+    );
+  });
+
+  const finishTerminal = (
+    payload: WorkflowPayload,
+    state: "canceled" | "failure",
+    safeFailureCode: string,
+  ) =>
+    Effect.gen(function* () {
+      const terminalAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+      return yield* ports.persistence.finishTerminal(
+        payload.workflowId,
+        payload.inputDigest,
+        state,
+        safeFailureCode,
+        terminalAt,
+      );
+    });
 
   const start = Effect.fn("ResearchReport.start")(function* (input: StartInput) {
     const workflowId = yield* workflowIdFor(input.authorization.user.userId, input.actionId);
@@ -429,10 +665,15 @@ export const make = Effect.gen(function* () {
       resourcePriceVersion: currentResourcePriceVersion,
       manifestVersion: admission.manifestVersion,
       sourceManifestKey: null,
+      sourceManifestDigest: null,
+      artifactContentId: null,
+      safeFailureCode: null,
       cloudflareInstanceId,
       admittedAt,
       deadlineAt: deadlineAfter(admittedAt),
       acceptedAt: null,
+      startedAt: null,
+      artifactStoredAt: null,
       cancelRequestedAt: null,
       terminalAt: null,
     };
@@ -465,15 +706,26 @@ export const make = Effect.gen(function* () {
     if (terminalStates.has(requested.state)) {
       return { _tag: "Terminal" as const, report: requested };
     }
+    if (requested.state === "artifact_stored") {
+      return { _tag: "PublicationCommitted" as const, report: requested };
+    }
     yield* ports.workflow.terminate(requested.cloudflareInstanceId).pipe(Effect.ignore);
     return { _tag: "CancelRequested" as const, report: requested };
   });
 
   return Service.of({
+    artifactAuthorization,
     authorizeExecution,
+    beginExecution,
     cancel,
+    claimArtifactPublication,
     commitSources,
+    completeSuccess,
     inspect,
+    finishCanceled: (payload, safeFailureCode) =>
+      finishTerminal(payload, "canceled", safeFailureCode),
+    finishFailure: (payload, safeFailureCode) =>
+      finishTerminal(payload, "failure", safeFailureCode),
     reconcileAcceptance,
     start,
   });

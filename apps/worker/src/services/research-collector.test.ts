@@ -3,6 +3,7 @@
 /* oxlint-disable eslint/no-underscore-dangle -- Assertions inspect canonical tagged outcomes. */
 import { expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer, Result } from "effect";
+import { TestClock } from "effect/testing";
 
 import {
   AgentId,
@@ -23,10 +24,15 @@ import { ResearchReport } from "./research-report";
 
 const userId = UserId.make("collector-user");
 const workflowId = ResearchReport.WorkflowId.make("collector-workflow");
+const providerAttemptStartedAt = new Date("2026-08-27T12:00:00.000Z");
+const providerAttemptExpiredAtMilliseconds = new Date("2026-08-27T12:00:36.000Z").getTime();
 const report: ResearchReport.Record = {
   acceptedAt: new Date("2026-08-27T12:00:00.000Z"),
   actionId: ActionId.make("collector-action"),
   admittedAt: new Date("2026-08-27T12:00:00.000Z"),
+  artifactContentId: null,
+  artifactStoredAt: null,
+  safeFailureCode: null,
   agentId: AgentId.make("collector-agent"),
   allowancePeriodId: AllowancePeriodId.make("collector-period"),
   approval: null,
@@ -55,7 +61,9 @@ const report: ResearchReport.Record = {
   routeId: ConversationRouteId.make("collector-route"),
   sessionId: SessionId.make("collector-session"),
   sourceManifestKey: null,
+  sourceManifestDigest: null,
   state: "accepted",
+  startedAt: new Date("2026-08-27T12:00:01.000Z"),
   terminalAt: null,
   userId,
   workflowId,
@@ -68,6 +76,7 @@ it.effect("retains source bodies only in R2 evidence and cites fetched pages onl
     const collection = yield* collector.collect(report);
 
     expect(collection.manifest.sources).toHaveLength(1);
+    expect(collection.manifestDigest).toBe("c".repeat(64));
     expect(collection.manifest.sources[0]).toMatchObject({
       contentKey: `users/${userId}/research/source.json`,
       url: "https://example.com/source",
@@ -85,6 +94,45 @@ it.effect("retains source bodies only in R2 evidence and cites fetched pages onl
     expect(collection.manifest.sources.every((source) => !("description" in source))).toBe(true);
   }).pipe(Effect.provide(layer(fixture.port)));
 });
+
+it.effect("deduplicates canonical variants before assigning page-operation identity", () => {
+  const fixture = makeFixture({ duplicateUrlVariants: true });
+  return Effect.gen(function* () {
+    const collector = yield* ResearchCollector.Service;
+    const collection = yield* collector.collect(report);
+    expect(fixture.pageFetchCalls).toBe(1);
+    expect(collection.manifest.sources).toHaveLength(1);
+    expect(collection.manifest.sources[0]?.url).toBe("https://example.com/source");
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
+it.effect(
+  "reads only the committed manifest identity and rejects corrupt Workflow ownership",
+  () => {
+    const validFixture = makeFixture();
+    const corruptFixture = makeFixture({ corruptManifestWorkflow: true });
+    const verify = (fixture: ReturnType<typeof makeFixture>) =>
+      Effect.gen(function* () {
+        const collector = yield* ResearchCollector.Service;
+        const collection = yield* collector.collect(report);
+        const committed: ResearchReport.Record = {
+          ...report,
+          sourceManifestDigest: collection.manifestDigest,
+          sourceManifestKey: collection.manifestKey,
+          state: "sources_committed",
+        };
+        return yield* collector.read(committed, collection);
+      }).pipe(Effect.provide(layer(fixture.port)));
+    return Effect.gen(function* () {
+      const retained = yield* verify(validFixture);
+      expect(retained).toMatchObject([
+        { content: "FETCHED_BODY_TEXT", source: { sourceId: "S1" } },
+      ]);
+      const corrupt = yield* verify(corruptFixture).pipe(Effect.result);
+      expect(corrupt).toMatchObject({ failure: { reason: "insufficientEvidence" } });
+    });
+  },
+);
 
 it.effect("retries one typed transient idempotent page GET and records both attempts", () => {
   const fixture = makeFixture({ transientPageFailures: 1 });
@@ -167,6 +215,28 @@ it.effect("resumes an unattempted claim but stops an attempted search as ambiguo
   });
 });
 
+it.effect(
+  "expires a crashed provider attempt after its bounded lease without duplicate I/O",
+  () => {
+    const fixture = makeFixture({
+      pendingAttemptCount: 1,
+      pendingSequence: 0,
+      pendingStartedAt: providerAttemptStartedAt,
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(providerAttemptExpiredAtMilliseconds);
+      const collector = yield* ResearchCollector.Service;
+      const result = yield* collector.collect(report).pipe(Effect.result);
+      expect(Result.isFailure(result)).toBe(true);
+      expect(fixture.discoveryCalls).toBe(0);
+      expect(fixture.operations.get(`${workflowId}:provider:0`)?.state).toBe("unknown");
+      expect(fixture.failureCodes.get(`${workflowId}:provider:0`)).toBe(
+        "expired-ambiguous-provider-attempt",
+      );
+    }).pipe(Effect.provide(layer(fixture.port)));
+  },
+);
+
 it.effect("reconciles an attempted page from immutable R2 evidence without refetching", () => {
   const fixture = makeFixture({ pendingAttemptCount: 1, pendingSequence: 1, reconcilePage: true });
   return Effect.gen(function* () {
@@ -178,6 +248,22 @@ it.effect("reconciles an attempted page from immutable R2 evidence without refet
       state: "completed",
       result: { _tag: "Page", contentKey: `users/${userId}/research/reconciled.json` },
     });
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
+it.effect("reconciles a late immutable page after the provider lease expired", () => {
+  const fixture = makeFixture({
+    pendingAttemptCount: 1,
+    pendingSequence: 1,
+    pendingState: "unknown",
+    reconcilePage: true,
+  });
+  return Effect.gen(function* () {
+    const collector = yield* ResearchCollector.Service;
+    const collection = yield* collector.collect(report);
+    expect(collection.manifest.sources).toHaveLength(1);
+    expect(fixture.pageFetchCalls).toBe(0);
+    expect(fixture.operations.get(`${workflowId}:provider:1`)?.state).toBe("completed");
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
@@ -195,11 +281,15 @@ it.effect("removes uploaded page evidence when authority ends before PostgreSQL 
 const makeFixture = (
   options: {
     readonly pendingAttemptCount?: number;
+    readonly pendingStartedAt?: Date;
     readonly pendingSequence?: number;
+    readonly pendingState?: ResearchCollector.OperationState;
     readonly reconcilePage?: boolean;
     readonly ambiguousDiscoveryFailures?: number;
     readonly beforeClaimReturn?: () => Effect.Effect<void>;
     readonly failAuthorizationAt?: number;
+    readonly duplicateUrlVariants?: boolean;
+    readonly corruptManifestWorkflow?: boolean;
     readonly transientPageFailures?: number;
   } = {},
 ) => {
@@ -207,6 +297,7 @@ const makeFixture = (
   const failureCodes = new Map<string, string>();
   const evidenceBodies = new Array<string>();
   const removedKeys = new Array<string>();
+  let retainedManifest: ResearchCollector.SourceManifest | null = null;
   let authorizationCalls = 0;
   let discoveryCalls = 0;
   let pageFetchCalls = 0;
@@ -235,7 +326,12 @@ const makeFixture = (
           }
           const pending =
             operation.sequence === options.pendingSequence
-              ? { ...operation, attemptCount: options.pendingAttemptCount ?? 0 }
+              ? {
+                  ...operation,
+                  attemptCount: options.pendingAttemptCount ?? 0,
+                  startedAt: options.pendingStartedAt ?? null,
+                  state: options.pendingState ?? operation.state,
+                }
               : operation;
           operations.set(operation.operationId, pending);
           yield* options.beforeClaimReturn?.() ?? Effect.void;
@@ -256,6 +352,26 @@ const makeFixture = (
           operations.set(operation.operationId, { ...retained, state });
           failureCodes.set(operation.operationId, safeFailureCode);
         }),
+      expireAmbiguous: (operation, expiredBefore) =>
+        Effect.sync(() => {
+          if (
+            operation.startedAt === null ||
+            operation.startedAt.getTime() > expiredBefore.getTime()
+          ) {
+            return false;
+          }
+          const retained = operations.get(operation.operationId);
+          if (
+            retained === undefined ||
+            retained.state !== "pending" ||
+            retained.attemptCount !== operation.attemptCount
+          ) {
+            return false;
+          }
+          operations.set(operation.operationId, { ...retained, state: "unknown" });
+          failureCodes.set(operation.operationId, "expired-ambiguous-provider-attempt");
+          return true;
+        }),
       recordAttempt: (operationId, expectedAttemptCount) =>
         Effect.sync(() => {
           const operation = operations.get(operationId);
@@ -265,7 +381,11 @@ const makeFixture = (
           if (operation.state !== "pending" || operation.attemptCount !== expectedAttemptCount) {
             return { _tag: "InFlight" as const, operation };
           }
-          const started = { ...operation, attemptCount: operation.attemptCount + 1 };
+          const started = {
+            ...operation,
+            attemptCount: operation.attemptCount + 1,
+            startedAt: providerAttemptStartedAt,
+          };
           operations.set(operationId, started);
           return { _tag: "Started" as const, operation: started };
         }),
@@ -286,6 +406,15 @@ const makeFixture = (
                 title: "Fetched source",
                 url: "https://example.com/source",
               },
+              ...(options.duplicateUrlVariants === true
+                ? [
+                    {
+                      description: "SAME_PAGE_VARIANT",
+                      title: "Fetched source variant",
+                      url: "https://EXAMPLE.com:443/source#section",
+                    },
+                  ]
+                : []),
             ],
           });
         }),
@@ -309,9 +438,30 @@ const makeFixture = (
           removedKeys.push(contentKey);
         }),
       putManifest: (manifestUserId, manifest) =>
-        Effect.succeed(
-          `users/${manifestUserId}/research-report/manifests/${manifest.workflowId}.json`,
-        ),
+        Effect.sync(() => {
+          retainedManifest = manifest;
+          return {
+            manifestDigest: ResearchReport.InputDigest.make("c".repeat(64)),
+            manifestKey: `users/${manifestUserId}/research-report/manifests/${manifest.workflowId}.json`,
+          };
+        }),
+      readManifest: (_, __, manifestDigest) =>
+        retainedManifest !== null && manifestDigest === "c".repeat(64)
+          ? Effect.succeed(
+              options.corruptManifestWorkflow === true
+                ? {
+                    ...retainedManifest,
+                    workflowId: ResearchReport.WorkflowId.make("another-workflow"),
+                  }
+                : retainedManifest,
+            )
+          : Effect.fail(
+              new ResearchCollector.Unavailable({
+                cause: "manifest",
+                message: "manifest unavailable",
+                reason: "storageUnavailable",
+              }),
+            ),
       put: (input) =>
         Effect.sync(() => {
           evidenceBodies.push(input.content);
@@ -328,6 +478,12 @@ const makeFixture = (
                 title: "Fetched source",
               })
             : null,
+        ),
+      readPage: (_, retainedPage) =>
+        Effect.succeed(
+          retainedPage.contentKey.includes("reconciled")
+            ? "RECONCILED_BODY_TEXT"
+            : "FETCHED_BODY_TEXT",
         ),
     },
   });

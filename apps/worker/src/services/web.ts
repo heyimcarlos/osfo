@@ -422,7 +422,7 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
                 rank: index + 1,
                 resultId: options.makeId(),
                 title: boundedText(result.title, 500),
-                url: canonicalUrl(result.url),
+                url: canonicalPublicUrl(result.url),
               };
               return ranked;
             }),
@@ -468,7 +468,7 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
     if (!isSafePublicUrl(suppliedUrl)) {
       return yield* unavailable("unsafeUrl", "The URL is not public HTTPS.");
     }
-    const url = canonicalUrl(suppliedUrl);
+    const url = canonicalPublicUrl(suppliedUrl);
     if (input.reference._tag === "Url" && !requestContainsPublicUrl(input.requestText, url)) {
       return yield* unavailable(
         "unsafeUrl",
@@ -580,7 +580,7 @@ const deduplicateResults = (results: ReadonlyArray<DiscoveryResultItem>) => {
   const seen = new Set<string>();
   return results.flatMap((result) => {
     if (!isSafePublicUrl(result.url)) return [];
-    const url = canonicalUrl(result.url);
+    const url = canonicalPublicUrl(result.url);
     if (seen.has(url)) return [];
     seen.add(url);
     return [{ ...result, url }];
@@ -618,7 +618,7 @@ export const publicQueryIsExplicit = (query: string, requestText: string) => {
 const requestContainsPublicUrl = (requestText: string, expected: string) =>
   (requestText.match(/https:\/\/[^\s<>"']+/giu) ?? []).some((candidate) => {
     const trimmed = candidate.replace(/[),.;!?\]}]+$/gu, "");
-    return isSafePublicUrl(trimmed) && canonicalUrl(trimmed) === expected;
+    return isSafePublicUrl(trimmed) && canonicalPublicUrl(trimmed) === expected;
   });
 
 const isReadableContentType = (value: string) => {
@@ -631,7 +631,8 @@ const isReadableContentType = (value: string) => {
   );
 };
 
-const canonicalUrl = (value: string) => {
+/** Serialize one already-validated public HTTPS URL into its stable page identity. */
+export const canonicalPublicUrl = (value: string) => {
   const url = new URL(value);
   url.hash = "";
   return url.href;

@@ -1,5 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
-import { Effect, Result, Schema } from "effect";
+import { Effect, Predicate, Result, Schema } from "effect";
 
 import { runInvocationEffect } from "../adapters/host";
 import { ResearchReportComposition } from "../composition/research-report";
@@ -8,12 +8,15 @@ import { makeWorkflowRuntime } from "../layers";
 import { ResearchCollector } from "../services/research-collector";
 import type { Denied } from "../services/authorization";
 import { ResearchReport } from "../services/research-report";
+import { ResearchReportDocument } from "../services/research-report-document";
+import { ResearchSynthesis } from "../services/research-synthesis";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare WorkflowEntrypoint and WorkflowStep are Promise-only host APIs. */
 /* oxlint-disable eslint/no-underscore-dangle -- Option uses the standard Effect _tag discriminator. */
 
 const ExecutionResult = Schema.Union([
   Schema.Struct({
+    artifactContentId: Schema.NullOr(Schema.String),
     sourceCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
     sourceManifestKey: Schema.NullOr(Schema.String),
     state: ResearchReport.State,
@@ -25,12 +28,22 @@ const ExecutionResult = Schema.Union([
       "invalidEnvironment",
       "invalidPayload",
       "notFound",
+      "recovery",
       "unauthorized",
       "unavailable",
     ]),
   }),
 ]);
 export type ExecutionResult = typeof ExecutionResult.Type;
+
+type WorkflowFailure =
+  | Denied
+  | ResearchCollector.Conflict
+  | ResearchCollector.Unavailable
+  | ResearchReport.Conflict
+  | ResearchReport.NotFound
+  | ResearchReport.Unavailable
+  | ResearchReportDocument.Unavailable;
 
 /** Dedicated Cloudflare execution host for one admitted Research Report Workflow. */
 export class ResearchReportWorkflow extends WorkflowEntrypoint<
@@ -47,11 +60,12 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
       const payload = Schema.decodeResult(ResearchReport.WorkflowPayload)(event.payload);
       if (Result.isFailure(payload)) return { failure: "invalidPayload" } as const;
       const serviceEffect = ResearchReport.Service.pipe(
-        Effect.flatMap((reports) => reports.authorizeExecution(payload.success)),
+        Effect.flatMap((reports) => reports.beginExecution(payload.success)),
         Effect.match({
           onFailure: (failure) => ({ failure: failureKind(failure) }) as const,
           onSuccess: (report) =>
             ({
+              artifactContentId: report.artifactContentId,
               sourceCount: 0,
               sourceManifestKey: report.sourceManifestKey,
               state: report.state,
@@ -68,7 +82,7 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
       );
     });
     if ("failure" in admission) return admission;
-    return step.do("collect and commit public evidence", async () => {
+    const collected = await step.do("collect and commit public evidence", async () => {
       const payload = Schema.decodeResult(ResearchReport.WorkflowPayload)(event.payload);
       if (Result.isFailure(payload)) return { failure: "invalidPayload" } as const;
       const serviceEffect = Effect.gen(function* () {
@@ -77,7 +91,7 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
         const report = yield* reports.authorizeExecution(payload.success);
         const collection = yield* collector.collect(report);
         const committed = yield* reports
-          .commitSources(payload.success, collection.manifestKey)
+          .commitSources(payload.success, collection.manifestKey, collection.manifestDigest)
           .pipe(
             Effect.catch(
               (
@@ -98,42 +112,143 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
             ),
           );
         return {
+          artifactContentId: committed.artifactContentId,
           sourceCount: collection.manifest.sources.length,
           sourceManifestKey: committed.sourceManifestKey,
           state: committed.state,
           workflowId: committed.workflowId,
         } as const;
       }).pipe(
+        commitTerminalOutcome(payload.success),
         Effect.match({
           onFailure: (failure) => ({ failure: failureKind(failure) }) as const,
           onSuccess: (result) => result,
         }),
       );
-      return runInvocationEffect(
+      const result = await runInvocationEffect(
         makeWorkflowRuntime(event.instanceId, stage.value),
         ResearchReportComposition.executionEffect(
           ResearchReportComposition.bindingsFromEnv(this.env),
           serviceEffect,
         ),
       );
+      if ("failure" in result && result.failure === "recovery") {
+        throw new Error("Research Report provider reconciliation is pending");
+      }
+      return result;
+    });
+    if ("failure" in collected) return collected;
+    return step.do("synthesize and publish cited report", async () => {
+      const payload = Schema.decodeResult(ResearchReport.WorkflowPayload)(event.payload);
+      if (Result.isFailure(payload)) return { failure: "invalidPayload" } as const;
+      const serviceEffect = Effect.gen(function* () {
+        const reports = yield* ResearchReport.Service;
+        const collector = yield* ResearchCollector.Service;
+        const documents = yield* ResearchReportDocument.Service;
+        const report = yield* reports.authorizeExecution(payload.success);
+        const collection = yield* collector.collect(report);
+        const committed = yield* reports.commitSources(
+          payload.success,
+          collection.manifestKey,
+          collection.manifestDigest,
+        );
+        const completed = yield* documents.generate(committed, collection);
+        return {
+          artifactContentId: completed.artifact.content.contentId,
+          sourceCount: collection.manifest.sources.length,
+          sourceManifestKey: completed.report.sourceManifestKey,
+          state: completed.report.state,
+          workflowId: completed.report.workflowId,
+        } as const;
+      }).pipe(
+        commitTerminalOutcome(payload.success),
+        Effect.match({
+          onFailure: (failure) => ({ failure: failureKind(failure) }) as const,
+          onSuccess: (result) => result,
+        }),
+      );
+      const result = await runInvocationEffect(
+        makeWorkflowRuntime(event.instanceId, stage.value),
+        ResearchReportComposition.executionEffect(
+          ResearchReportComposition.bindingsFromEnv(this.env),
+          serviceEffect,
+        ),
+      );
+      if ("failure" in result && result.failure === "recovery") {
+        throw new Error("Research Report provider reconciliation is pending");
+      }
+      return result;
     });
   }
 }
 
 const failureKind = (
-  failure:
-    | ResearchCollector.Conflict
-    | ResearchCollector.Unavailable
-    | ResearchReport.Conflict
-    | Denied
-    | ResearchReport.NotFound
-    | ResearchReport.Unavailable,
+  failure: WorkflowFailure,
 ): Extract<ExecutionResult, { readonly failure: string }>["failure"] => {
   if (Schema.is(ResearchReport.Conflict)(failure)) return "conflict";
   if (Schema.is(ResearchReport.NotFound)(failure)) return "notFound";
   if (Schema.is(ResearchReport.Unavailable)(failure)) return "unavailable";
   if (Schema.is(ResearchCollector.Conflict)(failure)) return "conflict";
-  if (Schema.is(ResearchCollector.Unavailable)(failure)) return "unavailable";
-  if (failure._tag === "Denied") return "unauthorized";
+  if (Schema.is(ResearchCollector.Unavailable)(failure)) {
+    return failure.reason === "ambiguousOperation" ? "recovery" : "unavailable";
+  }
+  if (Schema.is(ResearchReportDocument.Unavailable)(failure)) {
+    return isRecoveryPending(failure) ? "recovery" : "unavailable";
+  }
+  if (Predicate.hasProperty(failure, "_tag") && failure._tag === "Denied") return "unauthorized";
   return "unavailable";
 };
+
+const commitTerminalOutcome = (payload: ResearchReport.WorkflowPayload) =>
+  Effect.catch((failure: WorkflowFailure) => {
+    const disposition = terminalDisposition(failure);
+    if (disposition === null || disposition._tag === "RecoveryPending") {
+      return Effect.fail(failure);
+    }
+    return ResearchReport.Service.pipe(
+      Effect.flatMap((reports) =>
+        disposition._tag === "Canceled"
+          ? reports.finishCanceled(payload, disposition.safeFailureCode)
+          : reports.finishFailure(payload, disposition.safeFailureCode),
+      ),
+      Effect.andThen(Effect.fail(failure)),
+    );
+  });
+
+const terminalDisposition = (failure: WorkflowFailure) => {
+  if (Schema.is(ResearchCollector.Unavailable)(failure)) {
+    if (failure.reason === "ambiguousOperation") return { _tag: "RecoveryPending" as const };
+    if (failure.reason === "authorizationDenied") {
+      return { _tag: "Canceled" as const, safeFailureCode: "authority-ended" };
+    }
+    if (failure.reason === "insufficientEvidence") {
+      return { _tag: "Failure" as const, safeFailureCode: "insufficient-citation-evidence" };
+    }
+    return null;
+  }
+  if (!Schema.is(ResearchReportDocument.Unavailable)(failure)) return null;
+  if (isRecoveryPending(failure)) {
+    return { _tag: "RecoveryPending" as const };
+  }
+  if (Schema.is(ResearchSynthesis.Unavailable)(failure.cause)) {
+    if (failure.cause.reason === "authorizationDenied") {
+      return { _tag: "Canceled" as const, safeFailureCode: "authority-ended" };
+    }
+    if (failure.cause.reason === "fabricatedEvidence") {
+      return { _tag: "Failure" as const, safeFailureCode: "invalid-synthesis-evidence" };
+    }
+  }
+  if (Schema.is(ResearchCollector.Unavailable)(failure.cause)) {
+    if (failure.cause.reason === "authorizationDenied") {
+      return { _tag: "Canceled" as const, safeFailureCode: "authority-ended" };
+    }
+    if (failure.cause.reason === "insufficientEvidence") {
+      return { _tag: "Failure" as const, safeFailureCode: "insufficient-citation-evidence" };
+    }
+  }
+  return ResearchReportDocument.terminalDispositionFor(failure);
+};
+
+const isRecoveryPending = (failure: ResearchReportDocument.Unavailable) =>
+  Schema.is(ResearchSynthesis.Unavailable)(failure.cause) &&
+  failure.cause.reason === "ambiguousOperation";

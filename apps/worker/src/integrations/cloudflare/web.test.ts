@@ -130,6 +130,26 @@ describe("Cloudflare web adapters", () => {
     }),
   );
 
+  it.effect("canonicalizes page identity and bounds hostile title and content-type metadata", () =>
+    Effect.gen(function* () {
+      const fetchPage = makePageFetch(() =>
+        Promise.resolve(
+          new Response(`<title>${"T".repeat(3_000)}</title><main>Evidence</main>`, {
+            headers: { "content-type": `text/html; x=${"a".repeat(1_000)}` },
+          }),
+        ),
+      );
+
+      const result = yield* fetchPage({
+        url: "https://EXAMPLE.com:443/report#private-fragment",
+      });
+
+      expect(result.finalUrl).toBe("https://example.com/report");
+      expect(result.title).toHaveLength(2_000);
+      expect(result.contentType).toHaveLength(512);
+    }),
+  );
+
   it.effect("stops retaining an oversized response", () =>
     Effect.gen(function* () {
       const fetchPage = makePageFetch(() =>

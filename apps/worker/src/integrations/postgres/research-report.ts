@@ -38,6 +38,8 @@ const rowSelection = {
   actionId: researchReports.action_id,
   approvalJson: researchReports.approval_json,
   admittedAt: researchReports.admitted_at,
+  artifactContentId: researchReports.artifact_content_id,
+  artifactStoredAt: researchReports.artifact_stored_at,
   agentId: researchReports.agent_id,
   allowancePeriodId: researchReports.allowance_period_id,
   cancelRequestedAt: researchReports.cancel_requested_at,
@@ -53,9 +55,12 @@ const rowSelection = {
   requestJson: researchReports.request_json,
   resourcePriceVersion: researchReports.resource_price_version,
   routeId: researchReports.route_id,
+  safeFailureCode: researchReports.safe_failure_code,
   sessionId: researchReports.session_id,
   sourceManifestKey: researchReports.source_manifest_key,
+  sourceManifestDigest: researchReports.source_manifest_digest,
   state: researchReports.state,
+  startedAt: researchReports.started_at,
   terminalAt: researchReports.terminal_at,
   userId: researchReports.user_id,
   workflowId: researchReports.workflow_id,
@@ -66,6 +71,8 @@ type Row = {
   readonly actionId: string;
   readonly approvalJson: string | null;
   readonly admittedAt: Date;
+  readonly artifactContentId: string | null;
+  readonly artifactStoredAt: Date | null;
   readonly agentId: string;
   readonly allowancePeriodId: string;
   readonly cancelRequestedAt: Date | null;
@@ -81,9 +88,12 @@ type Row = {
   readonly requestJson: string;
   readonly resourcePriceVersion: string;
   readonly routeId: string;
+  readonly safeFailureCode: string | null;
   readonly sessionId: string;
   readonly sourceManifestKey: string | null;
+  readonly sourceManifestDigest: string | null;
   readonly state: string;
+  readonly startedAt: Date | null;
   readonly terminalAt: Date | null;
   readonly userId: string;
   readonly workflowId: string;
@@ -94,6 +104,8 @@ const EncodedRecord = Schema.Struct({
   actionId: ActionId,
   approval: Schema.NullOr(Approval),
   admittedAt: Schema.Date,
+  artifactContentId: Schema.NullOr(Schema.String.check(Schema.isMinLength(1))),
+  artifactStoredAt: Schema.NullOr(Schema.Date),
   agentId: AgentId,
   allowancePeriodId: AllowancePeriodId,
   cancelRequestedAt: Schema.NullOr(Schema.Date),
@@ -109,9 +121,14 @@ const EncodedRecord = Schema.Struct({
   request: ResearchReport.Request,
   resourcePriceVersion: ResourcePriceVersion,
   routeId: ConversationRouteId,
+  safeFailureCode: Schema.NullOr(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120)),
+  ),
   sessionId: SessionId,
   sourceManifestKey: Schema.NullOr(Schema.String.check(Schema.isMinLength(1))),
+  sourceManifestDigest: Schema.NullOr(ResearchReport.InputDigest),
   state: ResearchReport.State,
+  startedAt: Schema.NullOr(Schema.Date),
   terminalAt: Schema.NullOr(Schema.Date),
   userId: UserId,
   workflowId: ResearchReport.WorkflowId,
@@ -137,6 +154,8 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           action_id: record.actionId,
           approval_json: encodeApproval(record.approval),
           admitted_at: record.admittedAt,
+          artifact_content_id: record.artifactContentId,
+          artifact_stored_at: record.artifactStoredAt,
           agent_id: record.agentId,
           allowance_period_id: record.allowancePeriodId,
           cancel_requested_at: record.cancelRequestedAt,
@@ -152,9 +171,12 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           request_json: encodeRequest(record.request),
           resource_price_version: record.resourcePriceVersion,
           route_id: record.routeId,
+          safe_failure_code: record.safeFailureCode,
           session_id: record.sessionId,
           source_manifest_key: record.sourceManifestKey,
+          source_manifest_digest: record.sourceManifestDigest,
           state: record.state,
+          started_at: record.startedAt,
           terminal_at: record.terminalAt,
           user_id: record.userId,
           workflow_id: record.workflowId,
@@ -242,7 +264,75 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
         }),
       ),
     ),
-  markSourcesCommitted: (workflowId, inputDigest, sourceManifestKey, committedAt) =>
+  beginExecution: (workflowId, inputDigest, startedAt) =>
+    attempt("beginExecution", () =>
+      database.transaction(async (transaction) => {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${workflowId}, 0))`,
+        );
+        const [row] = await transaction
+          .select(rowSelection)
+          .from(researchReports)
+          .where(eq(researchReports.workflow_id, workflowId))
+          .limit(1)
+          .for("update");
+        if (row === undefined) return { _tag: "Missing" as const };
+        if (row.inputDigest !== inputDigest) return { _tag: "Conflict" as const };
+        if (
+          row.state === "running" ||
+          row.state === "sources_committed" ||
+          row.state === "artifact_stored" ||
+          row.state === "success"
+        ) {
+          return row.startedAt === null
+            ? { _tag: "Conflict" as const }
+            : { _tag: "Found" as const, row };
+        }
+        if (row.state !== "admitted" && row.state !== "accepted") {
+          return { _tag: "Conflict" as const };
+        }
+        const [updated] = await transaction
+          .update(researchReports)
+          .set({
+            accepted_at: row.acceptedAt ?? startedAt,
+            started_at: startedAt,
+            state: "running",
+            updated_at: startedAt,
+          })
+          .where(
+            and(
+              eq(researchReports.workflow_id, workflowId),
+              eq(researchReports.input_digest, inputDigest),
+              inArray(researchReports.state, ["admitted", "accepted"]),
+              sql`${researchReports.started_at} is null`,
+            ),
+          )
+          .returning(rowSelection);
+        return updated === undefined
+          ? { _tag: "Conflict" as const }
+          : { _tag: "Found" as const, row: updated };
+      }),
+    ).pipe(
+      Effect.flatMap((outcome) =>
+        Effect.gen(function* () {
+          if (outcome._tag === "Missing") return yield* new ResearchReport.NotFound({ workflowId });
+          if (outcome._tag === "Conflict") {
+            return yield* new ResearchReport.Conflict({
+              message: "Research Report execution could not claim the exact accepted identity",
+              workflowId,
+            });
+          }
+          return yield* decodeRow(outcome.row);
+        }),
+      ),
+    ),
+  markSourcesCommitted: (
+    workflowId,
+    inputDigest,
+    sourceManifestKey,
+    sourceManifestDigest,
+    committedAt,
+  ) =>
     attempt("markSourcesCommitted", () =>
       database.transaction(async (transaction) => {
         await transaction.execute(
@@ -256,8 +346,9 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           .for("update");
         if (row === undefined) return { _tag: "Missing" as const };
         if (row.inputDigest !== inputDigest) return { _tag: "Conflict" as const };
-        if (row.sourceManifestKey !== null) {
-          return row.sourceManifestKey === sourceManifestKey
+        if (row.sourceManifestKey !== null || row.sourceManifestDigest !== null) {
+          return row.sourceManifestKey === sourceManifestKey &&
+            row.sourceManifestDigest === sourceManifestDigest
             ? { _tag: "Found" as const, row }
             : { _tag: "Conflict" as const };
         }
@@ -268,6 +359,7 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           .update(researchReports)
           .set({
             source_manifest_key: sourceManifestKey,
+            source_manifest_digest: sourceManifestDigest,
             sources_committed_at: committedAt,
             state: "sources_committed",
             updated_at: committedAt,
@@ -298,6 +390,91 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
         }),
       ),
     ),
+  claimArtifactPublication: (workflowId, inputDigest, contentId, claimedAt) =>
+    transitionArtifact(database, {
+      claimedAt,
+      contentId,
+      inputDigest,
+      operation: "claimArtifactPublication",
+      target: "artifact_stored",
+      workflowId,
+    }),
+  completeSuccess: (workflowId, inputDigest, contentId, completedAt) =>
+    transitionArtifact(database, {
+      claimedAt: completedAt,
+      contentId,
+      inputDigest,
+      operation: "completeSuccess",
+      target: "success",
+      workflowId,
+    }),
+  finishTerminal: (workflowId, inputDigest, state, safeFailureCode, terminalAt) =>
+    attempt("finishTerminal", () =>
+      database.transaction(async (transaction) => {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${workflowId}, 0))`,
+        );
+        const [row] = await transaction
+          .select(rowSelection)
+          .from(researchReports)
+          .where(eq(researchReports.workflow_id, workflowId))
+          .limit(1)
+          .for("update");
+        if (row === undefined) return { _tag: "Missing" as const };
+        if (row.inputDigest !== inputDigest) return { _tag: "Conflict" as const };
+        if (row.state === state) {
+          return row.safeFailureCode === safeFailureCode
+            ? { _tag: "Found" as const, row }
+            : { _tag: "Conflict" as const };
+        }
+        if (
+          row.state === "artifact_stored" ||
+          row.state === "success" ||
+          row.state === "failure" ||
+          row.state === "canceled"
+        ) {
+          return { _tag: "Conflict" as const };
+        }
+        const [updated] = await transaction
+          .update(researchReports)
+          .set({
+            safe_failure_code: safeFailureCode,
+            state,
+            terminal_at: terminalAt,
+            updated_at: terminalAt,
+          })
+          .where(
+            and(
+              eq(researchReports.workflow_id, workflowId),
+              eq(researchReports.input_digest, inputDigest),
+              inArray(researchReports.state, [
+                "admitted",
+                "accepted",
+                "running",
+                "sources_committed",
+                "cancel_requested",
+              ]),
+            ),
+          )
+          .returning(rowSelection);
+        return updated === undefined
+          ? { _tag: "Conflict" as const }
+          : { _tag: "Found" as const, row: updated };
+      }),
+    ).pipe(
+      Effect.flatMap((outcome) =>
+        Effect.gen(function* () {
+          if (outcome._tag === "Missing") return yield* new ResearchReport.NotFound({ workflowId });
+          if (outcome._tag === "Conflict") {
+            return yield* new ResearchReport.Conflict({
+              message: "The terminal outcome lost to publication or another terminal claim",
+              workflowId,
+            });
+          }
+          return yield* decodeRow(outcome.row);
+        }),
+      ),
+    ),
   requestCancel: (workflowId, userId, requestedAt) =>
     attempt("requestCancel", () =>
       database.transaction(async (transaction) => {
@@ -317,7 +494,8 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
           row.state === "success" ||
           row.state === "failure" ||
           row.state === "canceled" ||
-          row.state === "cancel_requested"
+          row.state === "cancel_requested" ||
+          row.state === "artifact_stored"
         ) {
           return row;
         }
@@ -343,6 +521,102 @@ export const make = (database: Database): ResearchReport.PortInterface["persiste
       ),
     ),
 });
+
+const transitionArtifact = (
+  database: Database,
+  input: {
+    readonly claimedAt: Date;
+    readonly contentId: string;
+    readonly inputDigest: ResearchReport.InputDigest;
+    readonly operation: "claimArtifactPublication" | "completeSuccess";
+    readonly target: "artifact_stored" | "success";
+    readonly workflowId: ResearchReport.WorkflowId;
+  },
+) =>
+  attempt(input.operation, () =>
+    database.transaction(async (transaction) => {
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${input.workflowId}, 0))`,
+      );
+      const [row] = await transaction
+        .select(rowSelection)
+        .from(researchReports)
+        .where(eq(researchReports.workflow_id, input.workflowId))
+        .limit(1)
+        .for("update");
+      if (row === undefined) return { _tag: "Missing" as const };
+      if (
+        row.inputDigest !== input.inputDigest ||
+        (row.artifactContentId !== null && row.artifactContentId !== input.contentId)
+      ) {
+        return { _tag: "Conflict" as const };
+      }
+      if (input.target === "artifact_stored") {
+        if (row.state === "artifact_stored" || row.state === "success") {
+          return { _tag: "Found" as const, row };
+        }
+        if (row.state !== "sources_committed" || row.sourceManifestKey === null) {
+          return { _tag: "Conflict" as const };
+        }
+        const [updated] = await transaction
+          .update(researchReports)
+          .set({
+            artifact_content_id: input.contentId,
+            artifact_stored_at: input.claimedAt,
+            state: "artifact_stored",
+            updated_at: input.claimedAt,
+          })
+          .where(
+            and(
+              eq(researchReports.workflow_id, input.workflowId),
+              eq(researchReports.input_digest, input.inputDigest),
+              eq(researchReports.state, "sources_committed"),
+            ),
+          )
+          .returning(rowSelection);
+        return updated === undefined
+          ? { _tag: "Conflict" as const }
+          : { _tag: "Found" as const, row: updated };
+      }
+      if (row.state === "success") return { _tag: "Found" as const, row };
+      if (row.state !== "artifact_stored" || row.artifactContentId !== input.contentId) {
+        return { _tag: "Conflict" as const };
+      }
+      const [updated] = await transaction
+        .update(researchReports)
+        .set({ state: "success", terminal_at: input.claimedAt, updated_at: input.claimedAt })
+        .where(
+          and(
+            eq(researchReports.workflow_id, input.workflowId),
+            eq(researchReports.input_digest, input.inputDigest),
+            eq(researchReports.artifact_content_id, input.contentId),
+            eq(researchReports.state, "artifact_stored"),
+          ),
+        )
+        .returning(rowSelection);
+      return updated === undefined
+        ? { _tag: "Conflict" as const }
+        : { _tag: "Found" as const, row: updated };
+    }),
+  ).pipe(
+    Effect.flatMap((outcome) =>
+      Effect.gen(function* () {
+        if (outcome._tag === "Missing") {
+          return yield* new ResearchReport.NotFound({ workflowId: input.workflowId });
+        }
+        if (outcome._tag === "Conflict") {
+          return yield* new ResearchReport.Conflict({
+            message:
+              input.target === "artifact_stored"
+                ? "Artifact publication lost to cancellation or changed immutable facts"
+                : "Research Report success requires the exact published artifact",
+            workflowId: input.workflowId,
+          });
+        }
+        return yield* decodeRow(outcome.row);
+      }),
+    ),
+  );
 
 /** Rebuild current mutable authority facts before resumed Workflow work. */
 export const makeCurrentAuthorization = (

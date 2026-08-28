@@ -1,6 +1,12 @@
 import { Effect, Schema } from "effect";
 
-import { isSafePublicUrl, limits, type DiscoveryResult, type PageFetch } from "../../services/web";
+import {
+  canonicalPublicUrl,
+  isSafePublicUrl,
+  limits,
+  type DiscoveryResult,
+  type PageFetch,
+} from "../../services/web";
 
 const providerText = (maximumLength: number) =>
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(maximumLength));
@@ -86,6 +92,7 @@ export const makePageFetch = (fetcher: Fetcher = fetch) =>
       if (!isSafePublicUrl(currentUrl)) {
         return yield* providerUnavailable("redirect", "The page redirect target is unsafe.");
       }
+      currentUrl = canonicalPublicUrl(currentUrl);
       response = yield* Effect.tryPromise({
         try: () =>
           fetcher(currentUrl, {
@@ -108,13 +115,17 @@ export const makePageFetch = (fetcher: Fetcher = fetch) =>
       if (!isSafePublicUrl(target)) {
         return yield* providerUnavailable("redirect", "The page redirect target is unsafe.");
       }
-      redirects.push(target);
-      currentUrl = target;
+      const canonicalTarget = canonicalPublicUrl(target);
+      redirects.push(canonicalTarget);
+      currentUrl = canonicalTarget;
     }
     if (response === undefined) {
       return yield* providerUnavailable("fetch", "The public page could not be fetched.");
     }
-    const contentType = response.headers.get("content-type") ?? "application/octet-stream";
+    const contentType = boundedHeader(
+      response.headers.get("content-type") ?? "application/octet-stream",
+      512,
+    );
     const declaredLength = boundedContentLength(response.headers.get("content-length"));
     if (declaredLength !== null && declaredLength > limits.fetchedPageBytes) {
       yield* Effect.promise(
@@ -182,7 +193,13 @@ const normalizePage = (source: string, contentType: string) => {
     return { content: source.replaceAll(/\s+/gu, " ").trim(), title: null };
   }
   const titleMatch = /<title(?:\s[^>]*)?>([\s\S]*?)<\/title>/iu.exec(source);
-  const title = titleMatch === null ? null : decodeEntities(stripTags(titleMatch[1] ?? "")).trim();
+  const title =
+    titleMatch === null
+      ? null
+      : decodeEntities(stripTags(titleMatch[1] ?? ""))
+          .replaceAll(/\s+/gu, " ")
+          .trim()
+          .slice(0, 2_000);
   const visible = source
     .replaceAll(/<!--([\s\S]*?)-->/gu, " ")
     .replaceAll(
@@ -226,6 +243,12 @@ const boundedContentLength = (value: string | null): bigint | null => {
     return null;
   }
 };
+
+const boundedHeader = (value: string, maximum: number) =>
+  value
+    .replaceAll(/[\r\n]/gu, " ")
+    .trim()
+    .slice(0, maximum) || "application/octet-stream";
 
 const basePage = (
   response: Response,
