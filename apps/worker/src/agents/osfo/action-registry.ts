@@ -9,6 +9,8 @@ import {
   researchReportStartActionName,
   ResearchReportStartInput,
   RetainedDocumentInput,
+  scheduledEmailStartActionName,
+  ScheduledEmailStartInput,
 } from "./action-presentation";
 import {
   ClearCoreMemoryInput,
@@ -54,6 +56,7 @@ type SanitizedPendingApprovalInput =
   | Partial<typeof CalendarUpdateEventInput.Type>
   | Partial<typeof DriveDeliverArtifactInput.Type>
   | Partial<typeof GmailMessageInput.Type>
+  | Partial<ScheduledEmailStartInput>
   | Partial<SkillDeleteInput>
   | Partial<SessionDeleteInput>;
 
@@ -66,6 +69,9 @@ export {
   researchReportRequiresApproval,
   ResearchReportStartInput,
   RetainedDocumentInput,
+  scheduledEmailStartActionName,
+  ScheduledEmailIdentityInput,
+  ScheduledEmailStartInput,
 } from "./action-presentation";
 
 export {
@@ -195,6 +201,14 @@ export const sanitizePendingApproval = (approval: PendingApproval): PendingAppro
     return withInput(
       approval,
       Schema.decodeUnknownOption(ResearchReportStartInput)(approval.descriptor.input).pipe(
+        Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
+      ),
+    );
+  }
+  if (approval.descriptor.action === scheduledEmailStartActionName) {
+    return withInput(
+      approval,
+      Schema.decodeUnknownOption(ScheduledEmailStartInput)(approval.descriptor.input).pipe(
         Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
       ),
     );

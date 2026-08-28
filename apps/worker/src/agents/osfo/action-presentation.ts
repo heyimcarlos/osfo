@@ -30,6 +30,7 @@ import type { IntegrationToolInput } from "./integration-tools";
 import { ReminderManageInput, reminderManageActionName } from "./reminder-tool-contracts";
 import { ResearchReport } from "../../services/research-report";
 import { DocumentBuild } from "../../services/document-build";
+import { ScheduledEmail } from "../../services/scheduled-email";
 import {
   CalendarCreateEventInput,
   CalendarDeleteEventInput,
@@ -48,6 +49,8 @@ export const artifactDeleteActionName = "deleteArtifact";
 export const researchReportStartActionName = "startResearchReport";
 /** Ordinary Document Build Action; no Approval presentation is created. */
 export const documentBuildStartActionName = "startDocumentBuild";
+/** Approval-gated Action that admits one exact future Gmail effect. */
+export const scheduledEmailStartActionName = "scheduleEmail";
 
 /** Model-visible input for one bounded Research Report admission. */
 export const ResearchReportStartInput = ResearchReport.Request;
@@ -57,6 +60,9 @@ export const ResearchReportIdentityInput = Schema.Struct({ workflowId: ResearchR
 
 export const DocumentBuildStartInput = DocumentBuild.Request;
 export const DocumentBuildIdentityInput = Schema.Struct({ workflowId: DocumentBuild.WorkflowId });
+export const ScheduledEmailStartInput = ScheduledEmail.Request;
+export type ScheduledEmailStartInput = typeof ScheduledEmailStartInput.Type;
+export const ScheduledEmailIdentityInput = Schema.Struct({ workflowId: ScheduledEmail.WorkflowId });
 
 /** Consequence policy used by Think's input-dependent durable Approval gate. */
 export const researchReportRequiresApproval = (input: ResearchReport.Request): boolean =>
@@ -88,6 +94,9 @@ export const presentOsfoAction = Effect.fn("ActionPresentation.present")(functio
   }
   if (pending.descriptor.action === researchReportStartActionName) {
     return yield* presentResearchReportStartAction(pending);
+  }
+  if (pending.descriptor.action === scheduledEmailStartActionName) {
+    return yield* presentScheduledEmailStartAction(pending);
   }
   if (pending.descriptor.action === forgetKnowledgeActionName) {
     return yield* presentForgetKnowledgeAction(pending, inspectCurrentCoreMemory);
@@ -355,6 +364,46 @@ export const hasExactResearchReportStartInput = (
     )
   );
 };
+
+/** Verify the exact future Gmail effect shown at the User decision boundary. */
+export const hasExactScheduledEmailStartInput = (
+  presentation: ActionPresentation,
+  input: ScheduledEmail.Request,
+): boolean =>
+  hasExactFields(
+    presentation,
+    "integration.effect",
+    "osfo-scheduled-email-start-v1",
+    scheduledEmailPresentationFields(input),
+  );
+
+const presentScheduledEmailStartAction = Effect.fn(
+  "ActionPresentation.presentScheduledEmailStart",
+)(function* (pending: PendingThinkAction) {
+  const input = yield* Schema.decodeUnknownEffect(ScheduledEmail.Request)(
+    pending.descriptor.input,
+  ).pipe(
+    Effect.mapError(
+      () =>
+        new ActionPresentationUnavailable({
+          action: pending.descriptor.action,
+          message: "The Scheduled Email input cannot be projected safely",
+        }),
+    ),
+  );
+  return ActionPresentation.make({
+    actionDefinitionVersion: "osfo-scheduled-email-start-v1",
+    actionId: ActionId.make(pending.descriptor.toolCallId),
+    consequences: [
+      "At the exact scheduled instant, send this message from the connected primary Gmail mailbox.",
+    ],
+    description: "Schedule the exact Gmail message and send time shown here.",
+    fields: scheduledEmailPresentationFields(input),
+    operation: "integration.effect",
+    presentationId: ActionPresentationId.make(pending.executionId),
+    title: "Schedule Gmail message",
+  });
+});
 
 const presentGmailSendAction = Effect.fn("ActionPresentation.presentGmailSend")(function* (
   pending: PendingThinkAction,
@@ -773,6 +822,14 @@ const gmailPresentationFields = (input: typeof GmailMessageInput.Type) => [
   { label: "Recipients", name: "recipients", value: encodeGmailRecipients(input.recipients) },
   { label: "Subject", name: "subject", value: input.subject },
   { label: "Message", name: "body", value: input.body },
+];
+
+const scheduledEmailPresentationFields = (input: ScheduledEmail.Request) => [
+  { label: "Gmail mailbox", name: "gmailResource", value: input.gmailResource },
+  { label: "Recipients", name: "recipients", value: encodeGmailRecipients(input.recipients) },
+  { label: "Subject", name: "subject", value: input.subject },
+  { label: "Message", name: "body", value: input.body },
+  { label: "Send at", name: "scheduledAt", value: input.scheduledAt.toISOString() },
 ];
 
 const calendarUpdatePresentationFields = (input: typeof CalendarUpdateEventInput.Type) => [

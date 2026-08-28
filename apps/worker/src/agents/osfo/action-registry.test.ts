@@ -17,9 +17,11 @@ import {
   hasExactPersonalSkillDeleteInput,
   hasExactReminderManageInput,
   hasExactResearchReportStartInput,
+  hasExactScheduledEmailStartInput,
   hasExactSessionDeleteInput,
   presentOsfoAction,
   researchReportRequiresApproval,
+  scheduledEmailStartActionName,
 } from "./action-presentation";
 import { ForgetKnowledgeInput } from "./deletion-actions";
 import { ReminderId } from "./reminders";
@@ -541,6 +543,45 @@ it.effect("presents and fences the complete Gmail send", () =>
       hasExactIntegrationActionInput(presentation, "GMAIL_SEND_EMAIL", {
         ...input,
         body: "Changed after approval",
+      }),
+    ).toBe(false);
+  }),
+);
+
+it.effect("presents and fences one exact scheduled Gmail message", () =>
+  Effect.gen(function* () {
+    const input = {
+      body: "Exact scheduled body",
+      gmailResource: "primary" as const,
+      recipients: ["recipient@example.test"] as const,
+      scheduledAt: new Date("2026-09-01T16:00:00.000Z"),
+      subject: "Exact scheduled subject",
+    };
+    const presentation = yield* presentOsfoAction({
+      descriptor: {
+        action: scheduledEmailStartActionName,
+        input,
+        kind: "durable-pause",
+        permissions: ["workflows:start", "integrations:gmail:send"],
+        requestId: "request-scheduled-email",
+        risk: "high",
+        summary: "Schedule the exact Gmail message shown",
+        toolCallId: "tool-call-scheduled-email",
+      },
+      executionId: ActionPresentationId.make("execution-scheduled-email"),
+      source: "action",
+    });
+
+    expect(presentation).toMatchObject({
+      actionDefinitionVersion: "osfo-scheduled-email-start-v1",
+      operation: "integration.effect",
+      title: "Schedule Gmail message",
+    });
+    expect(hasExactScheduledEmailStartInput(presentation, input)).toBe(true);
+    expect(
+      hasExactScheduledEmailStartInput(presentation, {
+        ...input,
+        scheduledAt: new Date("2026-09-01T16:01:00.000Z"),
       }),
     ).toBe(false);
   }),

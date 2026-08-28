@@ -171,7 +171,9 @@ export const requiresOwnership = (operation: AuthorizationOperation) =>
   operation.kind === "account.delete";
 
 export const requiresGmailConnection = (operation: AuthorizationOperation) =>
-  operation.kind.startsWith("gmail.") && operation.kind !== "gmail.connection.manage";
+  (operation.kind.startsWith("gmail.") && operation.kind !== "gmail.connection.manage") ||
+  ((operation.kind === "integration.read" || operation.kind === "integration.effect") &&
+    operation.toolkit === "gmail");
 
 export const authorityPermits = (
   authority: Exclude<AuthorizationContext["authority"], null>,
