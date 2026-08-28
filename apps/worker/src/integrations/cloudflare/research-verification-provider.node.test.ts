@@ -68,3 +68,50 @@ it.effect(
       (emulator) => Effect.promise(emulator.close),
     ),
 );
+
+it.effect("serializes the Workers AI request shape through the local Agent boundary", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(startProviderEmulator),
+    (emulator) =>
+      Effect.gen(function* () {
+        const binding = ResearchVerificationProvider.makeAiBinding({
+          _tag: "LocalVerification",
+          baseURL: emulator.origin,
+        });
+        const response = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            max_tokens: undefined,
+            messages: [{ content: "Connect this Telegram chat", role: "user" }],
+            stream: true,
+            temperature: undefined,
+            tools: [
+              {
+                function: {
+                  description: "Present a Telegram channel-link invitation",
+                  name: "present_link",
+                  parameters: { properties: {}, type: "object" },
+                },
+                type: "function",
+              },
+            ],
+            top_p: undefined,
+          }),
+        );
+        expect(response).toMatchObject({
+          finish_reason: "tool_calls",
+          tool_calls: [{ name: "present_link" }],
+        });
+        const ledger = yield* Effect.promise(() =>
+          fetch(`${emulator.origin}/_test/research/ledger`).then((result) => result.json()),
+        );
+        expect(ledger).toEqual([
+          {
+            kind: "agent",
+            operationId: null,
+            subject: expect.stringContaining("Connect this Telegram chat"),
+          },
+        ]);
+      }),
+    (emulator) => Effect.promise(emulator.close),
+  ),
+);

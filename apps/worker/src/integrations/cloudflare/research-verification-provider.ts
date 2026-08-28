@@ -185,7 +185,7 @@ export const makeAiBinding = (
     aiGatewayLogId: null,
     run: (_model: string, inputs: Schema.Json) =>
       Effect.runPromise(
-        requestJson(config.baseURL, "/_local/research/agent", Schema.Json, Schema.Json, inputs),
+        requestUnknownJson(config.baseURL, "/_local/research/agent", Schema.Json, inputs),
       ),
   };
   // SAFETY: workers-ai-provider reads only `run` and `aiGatewayLogId` on this binding. The
@@ -233,6 +233,39 @@ const requestJson = <Request extends Schema.Top, Response extends Schema.Top>(
     const client = yield* HttpClient.HttpClient;
     const request = yield* HttpClientRequest.post(new URL(path, baseURL).href).pipe(
       HttpClientRequest.schemaBodyJson(requestSchema)(body),
+    );
+    const response = yield* client.execute(request);
+    if (response.status < 200 || response.status >= 300) {
+      return yield* new LocalVerificationUnavailable({
+        cause: response.status,
+        message: "The local Research provider returned a non-success status",
+      });
+    }
+    return yield* HttpClientResponse.schemaBodyJson(responseSchema)(response);
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new LocalVerificationUnavailable({
+          cause,
+          message: "The local Research provider request failed",
+        }),
+    ),
+    // This adapter is the owning local-only HTTP composition boundary and closes the client layer.
+    // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The returned provider ports intentionally expose no transport dependency.
+    Effect.provide(FetchHttpClient.layer),
+  );
+
+const requestUnknownJson = <Response extends Schema.Top>(
+  baseURL: string,
+  path: string,
+  responseSchema: Response,
+  body: Schema.Json,
+) =>
+  Effect.gen(function* () {
+    const encoded = yield* Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(body);
+    const client = yield* HttpClient.HttpClient;
+    const request = HttpClientRequest.post(new URL(path, baseURL).href).pipe(
+      HttpClientRequest.bodyText(encoded, "application/json"),
     );
     const response = yield* client.execute(request);
     if (response.status < 200 || response.status >= 300) {
