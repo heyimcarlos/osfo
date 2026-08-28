@@ -125,6 +125,9 @@ export interface PortInterface {
   readonly pendingSources: (
     userId: UserId,
   ) => Effect.Effect<ReadonlyArray<Notification>, Unavailable>;
+  readonly deliveredForUser: (
+    userId: UserId,
+  ) => Effect.Effect<ReadonlyArray<Notification>, Unavailable>;
 }
 
 export class Port extends Context.Service<Port, PortInterface>()(
@@ -152,6 +155,7 @@ export interface Interface {
     notificationIds: ReadonlyArray<NotificationId>,
   ) => Effect.Effect<void, Unavailable>;
   readonly pendingSources: PortInterface["pendingSources"];
+  readonly deliveredForUser: PortInterface["deliveredForUser"];
 }
 
 export class Service extends Context.Service<Service, Interface>()(
@@ -168,6 +172,7 @@ export const make = Effect.gen(function* () {
       now.pipe(Effect.flatMap((time) => port.claimTerminal(payload, time))),
     enforceDeadline: (payload) =>
       now.pipe(Effect.flatMap((time) => port.enforceDeadline(payload, time))),
+    deliveredForUser: port.deliveredForUser,
     exposeSources: (userId, notificationIds) =>
       now.pipe(Effect.flatMap((time) => port.exposeSources(userId, notificationIds, time))),
     inspect: port.inspect,

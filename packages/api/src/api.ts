@@ -4,6 +4,7 @@ import { HealthGroup } from "./groups/health";
 import { BillingGroup } from "./groups/billing";
 import { ChannelLinksGroup } from "./groups/channel-links";
 import { RegistrationGroup } from "./groups/registration";
+import { ResearchReportsGroup } from "./groups/research-reports";
 import { AccountGroup } from "./groups/account";
 import { SkillsGroup } from "./groups/skills";
 import { IntegrationsGroup } from "./groups/integrations";
@@ -16,6 +17,7 @@ export const Api = HttpApi.make("osfo")
   .add(HealthGroup)
   .add(IntegrationsGroup)
   .add(RegistrationGroup)
+  .add(ResearchReportsGroup)
   .add(SkillsGroup)
   .annotateMerge(
     OpenApi.annotations({
@@ -80,6 +82,12 @@ export {
   RegistrationUnavailable,
   UserId,
 } from "./groups/registration";
+export {
+  ResearchReportNotifications,
+  ResearchReportNotificationSummary,
+  ResearchReportNotificationsUnavailable,
+  ResearchReportsGroup,
+} from "./groups/research-reports";
 export {
   Auth,
   AuthenticationUnavailable,

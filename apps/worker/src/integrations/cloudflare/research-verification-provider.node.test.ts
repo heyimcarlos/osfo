@@ -141,6 +141,51 @@ it.effect("serializes the Workers AI request shape through the local Agent bound
           finish_reason: "tool_calls",
           tool_calls: [{ arguments: { workflowId }, name: "inspectResearchReport" }],
         });
+        const inspectCompletion = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            max_tokens: undefined,
+            messages: [
+              { content: `Inspect Research Report ${workflowId} status.`, role: "user" },
+              {
+                // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This trusted Workers AI fixture mirrors the provider's tool-result wire text.
+                content: JSON.stringify({ state: "success", workflowId }),
+                name: "inspectResearchReport",
+                role: "tool",
+                tool_call_id: "verification-inspectResearchReport",
+              },
+            ],
+            stream: true,
+            temperature: undefined,
+            tools: [
+              {
+                function: {
+                  description: "Start a Research Report",
+                  name: "startResearchReport",
+                  parameters: { properties: {}, type: "object" },
+                },
+                type: "function",
+              },
+              {
+                function: {
+                  description: "Inspect a Research Report",
+                  name: "inspectResearchReport",
+                  parameters: { properties: {}, type: "object" },
+                },
+                type: "function",
+              },
+              {
+                function: {
+                  description: "Cancel a Research Report",
+                  name: "cancelResearchReport",
+                  parameters: { properties: {}, type: "object" },
+                },
+                type: "function",
+              },
+            ],
+            top_p: undefined,
+          }),
+        );
+        expect(inspectCompletion).toMatchObject({ finish_reason: "stop" });
         const cancelResponse = yield* Effect.promise(() =>
           binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
             max_tokens: undefined,
@@ -193,6 +238,11 @@ it.effect("serializes the Workers AI request shape through the local Agent bound
             kind: "agent",
             operationId: null,
             subject: expect.stringContaining(`Inspect Research Report ${workflowId} status.`),
+          },
+          {
+            kind: "agent",
+            operationId: null,
+            subject: expect.stringContaining('"name":"inspectResearchReport"'),
           },
           {
             kind: "agent",

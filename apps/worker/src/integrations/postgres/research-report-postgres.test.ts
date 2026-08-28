@@ -99,6 +99,58 @@ it.effect("serializes different Workflow identities against one User capacity", 
   }).pipe(Effect.scoped),
 );
 
+it.effect("lists only bounded delivered Research Report notifications for the owning User", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedUser(fixture.database);
+    const persistence = ResearchReportPostgres.make(fixture.database);
+    const admitted = yield* persistence.admit(record("dashboard"), 10n);
+    yield* Effect.promise(() =>
+      fixture.database
+        .update(researchReports)
+        .set({
+          accepted_at: executionStartedAt,
+          artifact_content_id: "document:workflow:research:dashboard",
+          artifact_stored_at: artifactStoredAt,
+          manifest_version: "research-manifest-v1",
+          source_manifest_digest: "d".repeat(64),
+          source_manifest_key:
+            "users/concurrent-research-user/research-report/manifests/dashboard.json",
+          started_at: executionStartedAt,
+          state: "success",
+          terminal_at: deletionCompletedAt,
+        })
+        .where(eq(researchReports.workflow_id, admitted.report.workflowId)),
+    );
+    yield* Effect.promise(() =>
+      fixture.database.insert(researchReportNotifications).values({
+        claimed_at: artifactStoredAt,
+        delivered_at: deletionCompletedAt,
+        kind: "terminal",
+        notification_id: "notification-dashboard",
+        think_submission_id: "submission-dashboard",
+        user_id: userId,
+        workflow_id: admitted.report.workflowId,
+      }),
+    );
+    const followUps = ResearchReportFollowUpPostgres.make(fixture.database);
+
+    expect(yield* followUps.deliveredForUser(userId)).toMatchObject([
+      {
+        acceptedAt: deletionCompletedAt,
+        artifactContentId: "document:workflow:research:dashboard",
+        kind: "terminal",
+        reportState: "success",
+        safeFailureCode: null,
+        workflowId: admitted.report.workflowId,
+      },
+    ]);
+    expect(yield* followUps.deliveredForUser(UserId.make("another-user"))).toEqual([]);
+  }).pipe(Effect.scoped),
+);
+
 it.effect("fences admission, terminalizes every private Workflow, and cascades child truth", () =>
   Effect.gen(function* () {
     const fixture = yield* makeTestDatabase;

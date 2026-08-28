@@ -1,7 +1,7 @@
 import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { researchReportNotifications, researchReports } from "@osfo/db/schema/research-reports";
 import { deletionCases } from "@osfo/db/schema/user-lifecycle";
-import { and, eq, gt, inArray, isNotNull, isNull, notExists, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, notExists, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -158,6 +158,31 @@ export const make = (database: Database): ResearchReportFollowUp.PortInterface =
     );
 
   return {
+    deliveredForUser: (userId) =>
+      attempt("deliveredForUser", () =>
+        database
+          .select(notificationSelection)
+          .from(researchReportNotifications)
+          .innerJoin(
+            researchReports,
+            eq(researchReports.workflow_id, researchReportNotifications.workflow_id),
+          )
+          .innerJoin(
+            allowancePeriods,
+            and(
+              eq(allowancePeriods.user_id, researchReports.user_id),
+              eq(allowancePeriods.allowance_period_id, researchReports.allowance_period_id),
+            ),
+          )
+          .where(
+            and(
+              eq(researchReportNotifications.user_id, userId),
+              isNotNull(researchReportNotifications.delivered_at),
+            ),
+          )
+          .orderBy(desc(researchReportNotifications.delivered_at))
+          .limit(20),
+      ).pipe(Effect.flatMap((rows) => Effect.forEach(rows, decode))),
     claimMilestone: (payload, now) =>
       Effect.gen(function* () {
         const result = yield* attempt("claimMilestone", () =>

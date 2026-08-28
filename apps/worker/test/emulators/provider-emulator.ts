@@ -456,6 +456,7 @@ const handleResearch = (
         if (
           workflowId !== undefined &&
           toolNames.includes("inspectResearchReport") &&
+          lastMessageRole(input) === "user" &&
           /(?:inspect|status|check)/iu.test(lastMessage)
         ) {
           respondJson(response, 200, toolResponse("inspectResearchReport", { workflowId }));
@@ -464,6 +465,7 @@ const handleResearch = (
         if (
           workflowId !== undefined &&
           toolNames.includes("cancelResearchReport") &&
+          lastMessageRole(input) === "user" &&
           /cancel/iu.test(lastMessage)
         ) {
           respondJson(response, 200, toolResponse("cancelResearchReport", { workflowId }));

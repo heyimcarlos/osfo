@@ -13,8 +13,10 @@ import {
   saveAgentControlPreferences,
 } from "./agent-control-preferences";
 import { OsfoAgentControlPanel } from "./osfo-agent-control-panel";
+import { ResearchReportNotificationCenterContent } from "./research-report-notification-center";
 
 /* oxlint-disable effecttsgo/async-function -- Testing Library owns browser interaction Promises. */
+/* oxlint-disable effecttsgo/global-date -- Fixed delivered timestamps make notification presentation deterministic. */
 
 afterEach(() => {
   cleanup();
@@ -103,5 +105,51 @@ describe("OsfoAgentControlPanel", () => {
         defaultAgentControlPreferences,
       ),
     ).not.toThrow();
+  });
+
+  it("shows a delivered Research Report result without exposing private report content", async () => {
+    const user = userEvent.setup();
+    renderWithTestRouter(
+      <ResearchReportNotificationCenterContent
+        items={[
+          {
+            artifactContentId: "document:workflow:research:verification",
+            deliveredAt: new Date("2026-08-28T12:00:00.000Z"),
+            kind: "terminal",
+            safeFailureCode: null,
+            state: "success",
+            workflowId: "research:verification",
+          },
+        ]}
+        open={false}
+        onClose={() => undefined}
+        onOpen={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Notification center, 1 update" })).toBeTruthy();
+    cleanup();
+    renderWithTestRouter(
+      <ResearchReportNotificationCenterContent
+        items={[
+          {
+            artifactContentId: "document:workflow:research:verification",
+            deliveredAt: new Date("2026-08-28T12:00:00.000Z"),
+            kind: "terminal",
+            safeFailureCode: null,
+            state: "success",
+            workflowId: "research:verification",
+          },
+        ]}
+        open
+        onClose={() => undefined}
+        onOpen={() => undefined}
+      />,
+    );
+    expect(screen.getByRole("dialog", { name: "Notification center" })).toBeTruthy();
+    expect(screen.getByText("Research Report complete")).toBeTruthy();
+    expect(screen.getByText("The cited report artifact is ready.")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("canonical public source evidence");
+    await user.click(screen.getByRole("button", { name: "Close notification center" }));
   });
 });
