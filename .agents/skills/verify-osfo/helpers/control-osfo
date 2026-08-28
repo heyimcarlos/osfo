@@ -1306,9 +1306,17 @@ observe_billing() {
   curl --fail --silent --show-error "$provider_origin/_test/stripe/ledger" \
     | jq . >"$feature_dir/provider.json"
   jq --exit-status --arg phone "$phone" \
-    '.phoneNumber == $phone and .billingPlan == "free" and
-      .allowancePlan == "free" and .allowanceEndsAt != null' \
+    '.phoneNumber == $phone and .allowanceEndsAt != null and
+      ((.billingPlan == "free" and .allowancePlan == "free") or
+       (.billingPlan == "adventurer" and .allowancePlan == "adventurer"))' \
     "$feature_dir/state.json" >/dev/null
+  if [[ "$(jq --raw-output '.billingPlan' "$feature_dir/state.json")" == 'adventurer' ]]; then
+    jq --exit-status \
+      '[.[] | select(.path == "/v1/checkout/sessions" and
+        .parameters.mode == "subscription" and
+        .parameters["line_items[0][price]"] == "price_adventurer")] | length == 1' \
+      "$feature_dir/provider.json" >/dev/null
+  fi
   complete_observation "$run_id" "$feature_dir"
   printf 'observed billing state=%s provider=%s\n' \
     "$feature_dir/state.json" "$feature_dir/provider.json"
