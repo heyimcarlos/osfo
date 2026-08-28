@@ -101,6 +101,85 @@ it.effect("serializes the Workers AI request shape through the local Agent bound
           finish_reason: "tool_calls",
           tool_calls: [{ name: "present_link" }],
         });
+        const workflowId = `research:${"a".repeat(64)}`;
+        const inspectResponse = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            max_tokens: undefined,
+            messages: [{ content: `Inspect Research Report ${workflowId} status.`, role: "user" }],
+            stream: true,
+            temperature: undefined,
+            tools: [
+              {
+                function: {
+                  description: "Start a Research Report",
+                  name: "startResearchReport",
+                  parameters: { properties: {}, type: "object" },
+                },
+                type: "function",
+              },
+              {
+                function: {
+                  description: "Inspect a Research Report",
+                  name: "inspectResearchReport",
+                  parameters: { properties: {}, type: "object" },
+                },
+                type: "function",
+              },
+              {
+                function: {
+                  description: "Cancel a Research Report",
+                  name: "cancelResearchReport",
+                  parameters: { properties: {}, type: "object" },
+                },
+                type: "function",
+              },
+            ],
+            top_p: undefined,
+          }),
+        );
+        expect(inspectResponse).toMatchObject({
+          finish_reason: "tool_calls",
+          tool_calls: [{ arguments: { workflowId }, name: "inspectResearchReport" }],
+        });
+        const cancelResponse = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            max_tokens: undefined,
+            messages: [{ content: `Cancel Research Report ${workflowId}.`, role: "user" }],
+            stream: true,
+            temperature: undefined,
+            tools: [
+              {
+                function: {
+                  description: "Start a Research Report",
+                  name: "startResearchReport",
+                  parameters: { properties: {}, type: "object" },
+                },
+                type: "function",
+              },
+              {
+                function: {
+                  description: "Inspect a Research Report",
+                  name: "inspectResearchReport",
+                  parameters: { properties: {}, type: "object" },
+                },
+                type: "function",
+              },
+              {
+                function: {
+                  description: "Cancel a Research Report",
+                  name: "cancelResearchReport",
+                  parameters: { properties: {}, type: "object" },
+                },
+                type: "function",
+              },
+            ],
+            top_p: undefined,
+          }),
+        );
+        expect(cancelResponse).toMatchObject({
+          finish_reason: "tool_calls",
+          tool_calls: [{ arguments: { workflowId }, name: "cancelResearchReport" }],
+        });
         const ledger = yield* Effect.promise(() =>
           fetch(`${emulator.origin}/_test/research/ledger`).then((result) => result.json()),
         );
@@ -109,6 +188,16 @@ it.effect("serializes the Workers AI request shape through the local Agent bound
             kind: "agent",
             operationId: null,
             subject: expect.stringContaining("Connect this Telegram chat"),
+          },
+          {
+            kind: "agent",
+            operationId: null,
+            subject: expect.stringContaining(`Inspect Research Report ${workflowId} status.`),
+          },
+          {
+            kind: "agent",
+            operationId: null,
+            subject: expect.stringContaining(`Cancel Research Report ${workflowId}.`),
           },
         ]);
       }),

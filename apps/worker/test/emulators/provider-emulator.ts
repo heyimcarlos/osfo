@@ -452,23 +452,6 @@ const handleResearch = (
           respondJson(response, 200, toolResponse("present_link", {}));
           return;
         }
-        if (
-          toolNames.includes("startResearchReport") &&
-          lastMessageRole(input) === "user" &&
-          /(?:investigate|research|sources)/iu.test(lastMessage)
-        ) {
-          respondJson(
-            response,
-            200,
-            toolResponse("startResearchReport", {
-              consequences: [],
-              format: "pdf",
-              queries: ["durable workflow verification"],
-              topic: "Durable Workflow verification",
-            }),
-          );
-          return;
-        }
         const workflowId = /research[:\w-]{8,300}/iu.exec(lastMessage)?.[0];
         if (
           workflowId !== undefined &&
@@ -484,6 +467,23 @@ const handleResearch = (
           /cancel/iu.test(lastMessage)
         ) {
           respondJson(response, 200, toolResponse("cancelResearchReport", { workflowId }));
+          return;
+        }
+        if (
+          toolNames.includes("startResearchReport") &&
+          lastMessageRole(input) === "user" &&
+          /(?:investigate|research|sources)/iu.test(lastMessage)
+        ) {
+          respondJson(
+            response,
+            200,
+            toolResponse("startResearchReport", {
+              consequences: [],
+              format: "pdf",
+              queries: ["durable workflow verification"],
+              topic: "Durable Workflow verification",
+            }),
+          );
           return;
         }
         respondJson(response, 200, {
