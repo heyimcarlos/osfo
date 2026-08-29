@@ -1360,6 +1360,7 @@ export const completeProductionEvidence = (): ProductionQualificationEvidence =>
     arrivalCount: 1,
     artifactId: "qualification-execution-run-fixture",
     endedAtEpochMs: Date.parse("2026-08-17T12:00:01.000Z"),
+    executionId: "qualification-execution-fixture",
     planChecksum: fixturePlanChecksum,
     runDescriptorChecksum: qualificationChecksum({ fixtureRun: true }),
     runId: "qualification-run-fixture",
@@ -1465,6 +1466,7 @@ export const completeProductionEvidence = (): ProductionQualificationEvidence =>
     })),
     execution: qualificationExecutionEvidence(
       manifest,
+      "qualification-execution-fixture",
       fixturePlanChecksum,
       "qualification-execution-fixture",
       [fixtureRunReceipt],
@@ -1482,7 +1484,7 @@ export const completeProductionEvidence = (): ProductionQualificationEvidence =>
           )?.acceptedRootIds ?? [];
         const runArtifactChecksum = qualificationChecksum(acceptedRootIds);
         const recoverableBacklogRootIds = Array.from(
-          { length: 120 },
+          { length: acceptedRootIds.length * 2 },
           (_entry, index) => `pre-outage-backlog-${region}-${repetition + 1}-${index}`,
         );
         const outageEndedAtUtc = "2026-08-17T12:00:00.000Z";
@@ -1511,8 +1513,8 @@ export const completeProductionEvidence = (): ProductionQualificationEvidence =>
             },
             {
               authorityFactIds: ["recovery-state-240"],
-              backlogRootIds: recoverableBacklogRootIds.slice(0, 100),
-              durablyWaitingRootIds: recoverableBacklogRootIds.slice(0, 100),
+              backlogRootIds: recoverableBacklogRootIds.slice(0, -1),
+              durablyWaitingRootIds: recoverableBacklogRootIds.slice(0, -1),
               interruptedAgentIds: [],
               lostAcceptedRootIds: [],
               observedAtUtc: "2026-08-17T12:04:00.000Z",
@@ -1528,20 +1530,19 @@ export const completeProductionEvidence = (): ProductionQualificationEvidence =>
           ],
           throughputWindows: [
             {
-              acceptedRootIds: acceptedRootIds.slice(0, 5),
+              acceptedRootIds,
               authorityFactIds: ["recovery-throughput-1"],
-              completedRootIds: [
-                ...acceptedRootIds.slice(0, 5),
-                ...recoverableBacklogRootIds.slice(0, 2),
-              ],
-              windowEndedAtUtc: "2026-08-17T12:00:01.000Z",
+              completedRootIds: [...acceptedRootIds, ...recoverableBacklogRootIds],
+              windowEndedAtUtc: DateTime.formatIso(
+                DateTime.makeUnsafe(Date.parse(outageEndedAtUtc) + acceptedRootIds.length * 1_000),
+              ),
               windowStartedAtUtc: outageEndedAtUtc,
             },
           ],
         };
         return {
           evidence: {
-            acceptedDemandPerSecond: 5,
+            acceptedDemandPerSecond: 1,
             authorityArtifact: {
               ...authorityContent,
               artifactChecksum: qualificationChecksum(authorityContent),
@@ -1550,7 +1551,7 @@ export const completeProductionEvidence = (): ProductionQualificationEvidence =>
             interruptedAgentSettledAfterSeconds: 45,
             lostAcceptedRoots: 0,
             recoverableBacklogSettledAfterSeconds: 1_100,
-            recoveryGoodputPerSecond: 7,
+            recoveryGoodputPerSecond: 3,
           },
           region,
           repetition: repetition + 1,

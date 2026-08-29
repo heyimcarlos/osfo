@@ -194,6 +194,57 @@ describe("Production qualification", () => {
     });
   });
 
+  it("fails when raw recovery facts omit accepted work from every state transition", () => {
+    const evidence = completeProductionEvidence();
+    const first = evidence.recoveryRuns[0];
+    const authority = first?.evidence.authorityArtifact;
+    const laneRun = evidence.runs.laneRuns.find(
+      (run) =>
+        run.lane === "dependencyOutageRecovery" &&
+        run.region === first?.region &&
+        run.repetition === first.repetition,
+    );
+    const omittedRoot = laneRun?.acceptedRootIds[0];
+    expect(first).toBeDefined();
+    expect(authority).toBeDefined();
+    expect(omittedRoot).toBeDefined();
+    if (first === undefined || authority === undefined || omittedRoot === undefined) return;
+    const throughputWindows = authority.throughputWindows.map((window) => ({
+      ...window,
+      acceptedRootIds: window.acceptedRootIds.filter((rootId) => rootId !== omittedRoot),
+      completedRootIds: window.completedRootIds.filter((rootId) => rootId !== omittedRoot),
+    }));
+    const { artifactChecksum: _artifactChecksum, ...authorityContent } = {
+      ...authority,
+      throughputWindows,
+    };
+    const changedAuthority = {
+      ...authorityContent,
+      artifactChecksum: qualificationChecksum(authorityContent),
+    };
+
+    expect(
+      qualifyProduction({
+        ...evidence,
+        recoveryRuns: evidence.recoveryRuns.map((run) =>
+          run === first
+            ? Object.assign({}, run, {
+                evidence: Object.assign({}, run.evidence, {
+                  authorityArtifact: changedAuthority,
+                }),
+              })
+            : run,
+        ),
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "recoveryAuthorityRunConflict", verdict: "FAIL" }),
+        expect.objectContaining({ code: "recoveryAuthorityCoverageConflict", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
+    });
+  });
+
   it("rejects raw resource facts outside the exact accepted run corpus", () => {
     const evidence = completeProductionEvidence();
     const first = evidence.resourceUse[0];
@@ -428,6 +479,7 @@ describe("Production qualification", () => {
         ...evidence,
         execution: qualificationExecutionEvidence(
           manifest,
+          evidence.execution.executionId,
           evidence.execution.planChecksum,
           evidence.execution.artifactId,
           evidence.execution.runReceipts,

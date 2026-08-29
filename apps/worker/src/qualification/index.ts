@@ -1,7 +1,7 @@
 /** Supported production qualification facade. Authority-specific collectors live with their stores. */
 export {
   createQualificationExecutionPlan,
-  executeQualification,
+  executeDurableQualification,
   qualificationExecutionReceiptForRun,
   qualificationRunArrivals,
   QualificationExecutionInvalid,
@@ -9,7 +9,11 @@ export {
 export type {
   QualificationChallengeExecutionRun,
   QualificationCharacterizationExecutionRun,
-  QualificationExecutionDriver,
+  DurableQualificationExecutionPorts,
+  QualificationArrivalAuthorityRecord,
+  QualificationAuthorityCollectors,
+  QualificationAuthorityReadPhase,
+  QualificationExecutionArtifactStore,
   QualificationExecutionPlan,
   QualificationExecutionRun,
   QualificationLaneExecutionRun,

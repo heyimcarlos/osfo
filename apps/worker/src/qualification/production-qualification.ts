@@ -57,6 +57,7 @@ export interface RecoveryRunEvidence {
 export interface QualificationExecutionEvidence {
   readonly artifactChecksum: string;
   readonly artifactId: string;
+  readonly executionId: string;
   readonly manifestChecksum: string;
   readonly planChecksum: string;
   readonly runReceipts: ReadonlyArray<QualificationRunExecutionReceipt>;
@@ -71,6 +72,7 @@ export interface QualificationRunExecutionReceipt {
   readonly artifactChecksum: string;
   readonly artifactId: string;
   readonly endedAtEpochMs: number;
+  readonly executionId: string;
   readonly planChecksum: string;
   readonly runDescriptorChecksum: string;
   readonly runId: string;
@@ -89,12 +91,14 @@ export const qualificationRunExecutionReceipt = (
 /** Bind a collector's retained evidence to the exact manifest and execution plan it observed. */
 export const qualificationExecutionEvidence = (
   manifest: ProductionQualificationManifest,
+  executionId: string,
   planChecksum: string,
   artifactId: string,
   runReceipts: ReadonlyArray<QualificationRunExecutionReceipt>,
 ): QualificationExecutionEvidence => {
   const content = {
     artifactId,
+    executionId,
     manifestChecksum: manifest.manifestChecksum,
     planChecksum,
     runReceipts,
@@ -257,6 +261,7 @@ export const qualifyProduction = (
   const { artifactChecksum: executionChecksum, ...executionContent } = evidence.execution;
   if (
     evidence.execution.artifactId.length === 0 ||
+    evidence.execution.executionId.length === 0 ||
     evidence.execution.planChecksum.length === 0 ||
     evidence.execution.runReceipts.length === 0
   ) {
@@ -289,6 +294,7 @@ export const qualifyProduction = (
       if (
         artifactChecksum !== qualificationChecksum(receiptContent) ||
         receipt.planChecksum !== evidence.execution.planChecksum ||
+        receipt.executionId !== evidence.execution.executionId ||
         receipt.artifactId.length === 0 ||
         receipt.arrivalArtifactChecksum.length === 0 ||
         receipt.runDescriptorChecksum.length === 0 ||
@@ -758,6 +764,30 @@ export const qualifyProduction = (
           const acceptedAuthorityRoots = recoveryAuthority.throughputWindows.flatMap(
             ({ acceptedRootIds }) => acceptedRootIds,
           );
+          const acceptedAuthoritySet = new Set(acceptedAuthorityRoots);
+          const completedAuthorityRoots = recoveryAuthority.throughputWindows.flatMap(
+            ({ completedRootIds }) => completedRootIds,
+          );
+          const completedRoots = new Set(completedAuthorityRoots);
+          const finalObservation = recoveryAuthority.stateObservations.reduce<
+            (typeof recoveryAuthority.stateObservations)[number] | undefined
+          >(
+            (latest, observation) =>
+              latest === undefined ||
+              Date.parse(observation.observedAtUtc) > Date.parse(latest.observedAtUtc)
+                ? observation
+                : latest,
+            undefined,
+          );
+          const statePartitionInvalid = recoveryAuthority.stateObservations.some((observation) => {
+            const backlog = new Set(observation.backlogRootIds);
+            const lost = new Set(observation.lostAcceptedRootIds);
+            return (
+              observation.durablyWaitingRootIds.some((rootId) => !backlog.has(rootId)) ||
+              [...lost].some((rootId) => backlog.has(rootId)) ||
+              [...backlog, ...lost].some((rootId) => !recoverableRoots.has(rootId))
+            );
+          });
           const terminalAuthorityRoots = [
             ...recoveryAuthority.throughputWindows.flatMap(
               ({ completedRootIds }) => completedRootIds,
@@ -772,12 +802,37 @@ export const qualifyProduction = (
           ];
           if (
             acceptedAuthorityRoots.some((rootId) => !acceptedRoots.has(rootId)) ||
+            acceptedAuthorityRoots.length !== acceptedAuthoritySet.size ||
+            acceptedAuthoritySet.size !== acceptedRoots.size ||
+            [...acceptedRoots].some((rootId) => !acceptedAuthoritySet.has(rootId)) ||
+            (recoveryAuthority.stateObservations[0]?.backlogRootIds.length ?? 0) !==
+              backlogRoots.size ||
+            [...backlogRoots].some((rootId) => acceptedRoots.has(rootId)) ||
             terminalAuthorityRoots.some((rootId) => !recoverableRoots.has(rootId))
           ) {
             findings.push(
               finding(
                 "recoveryAuthorityRunConflict",
                 `${subject} raw recovery facts name roots outside the accepted run`,
+                recoveryAuthority.artifactId,
+                "FAIL",
+              ),
+            );
+          }
+          if (
+            statePartitionInvalid ||
+            completedAuthorityRoots.length !== completedRoots.size ||
+            completedRoots.size !== recoverableRoots.size ||
+            [...recoverableRoots].some((rootId) => !completedRoots.has(rootId)) ||
+            finalObservation === undefined ||
+            finalObservation.backlogRootIds.length > 0 ||
+            finalObservation.durablyWaitingRootIds.length > 0 ||
+            finalObservation.lostAcceptedRootIds.length > 0
+          ) {
+            findings.push(
+              finding(
+                "recoveryAuthorityCoverageConflict",
+                `${subject} does not partition every accepted and recoverable root through terminal state`,
                 recoveryAuthority.artifactId,
                 "FAIL",
               ),
