@@ -100,4 +100,36 @@ describe("ScheduledEmailControlContent", () => {
     expect(html).toContain("Scheduled Email delivery unconfirmed — it may have been sent");
     expect(html).not.toContain("providerLogId");
   });
+
+  it("renders canonical late provider truth instead of the original ambiguity snapshot", () => {
+    const html = renderToStaticMarkup(
+      <ScheduledEmailControlContent
+        busyPresentationId={null}
+        error={null}
+        items={{
+          approvals: [],
+          notifications: [
+            {
+              deliveredAt: new Date("2026-08-29T12:00:30.000Z"),
+              sendOutcome: "applied",
+              state: "success",
+              workflowId: "scheduled-email:late-applied",
+            },
+            {
+              deliveredAt: new Date("2026-08-29T12:01:30.000Z"),
+              sendOutcome: "notApplied",
+              state: "failure",
+              workflowId: "scheduled-email:late-not-applied",
+            },
+          ],
+        }}
+        onDecide={vi.fn<(presentationId: string, decision: "approve" | "reject") => void>()}
+        onRefresh={vi.fn<() => void>()}
+      />,
+    );
+
+    expect(html).toContain("Scheduled Email sent");
+    expect(html).toContain("Scheduled Email not sent");
+    expect(html).not.toContain("Scheduled Email delivery unconfirmed");
+  });
 });

@@ -690,7 +690,7 @@ describe("ScheduledEmail", () => {
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 
-  it.effect("refines unaccounted ambiguity when late evidence proves NotApplied", () => {
+  it.effect("retains conservative accounting when late evidence proves NotApplied", () => {
     const fixture = makeFixture({ sendOutcome: "ambiguous" });
     return Effect.gen(function* () {
       yield* TestClock.setTime(now.getTime());
@@ -723,12 +723,13 @@ describe("ScheduledEmail", () => {
       expect(yield* emails.recoverClaimed(payload)).toMatchObject({
         providerLogId: "late-proved-not-applied-log",
         safeFailureCode: "send-not-applied",
-        sendAccountedAt: null,
-        sendAccountingBasis: null,
+        sendAccountedAt: expect.any(Date),
+        sendAccountingBasis: "conservative",
         sendOutcome: "notApplied",
         state: "failure",
       });
-      expect(fixture.gmailSendFacts).toBe(0);
+      expect(fixture.gmailSendFacts).toBe(1);
+      expect(fixture.gmailSendBases).toEqual(["conservative"]);
       expect(fixture.followUps).toBe(1);
       expect(fixture.sendAttempts).toBe(1);
     }).pipe(Effect.provide(layer(fixture.port)));
@@ -1130,7 +1131,7 @@ const makeFixture = (
             return stored;
           }),
         ),
-      refineNotApplied: (workflowId, digest, providerLogId, preserveAccounting, outcomeAt) =>
+      refineNotApplied: (workflowId, digest, providerLogId, outcomeAt) =>
         requireStored(workflowId, digest).pipe(
           Effect.map((email) => {
             if (
@@ -1144,7 +1145,6 @@ const makeFixture = (
               ...email,
               providerLogId,
               safeFailureCode: "send-not-applied",
-              sendAccountingBasis: preserveAccounting ? "conservative" : null,
               sendOutcome: "notApplied",
               sendOutcomeAt: outcomeAt,
             };
@@ -1202,10 +1202,7 @@ const makeFixture = (
       failSendAccounting
         ? Effect.fail(unavailable("send-accounting"))
         : Effect.sync(() => {
-            if (
-              (email.sendOutcome === "applied" || email.sendOutcome === "ambiguous") &&
-              email.sendAccountingBasis !== null
-            ) {
+            if (email.sendAccountingBasis !== null) {
               const retainedBasis = terminalFacts.get(email.workflowId);
               if (retainedBasis !== undefined && retainedBasis !== email.sendAccountingBasis) {
                 throw new Error("Scheduled Email accounting basis changed across replay");
@@ -1216,7 +1213,6 @@ const makeFixture = (
               }
             }
           }),
-    sendAccountingRecorded: (email) => Effect.succeed(terminalFacts.has(email.workflowId)),
     recordWorkflowStart: (email) =>
       failWorkflowAccounting
         ? Effect.fail(unavailable("workflow-accounting"))

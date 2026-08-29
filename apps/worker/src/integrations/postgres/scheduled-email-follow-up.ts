@@ -43,11 +43,17 @@ const selection = {
   )`,
 };
 
+const deliveredSelection = {
+  ...selection,
+  currentSendOutcome: scheduledEmails.send_outcome,
+  currentState: scheduledEmails.state,
+};
+
 export const make = (database: Database): ScheduledEmailFollowUp.PortInterface => ({
   deliveredForUser: (userId) =>
     attempt("deliveredForUser", () =>
       database
-        .select(selection)
+        .select(deliveredSelection)
         .from(scheduledEmailNotifications)
         .innerJoin(
           scheduledEmails,
@@ -72,7 +78,7 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
         )
         .orderBy(desc(scheduledEmailNotifications.accepted_at))
         .limit(20),
-    ).pipe(Effect.flatMap((rows) => Effect.forEach(rows, decode))),
+    ).pipe(Effect.flatMap((rows) => Effect.forEach(rows, decodeDelivered))),
   claimTerminal: (email, notificationId, claimedAt) =>
     attempt("claimTerminal", () =>
       database.transaction(async (transaction) => {
@@ -416,11 +422,22 @@ const isAccessFenced = async (
 };
 
 type EncodedNotification = typeof ScheduledEmailFollowUp.Notification.Encoded;
+type DeliveredRow = EncodedNotification & {
+  readonly currentSendOutcome: EncodedNotification["sendOutcome"];
+  readonly currentState: ScheduledEmail.Record["state"];
+};
 
 const decode = (row: EncodedNotification) =>
   Schema.decodeEffect(ScheduledEmailFollowUp.Notification)(row).pipe(
     Effect.mapError((cause) => unavailable("decode", cause)),
   );
+
+const decodeDelivered = ({ currentSendOutcome, currentState, ...notification }: DeliveredRow) => {
+  if (currentState !== "success" && currentState !== "failure" && currentState !== "canceled") {
+    return Effect.fail(unavailable("decodeDelivered", currentState));
+  }
+  return decode({ ...notification, sendOutcome: currentSendOutcome, state: currentState });
+};
 
 const requireNotification = (
   notificationId: ScheduledEmailFollowUp.NotificationId,

@@ -140,8 +140,6 @@ export const serviceLayerFromDatabase = (
       accounting
         .recordSendOutcome(email)
         .pipe(Effect.mapError((cause) => unavailable("accounting.gmailSend", cause))),
-    sendAccountingRecorded: (email) =>
-      ScheduledEmailPostgres.sendAccountingRecorded(database, email),
     recordWorkflowStart: (email) =>
       accounting
         .recordWorkflowStart(email)

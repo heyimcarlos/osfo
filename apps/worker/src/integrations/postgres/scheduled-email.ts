@@ -306,12 +306,12 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
         .returning();
       return updated === undefined ? changed() : found(updated);
     }),
-  refineNotApplied: (workflowId, inputDigest, providerLogId, preserveAccounting, outcomeAt) =>
+  refineNotApplied: (workflowId, inputDigest, providerLogId, outcomeAt) =>
     transition(database, workflowId, inputDigest, "refineNotApplied", async (transaction, row) => {
       if (
         row.state === "failure" &&
         row.send_outcome === "notApplied" &&
-        row.send_accounting_basis === (preserveAccounting ? "conservative" : null) &&
+        row.send_accounting_basis === "conservative" &&
         row.safe_failure_code === "send-not-applied"
       ) {
         return found(row);
@@ -328,7 +328,6 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
         .set({
           provider_log_id: providerLogId,
           safe_failure_code: "send-not-applied",
-          send_accounting_basis: preserveAccounting ? "conservative" : null,
           send_outcome: "notApplied",
           send_outcome_at: outcomeAt,
           updated_at: sql`clock_timestamp()`,
@@ -437,23 +436,6 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
       }),
     ).pipe(Effect.flatMap((row) => decodeCancel(workflowId, row))),
 });
-
-/** Check the immutable launch allowance key before refining terminal provider truth. */
-export const sendAccountingRecorded = (database: Database, email: ScheduledEmail.Record) =>
-  attempt("sendAccountingRecorded", () =>
-    database
-      .select({ allowanceKind: allowanceUsage.allowance_kind })
-      .from(allowanceUsage)
-      .where(
-        and(
-          eq(allowanceUsage.allowance_period_id, email.allowancePeriodId),
-          eq(allowanceUsage.allowance_kind, "gmailSends"),
-          eq(allowanceUsage.source_type, "integrationAction"),
-          eq(allowanceUsage.source_id, email.actionId),
-        ),
-      )
-      .limit(1),
-  ).pipe(Effect.map((rows) => rows.length > 0));
 
 /** Rebuild mutable User, Subscription, allowance, and originating-authority facts. */
 export const makeCurrentAuthorization = (

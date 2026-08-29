@@ -244,7 +244,6 @@ export interface PortInterface {
   >;
   readonly recordWorkflowStart: (email: Record) => Effect.Effect<void, Unavailable>;
   readonly recordSendOutcome: (email: Record) => Effect.Effect<void, Unavailable>;
-  readonly sendAccountingRecorded: (email: Record) => Effect.Effect<boolean, Unavailable>;
   readonly commitTerminalFollowUp: (email: Record) => Effect.Effect<void, Unavailable>;
   readonly reconcileSend: (email: Record) => Effect.Effect<SendReconciliation, Unavailable>;
   readonly persistence: {
@@ -308,7 +307,6 @@ export interface PortInterface {
       workflowId: WorkflowId,
       inputDigest: InputDigest,
       providerLogId: string | null,
-      preserveAccounting: boolean,
       outcomeAt: Date,
     ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
     readonly requestCancel: (
@@ -705,12 +703,10 @@ export const make = Effect.gen(function* () {
     const reconciliation = yield* ports.reconcileSend(email);
     const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     if (reconciliation._tag === "NotApplied") {
-      const preserveAccounting = yield* ports.sendAccountingRecorded(email);
       const completed = yield* ports.persistence.refineNotApplied(
         email.workflowId,
         email.inputDigest,
         reconciliation.providerLogId,
-        preserveAccounting,
         outcomeAt,
       );
       return yield* settleTerminal(completed);

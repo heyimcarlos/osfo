@@ -25,6 +25,18 @@ export interface Bindings {
   readonly OSFO_DIRECTORY: { readonly getByName: (name: string) => DirectoryStub };
 }
 
+export const projectNotification = (
+  item: Pick<
+    ScheduledEmailFollowUp.Notification,
+    "acceptedAt" | "claimedAt" | "sendOutcome" | "state" | "workflowId"
+  >,
+) => ({
+  deliveredAt: item.acceptedAt ?? item.claimedAt,
+  sendOutcome: item.sendOutcome,
+  state: item.state,
+  workflowId: item.workflowId,
+});
+
 /** Expose exact pending Approval decisions and delivered safe status for Scheduled Email. */
 export const layer = (bindings: Bindings) =>
   Layer.unwrap(
@@ -50,12 +62,7 @@ export const layer = (bindings: Bindings) =>
                 followUps.deliveredForUser(UserId.make(currentUser.userId)),
               ),
               Effect.map((items) => ({
-                items: items.map((item) => ({
-                  deliveredAt: item.acceptedAt ?? item.claimedAt,
-                  sendOutcome: item.sendOutcome,
-                  state: item.state,
-                  workflowId: item.workflowId,
-                })),
+                items: items.map(projectNotification),
               })),
               Effect.mapError(() => unavailable()),
             ),
