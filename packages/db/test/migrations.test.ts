@@ -83,6 +83,209 @@ describe("Postgres migrations", () => {
     ),
   );
 
+  it.effect("removes only false conservative Gmail facts proven NotApplied", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      ({ client }) =>
+        Effect.gen(function* () {
+          const migrations = yield* readMigrations;
+          const accountingMigration = migrations.find(
+            ({ name }) => name === "0028_melted_aaron_stack.sql",
+          );
+          if (accountingMigration === undefined) {
+            return yield* Effect.die(new Error("Scheduled Email accounting migration is missing"));
+          }
+          yield* applyMigrations(
+            client,
+            migrations.filter(({ name }) => name < accountingMigration.name),
+          );
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO users (id, name, email, updated_at)
+              VALUES ('accounting-user', 'Accounting User', 'accounting-user@example.test', now());
+              INSERT INTO billing_subscriptions (
+                billing_subscription_id, user_id, plan, plan_policy_version
+              ) VALUES ('accounting-subscription', 'accounting-user', 'free', 'launch-v1');
+              INSERT INTO allowance_periods (
+                allowance_period_id, user_id, billing_subscription_id, plan,
+                plan_policy_version, starts_at, ends_at
+              ) VALUES (
+                'accounting-period', 'accounting-user', 'accounting-subscription', 'free',
+                'launch-v1', '2026-08-01T00:00:00Z', '2026-09-01T00:00:00Z'
+              );
+              INSERT INTO scheduled_emails (
+                workflow_id, action_id, user_id, agent_id, route_id, session_id,
+                originating_authority_json, plan, approval_presentation, input_digest,
+                request_json, due_at, state, allowance_period_id, plan_policy_version,
+                capability_catalog_version, model_access_policy_version, model_route,
+                resource_price_version, manifest_version, cloudflare_instance_id,
+                provider_log_id, send_outcome, send_accounting_basis, safe_failure_code,
+                admitted_at, accepted_at, waiting_at, send_started_at, send_outcome_at,
+                send_accounted_at, terminal_at, workflow_start_accounted_at
+              ) VALUES
+                (
+                  'not-applied-workflow', 'not-applied-action', 'accounting-user', 'agent',
+                  'route', 'session', '{}', 'free', '{}', repeat('a', 64), '{}',
+                  '2026-08-02T00:01:00Z', 'failure', 'accounting-period', 'launch-v1',
+                  'launch-v1', 'launch-v1', 'test', 'launch-v1', 'scheduled-email-v1',
+                  'not-applied-instance', 'not-applied-log', 'notApplied', 'conservative',
+                  'send-not-applied', '2026-08-02T00:00:00Z', '2026-08-02T00:00:01Z',
+                  '2026-08-02T00:00:02Z', '2026-08-02T00:01:00Z',
+                  '2026-08-02T00:03:00Z', '2026-08-02T00:03:01Z',
+                  '2026-08-02T00:03:00Z', '2026-08-02T00:00:03Z'
+                ),
+                (
+                  'ambiguous-workflow', 'ambiguous-action', 'accounting-user', 'agent',
+                  'route', 'session', '{}', 'free', '{}', repeat('b', 64), '{}',
+                  '2026-08-03T00:01:00Z', 'failure', 'accounting-period', 'launch-v1',
+                  'launch-v1', 'launch-v1', 'test', 'launch-v1', 'scheduled-email-v1',
+                  'ambiguous-instance', NULL, 'ambiguous', 'conservative',
+                  'send-outcome-unknown', '2026-08-03T00:00:00Z', '2026-08-03T00:00:01Z',
+                  '2026-08-03T00:00:02Z', '2026-08-03T00:01:00Z',
+                  '2026-08-03T00:03:00Z', '2026-08-03T00:06:01Z',
+                  '2026-08-03T00:03:00Z', '2026-08-03T00:00:03Z'
+                ),
+                (
+                  'observed-not-applied-workflow', 'observed-not-applied-action',
+                  'accounting-user', 'agent', 'route', 'session', '{}', 'free', '{}',
+                  repeat('c', 64), '{}', '2026-08-04T00:01:00Z', 'failure',
+                  'accounting-period', 'launch-v1', 'launch-v1', 'launch-v1', 'test',
+                  'launch-v1', 'scheduled-email-v1', 'observed-not-applied-instance',
+                  'observed-not-applied-log', 'notApplied', 'conservative',
+                  'send-not-applied', '2026-08-04T00:00:00Z', '2026-08-04T00:00:01Z',
+                  '2026-08-04T00:00:02Z', '2026-08-04T00:01:00Z',
+                  '2026-08-04T00:03:00Z', '2026-08-04T00:03:01Z',
+                  '2026-08-04T00:03:00Z', '2026-08-04T00:00:03Z'
+                );
+              INSERT INTO allowance_usage (
+                allowance_period_id, allowance_kind, source_type, source_id,
+                user_id, quantity, basis
+              ) VALUES
+                (
+                  'accounting-period', 'gmailSends', 'integrationAction',
+                  'not-applied-action', 'accounting-user', 1, 'conservative'
+                ),
+                (
+                  'accounting-period', 'gmailSends', 'integrationAction',
+                  'ambiguous-action', 'accounting-user', 1, 'conservative'
+                ),
+                (
+                  'accounting-period', 'gmailSends', 'integrationAction',
+                  'observed-not-applied-action', 'accounting-user', 1, 'observed'
+                );
+            `),
+          );
+
+          yield* applyMigrations(client, migrations);
+          const emails = yield* Effect.promise(() =>
+            client.query<{
+              readonly action_id: string;
+              readonly send_accounting_basis: string | null;
+              readonly send_reconciliation_claimed_at: Date | null;
+              readonly send_reconciliation_lease_expires_at: Date | null;
+              readonly send_reconciliation_recovery_used: boolean;
+            }>(`
+              SELECT action_id, send_accounting_basis, send_reconciliation_claimed_at,
+                     send_reconciliation_lease_expires_at, send_reconciliation_recovery_used
+              FROM scheduled_emails
+              ORDER BY action_id
+            `),
+          );
+          const usage = yield* Effect.promise(() =>
+            client.query<{ readonly source_id: string }>(`
+              SELECT source_id
+              FROM allowance_usage
+              WHERE allowance_kind = 'gmailSends'
+              ORDER BY source_id
+            `),
+          );
+
+          expect(emails.rows).toEqual([
+            {
+              action_id: "ambiguous-action",
+              send_accounting_basis: "conservative",
+              send_reconciliation_claimed_at: null,
+              send_reconciliation_lease_expires_at: null,
+              send_reconciliation_recovery_used: false,
+            },
+            {
+              action_id: "not-applied-action",
+              send_accounting_basis: null,
+              send_reconciliation_claimed_at: null,
+              send_reconciliation_lease_expires_at: null,
+              send_reconciliation_recovery_used: false,
+            },
+            {
+              action_id: "observed-not-applied-action",
+              send_accounting_basis: "conservative",
+              send_reconciliation_claimed_at: null,
+              send_reconciliation_lease_expires_at: null,
+              send_reconciliation_recovery_used: false,
+            },
+          ]);
+          expect(usage.rows).toEqual([
+            { source_id: "ambiguous-action" },
+            { source_id: "observed-not-applied-action" },
+          ]);
+          const partialLease = yield* Effect.tryPromise({
+            try: () =>
+              client.exec(`
+                UPDATE scheduled_emails
+                SET send_accounting_basis = null,
+                    send_accounted_at = null,
+                    send_reconciliation_claimed_at = '2026-08-03T00:04:59Z'
+                WHERE workflow_id = 'ambiguous-workflow'
+              `),
+            catch: (cause) => new MigrationConstraintRejected({ cause }),
+          }).pipe(Effect.exit);
+          expect(Exit.isFailure(partialLease)).toBe(true);
+          const oversizedLease = yield* Effect.tryPromise({
+            try: () =>
+              client.exec(`
+                UPDATE scheduled_emails
+                SET send_accounting_basis = null,
+                    send_accounted_at = null,
+                    send_reconciliation_claimed_at = '2026-08-03T00:04:59Z',
+                    send_reconciliation_lease_expires_at = '2026-08-03T00:07:01Z'
+                WHERE workflow_id = 'ambiguous-workflow'
+              `),
+            catch: (cause) => new MigrationConstraintRejected({ cause }),
+          }).pipe(Effect.exit);
+          expect(Exit.isFailure(oversizedLease)).toBe(true);
+          const mismatchedRecoveryState = yield* Effect.tryPromise({
+            try: () =>
+              client.exec(`
+                UPDATE scheduled_emails
+                SET send_accounting_basis = null,
+                    send_accounted_at = null,
+                    send_reconciliation_claimed_at = '2026-08-03T00:04:59Z',
+                    send_reconciliation_lease_expires_at = '2026-08-03T00:05:59Z',
+                    send_reconciliation_recovery_used = true
+                WHERE workflow_id = 'ambiguous-workflow'
+              `),
+            catch: (cause) => new MigrationConstraintRejected({ cause }),
+          }).pipe(Effect.exit);
+          expect(Exit.isFailure(mismatchedRecoveryState)).toBe(true);
+          const preSendLease = yield* Effect.tryPromise({
+            try: () =>
+              client.exec(`
+                UPDATE scheduled_emails
+                SET send_accounting_basis = null,
+                    send_accounted_at = null,
+                    send_reconciliation_claimed_at = '2026-08-03T00:00:59Z',
+                    send_reconciliation_lease_expires_at = '2026-08-03T00:01:00Z',
+                    send_reconciliation_recovery_used = false
+                WHERE workflow_id = 'ambiguous-workflow'
+              `),
+            catch: (cause) => new MigrationConstraintRejected({ cause }),
+          }).pipe(Effect.exit);
+          expect(Exit.isFailure(preSendLease)).toBe(true);
+          return undefined;
+        }),
+      closeTestDatabase,
+    ),
+  );
+
   it.effect("enforces one active WhatsApp Wake-up per User and closed lifecycle rows", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,

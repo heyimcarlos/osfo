@@ -13,7 +13,7 @@ import { deletionCases } from "@osfo/db/schema/user-lifecycle";
 import { env } from "cloudflare:workers";
 import { expect, it } from "@effect/vitest";
 import { eq } from "drizzle-orm";
-import { Deferred, Effect, Layer, Result, Schema } from "effect";
+import { Deferred, Effect, Fiber, Layer, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import postgres from "postgres";
 
@@ -350,11 +350,6 @@ it.effect("expires terminal ambiguity inspection after the provider evidence hor
         "send-outcome-unknown",
         new Date(sendAt.getTime() + 120_000),
       );
-      yield* persistence.markSendAccounted(
-        email.workflowId,
-        email.inputDigest,
-        new Date(sendAt.getTime() + 121_000),
-      );
       yield* persistence.markWorkflowStartAccounted(
         email.workflowId,
         email.inputDigest,
@@ -387,7 +382,32 @@ it.effect("expires terminal ambiguity inspection after the provider evidence hor
       expect(
         (yield* ScheduledEmailPostgres.reconciliationBatch(
           database,
-          new Date(sendAt.getTime() + 300_001),
+          new Date(sendAt.getTime() + 300_000),
+          20,
+        )).some(({ workflowId }) => workflowId === email.workflowId),
+      ).toBe(true);
+      const finalizedAt = new Date(sendAt.getTime() + 300_001);
+      yield* persistence.finalizeAmbiguousAccounting(
+        email.workflowId,
+        email.inputDigest,
+        finalizedAt,
+      );
+      yield* Effect.promise(() =>
+        database.insert(allowanceUsage).values({
+          allowance_kind: "gmailSends",
+          allowance_period_id: email.allowancePeriodId,
+          basis: "conservative",
+          quantity: 1n,
+          source_id: email.actionId,
+          source_type: "integrationAction",
+          user_id: email.userId,
+        }),
+      );
+      yield* persistence.markSendAccounted(email.workflowId, email.inputDigest, finalizedAt);
+      expect(
+        (yield* ScheduledEmailPostgres.reconciliationBatch(
+          database,
+          new Date(sendAt.getTime() + 300_002),
           20,
         )).some(({ workflowId }) => workflowId === email.workflowId),
       ).toBe(false);
@@ -395,6 +415,563 @@ it.effect("expires terminal ambiguity inspection after the provider evidence hor
       expect(
         yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, email.userId, sendAt),
       ).toMatchObject({ _tag: "Ready" });
+    }),
+  ),
+);
+
+it.effect(
+  "keeps fenced account deletion pending while read-only ambiguity recovery converges",
+  () =>
+    withDatabase((database) =>
+      Effect.gen(function* () {
+        const seeded = yield* seedUser(database, "fenced-terminal-ambiguity");
+        const candidate = record(seeded, "fenced-terminal-ambiguity");
+        const email = {
+          ...candidate,
+          cloudflareInstanceId: yield* ScheduledEmail.cloudflareInstanceIdFor(candidate.workflowId),
+        };
+        const persistence = ScheduledEmailPostgres.make(database);
+        yield* persistence.admit(email, 5n);
+        yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+        yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+        yield* persistence.finishTerminal(
+          email.workflowId,
+          email.inputDigest,
+          "failure",
+          "ambiguous",
+          null,
+          "send-outcome-unknown",
+          new Date(sendAt.getTime() + 120_000),
+        );
+        yield* insertDeletionFence(database, seeded, "fenced-terminal-ambiguity");
+
+        expect(
+          yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, email.userId, sendAt),
+        ).toMatchObject({ _tag: "RecoveryPending", workflowIds: [email.workflowId] });
+        expect(
+          yield* ScheduledEmailPostgres.reconciliationBatch(
+            database,
+            new Date(sendAt.getTime() + 240_000),
+            20,
+          ),
+        ).toContainEqual(
+          expect.objectContaining({ kind: "settlement", workflowId: email.workflowId }),
+        );
+
+        let providerInspections = 0;
+        const port = ScheduledEmail.Port.of({
+          commitTerminalFollowUp: () => Effect.void,
+          currentAuthorization: () =>
+            Effect.die(new Error("Terminal ambiguity recovery needs no live authority")),
+          persistence,
+          reconcileSend: () =>
+            Effect.sync(() => {
+              providerInspections += 1;
+              return { _tag: "NotApplied" as const, providerLogId: "fenced-not-applied" };
+            }),
+          recordSendOutcome: () => Effect.void,
+          recordWorkflowStart: () => Effect.void,
+          send: () => Effect.die(new Error("Deletion-fenced recovery must never send Gmail")),
+          workflow: { create: () => Effect.void, terminate: () => Effect.void },
+        });
+        yield* TestClock.setTime(sendAt.getTime() + 240_000);
+        expect(
+          yield* ScheduledEmail.Service.pipe(
+            Effect.flatMap((service) => service.recoverClaimed(payloadFor(email))),
+            Effect.provide(
+              ScheduledEmail.layerWithoutDependencies.pipe(
+                Layer.provide(Layer.succeed(ScheduledEmail.Port, port)),
+              ),
+            ),
+          ),
+        ).toMatchObject({
+          providerLogId: "fenced-not-applied",
+          sendAccountedAt: expect.any(Date),
+          sendAccountingBasis: null,
+          sendOutcome: "notApplied",
+        });
+        expect(providerInspections).toBe(1);
+        expect(
+          yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, email.userId, sendAt),
+        ).toMatchObject({ _tag: "Ready" });
+      }),
+    ),
+);
+
+it.effect("marks direct NotApplied accounting resolved without a Gmail fact or repeat repair", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "direct-not-applied-accounting");
+      const email = record(seeded, "direct-not-applied-accounting");
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      const failed = yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "notApplied",
+        "direct-not-applied-log",
+        "send-not-applied",
+        sendAt,
+      );
+      yield* persistence.markWorkflowStartAccounted(email.workflowId, email.inputDigest, sendAt);
+      const followUps = ScheduledEmailFollowUpPostgres.make(database);
+      const notificationId = ScheduledEmailFollowUp.NotificationId.make(
+        `${email.workflowId}-terminal`,
+      );
+      yield* followUps.claimTerminal(failed, notificationId, sendAt);
+      yield* followUps.selectDeliverySession(notificationId, email.sessionId);
+      yield* followUps.markAccepted(
+        notificationId,
+        ThinkSubmissionId.make("direct-not-applied-accounting-submission"),
+        sendAt,
+      );
+      yield* followUps.markWakeRequested(notificationId, sendAt);
+
+      expect(
+        (yield* ScheduledEmailPostgres.reconciliationBatch(database, sendAt, 20)).some(
+          ({ workflowId }) => workflowId === email.workflowId,
+        ),
+      ).toBe(true);
+      const resolved = yield* persistence.markSendAccounted(
+        email.workflowId,
+        email.inputDigest,
+        sendAt,
+      );
+      expect(resolved).toMatchObject({
+        sendAccountedAt: sendAt,
+        sendAccountingBasis: null,
+        sendOutcome: "notApplied",
+      });
+      expect(
+        (yield* ScheduledEmailPostgres.reconciliationBatch(
+          database,
+          new Date(sendAt.getTime() + 1),
+          20,
+        )).some(({ workflowId }) => workflowId === email.workflowId),
+      ).toBe(false);
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select({ basis: allowanceUsage.basis })
+            .from(allowanceUsage)
+            .where(eq(allowanceUsage.source_id, email.actionId)),
+        ),
+      ).toEqual([]);
+    }),
+  ),
+);
+
+it.effect("finalizes old deletion-fenced ambiguity after the recovery envelope", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "fenced-old-terminal-ambiguity");
+      const candidate = record(seeded, "fenced-old-terminal-ambiguity");
+      const email = {
+        ...candidate,
+        cloudflareInstanceId: yield* ScheduledEmail.cloudflareInstanceIdFor(candidate.workflowId),
+      };
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        new Date(sendAt.getTime() + 120_000),
+      );
+      yield* insertDeletionFence(database, seeded, "fenced-old-terminal-ambiguity");
+      const recoveryAt = new Date(sendAt.getTime() + 420_001);
+
+      expect(
+        yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, email.userId, recoveryAt),
+      ).toMatchObject({ _tag: "RecoveryPending", workflowIds: [email.workflowId] });
+      expect(
+        yield* ScheduledEmailPostgres.reconciliationBatch(database, recoveryAt, 20),
+      ).toContainEqual(
+        expect.objectContaining({ kind: "settlement", workflowId: email.workflowId }),
+      );
+
+      let providerInspections = 0;
+      let recordedSends = 0;
+      const port = ScheduledEmail.Port.of({
+        commitTerminalFollowUp: () => Effect.void,
+        currentAuthorization: () =>
+          Effect.die(new Error("Final ambiguity accounting needs no live authority")),
+        persistence,
+        reconcileSend: () =>
+          Effect.sync(() => {
+            providerInspections += 1;
+            return { _tag: "Pending" as const };
+          }),
+        recordSendOutcome: () =>
+          Effect.sync(() => {
+            recordedSends += 1;
+          }),
+        recordWorkflowStart: () => Effect.void,
+        send: () => Effect.die(new Error("Final ambiguity accounting must never send Gmail")),
+        workflow: { create: () => Effect.void, terminate: () => Effect.void },
+      });
+      yield* TestClock.setTime(recoveryAt.getTime());
+      expect(
+        yield* ScheduledEmail.Service.pipe(
+          Effect.flatMap((service) => service.recoverClaimed(payloadFor(email))),
+          Effect.provide(
+            ScheduledEmail.layerWithoutDependencies.pipe(
+              Layer.provide(Layer.succeed(ScheduledEmail.Port, port)),
+            ),
+          ),
+        ),
+      ).toMatchObject({
+        sendAccountedAt: expect.any(Date),
+        sendAccountingBasis: "conservative",
+        sendOutcome: "ambiguous",
+      });
+      expect(providerInspections).toBe(0);
+      expect(recordedSends).toBe(1);
+      expect(
+        (yield* ScheduledEmailPostgres.reconciliationBatch(
+          database,
+          new Date(recoveryAt.getTime() + 1),
+          20,
+        )).some(({ workflowId }) => workflowId === email.workflowId),
+      ).toBe(false);
+      expect(
+        yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, email.userId, recoveryAt),
+      ).toMatchObject({ _tag: "Ready" });
+    }),
+  ),
+);
+
+it.effect("lets an in-horizon reconciliation claim beat exact-horizon finalization", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "reconciliation-finalization-race");
+      const email = record(seeded, "reconciliation-finalization-race");
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        new Date(sendAt.getTime() + 120_000),
+      );
+      const claimedAt = new Date(sendAt.getTime() + 299_000);
+      const claim = yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        claimedAt,
+      );
+      expect(claim).toMatchObject({ _tag: "Acquired", claimedAt });
+
+      yield* Effect.all(
+        [
+          persistence.completeTerminalReconciliation(
+            email.workflowId,
+            email.inputDigest,
+            claimedAt,
+            { _tag: "NotApplied", providerLogId: "authoritative-not-applied" },
+            new Date(sendAt.getTime() + 299_999),
+          ),
+          persistence.finalizeAmbiguousAccounting(
+            email.workflowId,
+            email.inputDigest,
+            new Date(sendAt.getTime() + 300_000),
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      expect(yield* persistence.inspect(email.workflowId)).toMatchObject({
+        providerLogId: "authoritative-not-applied",
+        sendAccountingBasis: null,
+        sendOutcome: "notApplied",
+      });
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select()
+            .from(allowanceUsage)
+            .where(eq(allowanceUsage.source_id, email.actionId)),
+        ),
+      ).toEqual([]);
+    }),
+  ),
+);
+
+it.effect("recovers a crashed in-horizon reconciliation before conservative finalization", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "expired-reconciliation-claim");
+      const email = record(seeded, "expired-reconciliation-claim");
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        new Date(sendAt.getTime() + 120_000),
+      );
+      const claimedAt = new Date(sendAt.getTime() + 299_000);
+      const leaseExpiresAt = new Date(claimedAt.getTime() + 60_000);
+      yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        claimedAt,
+      );
+
+      expect(
+        yield* persistence.finalizeAmbiguousAccounting(
+          email.workflowId,
+          email.inputDigest,
+          new Date(sendAt.getTime() + 300_000),
+        ),
+      ).toMatchObject({ sendAccountingBasis: null });
+      const recoveredAt = new Date(leaseExpiresAt.getTime() + 1);
+      const recovered = yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        recoveredAt,
+      );
+      expect(recovered).toMatchObject({
+        _tag: "Acquired",
+        claimedAt: recoveredAt,
+        email: {
+          sendReconciliationLeaseExpiresAt: new Date(leaseExpiresAt.getTime() + 60_000),
+          sendReconciliationRecoveryUsed: true,
+        },
+      });
+      expect(
+        yield* persistence.completeTerminalReconciliation(
+          email.workflowId,
+          email.inputDigest,
+          recoveredAt,
+          { _tag: "NotApplied", providerLogId: "recovered-not-applied" },
+          new Date(recoveredAt.getTime() + 1_000),
+        ),
+      ).toMatchObject({
+        providerLogId: "recovered-not-applied",
+        sendAccountingBasis: null,
+        sendOutcome: "notApplied",
+      });
+    }),
+  ),
+);
+
+it.effect("lets the explicit recovery claim beat a stale completion at the 6-minute boundary", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "reconciliation-recovery-boundary");
+      const email = record(seeded, "reconciliation-recovery-boundary");
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        new Date(sendAt.getTime() + 120_000),
+      );
+      const initialClaimedAt = new Date(sendAt.getTime() + 300_000);
+      const initialLeaseExpiresAt = new Date(sendAt.getTime() + 360_000);
+      yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        initialClaimedAt,
+      );
+
+      yield* Effect.all(
+        [
+          persistence.completeTerminalReconciliation(
+            email.workflowId,
+            email.inputDigest,
+            initialClaimedAt,
+            { _tag: "NotApplied", providerLogId: "stale-not-applied" },
+            initialLeaseExpiresAt,
+          ),
+          persistence.claimTerminalReconciliation(
+            email.workflowId,
+            email.inputDigest,
+            initialLeaseExpiresAt,
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      expect(yield* persistence.inspect(email.workflowId)).toMatchObject({
+        providerLogId: null,
+        sendAccountingBasis: null,
+        sendOutcome: "ambiguous",
+        sendReconciliationClaimedAt: initialLeaseExpiresAt,
+        sendReconciliationLeaseExpiresAt: new Date(sendAt.getTime() + 420_000),
+        sendReconciliationRecoveryUsed: true,
+      });
+      expect(
+        yield* ScheduledEmailPostgres.reconciliationBatch(
+          database,
+          new Date(sendAt.getTime() + 390_000),
+          20,
+        ),
+      ).toContainEqual(
+        expect.objectContaining({ kind: "settlement", workflowId: email.workflowId }),
+      );
+      expect(
+        yield* persistence.completeTerminalReconciliation(
+          email.workflowId,
+          email.inputDigest,
+          initialLeaseExpiresAt,
+          { _tag: "NotApplied", providerLogId: "recovered-not-applied" },
+          new Date(sendAt.getTime() + 419_999),
+        ),
+      ).toMatchObject({
+        providerLogId: "recovered-not-applied",
+        sendAccountingBasis: null,
+        sendOutcome: "notApplied",
+        sendReconciliationRecoveryUsed: false,
+      });
+    }),
+  ),
+);
+
+it.effect("lets conservative finalization beat a stale recovery completion at 7 minutes", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "reconciliation-final-boundary");
+      const email = record(seeded, "reconciliation-final-boundary");
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        new Date(sendAt.getTime() + 120_000),
+      );
+      const initialClaimedAt = new Date(sendAt.getTime() + 300_000);
+      const recoveryClaimedAt = new Date(sendAt.getTime() + 360_000);
+      const finalDeadline = new Date(sendAt.getTime() + 420_000);
+      yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        initialClaimedAt,
+      );
+      yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        recoveryClaimedAt,
+      );
+
+      yield* Effect.all(
+        [
+          persistence.completeTerminalReconciliation(
+            email.workflowId,
+            email.inputDigest,
+            recoveryClaimedAt,
+            { _tag: "NotApplied", providerLogId: "too-late-not-applied" },
+            finalDeadline,
+          ),
+          persistence.finalizeAmbiguousAccounting(
+            email.workflowId,
+            email.inputDigest,
+            finalDeadline,
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      expect(yield* persistence.inspect(email.workflowId)).toMatchObject({
+        providerLogId: null,
+        sendAccountingBasis: "conservative",
+        sendOutcome: "ambiguous",
+        sendReconciliationClaimedAt: null,
+        sendReconciliationLeaseExpiresAt: null,
+        sendReconciliationRecoveryUsed: false,
+      });
+    }),
+  ),
+);
+
+it.effect("finalizes ambiguity after the bounded reconciliation recovery lease expires", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "expired-reconciliation-recovery");
+      const email = record(seeded, "expired-reconciliation-recovery");
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        new Date(sendAt.getTime() + 120_000),
+      );
+      const claimedAt = new Date(sendAt.getTime() + 241_000);
+      const leaseExpiresAt = new Date(sendAt.getTime() + 301_000);
+      yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        claimedAt,
+      );
+      const recoveredAt = new Date(leaseExpiresAt.getTime() + 1);
+      const recoveryDeadline = new Date(leaseExpiresAt.getTime() + 60_000);
+      yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        recoveredAt,
+      );
+
+      expect(
+        yield* persistence.finalizeAmbiguousAccounting(
+          email.workflowId,
+          email.inputDigest,
+          recoveryDeadline,
+        ),
+      ).toMatchObject({
+        sendAccountingBasis: "conservative",
+        sendReconciliationClaimedAt: null,
+        sendReconciliationLeaseExpiresAt: null,
+        sendReconciliationRecoveryUsed: false,
+      });
+      expect(
+        yield* persistence.finalizeAmbiguousAccounting(
+          email.workflowId,
+          email.inputDigest,
+          new Date(recoveryDeadline.getTime() + 1),
+        ),
+      ).toMatchObject({
+        sendAccountingBasis: "conservative",
+        sendReconciliationClaimedAt: null,
+        sendReconciliationLeaseExpiresAt: null,
+        sendReconciliationRecoveryUsed: false,
+      });
     }),
   ),
 );
@@ -409,6 +986,14 @@ it.effect("rejects NULL-hole pending and success lifecycle rows", () =>
       yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
       yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
 
+      expect(
+        yield* Effect.tryPromise(() =>
+          database
+            .update(scheduledEmails)
+            .set({ send_accounted_at: sendAt, state: "waiting" })
+            .where(eq(scheduledEmails.workflow_id, email.workflowId)),
+        ).pipe(Effect.result),
+      ).toMatchObject({ failure: expect.anything() });
       expect(
         yield* Effect.tryPromise(() =>
           database
@@ -464,12 +1049,67 @@ it.effect("rejects NULL-hole pending and success lifecycle rows", () =>
             .where(eq(scheduledEmails.workflow_id, email.workflowId)),
         ).pipe(Effect.result),
       ).toMatchObject({ failure: expect.anything() });
+      yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        sendAt,
+      );
+      expect(
+        yield* Effect.tryPromise(() =>
+          database
+            .update(scheduledEmails)
+            .set({
+              send_reconciliation_claimed_at: new Date(sendAt.getTime() + 180_000),
+              send_reconciliation_lease_expires_at: new Date(sendAt.getTime() + 240_001),
+            })
+            .where(eq(scheduledEmails.workflow_id, email.workflowId)),
+        ).pipe(Effect.result),
+      ).toMatchObject({ failure: expect.anything() });
+      expect(
+        yield* Effect.tryPromise(() =>
+          database
+            .update(scheduledEmails)
+            .set({
+              send_reconciliation_claimed_at: new Date(sendAt.getTime() + 420_000),
+              send_reconciliation_lease_expires_at: new Date(sendAt.getTime() + 420_001),
+            })
+            .where(eq(scheduledEmails.workflow_id, email.workflowId)),
+        ).pipe(Effect.result),
+      ).toMatchObject({ failure: expect.anything() });
+      expect(
+        yield* Effect.tryPromise(() =>
+          database
+            .update(scheduledEmails)
+            .set({
+              send_reconciliation_claimed_at: new Date(sendAt.getTime() + 300_000),
+              send_reconciliation_lease_expires_at: new Date(sendAt.getTime() + 360_000),
+              send_reconciliation_recovery_used: true,
+            })
+            .where(eq(scheduledEmails.workflow_id, email.workflowId)),
+        ).pipe(Effect.result),
+      ).toMatchObject({ failure: expect.anything() });
+      expect(
+        yield* Effect.tryPromise(() =>
+          database
+            .update(scheduledEmails)
+            .set({
+              send_reconciliation_claimed_at: new Date(sendAt.getTime() - 2_000),
+              send_reconciliation_lease_expires_at: new Date(sendAt.getTime() - 1_000),
+              send_reconciliation_recovery_used: false,
+            })
+            .where(eq(scheduledEmails.workflow_id, email.workflowId)),
+        ).pipe(Effect.result),
+      ).toMatchObject({ failure: expect.anything() });
     }),
   ),
 );
 
 it.effect(
-  "preserves the original-period conservative fact when Applied evidence refines settled truth",
+  "records one observed fact when Applied evidence refines provisional terminal ambiguity",
   () =>
     withDatabase((database) =>
       Effect.gen(function* () {
@@ -490,26 +1130,10 @@ it.effect(
         );
         expect(unknown).toMatchObject({
           sendAccountedAt: null,
-          sendAccountingBasis: "conservative",
+          sendAccountingBasis: null,
           sendOutcome: "ambiguous",
           state: "failure",
         });
-        yield* Effect.promise(() =>
-          database.insert(allowanceUsage).values({
-            allowance_kind: "gmailSends",
-            allowance_period_id: email.allowancePeriodId,
-            basis: "conservative",
-            quantity: 1n,
-            source_id: email.actionId,
-            source_type: "integrationAction",
-            user_id: email.userId,
-          }),
-        );
-        yield* persistence.markSendAccounted(
-          email.workflowId,
-          email.inputDigest,
-          new Date("2026-08-28T12:00:01.000Z"),
-        );
         const followUps = ScheduledEmailFollowUpPostgres.make(database);
         const notificationId = ScheduledEmailFollowUp.NotificationId.make(
           `${email.workflowId}-terminal`,
@@ -522,17 +1146,51 @@ it.effect(
           new Date("2026-08-28T12:00:01.000Z"),
         );
 
-        const refined = yield* persistence.finishApplied(
+        expect(
+          yield* persistence
+            .finishApplied(
+              email.workflowId,
+              email.inputDigest,
+              applied,
+              new Date("2026-08-28T12:00:01.250Z"),
+            )
+            .pipe(Effect.result),
+        ).toMatchObject({ failure: { _tag: "ScheduledEmailConflict" } });
+        const claimedAt = new Date("2026-08-28T12:00:01.500Z");
+        const claim = yield* persistence.claimTerminalReconciliation(
           email.workflowId,
           email.inputDigest,
-          applied,
+          claimedAt,
+        );
+        expect(claim).toMatchObject({ _tag: "Acquired", claimedAt });
+        const refined = yield* persistence.completeTerminalReconciliation(
+          email.workflowId,
+          email.inputDigest,
+          claimedAt,
+          { _tag: "Applied", result: applied },
           new Date("2026-08-28T12:00:02.000Z"),
         );
         expect(refined).toMatchObject({
-          sendAccountingBasis: "conservative",
+          sendAccountingBasis: "observed",
           sendOutcome: "applied",
           state: "success",
         });
+        yield* Effect.promise(() =>
+          database.insert(allowanceUsage).values({
+            allowance_kind: "gmailSends",
+            allowance_period_id: email.allowancePeriodId,
+            basis: "observed",
+            quantity: 1n,
+            source_id: email.actionId,
+            source_type: "integrationAction",
+            user_id: email.userId,
+          }),
+        );
+        yield* persistence.markSendAccounted(
+          email.workflowId,
+          email.inputDigest,
+          new Date("2026-08-28T12:00:03.000Z"),
+        );
         expect(yield* followUps.inspect(notificationId)).toMatchObject({
           sendOutcome: "ambiguous",
           state: "failure",
@@ -554,7 +1212,7 @@ it.effect(
           ),
         ).toEqual([
           {
-            basis: "conservative",
+            basis: "observed",
             periodId: email.allowancePeriodId,
             sourceId: email.actionId,
           },
@@ -563,114 +1221,91 @@ it.effect(
     ),
 );
 
-it.effect("retains the immutable conservative obligation when NotApplied truth arrives late", () =>
+it.effect("resolves late NotApplied accounting without an immutable Gmail fact", () =>
   withDatabase((database) =>
     Effect.gen(function* () {
       const seeded = yield* seedUser(database, "not-applied-refinement");
       const persistence = ScheduledEmailPostgres.make(database);
       const followUps = ScheduledEmailFollowUpPostgres.make(database);
-      yield* Effect.forEach(
-        ["accounting-first", "refinement-first"] as const,
-        (order) =>
-          Effect.gen(function* () {
-            const email = record(seeded, `not-applied-${order}`);
-            yield* persistence.admit(email, 5n);
-            yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
-            yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
-            const unknown = yield* persistence.finishTerminal(
-              email.workflowId,
-              email.inputDigest,
-              "failure",
-              "ambiguous",
-              null,
-              "send-outcome-unknown",
-              sendAt,
-            );
-            const notificationId = ScheduledEmailFollowUp.NotificationId.make(
-              `${email.workflowId}-terminal`,
-            );
-            yield* followUps.claimTerminal(unknown, notificationId, sendAt);
-            yield* followUps.selectDeliverySession(notificationId, email.sessionId);
-            yield* followUps.markAccepted(
-              notificationId,
-              ThinkSubmissionId.make(`not-applied-${order}-submission`),
-              sendAt,
-            );
-
-            const firstFinished = yield* Deferred.make<void>();
-            const retainAccounting = Effect.gen(function* () {
-              if (order === "refinement-first") yield* Deferred.await(firstFinished);
-              const fact = {
-                allowance_kind: "gmailSends" as const,
-                allowance_period_id: email.allowancePeriodId,
-                basis: "conservative" as const,
-                quantity: 1n,
-                source_id: email.actionId,
-                source_type: "integrationAction",
-                user_id: email.userId,
-              };
-              yield* Effect.promise(() =>
-                database.insert(allowanceUsage).values(fact).onConflictDoNothing(),
-              );
-              yield* Effect.promise(() =>
-                database.insert(allowanceUsage).values(fact).onConflictDoNothing(),
-              );
-              yield* persistence.markSendAccounted(
-                email.workflowId,
-                email.inputDigest,
-                new Date("2026-08-28T12:00:02.000Z"),
-              );
-              if (order === "accounting-first") yield* Deferred.succeed(firstFinished, undefined);
-            });
-            const refineTruth = Effect.gen(function* () {
-              if (order === "accounting-first") yield* Deferred.await(firstFinished);
-              yield* persistence.refineNotApplied(
-                email.workflowId,
-                email.inputDigest,
-                `proved-not-applied-${order}`,
-                new Date("2026-08-28T12:00:03.000Z"),
-              );
-              if (order === "refinement-first") yield* Deferred.succeed(firstFinished, undefined);
-            });
-            yield* Effect.all([retainAccounting, refineTruth], {
-              concurrency: "unbounded",
-              discard: true,
-            });
-
-            expect(yield* persistence.inspect(email.workflowId)).toMatchObject({
-              providerLogId: `proved-not-applied-${order}`,
-              safeFailureCode: "send-not-applied",
-              sendAccountedAt: expect.any(Date),
-              sendAccountingBasis: "conservative",
-              sendOutcome: "notApplied",
-              state: "failure",
-            });
-            expect(yield* followUps.inspect(notificationId)).toMatchObject({
-              sendOutcome: "ambiguous",
-              state: "failure",
-            });
-            expect(
-              (yield* followUps.deliveredForUser(email.userId)).filter(
-                ({ workflowId }) => workflowId === email.workflowId,
-              ),
-            ).toMatchObject([
-              {
-                sendOutcome: "notApplied",
-                state: "failure",
-                workflowId: email.workflowId,
-              },
-            ]);
-            expect(
-              yield* Effect.promise(() =>
-                database
-                  .select({ basis: allowanceUsage.basis })
-                  .from(allowanceUsage)
-                  .where(eq(allowanceUsage.source_id, email.actionId)),
-              ),
-            ).toEqual([{ basis: "conservative" }]);
-          }),
-        { discard: true },
+      const email = record(seeded, "not-applied-late");
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      const unknown = yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        new Date(sendAt.getTime() + 120_000),
       );
+      const notificationId = ScheduledEmailFollowUp.NotificationId.make(
+        `${email.workflowId}-terminal`,
+      );
+      yield* followUps.claimTerminal(unknown, notificationId, sendAt);
+      yield* followUps.selectDeliverySession(notificationId, email.sessionId);
+      yield* followUps.markAccepted(
+        notificationId,
+        ThinkSubmissionId.make("not-applied-late-submission"),
+        sendAt,
+      );
+
+      const claimedAt = new Date(sendAt.getTime() + 240_000);
+      const claim = yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        claimedAt,
+      );
+      expect(claim).toMatchObject({ _tag: "Acquired", claimedAt });
+      const refined = yield* persistence.completeTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        claimedAt,
+        { _tag: "NotApplied", providerLogId: "proved-not-applied-late" },
+        new Date(sendAt.getTime() + 240_001),
+      );
+      expect(refined).toMatchObject({
+        providerLogId: "proved-not-applied-late",
+        safeFailureCode: "send-not-applied",
+        sendAccountedAt: null,
+        sendAccountingBasis: null,
+        sendOutcome: "notApplied",
+        state: "failure",
+      });
+      expect(
+        (yield* ScheduledEmailPostgres.reconciliationBatch(
+          database,
+          new Date(sendAt.getTime() + 241_000),
+          20,
+        )).some(({ workflowId }) => workflowId === email.workflowId),
+      ).toBe(true);
+
+      yield* persistence.markSendAccounted(
+        email.workflowId,
+        email.inputDigest,
+        new Date(sendAt.getTime() + 242_000),
+      );
+      expect(yield* persistence.inspect(email.workflowId)).toMatchObject({
+        sendAccountedAt: expect.any(Date),
+        sendAccountingBasis: null,
+        sendOutcome: "notApplied",
+      });
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select({ basis: allowanceUsage.basis })
+            .from(allowanceUsage)
+            .where(eq(allowanceUsage.source_id, email.actionId)),
+        ),
+      ).toEqual([]);
+      expect(yield* followUps.inspect(notificationId)).toMatchObject({
+        sendOutcome: "ambiguous",
+        state: "failure",
+      });
+      expect(yield* followUps.deliveredForUser(email.userId)).toMatchObject([
+        { sendOutcome: "notApplied", state: "failure", workflowId: email.workflowId },
+      ]);
     }),
   ),
 );
@@ -962,11 +1597,109 @@ it.effect("continues claimed reconciliation after deletion fencing and unblocks 
           ),
         ),
       );
-      expect(recovered).toMatchObject({ safeFailureCode: "authority-ended", state: "canceled" });
+      expect(recovered).toMatchObject({ safeFailureCode: "cancel-requested", state: "canceled" });
       expect(providerCalls).toBe(0);
       expect(
         yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, seeded.userId, sendAt),
       ).toMatchObject({ _tag: "Ready" });
+    }),
+  ),
+);
+
+it.effect("cancels a NotStarted recovery that account deletion fences during inspection", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "fenced-not-started-race");
+      const candidate = record(seeded, "fenced-not-started-race");
+      const email = {
+        ...candidate,
+        cloudflareInstanceId: yield* ScheduledEmail.cloudflareInstanceIdFor(candidate.workflowId),
+      };
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      const authorizationSnapshot = yield* ScheduledEmailPostgres.makeCurrentAuthorization(
+        database,
+      )(email, "durableTrigger").pipe(
+        Effect.map((current) => ({
+          ...current,
+          allowance:
+            current.allowance._tag === "Metered"
+              ? { ...current.allowance, plan: "adventurer" as const }
+              : current.allowance,
+          authority: {
+            _tag: "DurableTrigger" as const,
+            triggerId: email.workflowId,
+            triggerType: "workflow" as const,
+            userId: email.userId,
+          },
+          originatingAuthority: {
+            _tag: "DurableTrigger" as const,
+            triggerId: email.workflowId,
+            triggerType: "workflow" as const,
+          },
+          gmailConnection: {
+            _tag: "Connected" as const,
+            toolkit: "gmail" as const,
+            userId: email.userId,
+          },
+          integrationConnections: [
+            {
+              _tag: "Connected" as const,
+              toolkit: "gmail" as const,
+              userId: email.userId,
+            },
+          ],
+          subscription: { ...current.subscription, plan: "adventurer" as const },
+        })),
+      );
+      const inspectionStarted = yield* Deferred.make<void>();
+      const releaseInspection = yield* Deferred.make<void>();
+      let providerSends = 0;
+      const port = ScheduledEmail.Port.of({
+        commitTerminalFollowUp: () => Effect.void,
+        currentAuthorization: () => Effect.succeed(authorizationSnapshot),
+        persistence,
+        reconcileSend: () =>
+          Deferred.succeed(inspectionStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseInspection)),
+            Effect.as({ _tag: "NotStarted" as const }),
+          ),
+        recordSendOutcome: () => Effect.void,
+        recordWorkflowStart: () => Effect.void,
+        send: (_retained, authorize) =>
+          authorize.pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                providerSends += 1;
+                return applied;
+              }),
+            ),
+          ),
+        workflow: { create: () => Effect.void, terminate: () => Effect.void },
+      });
+      const recovery = yield* ScheduledEmail.Service.pipe(
+        Effect.flatMap((service) => service.recoverClaimed(payloadFor(email))),
+        Effect.provide(
+          ScheduledEmail.layerWithoutDependencies.pipe(
+            Layer.provide(Layer.succeed(ScheduledEmail.Port, port)),
+          ),
+        ),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(inspectionStarted);
+      yield* insertDeletionFence(database, seeded, "fenced-not-started-race");
+      expect(
+        yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, email.userId, sendAt),
+      ).toMatchObject({ _tag: "RecoveryPending", workflowIds: [email.workflowId] });
+      yield* Deferred.succeed(releaseInspection, undefined);
+      expect(yield* Fiber.join(recovery)).toMatchObject({
+        cancelRequestedAt: expect.any(Date),
+        safeFailureCode: "cancel-requested",
+        state: "canceled",
+      });
+      expect(providerSends).toBe(0);
     }),
   ),
 );

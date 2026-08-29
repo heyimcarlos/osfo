@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   foreignKey,
   index,
@@ -64,6 +65,9 @@ export const scheduledEmails = pgTable(
     send_claim_generation: integer().default(0).notNull(),
     send_outcome_at: timestamp({ withTimezone: true }),
     send_accounted_at: timestamp({ withTimezone: true }),
+    send_reconciliation_claimed_at: timestamp({ withTimezone: true }),
+    send_reconciliation_lease_expires_at: timestamp({ withTimezone: true }),
+    send_reconciliation_recovery_used: boolean().default(false).notNull(),
     cancel_requested_at: timestamp({ withTimezone: true }),
     terminal_at: timestamp({ withTimezone: true }),
     workflow_start_accounted_at: timestamp({ withTimezone: true }),
@@ -123,7 +127,7 @@ export const scheduledEmails = pgTable(
           ${table.state} = 'send_pending_reconciliation'
           and ${table.send_outcome} is not null
           and ${table.send_outcome} = 'ambiguous'
-          and ${table.send_accounting_basis} = 'conservative'
+          and ${table.send_accounting_basis} is null
           and ${table.send_outcome_at} is not null
           and ${table.provider_resource_id} is null
         ) or (
@@ -138,7 +142,7 @@ export const scheduledEmails = pgTable(
           ${table.state} = 'failure'
           and ${table.send_outcome} is not null
           and ${table.send_outcome} in ('notApplied', 'ambiguous')
-          and (${table.send_outcome} <> 'ambiguous' or ${table.send_accounting_basis} = 'conservative')
+          and (${table.send_outcome} <> 'ambiguous' or ${table.send_accounting_basis} is null or ${table.send_accounting_basis} = 'conservative')
           and (${table.send_outcome} <> 'notApplied' or ${table.send_accounting_basis} is null or ${table.send_accounting_basis} = 'conservative')
           and ${table.send_outcome_at} is not null
           and ${table.provider_resource_id} is null
@@ -156,7 +160,9 @@ export const scheduledEmails = pgTable(
         and (${table.state} <> 'send_pending_reconciliation' or (${table.send_outcome} is not null and ${table.send_outcome} = 'ambiguous' and ${table.send_outcome_at} is not null and ${table.terminal_at} is null))
         and (${table.state} not in ('sending', 'send_pending_reconciliation', 'success', 'failure') or ${table.send_started_at} is not null)
         and (${table.state} <> 'success' or (${table.send_outcome} is not null and ${table.send_outcome} = 'applied' and ${table.send_outcome_at} is not null and ${table.provider_log_id} is not null and ${table.provider_resource_id} is not null))
-        and (${table.send_accounted_at} is null or ${table.send_accounting_basis} is not null)
+        and (${table.send_accounted_at} is null or (${table.send_outcome} is not null and (${table.send_outcome} = 'notApplied' or ${table.send_accounting_basis} is not null)))
+        and (not ${table.send_reconciliation_recovery_used} or (${table.state} = 'failure' and ${table.send_outcome} = 'ambiguous' and ${table.send_accounting_basis} is null and ${table.send_started_at} is not null))
+        and ((${table.send_reconciliation_claimed_at} is null and ${table.send_reconciliation_lease_expires_at} is null) or (${table.state} = 'failure' and ${table.send_outcome} = 'ambiguous' and ${table.send_accounting_basis} is null and ${table.send_started_at} is not null and ${table.send_reconciliation_claimed_at} is not null and ${table.send_reconciliation_lease_expires_at} is not null and ${table.send_reconciliation_claimed_at} >= ${table.send_started_at} and ${table.send_reconciliation_lease_expires_at} > ${table.send_reconciliation_claimed_at} and ${table.send_reconciliation_lease_expires_at} <= ${table.send_reconciliation_claimed_at} + interval '1 minute' and ((${table.send_reconciliation_recovery_used} = false and ${table.send_reconciliation_claimed_at} <= ${table.send_started_at} + interval '5 minutes' and ${table.send_reconciliation_lease_expires_at} <= ${table.send_started_at} + interval '6 minutes') or (${table.send_reconciliation_recovery_used} = true and ${table.send_reconciliation_claimed_at} > ${table.send_started_at} + interval '5 minutes' and ${table.send_reconciliation_claimed_at} < ${table.send_started_at} + interval '7 minutes' and ${table.send_reconciliation_lease_expires_at} <= ${table.send_started_at} + interval '7 minutes'))))
         and (${table.send_accounting_basis} <> 'observed' or ${table.send_outcome} = 'applied')
         and (${table.workflow_start_accounted_at} is null or ${table.accepted_at} is not null)
         and (${table.safe_failure_code} is null or length(btrim(${table.safe_failure_code})) between 1 and 120)`,
