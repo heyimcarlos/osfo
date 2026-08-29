@@ -1486,7 +1486,7 @@ export class OsfoAgent extends Think<Env> {
           this.#startDocumentBuild(input, ActionId.make(context.toolCallId)),
         idempotencyKey: ({ ctx }) => `document-build-start:${ctx.toolCallId}`,
         inputSchema: effectToolSchema(DocumentBuildStartInput),
-        kind: "durable-pause",
+        kind: "server",
         permissions: ["workflows:start"],
       }),
       [scheduledEmailStartActionName]: action({
