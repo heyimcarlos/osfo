@@ -11,6 +11,7 @@ emulator_test="$repo_root/apps/worker/src/integrations/cloudflare/research-verif
 agent_runtime_test="$repo_root/apps/worker/src/agents/osfo/document-build-agent.runtime.test.ts"
 free_denial_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-free-denial"
 free_state_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-free-state"
+artifact_state_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-artifact-state"
 tab_sequence_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-tab-sequence"
 fixture_dir="$(mktemp -d)"
 trap 'rm -rf -- "$fixture_dir"' EXIT
@@ -25,6 +26,7 @@ for required in \
   "a.source_type = 'documentBuild' and a.allowance_kind = 'workflowStarts'" \
   "a.source_type = 'documentBuild' and a.allowance_kind = 'generatedDocuments'" \
   'assert-document-build-free-state' \
+  'assert-document-build-artifact-state' \
   '.actionId != $freeActionId' \
   'observe_document_build()' \
   '.artifactContentId == ("document:workflow:" + .workflowId)' \
@@ -141,6 +143,88 @@ if jq '.agentRuntime.documentBuildTimer = { status: "unknown" }' \
   "$free_state_assertion" "$fixture_dir/unknown-timer.json" \
     'verification-user' 'web:00000000-0000-4000-8000-000000000289' 2>/dev/null; then
   printf 'An existing Free Document Build timer candidate falsely qualified as absent\n' >&2
+  exit 1
+fi
+
+jq --null-input '
+  {
+    userId: "verification-user",
+    workflowId: "document-build:verification",
+    artifactContentId: "document:workflow:document-build:verification",
+    format: "pdf",
+    sourceSha256: ("sha256:" + ("a" * 64)),
+    sourceByteLength: "109",
+    costEvidence: {
+      providerOperationId: "document-build-provider-operation",
+      usdMicros: "10"
+    },
+    agentRuntime: {
+      documentContent: {
+        size: 123,
+        checksums: { sha256: ("b" * 64) },
+        customMetadata: {
+          osfo: ({
+            userId: "verification-user",
+            owner: { _tag: "Workflow", workflowId: "document-build:verification" },
+            intentDigest: "document-build-intent",
+            format: "pdf",
+            retention: "accounted",
+            artifact: {
+              content: {
+                contentId: "document:workflow:document-build:verification",
+                byteLength: "123",
+                sha256: ("b" * 64)
+              },
+              artifactRole: {
+                _tag: "GeneratedDocumentV1",
+                format: "pdf",
+                pageCount: 1
+              }
+            },
+            cost: {
+              providerOperationId: "document-build-provider-operation",
+              usdMicros: "10"
+            }
+          } | tojson)
+        }
+      },
+      documentAttempt: {
+        customMetadata: {
+          osfo: ({
+            userId: "verification-user",
+            status: "completed",
+            intentDigest: "document-build-intent",
+            renderedPageCount: 1,
+            cost: {
+              providerOperationId: "document-build-provider-operation",
+              usdMicros: "10"
+            }
+          } | tojson)
+        }
+      },
+      documentOwner: {
+        customMetadata: {
+          osfo: ({
+            userId: "verification-user",
+            contentId: "document:workflow:document-build:verification"
+          } | tojson)
+        }
+      },
+      documentSourceObject: {
+        size: 109,
+        checksums: { sha256: ("a" * 64) },
+        customMetadata: { "osfo-sha256": ("sha256:" + ("a" * 64)) }
+      }
+    }
+  }
+' >"$fixture_dir/artifact-state.json"
+"$artifact_state_assertion" "$fixture_dir/artifact-state.json"
+if jq '
+    .agentRuntime.documentAttempt.customMetadata.osfo |=
+      (fromjson | .status = "failed" | tojson)
+  ' "$fixture_dir/artifact-state.json" >"$fixture_dir/failed-artifact-state.json" && \
+  "$artifact_state_assertion" "$fixture_dir/failed-artifact-state.json" 2>/dev/null; then
+  printf 'A failed Document Build attempt falsely qualified as successful artifact state\n' >&2
   exit 1
 fi
 
