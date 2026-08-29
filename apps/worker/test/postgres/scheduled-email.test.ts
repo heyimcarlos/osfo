@@ -419,6 +419,85 @@ it.effect("expires terminal ambiguity inspection after the provider evidence hor
   ),
 );
 
+it.effect(
+  "keeps fenced account deletion pending while read-only ambiguity recovery converges",
+  () =>
+    withDatabase((database) =>
+      Effect.gen(function* () {
+        const seeded = yield* seedUser(database, "fenced-terminal-ambiguity");
+        const candidate = record(seeded, "fenced-terminal-ambiguity");
+        const email = {
+          ...candidate,
+          cloudflareInstanceId: yield* ScheduledEmail.cloudflareInstanceIdFor(candidate.workflowId),
+        };
+        const persistence = ScheduledEmailPostgres.make(database);
+        yield* persistence.admit(email, 5n);
+        yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+        yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+        yield* persistence.finishTerminal(
+          email.workflowId,
+          email.inputDigest,
+          "failure",
+          "ambiguous",
+          null,
+          "send-outcome-unknown",
+          new Date(sendAt.getTime() + 120_000),
+        );
+        yield* insertDeletionFence(database, seeded, "fenced-terminal-ambiguity");
+
+        expect(
+          yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, email.userId, sendAt),
+        ).toMatchObject({ _tag: "RecoveryPending", workflowIds: [email.workflowId] });
+        expect(
+          yield* ScheduledEmailPostgres.reconciliationBatch(
+            database,
+            new Date(sendAt.getTime() + 240_000),
+            20,
+          ),
+        ).toContainEqual(
+          expect.objectContaining({ kind: "settlement", workflowId: email.workflowId }),
+        );
+
+        let providerInspections = 0;
+        const port = ScheduledEmail.Port.of({
+          commitTerminalFollowUp: () => Effect.void,
+          currentAuthorization: () =>
+            Effect.die(new Error("Terminal ambiguity recovery needs no live authority")),
+          persistence,
+          reconcileSend: () =>
+            Effect.sync(() => {
+              providerInspections += 1;
+              return { _tag: "NotApplied" as const, providerLogId: "fenced-not-applied" };
+            }),
+          recordSendOutcome: () => Effect.void,
+          recordWorkflowStart: () => Effect.void,
+          send: () => Effect.die(new Error("Deletion-fenced recovery must never send Gmail")),
+          workflow: { create: () => Effect.void, terminate: () => Effect.void },
+        });
+        yield* TestClock.setTime(sendAt.getTime() + 240_000);
+        expect(
+          yield* ScheduledEmail.Service.pipe(
+            Effect.flatMap((service) => service.recoverClaimed(payloadFor(email))),
+            Effect.provide(
+              ScheduledEmail.layerWithoutDependencies.pipe(
+                Layer.provide(Layer.succeed(ScheduledEmail.Port, port)),
+              ),
+            ),
+          ),
+        ).toMatchObject({
+          providerLogId: "fenced-not-applied",
+          sendAccountedAt: expect.any(Date),
+          sendAccountingBasis: null,
+          sendOutcome: "notApplied",
+        });
+        expect(providerInspections).toBe(1);
+        expect(
+          yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, email.userId, sendAt),
+        ).toMatchObject({ _tag: "Ready" });
+      }),
+    ),
+);
+
 it.effect("marks direct NotApplied accounting resolved without a Gmail fact or repeat repair", () =>
   withDatabase((database) =>
     Effect.gen(function* () {

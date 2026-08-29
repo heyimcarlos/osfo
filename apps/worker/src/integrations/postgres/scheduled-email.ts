@@ -709,6 +709,8 @@ export const quiesceForAccountDeletion = (database: Database, userId: UserId, te
       const rows = await transaction
         .select({
           instanceId: scheduledEmails.cloudflare_instance_id,
+          sendAccountingBasis: scheduledEmails.send_accounting_basis,
+          sendOutcome: scheduledEmails.send_outcome,
           state: scheduledEmails.state,
           workflowId: scheduledEmails.workflow_id,
         })
@@ -736,7 +738,14 @@ export const quiesceForAccountDeletion = (database: Database, userId: UserId, te
           );
       }
       const workflowIds = rows
-        .filter((row) => row.state === "sending" || row.state === "send_pending_reconciliation")
+        .filter(
+          (row) =>
+            row.state === "sending" ||
+            row.state === "send_pending_reconciliation" ||
+            (row.state === "failure" &&
+              row.sendOutcome === "ambiguous" &&
+              row.sendAccountingBasis === null),
+        )
         .map(({ workflowId }) => workflowId);
       const instances = preEffect.map(({ instanceId }) => instanceId);
       return workflowIds.length === 0
@@ -840,7 +849,6 @@ export const reconciliationBatch = (database: Database, now: Date, limit: number
                   sql`${scheduledEmails.send_reconciliation_lease_expires_at} + interval '1 minute' > ${now.toISOString()}::timestamptz`,
                 ),
               ),
-              accessIsAvailable,
             ),
             and(
               inArray(scheduledEmails.state, ["success", "failure", "canceled"]),
