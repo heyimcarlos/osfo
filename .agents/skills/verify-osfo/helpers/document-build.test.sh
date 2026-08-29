@@ -13,6 +13,7 @@ agent_runtime_test="$repo_root/apps/worker/src/agents/osfo/document-build-agent.
 free_denial_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-free-denial"
 free_state_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-free-state"
 artifact_state_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-artifact-state"
+provider_state_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-provider-state"
 deletion_state_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-deletion-state"
 tab_sequence_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-tab-sequence"
 fixture_dir="$(mktemp -d)"
@@ -31,16 +32,25 @@ for required in \
   "a.source_type = 'documentBuild' and a.allowance_kind = 'generatedDocuments'" \
   'assert-document-build-free-state' \
   'assert-document-build-artifact-state' \
+  'assert-document-build-provider-state' \
   'assert-document-build-deletion-state' \
   '.actionId != $freeActionId' \
   'observe_document_build()' \
   '.artifactContentId == ("document:workflow:" + .workflowId)' \
-  '.selectedTool == "startDocumentBuild"' \
-  '.selectedTool == "inspectDocumentBuild"' \
   '.acceptedRunInviteCount == 1' \
   '.activeRunLinkCount == 1'; do
   if ! grep -F -q "$required" "$control"; then
     printf 'Document Build verifier is missing invariant: %s\n' "$required" >&2
+    exit 1
+  fi
+done
+
+for required in \
+  '.selectedTool == "startDocumentBuild"' \
+  '.selectedTool == "inspectDocumentBuild"' \
+  '::cf-wai-tool-call::'; do
+  if ! grep -F -q "$required" "$provider_state_assertion"; then
+    printf 'Document Build provider assertion is missing invariant: %s\n' "$required" >&2
     exit 1
   fi
 done
@@ -235,6 +245,66 @@ if jq '.artifactObjectSha256 = ("c" * 64)' \
   "$fixture_dir/artifact-state.json" >"$fixture_dir/mismatched-artifact-digest.json" && \
   "$artifact_state_assertion" "$fixture_dir/mismatched-artifact-digest.json" 2>/dev/null; then
   printf 'A generated artifact with mismatched stored bytes falsely qualified\n' >&2
+  exit 1
+fi
+
+jq --null-input '{
+  costEvidence: {
+    _tag: "Incurred",
+    providerOperationId: "document-build-provider-operation",
+    usdMicros: "10",
+    basis: "local-verification"
+  },
+  providerCostQuantity: "10",
+  providerCostBasis: "local-verification",
+  model: [
+    {
+      kind: "tool-selection",
+      operationId: "verification-startDocumentBuild",
+      selectedTool: "startDocumentBuild",
+      subject: "web:00000000-0000-4000-8000-000000000289"
+    },
+    {
+      kind: "tool-selection",
+      operationId: null,
+      selectedTool: "inspectDocumentBuild",
+      subject: "document-build:verification"
+    }
+  ],
+  telegram: [
+    { body: ({ text: "Started document-build:verification" } | tojson) },
+    {
+      body: ({
+        text: "Document Build document-build:verification succeeded as document:workflow:document-build:verification"
+      } | tojson)
+    }
+  ]
+}' >"$fixture_dir/provider-state.json"
+"$provider_state_assertion" \
+  "$fixture_dir/provider-state.json" \
+  'web:00000000-0000-4000-8000-000000000289' \
+  'document-build:verification' \
+  'document:workflow:document-build:verification' \
+  'verification-startDocumentBuild::cf-wai-tool-call::e0i-live-suffix' \
+  'verification-startDocumentBuild'
+if "$provider_state_assertion" \
+  "$fixture_dir/provider-state.json" \
+  'web:00000000-0000-4000-8000-000000000289' \
+  'document-build:verification' \
+  'document:workflow:document-build:verification' \
+  'verification-other::cf-wai-tool-call::e0i-live-suffix' \
+  'verification-startDocumentBuild' 2>/dev/null; then
+  printf 'An unrelated namespaced Document Build Action falsely matched the provider selection\n' >&2
+  exit 1
+fi
+if "$provider_state_assertion" \
+  "$fixture_dir/provider-state.json" \
+  'web:00000000-0000-4000-8000-000000000289' \
+  'document-build:verification' \
+  'document:workflow:document-build:verification' \
+  'verification-startDocumentBuild' \
+  'verification-startDocumentBuild' 2>/dev/null; then
+  printf 'A raw provider operation ID falsely qualified as the persisted Action ID\n' >&2
   exit 1
 fi
 if jq '

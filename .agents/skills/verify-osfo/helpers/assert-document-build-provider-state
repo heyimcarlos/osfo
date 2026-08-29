@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$#" -ne 6 ]]; then
+  printf 'Usage: assert-document-build-provider-state <provider-file> <file-id> <workflow-id> <artifact-id> <action-id> <provider-operation-id>\n' >&2
+  exit 2
+fi
+
+provider_file="$1"
+file_id="$2"
+workflow_id="$3"
+artifact_id="$4"
+action_id="$5"
+provider_operation_id="$6"
+
+# workers-ai-provider retains the provider's operation ID before this marker and
+# appends a unique suffix before Think exposes the Action toolCallId.
+jq --exit-status \
+  --arg fileId "$file_id" \
+  --arg workflowId "$workflow_id" \
+  --arg artifactId "$artifact_id" \
+  --arg actionId "$action_id" \
+  --arg providerOperationId "$provider_operation_id" \
+  '($actionId | split("::cf-wai-tool-call::")) as $actionParts |
+    .costEvidence._tag == "Incurred" and
+    (.costEvidence.providerOperationId | length) > 0 and
+    .costEvidence.usdMicros != "0" and
+    .providerCostQuantity == .costEvidence.usdMicros and
+    .providerCostBasis == .costEvidence.basis and
+    ($actionParts | length) == 2 and
+    $actionParts[0] == $providerOperationId and
+    ($actionParts[1] | length) > 0 and
+    ([.model[] | select(.kind == "tool-selection" and
+      .selectedTool == "startDocumentBuild" and .subject == $fileId and
+      .operationId == $providerOperationId)] | length) == 1 and
+    ([.model[] | select(.kind == "tool-selection" and
+      .selectedTool == "inspectDocumentBuild" and .subject == $workflowId)] | length) == 1 and
+    (any(.telegram[];
+      (.body | fromjson?) as $body |
+      (($body.text? // $body.rich_message.markdown? // "") | contains($workflowId)))) and
+    (any(.telegram[];
+      (.body | fromjson?) as $body |
+      (($body.text? // $body.rich_message.markdown? // "") | contains($artifactId))))' \
+  "$provider_file" >/dev/null

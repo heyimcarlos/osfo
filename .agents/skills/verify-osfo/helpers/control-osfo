@@ -1600,7 +1600,7 @@ observe_document_build_free_denial() {
 
 observe_document_build() {
   local run_id state_dir feature_dir container_id provider_origin phone state_json user_id agent_id file_id
-  local action_id free_action_id artifact_id main_instance_id timer_instance_id runtime source_key artifact_key attempt_key owner_key
+  local action_id free_action_id provider_operation_id artifact_id main_instance_id timer_instance_id runtime source_key artifact_key attempt_key owner_key
   local files_bucket artifacts_bucket source_exists artifact_exists attempt_exists owner_exists
   local artifact_object_sha256
   run_id="$1"
@@ -1662,6 +1662,7 @@ observe_document_build() {
   agent_id="$(jq --exit-status --raw-output '.agentId' <<<"$state_json")"
   action_id="$(jq --exit-status --raw-output '.actionId' <<<"$state_json")"
   free_action_id="$(state_value "$run_id" document-build-free-action-id)"
+  provider_operation_id='verification-startDocumentBuild'
   file_id="$(jq --exit-status --raw-output '.sourceFileId' <<<"$state_json")"
   artifact_id="$(jq --exit-status --raw-output '.artifactContentId' <<<"$state_json")"
   main_instance_id="$(jq --exit-status --raw-output '.cloudflareInstanceId' <<<"$state_json")"
@@ -1738,26 +1739,10 @@ observe_document_build() {
       .agentRuntime.documentBuildMain != null and .agentRuntime.documentBuildTimer != null' \
     "$feature_dir/state.json" >/dev/null
   "$script_dir/assert-document-build-artifact-state" "$feature_dir/state.json"
-  jq --exit-status \
-    --arg fileId "$file_id" --arg workflowId "$(jq --raw-output '.workflowId' <<<"$state_json")" \
-    --arg artifactId "$artifact_id" --arg actionId "$action_id" \
-    '.costEvidence._tag == "Incurred" and
-      (.costEvidence.providerOperationId | length) > 0 and
-      .costEvidence.usdMicros != "0" and
-      .providerCostQuantity == .costEvidence.usdMicros and
-      .providerCostBasis == .costEvidence.basis and
-      ([.model[] | select(.kind == "tool-selection" and
-        .selectedTool == "startDocumentBuild" and .subject == $fileId and
-        .operationId == $actionId)] | length) == 1 and
-      ([.model[] | select(.kind == "tool-selection" and
-        .selectedTool == "inspectDocumentBuild" and .subject == $workflowId)] | length) == 1 and
-      (any(.telegram[];
-        (.body | fromjson?) as $body |
-        (($body.text? // $body.rich_message.markdown? // "") | contains($workflowId)))) and
-      (any(.telegram[];
-        (.body | fromjson?) as $body |
-        (($body.text? // $body.rich_message.markdown? // "") | contains($artifactId))))' \
-    "$feature_dir/provider.json" >/dev/null
+  "$script_dir/assert-document-build-provider-state" \
+    "$feature_dir/provider.json" "$file_id" \
+    "$(jq --raw-output '.workflowId' <<<"$state_json")" "$artifact_id" \
+    "$action_id" "$provider_operation_id"
   printf '%s\n' "$file_id" >"$state_dir/document-build-file-id"
   printf '%s\n' "$artifact_id" >"$state_dir/document-build-artifact-id"
   printf '%s\n' "$main_instance_id" >"$state_dir/document-build-main-instance-id"
