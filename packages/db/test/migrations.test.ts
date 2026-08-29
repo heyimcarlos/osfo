@@ -228,6 +228,7 @@ describe("Postgres migrations", () => {
               client.exec(`
                 UPDATE scheduled_emails
                 SET send_accounting_basis = null,
+                    send_accounted_at = null,
                     send_reconciliation_claimed_at = '2026-08-03T00:04:59Z'
                 WHERE workflow_id = 'ambiguous-workflow'
               `),
