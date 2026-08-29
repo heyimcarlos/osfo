@@ -9,6 +9,7 @@ import {
 import { Effect, Schema } from "effect";
 
 import { OSFO_DIRECTORY_NAME } from "../../src/agents/osfo/identity";
+import { hourlyMaintenanceCron } from "../../src/scheduled-lifecycle";
 import worker from "../../src/worker";
 import { spawnApp } from "../support/spawn-app";
 
@@ -18,7 +19,7 @@ const AuthSessionResponse = Schema.Struct({
 
 const runScheduledMaintenance = (): Promise<void> => {
   const context = createExecutionContext();
-  worker.scheduled(createScheduledController(), env, context);
+  worker.scheduled(createScheduledController({ cron: hourlyMaintenanceCron }), env, context);
   return waitOnExecutionContext(context);
 };
 
