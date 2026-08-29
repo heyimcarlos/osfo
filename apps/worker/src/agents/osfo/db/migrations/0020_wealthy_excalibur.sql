@@ -1,0 +1,1 @@
+ALTER TABLE `osfo_model_call_usage_evidence` ADD `qualification_gateway_request_id` text;

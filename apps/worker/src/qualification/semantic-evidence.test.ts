@@ -335,6 +335,123 @@ describe("Semantic evidence", () => {
     });
   });
 
+  it("treats a terminal Think failure as complete no-obligation evidence", () => {
+    const input = semanticEvidenceInput();
+    const productFactId = "memory-not-required:assistant-1";
+    const productAuthorityExports = [
+      authorityExport("memory_commit_receipts", [
+        {
+          effectReceipts: [],
+          memoryObligation: "notRequired",
+          occurredAt: "2026-08-17T12:00:00.010Z",
+          outcomeId: "assistant-1",
+          productFactId,
+          rootId: "message-1",
+          stageOccurrences: [],
+          terminalStatus: "error",
+          usageFacts: [],
+          userMessageId: "message-1",
+        },
+      ]),
+    ];
+    const memoryRequirements = {
+      ordinaryConversation: {
+        amplificationLimits: {},
+        requiredComponents: ["Memory"],
+        requiredCorrelations: [],
+        requiredStages: [],
+        requiredStores: [],
+      },
+    } satisfies Readonly<Record<string, SemanticJourneyRequirement>>;
+    const trace = {
+      ...input.traces[0],
+      amplification: [],
+      operations: input.traces[0].operations.map((operation) => ({
+        ...operation,
+        sourceProductFactIds: [productFactId],
+      })),
+      signals: [
+        {
+          component: "Memory" as const,
+          occurredAt: "2026-08-17T12:00:00.010Z",
+          signalId: productFactId,
+        },
+      ],
+    };
+
+    const assessment = assessSemanticEvidence(
+      { ...input, productAuthorityExports, traces: [trace] },
+      memoryRequirements,
+    );
+    expect(assessment).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "componentProductAuthorityInvalid", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
+    });
+    expect(
+      assessment.findings.some(
+        ({ subject, verdict }) => subject === "message-1:Memory" && verdict === "MISSING",
+      ),
+    ).toBe(false);
+  });
+
+  it("treats a committed Memory failure as complete failure evidence", () => {
+    const input = semanticEvidenceInput();
+    const productFactId = "memory-outbox-1";
+    const productAuthorityExports = [
+      authorityExport("memory_commit_receipts", [
+        {
+          commitStatus: "failed",
+          effectReceipts: [],
+          memoryCommitId: productFactId,
+          occurredAt: "2026-08-17T12:00:00.020Z",
+          outcomeId: "provider-document-1",
+          productFactId,
+          rootId: "message-1",
+          stageOccurrences: [],
+          usageFacts: [],
+          userMessageId: "message-1",
+        },
+      ]),
+    ];
+    const memoryRequirements = {
+      ordinaryConversation: {
+        amplificationLimits: {},
+        requiredComponents: ["Memory"],
+        requiredCorrelations: [],
+        requiredStages: [],
+        requiredStores: [],
+      },
+    } satisfies Readonly<Record<string, SemanticJourneyRequirement>>;
+    const trace = {
+      ...input.traces[0],
+      amplification: [],
+      operations: input.traces[0].operations.map((operation) => ({
+        ...operation,
+        sourceProductFactIds: [productFactId],
+      })),
+      signals: [
+        {
+          component: "Memory" as const,
+          occurredAt: "2026-08-17T12:00:00.020Z",
+          signalId: productFactId,
+        },
+      ],
+    };
+
+    const assessment = assessSemanticEvidence(
+      { ...input, productAuthorityExports, traces: [trace] },
+      memoryRequirements,
+    );
+    expect(assessment.verdict).toBe("FAIL");
+    expect(
+      assessment.findings.some(
+        ({ subject, verdict }) => subject === "message-1:Memory" && verdict === "MISSING",
+      ),
+    ).toBe(false);
+  });
+
   it("rejects duplicate local product authority for one root", () => {
     const input = semanticEvidenceInput();
     const duplicate = input.localEvidence[0];

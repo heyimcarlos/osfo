@@ -188,6 +188,7 @@ describe("ScheduledEmail", () => {
         .pipe(Effect.result);
 
       expect(started).toMatchObject({ _tag: "Started", email: { state: "accepted" } });
+      expect("qualificationContext" in started.email).toBe(false);
       expect(replayed).toMatchObject({ _tag: "Replayed", email: { state: "accepted" } });
       expect(changed).toMatchObject({ failure: { _tag: "ScheduledEmailConflict" } });
       expect(fixture.calls.slice(0, 4)).toEqual([
@@ -213,6 +214,35 @@ describe("ScheduledEmail", () => {
           })
           .pipe(Effect.result),
       ).toMatchObject({ failure: { _tag: "ScheduledEmailConflict" } });
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect("retains the exact server-owned qualification root on admission", () => {
+    const fixture = makeFixture();
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const qualificationContext = {
+        attemptId: "qualification-attempt-1",
+        executionId: "qualification-execution-1",
+        journey: "scheduledEmail" as const,
+        offeredAtEpochMs: now.getTime(),
+        planChecksum: "qualification-plan-1",
+        region: "americas" as const,
+        rootId: "qualification-root-1",
+        runId: "qualification-run-1",
+      };
+      const started = yield* emails.start(startInput({ qualificationContext }));
+      const conflict = yield* emails
+        .start(
+          startInput({
+            qualificationContext: { ...qualificationContext, rootId: "other-root" },
+          }),
+        )
+        .pipe(Effect.result);
+
+      expect(started).toMatchObject({ email: { qualificationContext } });
+      expect(conflict).toMatchObject({ failure: { _tag: "ScheduledEmailConflict" } });
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 

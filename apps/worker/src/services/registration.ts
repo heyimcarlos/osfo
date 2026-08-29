@@ -2,9 +2,10 @@ import { agents } from "@osfo/db/schema/agents";
 import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
+import { qualificationParticipantProvisions } from "@osfo/db/schema/qualification-cohorts";
 import { HelpArea, RegistrationLocale } from "@osfo/api";
 import { and, eq, gt, lt } from "drizzle-orm";
-import { Context, Crypto, DateTime, Effect, Layer, Schema } from "effect";
+import { Context, Crypto, DateTime, Effect, Layer, type Redacted, Schema } from "effect";
 
 import {
   type Database,
@@ -24,6 +25,7 @@ import {
   PlanPolicyVersion,
   UserId,
 } from "../domain";
+import { qualificationEnrollmentDigest } from "../qualification/qualification-enrollment";
 
 /** Completed registration returned to an authenticated User. */
 export const RegistrationCompleted = Schema.Struct({
@@ -109,29 +111,31 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@osfo/Registration") {}
 
 /** Construct Registration from request-scoped runtime capabilities. */
-export const make = Effect.gen(function* () {
-  const agentRegistration = yield* AgentRegistration;
-  const crypto = yield* Crypto.Crypto;
-  const dbService = yield* Db.Service;
+export const make = (qualificationEnrollmentKey: Redacted.Redacted) =>
+  Effect.gen(function* () {
+    const agentRegistration = yield* AgentRegistration;
+    const crypto = yield* Crypto.Crypto;
+    const dbService = yield* Db.Service;
 
-  const complete = Effect.fn("Registration.complete")((input: CompleteInput) =>
-    Effect.scoped(
-      dbService.database.pipe(
-        Effect.flatMap((db) =>
-          completeRegistration(db, crypto, input).pipe(
-            Effect.andThen(readCompletedRegistration(db, input.userId)),
+    const complete = Effect.fn("Registration.complete")((input: CompleteInput) =>
+      Effect.scoped(
+        dbService.database.pipe(
+          Effect.flatMap((db) =>
+            completeRegistration(db, crypto, qualificationEnrollmentKey, input).pipe(
+              Effect.andThen(readCompletedRegistration(db, input.userId)),
+            ),
           ),
+          Effect.tap((registration) => agentRegistration.initialize(registration)),
         ),
-        Effect.tap((registration) => agentRegistration.initialize(registration)),
       ),
-    ),
-  );
+    );
 
-  return Service.of({ complete });
-});
+    return Service.of({ complete });
+  });
 
 /** Registration Layer that preserves its database and cryptography requirements. */
-export const layerWithoutDependencies = Layer.effect(Service, make);
+export const layerWithoutDependencies = (qualificationEnrollmentKey: Redacted.Redacted) =>
+  Layer.effect(Service, make(qualificationEnrollmentKey));
 
 const StoredRegistration = Schema.Struct({
   agentCreatedAt: Schema.NullOr(DbTimestamp),
@@ -234,6 +238,7 @@ const readCompletedRegistration = Effect.fn("Registration.readCompleted")(functi
 const completeRegistration = Effect.fn("Registration.completeRegistration")(function* (
   db: Database,
   crypto: Crypto.Crypto,
+  qualificationEnrollmentKey: Redacted.Redacted,
   input: CompleteInput,
 ) {
   const userId = input.userId;
@@ -254,6 +259,25 @@ const completeRegistration = Effect.fn("Registration.completeRegistration")(func
   const occurredAtTimestamp = DbTimestamp.make(DateTime.formatIso(occurredAt));
   const allowancePeriodEndsAt = DateTime.toDateUtc(DateTime.add(occurredAt, { days: 30 }));
   const completedAt = DateTime.toDateUtc(occurredAt);
+  const [preRegistration] = yield* Effect.tryPromise({
+    try: () =>
+      db
+        .select({
+          phoneNumber: users.phoneNumber,
+          phoneNumberVerified: users.phoneNumberVerified,
+        })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1),
+    catch: (cause) => dbWriteRejected("completeRegistration", userId, cause),
+  });
+  const enrollmentDigest =
+    preRegistration?.phoneNumber !== null && preRegistration?.phoneNumberVerified === true
+      ? yield* qualificationEnrollmentDigest(
+          qualificationEnrollmentKey,
+          preRegistration.phoneNumber,
+        ).pipe(Effect.mapError((cause) => dbWriteRejected("completeRegistration", userId, cause)))
+      : null;
 
   const result = yield* Effect.tryPromise({
     try: () =>
@@ -261,6 +285,7 @@ const completeRegistration = Effect.fn("Registration.completeRegistration")(func
       db.transaction(async (transaction) => {
         const [user] = await transaction
           .select({
+            createdAt: users.createdAt,
             phoneNumber: users.phoneNumber,
             phoneNumberVerified: users.phoneNumberVerified,
             registrationCompletedAt: users.registrationCompletedAt,
@@ -274,6 +299,22 @@ const completeRegistration = Effect.fn("Registration.completeRegistration")(func
         if (user.phoneNumber === null || user.phoneNumberVerified !== true) {
           return "phone-verification-required" as const;
         }
+        const [qualificationProvision] =
+          enrollmentDigest === null || user.phoneNumber !== preRegistration?.phoneNumber
+            ? []
+            : await transaction
+                .select({ provisionId: qualificationParticipantProvisions.provision_id })
+                .from(qualificationParticipantProvisions)
+                .where(
+                  and(
+                    eq(qualificationParticipantProvisions.state, "PENDING"),
+                    lt(qualificationParticipantProvisions.created_at, user.createdAt),
+                    gt(qualificationParticipantProvisions.expires_at, completedAt),
+                    eq(qualificationParticipantProvisions.enrollment_digest, enrollmentDigest),
+                  ),
+                )
+                .for("update")
+                .limit(1);
 
         await transaction.insert(agents).values({
           agent_id: AgentId.make(`agent-${generatedIds.agent}`),
@@ -336,6 +377,22 @@ const completeRegistration = Effect.fn("Registration.completeRegistration")(func
               : { ...profile, name: input.profile.preferredName },
           )
           .where(eq(users.id, userId));
+        if (qualificationProvision !== undefined) {
+          const consumed = await transaction
+            .update(qualificationParticipantProvisions)
+            .set({ consumed_at: completedAt, state: "CONSUMED", user_id: userId })
+            .where(
+              and(
+                eq(
+                  qualificationParticipantProvisions.provision_id,
+                  qualificationProvision.provisionId,
+                ),
+                eq(qualificationParticipantProvisions.state, "PENDING"),
+              ),
+            )
+            .returning({ provisionId: qualificationParticipantProvisions.provision_id });
+          if (consumed.length !== 1) return "qualification-provision-conflict" as const;
+        }
 
         return "ready" as const;
       }),
@@ -349,6 +406,9 @@ const completeRegistration = Effect.fn("Registration.completeRegistration")(func
     });
   }
   if (result === "period-overlap") {
+    return yield* dbWriteRejected("completeRegistration", userId, result);
+  }
+  if (result === "qualification-provision-conflict") {
     return yield* dbWriteRejected("completeRegistration", userId, result);
   }
   if (result === "phone-verification-required") {

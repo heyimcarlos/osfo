@@ -259,6 +259,67 @@ export const conversationSnapshotOutboxId = (
     `conversation:${sessionId.length}:${sessionId}:${assistantMessageId}`,
   );
 
+/** Read the exact provider outcome for one committed conversation snapshot. */
+export const readQualificationMemoryOutcome = (
+  db: AgentDb,
+  sessionId: SessionId,
+  assistantMessageId: AssistantMessageId,
+) =>
+  Effect.gen(function* () {
+    const outboxId = conversationSnapshotOutboxId(sessionId, assistantMessageId);
+    const row = yield* execute("readQualificationMemoryOutcome", () =>
+      db
+        .select({
+          availableAt: memoryProviderOutbox.available_at,
+          completedAt: memoryProviderOutbox.completed_at,
+          operationType: memoryProviderOutbox.operation_type,
+          outboxId: memoryProviderOutbox.outbox_id,
+          payloadJson: memoryProviderOutbox.payload_json,
+          providerAcceptedAt: memoryProviderOutbox.provider_accepted_at,
+          providerDocumentId: memoryProviderOutbox.provider_document_id,
+          providerStatus: memoryProviderOutbox.provider_status,
+          status: memoryProviderOutbox.status,
+        })
+        .from(memoryProviderOutbox)
+        .where(eq(memoryProviderOutbox.outbox_id, outboxId))
+        .limit(1)
+        .get(),
+    );
+    if (row === undefined) return null;
+    const payload = yield* Schema.decodeEffect(Schema.fromJsonString(SaveConversationPayload))(
+      row.payloadJson,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new AgentStoreRecordInvalid({
+            message: "The retained qualification Memory snapshot is invalid",
+            operation: "readQualificationMemoryOutcome",
+          }),
+      ),
+    );
+    if (
+      row.operationType !== "saveConversation" ||
+      payload.projection.lastMessageId !== assistantMessageId ||
+      payload.projection.sessionId !== sessionId
+    ) {
+      return yield* new AgentStoreRecordInvalid({
+        message: "The retained qualification Memory snapshot conflicts with its committed turn",
+        operation: "readQualificationMemoryOutcome",
+      });
+    }
+    return {
+      completedAt: row.completedAt,
+      outboxId: row.outboxId,
+      providerDocumentId: row.providerDocumentId,
+      providerStatus: row.providerStatus,
+      status: row.status,
+      terminalAt:
+        row.completedAt ??
+        row.providerAcceptedAt ??
+        (row.status === "failed" ? row.availableAt : null),
+    } as const;
+  });
+
 /** Insert one exact conversation snapshot inside the committed-turn receipt transaction. */
 export const enqueueConversationSnapshotTransaction = (
   transaction: AgentTransaction,
@@ -1353,6 +1414,7 @@ const execute = <A>(
     | "completeMemoryProviderOutbox"
     | "enqueueMemoryProviderOutbox"
     | "inspectMemoryProviderOutbox"
+    | "readQualificationMemoryOutcome"
     | "retryMemoryProviderOutbox",
   query: () => A,
 ) =>

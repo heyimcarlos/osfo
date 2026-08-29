@@ -1,0 +1,3 @@
+ALTER TABLE "qualification_cohorts" ADD COLUMN "activated_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "qualification_cohorts" ADD CONSTRAINT "qualification_cohorts_activation_check" CHECK (("qualification_cohorts"."state" = 'PROVISIONING' and "qualification_cohorts"."activated_at" is null)
+        or ("qualification_cohorts"."state" <> 'PROVISIONING' and "qualification_cohorts"."activated_at" is not null));

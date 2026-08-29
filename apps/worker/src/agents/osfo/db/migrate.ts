@@ -18,6 +18,9 @@ import personalSkillNotificationMigrationSql from "./migrations/0014_spooky_snow
 import goodRootOutcomeEvaluationMigrationSql from "./migrations/0015_nebulous_domino.sql";
 import webCapabilityMigrationSql from "./migrations/0016_adorable_corsair.sql";
 import reminderMigrationSql from "./migrations/0017_long_deadpool.sql";
+import qualificationAdmissionMigrationSql from "./migrations/0018_qualification_admissions.sql";
+import qualificationModelAccessMigrationSql from "./migrations/0019_lonely_ser_duncan.sql";
+import qualificationGatewayIdentityMigrationSql from "./migrations/0020_wealthy_excalibur.sql";
 import {
   AgentMigrationDefinitionMismatch,
   AgentMigrationDigestMismatch,
@@ -124,6 +127,21 @@ export const agentMigrations: ReadonlyArray<AgentMigration> = [
     digest: "sha256:cfda69a9407391cfcdc81bb557e00d61059690471669d0d94db451bc60e2f7b2",
     sql: reminderMigrationSql,
     version: 18,
+  },
+  {
+    digest: "sha256:7295ff19816921611f0d67ae72a9a9daffc8d1dc164eb7f8c1afb5ae612f1fb6",
+    sql: qualificationAdmissionMigrationSql,
+    version: 19,
+  },
+  {
+    digest: "sha256:d05fb1e50f1cc2b78a1ac1e78aea62776d6874495c4bbb16f422539c91eb4551",
+    sql: qualificationModelAccessMigrationSql,
+    version: 20,
+  },
+  {
+    digest: "sha256:07a645701b1c4f359f1af60f3b94e686fa194856a218ddd6b41d91f54072f7e1",
+    sql: qualificationGatewayIdentityMigrationSql,
+    version: 21,
   },
 ];
 

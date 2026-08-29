@@ -16,6 +16,8 @@ const decodeOwnerInvocation = Schema.decodeUnknownPromise(Schema.fromJsonString(
 const RetainedOwnerRequest = Schema.Struct({
   artifactChecksum: Schema.String,
   authoritySources: Schema.Array(Schema.String),
+  cohortArtifactChecksum: Schema.String,
+  cohortArtifactId: Schema.String,
   executionId: Schema.String,
   manifest: Schema.Unknown,
   manifestChecksum: Schema.String,
@@ -35,18 +37,34 @@ const decodeOwnerWorkflowResponse = Schema.decodeUnknownOption(
   Schema.fromJsonString(OwnerWorkflowResponse),
 );
 
-interface QualificationOwnerEnv {
-  readonly ARTIFACTS: R2Bucket;
-  readonly QUALIFICATION_OWNER_WORKFLOW: Workflow<QualificationOwnerWorkflowPayload>;
+interface QualificationOwnerInstance {
+  readonly status: () => Promise<InstanceStatus>;
 }
 
-const validateRetainedRequest = (encoded: string, expectedChecksum: string): boolean => {
+interface QualificationOwnerEnv {
+  readonly ARTIFACTS: {
+    readonly get: (key: string) => Promise<{ readonly text: () => Promise<string> } | null>;
+  };
+  readonly QUALIFICATION_OWNER_WORKFLOW: {
+    readonly create: (options: {
+      readonly id: string;
+      readonly params: QualificationOwnerWorkflowPayload;
+    }) => Promise<QualificationOwnerInstance>;
+    readonly get: (id: string) => Promise<QualificationOwnerInstance>;
+  };
+}
+
+const validatedRetainedRequest = (
+  encoded: string,
+  expectedChecksum: string,
+): typeof RetainedOwnerRequest.Type | null => {
   const decoded = decodeRetainedOwnerRequest(encoded);
-  if (Option.isNone(decoded)) return false;
+  if (Option.isNone(decoded)) return null;
   const { artifactChecksum, ...content } = decoded.value;
-  return (
-    artifactChecksum === expectedChecksum && artifactChecksum === qualificationChecksum(content)
-  );
+  return artifactChecksum === expectedChecksum &&
+    artifactChecksum === qualificationChecksum(content)
+    ? decoded.value
+    : null;
 };
 
 // oxlint-disable-next-line effecttsgo/async-function -- Cloudflare R2 is a Promise-native boundary.
@@ -83,12 +101,23 @@ export default {
       return Response.json({ error: "qualificationRequestArtifactMissing" }, { status: 424 });
     }
     const encodedRequest = await requestArtifact.text();
-    if (!validateRetainedRequest(encodedRequest, invocation.requestArtifactChecksum)) {
+    const retainedRequest = validatedRetainedRequest(
+      encodedRequest,
+      invocation.requestArtifactChecksum,
+    );
+    const expectedRequestArtifactId = `qualification/executions/${encodeURIComponent(invocation.executionId)}/owner-request.json`;
+    if (
+      retainedRequest === null ||
+      invocation.requestArtifactId !== expectedRequestArtifactId ||
+      retainedRequest.executionId !== invocation.executionId ||
+      retainedRequest.manifestChecksum !== invocation.manifestChecksum ||
+      retainedRequest.planChecksum !== invocation.planChecksum
+    ) {
       return Response.json({ error: "qualificationRequestArtifactConflict" }, { status: 409 });
     }
     const completed = await completedResponse(env, invocation.executionId);
     if (completed !== null) return completed;
-    let instance: WorkflowInstance;
+    let instance: QualificationOwnerInstance;
     try {
       instance = await env.QUALIFICATION_OWNER_WORKFLOW.create({
         id: invocation.executionId,

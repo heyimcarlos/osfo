@@ -6,12 +6,17 @@ import {
   billingSubscriptions,
 } from "@osfo/db/schema/billing";
 import {
+  qualificationCohorts,
+  qualificationParticipantAllocations,
+  qualificationRootAttempts,
+} from "@osfo/db/schema/qualification-cohorts";
+import {
   administrativeAuthorities,
   deletionCases,
   userSuspensionEvents,
 } from "@osfo/db/schema/user-lifecycle";
 import { webhookEvents } from "@osfo/db/schema/webhooks";
-import { desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { Effect, Result, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -20,6 +25,7 @@ import { AdminActorId, AdminReason } from "../../domain/account-administration";
 import { ActionId } from "../../domain/action-execution";
 import { DeletionCaseId } from "../../domain/deletion-case";
 import { retainedCatalog } from "../../domain/plan-policy";
+import { qualificationChecksum } from "../../qualification/qualification-checksum";
 import { AccountDeletion } from "../../services/account-deletion";
 import { ApprovalPresentation } from "../../services/authorization";
 import {
@@ -208,7 +214,50 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
               ),
             );
         }
+        await transaction
+          .delete(qualificationRootAttempts)
+          .where(eq(qualificationRootAttempts.user_id, candidate.userId));
         await transaction.delete(users).where(eq(users.id, candidate.userId));
+        const deletionReceiptId = `postgres:qualification-account-deletion:${candidate.deletionCaseId}`;
+        const deletionReceiptChecksum = qualificationChecksum({
+          deletionCaseId: candidate.deletionCaseId,
+          receiptId: deletionReceiptId,
+          state: "DELETED",
+          userId: candidate.userId,
+        });
+        const completedAllocations = await transaction
+          .update(qualificationParticipantAllocations)
+          .set({
+            deleted_at: sql`clock_timestamp()`,
+            deletion_receipt_checksum: deletionReceiptChecksum,
+            deletion_receipt_id: deletionReceiptId,
+            state: "DELETED",
+          })
+          .where(
+            and(
+              eq(qualificationParticipantAllocations.user_id, candidate.userId),
+              eq(qualificationParticipantAllocations.deletion_case_id, candidate.deletionCaseId),
+              eq(qualificationParticipantAllocations.state, "DELETION_REQUESTED"),
+            ),
+          )
+          .returning({ cohortId: qualificationParticipantAllocations.cohort_id });
+        await Promise.all(
+          [...new Set(completedAllocations.map(({ cohortId }) => cohortId))].map((cohortId) =>
+            transaction
+              .update(qualificationCohorts)
+              .set({ state: "DELETED" })
+              .where(
+                and(
+                  eq(qualificationCohorts.cohort_id, cohortId),
+                  sql`not exists (
+                    select 1 from ${qualificationParticipantAllocations}
+                    where ${qualificationParticipantAllocations.cohort_id} = ${cohortId}
+                      and ${qualificationParticipantAllocations.state} <> 'DELETED'
+                  )`,
+                ),
+              ),
+          ),
+        );
         return true;
       }),
     );

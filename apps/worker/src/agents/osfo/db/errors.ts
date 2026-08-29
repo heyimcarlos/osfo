@@ -22,6 +22,7 @@ export const AgentStoreOperation = Schema.Literals([
   "rollbackCurrentSessionReplacement",
   "recordCommittedTurn",
   "readCommittedTurns",
+  "readQualificationMemoryOutcome",
   "claimMemoryProviderOutbox",
   "completeMemoryProviderOutbox",
   "enqueueMemoryProviderOutbox",
@@ -190,6 +191,7 @@ export const AgentRequestOperation = Schema.Literals([
   "submitScheduledEmailFollowUp",
   "submitResearchReportFollowUp",
   "submitManagedConversation",
+  "submitQualificationConversation",
   "uploadFile",
 ]);
 

@@ -1,22 +1,38 @@
-import { Worker } from "alchemy/Cloudflare";
+import { WorkerEntrypoint, type Worker } from "alchemy/Cloudflare";
+import { Effect } from "effect";
 
 import { Artifacts } from "./Artifacts";
 import { QualificationOwnerWorkflow } from "./QualificationOwnerWorkflow";
+import { ApiWorker, QualificationOwnerWorker } from "./WorkerBindings";
+
+// SAFETY: Alchemy resource tags are the supported representation for circular
+// service bindings (its own circular Worker test passes tags directly). The
+// named-entrypoint helper's older beta.72 signature accepts only a resolved
+// Worker even though its provider handles the same tag at reconciliation.
+const apiWorkerReference: unknown = ApiWorker;
+// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- SAFETY: apiWorkerReference is the ApiWorker resource tag accepted by Alchemy's binding reconciler.
+const qualificationProductAuthority = WorkerEntrypoint(apiWorkerReference as Worker, {
+  entrypoint: "QualificationProductAuthority",
+});
 
 /** Private, stage-scoped owner for bounded qualification execution artifacts. */
-export const QualificationOwner = Worker("QualificationOwner", {
-  compatibility: {
-    date: "2026-08-12",
-    flags: ["nodejs_compat"],
+export const QualificationOwnerLayer = QualificationOwnerWorker.make(
+  {
+    compatibility: {
+      date: "2026-08-12",
+      flags: ["nodejs_compat"],
+    },
+    env: {
+      ARTIFACTS: Artifacts,
+      PRODUCT_AUTHORITY: qualificationProductAuthority,
+      QUALIFICATION_OWNER_WORKFLOW: QualificationOwnerWorkflow,
+    },
+    main: "./apps/worker/src/qualification-owner-worker.ts",
+    observability: {
+      enabled: true,
+      logs: { enabled: true, headSamplingRate: 1, invocationLogs: true },
+      traces: { enabled: true, headSamplingRate: 1 },
+    },
   },
-  env: {
-    ARTIFACTS: Artifacts,
-    QUALIFICATION_OWNER_WORKFLOW: QualificationOwnerWorkflow,
-  },
-  main: "./apps/worker/src/qualification-owner-worker.ts",
-  observability: {
-    enabled: true,
-    logs: { enabled: true, headSamplingRate: 1, invocationLogs: true },
-    traces: { enabled: true, headSamplingRate: 1 },
-  },
-});
+  Effect.succeed({}),
+);

@@ -2,7 +2,13 @@
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
-import { canonicalQualificationJson } from "../../qualification/qualification-checksum";
+import {
+  canonicalQualificationJson,
+  qualificationChecksum,
+} from "../../qualification/qualification-checksum";
+import { createQualificationExecutionPlan } from "../../qualification/execution";
+import { createBoundedBetaManifest } from "../../qualification/qualification-manifest";
+import { qualificationCohortArtifactId } from "../../qualification/qualification-cohort";
 import type { QualificationExecutionListingBucket } from "./qualification-execution-artifacts";
 import { runQualificationTrigger } from "./qualification-trigger";
 
@@ -10,13 +16,6 @@ const invocation = {
   acceptanceLevel: "BoundedBeta",
   executionId: "qualification-trigger-test",
   startsAtEpochMs: 0,
-  versions: {
-    dependencyVersions: { effect: "4.0.0-rc.111" },
-    hardLimits: [{ maximum: 1_000, name: "sqlQueries", unit: "queries" }],
-    sourceVersion: "qualification-trigger-sha",
-    topologyVersion: "cloudflare-v1",
-    workloadSeed: 17,
-  },
 } as const;
 
 const artifacts = () => {
@@ -47,6 +46,7 @@ it.effect("rejects an unauthorized qualification invocation without calling the 
         }),
         {
           ARTIFACTS: bucket,
+          CF_VERSION_METADATA: { id: "deployed-sha", tag: "", timestamp: "2026-08-29" },
           QUALIFICATION_OWNER: {
             fetch: () => {
               calls += 1;
@@ -66,6 +66,41 @@ it.effect("rejects an unauthorized qualification invocation without calling the 
 it.effect("forwards one authorized retained execution to the private owner", () =>
   Effect.gen(function* () {
     const { bucket, retained } = artifacts();
+    const manifest = createBoundedBetaManifest({
+      dependencyVersions: {
+        "@cloudflare/think": "0.15.1",
+        agents: "0.20.1",
+        effect: "4.0.0-rc.111",
+      },
+      hardLimits: [
+        { maximum: 128, name: "workerMemory", unit: "MiB" },
+        { maximum: 1_000, name: "workerSubrequests", unit: "requests" },
+      ],
+      sourceVersion: "deployed-sha",
+      topologyVersion: "cloudflare-v1",
+      workloadSeed: 17,
+    });
+    const plan = createQualificationExecutionPlan(manifest, 0, invocation.executionId);
+    const cohortContent = {
+      cohortId: "qualification-trigger-cohort",
+      createdAtUtc: "2026-08-29T16:59:00.000Z",
+      executionId: invocation.executionId,
+      expiresAtUtc: "2099-08-30T17:00:00.000Z",
+      grantPrefix: `qualification/executions/${invocation.executionId}/cohort/grants`,
+      manifestChecksum: manifest.manifestChecksum,
+      notBeforeUtc: "2026-08-29T17:00:00.000Z",
+      participantCounts: { adventurer: 100, free: 900 },
+      planChecksum: plan.planChecksum,
+      sourceVersion: manifest.sourceVersion,
+      teardownPolicy: "permanentAccountDeletion" as const,
+    };
+    retained.set(
+      qualificationCohortArtifactId(invocation.executionId),
+      canonicalQualificationJson({
+        ...cohortContent,
+        artifactChecksum: qualificationChecksum(cohortContent),
+      }),
+    );
     let forwarded = Promise.resolve<string | null>(null);
     const response = yield* Effect.promise(() =>
       runQualificationTrigger(
@@ -76,6 +111,7 @@ it.effect("forwards one authorized retained execution to the private owner", () 
         }),
         {
           ARTIFACTS: bucket,
+          CF_VERSION_METADATA: { id: "deployed-sha", tag: "", timestamp: "2026-08-29" },
           QUALIFICATION_OWNER: {
             fetch: (_input, init) => {
               forwarded = new Response(init?.body).text();

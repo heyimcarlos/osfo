@@ -1,3 +1,4 @@
+/* oxlint-disable effecttsgo/global-date-in-effect -- Fixed timestamps make retained Memory authority assertions deterministic. */
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
 /* oxlint-disable effecttsgo/node-builtin-import -- This Node-only suite supplies real SQLite persistence to the Durable SQLite adapter. */
 /* oxlint-disable osfo/no-runtime-typeof -- The adapter branches over node:sqlite's closed SQLOutputValue union. */
@@ -41,6 +42,13 @@ import {
 } from "./memory-provider-outbox";
 import { makeAgentStore } from "./store";
 import { makeWebState } from "./web-state";
+import {
+  readQualificationAdmissionReceipts,
+  retainQualificationAdmissionReceipt,
+} from "./qualification-admissions";
+import { qualificationAdmissionReceipt } from "../../../qualification/qualification-attempt";
+import { ModelCallAttemptId } from "../../../domain/model-call-attempt";
+import { makeModelCallUsageStore, readQualificationModelAccess } from "./model-call-usage";
 import type { CompletedOperation, RankedResult } from "../../../services/web";
 import { ConversationSnapshotProjection } from "../memory-provider-projection";
 import { MemoryProvider } from "../../../services/memory-provider";
@@ -82,6 +90,93 @@ it("includes every generated Agent migration in the runtime manifest", () => {
   expect(imports.map((match) => match[2])).toEqual(migrationFiles);
   expect(imports.every((match) => referencedSql.has(match[1] ?? ""))).toBe(true);
 });
+
+it.effect("retains qualification admission authority idempotently and rejects changed replay", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const input = {
+        authorization: { user: { userId: "user-1" } },
+        message: "Run the ordinary conversation journey",
+        proofArtifactChecksum: "proof-1",
+        proofArtifactId: "qualification/executions/execution-1/attempts/run-1/root-1.json",
+        qualificationContext: {
+          attemptId: "attempt-1",
+          executionId: "execution-1",
+          journey: "ordinaryConversation" as const,
+          offeredAtEpochMs: 1_787_500_000_000,
+          planChecksum: "plan-1",
+          region: "americas" as const,
+          rootId: "root-1",
+          runId: "run-1",
+        },
+        routeId: "route-1",
+        submissionId: "submission-1",
+      };
+      const receipt = qualificationAdmissionReceipt(input, AgentId.make("agent-1"), {
+        decision: "accepted",
+        occurredAt: "2026-08-29T17:00:00.000Z",
+        thinkSubmissionId: "submission-1",
+      });
+
+      yield* retainQualificationAdmissionReceipt(db, receipt);
+      yield* retainQualificationAdmissionReceipt(db, receipt);
+      expect(yield* readQualificationAdmissionReceipts(db, "execution-1")).toEqual([receipt]);
+      const conflict = yield* retainQualificationAdmissionReceipt(db, {
+        ...receipt,
+        artifactChecksum: "changed",
+      }).pipe(Effect.flip);
+      expect(conflict._tag).toBe("QualificationAdmissionConflict");
+    }),
+  ),
+);
+
+it.effect("retains qualification model identity with zero usage through Allowance dispatch", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const store = makeModelCallUsageStore(db);
+      const attemptId = ModelCallAttemptId.make("model-call-attempt:submission-1:1");
+      const usage = {
+        allowancePeriodId: AllowancePeriodId.make("allowance-period-1"),
+        attemptId,
+        items: [],
+        qualification: {
+          costReconciliationId: `allowance:${attemptId}`,
+          executionId: "execution-1",
+          gatewayRequestId: "gateway-log-1",
+          modelRequestId: attemptId,
+          outcomeId: `model-outcome:${attemptId}`,
+          priceBookId: "resource-prices-2026-08-22",
+          rootId: "root-1",
+        },
+      } as const;
+
+      yield* store.commit(usage, new Date("2026-08-29T17:01:00.000Z"));
+      yield* store.commit(usage, new Date("2026-08-29T17:02:00.000Z"));
+      expect(yield* readQualificationModelAccess(db, "execution-1")).toMatchObject([
+        { attemptId, dispatchedAt: null, rootId: "root-1" },
+      ]);
+      yield* store.markDispatched(attemptId, new Date("2026-08-29T17:03:00.000Z"));
+      expect(yield* readQualificationModelAccess(db, "execution-1")).toMatchObject([
+        {
+          attemptId,
+          costReconciliationId: `allowance:${attemptId}`,
+          dispatchedAt: "2026-08-29T17:03:00.000Z",
+          priceBookId: "resource-prices-2026-08-22",
+          rootId: "root-1",
+        },
+      ]);
+      const conflict = yield* store
+        .commit(
+          { ...usage, qualification: { ...usage.qualification, rootId: "root-2" } },
+          new Date("2026-08-29T17:04:00.000Z"),
+        )
+        .pipe(Effect.flip);
+      expect(conflict._tag).toBe("ModelCallUsageConflict");
+    }),
+  ),
+);
 
 it.effect("activates an Agent that slept before the conversation processing migration", () =>
   withEmptyDatabase(({ database, storage }) =>
@@ -125,8 +220,8 @@ it.effect("activates an Agent that slept before the conversation processing migr
       const result = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
       expect(result).toEqual({
-        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
-        currentVersion: 18,
+        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+        currentVersion: 21,
       });
       expect(
         database

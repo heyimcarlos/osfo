@@ -17,6 +17,7 @@ import {
   createScaleQualifiedPublicManifest,
   type ProductionQualificationManifest,
 } from "../../qualification/qualification-manifest";
+import { qualificationCohortArtifactId } from "../../qualification/qualification-cohort";
 import type {
   QualificationExecutionListedObject,
   QualificationExecutionListingBucket,
@@ -91,6 +92,33 @@ const memoryBucket = () => {
   return { bucket, listed, retained };
 };
 
+const retainCohort = (
+  retained: Map<string, string>,
+  manifest: ProductionQualificationManifest,
+  plan: QualificationExecutionPlan,
+) => {
+  const content = {
+    cohortId: `${plan.executionId}-cohort`,
+    createdAtUtc: "2026-08-29T16:59:00.000Z",
+    executionId: plan.executionId,
+    expiresAtUtc: "2099-08-30T17:00:00.000Z",
+    grantPrefix: `qualification/executions/${plan.executionId}/cohort/grants`,
+    manifestChecksum: manifest.manifestChecksum,
+    notBeforeUtc: "2026-08-29T17:00:00.000Z",
+    participantCounts: {
+      adventurer: manifest.corpus.registeredUsers / 10,
+      free: manifest.corpus.registeredUsers - manifest.corpus.registeredUsers / 10,
+    },
+    planChecksum: plan.planChecksum,
+    sourceVersion: manifest.sourceVersion,
+    teardownPolicy: "permanentAccountDeletion" as const,
+  };
+  retained.set(
+    qualificationCohortArtifactId(plan.executionId),
+    canonicalQualificationJson({ ...content, artifactChecksum: qualificationChecksum(content) }),
+  );
+};
+
 const retainedOwner = (
   retained: Map<string, string>,
   listed: Map<string, QualificationExecutionListedObject>,
@@ -104,149 +132,153 @@ const retainedOwner = (
     | "staleMetadata"
     | "terminalChecksum"
     | null = null,
-) => ({
-  fetch: () => {
-    const executionId = plan.executionId;
-    const manifestChecksum = manifest.manifestChecksum;
-    const planChecksum = plan.planChecksum;
-    const streams = components.map((component) => {
-      const artifactPrefix = `qualification/executions/${executionId}/authority-streams/${component}`;
-      const recordCount =
-        component === "arrivals"
-          ? plan.runs.reduce((total, run) => total + run.arrivalCount, 0)
-          : component === "faults"
-            ? plan.runs.filter((run) => run.fault !== null).length
-            : component === "runs"
-              ? plan.runs.length
-              : component === "externalGates"
-                ? manifest.requiredExternalGates.length
-                : 1;
-      const chunkCount = Math.ceil(recordCount / 256);
-      let previousArtifactChecksum = "NONE";
-      for (let index = 0; index < chunkCount; index += 1) {
-        const chunkRecordCount = Math.min(256, recordCount - index * 256);
-        const bodySha256 = qualificationChecksum({
-          component,
-          executionId,
-          index,
-          planChecksum,
-          retainedFixture: true,
-        }).slice("sha256:".length);
-        const content = {
-          bodySha256,
-          component,
-          executionId,
-          index,
-          planChecksum,
-          previousArtifactChecksum,
-          recordCount: chunkRecordCount,
-          sourceVersion: manifest.sourceVersion,
-        };
-        const artifactChecksum = qualificationChecksum(content);
-        const key = `${artifactPrefix}/${index.toString().padStart(8, "0")}.json`;
-        const omit =
-          component === "arrivals" &&
-          ((tamper === "deletedShard" && index === 1) ||
-            (tamper === "partialStream" && index === chunkCount - 1));
-        if (!omit) {
-          listed.set(key, {
-            checksums: { sha256: hexToBytes(bodySha256) },
-            customMetadata: {
-              "osfo-artifact-checksum": artifactChecksum,
-              "osfo-body-sha256": bodySha256,
-              "osfo-component": component,
-              "osfo-execution-id": executionId,
-              "osfo-index": String(index),
-              "osfo-kind": "qualification-authority-stream-v1",
-              "osfo-plan-checksum": planChecksum,
-              "osfo-previous-checksum": previousArtifactChecksum,
-              "osfo-record-count": String(chunkRecordCount),
-              "osfo-source-version":
-                tamper === "staleMetadata" && component === "arrivals" && index === 0
-                  ? "stale-source"
-                  : manifest.sourceVersion,
-            },
-            key,
-          });
+) => {
+  retainCohort(retained, manifest, plan);
+  return {
+    fetch: () => {
+      const executionId = plan.executionId;
+      const manifestChecksum = manifest.manifestChecksum;
+      const planChecksum = plan.planChecksum;
+      const streams = components.map((component) => {
+        const artifactPrefix = `qualification/executions/${executionId}/authority-streams/${component}`;
+        const recordCount =
+          component === "arrivals"
+            ? plan.runs.reduce((total, run) => total + run.arrivalCount, 0)
+            : component === "faults"
+              ? plan.runs.filter((run) => run.fault !== null).length
+              : component === "runs"
+                ? plan.runs.length
+                : component === "externalGates"
+                  ? manifest.requiredExternalGates.length
+                  : 1;
+        const chunkCount = Math.ceil(recordCount / 256);
+        let previousArtifactChecksum = "NONE";
+        for (let index = 0; index < chunkCount; index += 1) {
+          const chunkRecordCount = Math.min(256, recordCount - index * 256);
+          const bodySha256 = qualificationChecksum({
+            component,
+            executionId,
+            index,
+            planChecksum,
+            retainedFixture: true,
+          }).slice("sha256:".length);
+          const content = {
+            bodySha256,
+            component,
+            executionId,
+            index,
+            planChecksum,
+            previousArtifactChecksum,
+            recordCount: chunkRecordCount,
+            sourceVersion: manifest.sourceVersion,
+          };
+          const artifactChecksum = qualificationChecksum(content);
+          const key = `${artifactPrefix}/${index.toString().padStart(8, "0")}.json`;
+          const omit =
+            component === "arrivals" &&
+            ((tamper === "deletedShard" && index === 1) ||
+              (tamper === "partialStream" && index === chunkCount - 1));
+          if (!omit) {
+            listed.set(key, {
+              checksums: { sha256: hexToBytes(bodySha256) },
+              customMetadata: {
+                "osfo-artifact-checksum": artifactChecksum,
+                "osfo-body-sha256": bodySha256,
+                "osfo-component": component,
+                "osfo-execution-id": executionId,
+                "osfo-index": String(index),
+                "osfo-kind": "qualification-authority-stream-v1",
+                "osfo-plan-checksum": planChecksum,
+                "osfo-previous-checksum": previousArtifactChecksum,
+                "osfo-record-count": String(chunkRecordCount),
+                "osfo-source-version":
+                  tamper === "staleMetadata" && component === "arrivals" && index === 0
+                    ? "stale-source"
+                    : manifest.sourceVersion,
+              },
+              key,
+            });
+          }
+          previousArtifactChecksum = artifactChecksum;
         }
-        previousArtifactChecksum = artifactChecksum;
-      }
-      if (tamper === "duplicateKey" && component === "arrivals") {
-        const first = listed.get(`${artifactPrefix}/00000000.json`);
-        if (first !== undefined) listed.set(`${artifactPrefix}/00000000-copy.json`, first);
-      }
-      return {
-        artifactPrefix,
-        canonicalDigest: previousArtifactChecksum,
-        chunkCount,
-        component,
-        recordCount,
-        sourceVersion: manifest.sourceVersion,
-        terminalChecksum:
-          tamper === "terminalChecksum" && component === "arrivals"
-            ? "sha256:tampered"
-            : previousArtifactChecksum,
-        verificationVersion: "qualification-owner-stream-v1" as const,
-      };
-    });
-    const retainedEvaluationInputChecksum = qualificationChecksum({
-      authoritySources,
-      executionId,
-      manifestChecksum,
-      planChecksum,
-      streams,
-    });
-    const evaluationInputChecksum =
-      tamper === "reportInput" ? "sha256:unrelated-report" : retainedEvaluationInputChecksum;
-    const report = {
-      adventurerContributionMargin: 0.75,
-      costSummaries: [],
-      evaluationInputChecksum,
-      executionId,
-      findings: [],
-      foreignExchangeUsdMicros: "0",
-      freeCostPerActivePeriodUsdMicros: "0",
-      manifestChecksum,
-      planChecksum,
-      recoveryReservePerSecond: 2,
-      stageSummaries: [],
-      taxesUsdMicros: "0",
-      verdict: "PASS",
-    };
-    const encodedReport = canonicalQualificationJson(report);
-    const reportArtifactId = `qualification/executions/${executionId}/report.json`;
-    retained.set(reportArtifactId, encodedReport);
-    const content = {
-      authoritySources,
-      evaluatorVersion: "production-qualification-v1" as const,
-      executionId,
-      manifestChecksum,
-      ownerIdentity: "osfo-qualification-owner-v1" as const,
-      planChecksum,
-      reportArtifactChecksum: qualificationChecksum({ encodedReport }),
-      reportArtifactId,
-      streams,
-    };
-    const bundle = { ...content, artifactChecksum: qualificationChecksum(content) };
-    const bundleArtifactId = `qualification/executions/${executionId}/bundle.json`;
-    retained.set(bundleArtifactId, canonicalQualificationJson(bundle));
-    return Promise.resolve(
-      Response.json({
-        bundleArtifactChecksum: bundle.artifactChecksum,
-        bundleArtifactId,
+        if (tamper === "duplicateKey" && component === "arrivals") {
+          const first = listed.get(`${artifactPrefix}/00000000.json`);
+          if (first !== undefined) listed.set(`${artifactPrefix}/00000000-copy.json`, first);
+        }
+        return {
+          artifactPrefix,
+          canonicalDigest: previousArtifactChecksum,
+          chunkCount,
+          component,
+          recordCount,
+          sourceVersion: manifest.sourceVersion,
+          terminalChecksum:
+            tamper === "terminalChecksum" && component === "arrivals"
+              ? "sha256:tampered"
+              : previousArtifactChecksum,
+          verificationVersion: "qualification-owner-stream-v1" as const,
+        };
+      });
+      const retainedEvaluationInputChecksum = qualificationChecksum({
+        authoritySources,
         executionId,
         manifestChecksum,
         planChecksum,
-      }),
-    );
-  },
-});
+        streams,
+      });
+      const evaluationInputChecksum =
+        tamper === "reportInput" ? "sha256:unrelated-report" : retainedEvaluationInputChecksum;
+      const report = {
+        adventurerContributionMargin: 0.75,
+        costSummaries: [],
+        evaluationInputChecksum,
+        executionId,
+        findings: [],
+        foreignExchangeUsdMicros: "0",
+        freeCostPerActivePeriodUsdMicros: "0",
+        manifestChecksum,
+        planChecksum,
+        recoveryReservePerSecond: 2,
+        stageSummaries: [],
+        taxesUsdMicros: "0",
+        verdict: "PASS",
+      };
+      const encodedReport = canonicalQualificationJson(report);
+      const reportArtifactId = `qualification/executions/${executionId}/report.json`;
+      retained.set(reportArtifactId, encodedReport);
+      const content = {
+        authoritySources,
+        evaluatorVersion: "production-qualification-v1" as const,
+        executionId,
+        manifestChecksum,
+        ownerIdentity: "osfo-qualification-owner-v1" as const,
+        planChecksum,
+        reportArtifactChecksum: qualificationChecksum({ encodedReport }),
+        reportArtifactId,
+        streams,
+      };
+      const bundle = { ...content, artifactChecksum: qualificationChecksum(content) };
+      const bundleArtifactId = `qualification/executions/${executionId}/bundle.json`;
+      retained.set(bundleArtifactId, canonicalQualificationJson(bundle));
+      return Promise.resolve(
+        Response.json({
+          bundleArtifactChecksum: bundle.artifactChecksum,
+          bundleArtifactId,
+          executionId,
+          manifestChecksum,
+          planChecksum,
+        }),
+      );
+    },
+  };
+};
 
 it.effect("reports the exact missing bounded owner binding", () =>
   Effect.gen(function* () {
     const manifest = compactManifest();
     const plan = createQualificationExecutionPlan(manifest, 0, "production-composition-test");
-    const { bucket } = memoryBucket();
+    const { bucket, retained } = memoryBucket();
+    retainCohort(retained, manifest, plan);
     const composition = makeProductionQualificationComposition({
       ARTIFACTS: bucket,
     });
@@ -393,5 +425,86 @@ it.effect("rejects missing, partial, stale, and duplicate retained shards", () =
         ]),
       );
     }
+  }),
+);
+
+it.effect("fails when an execution identity is replayed with another frozen plan", () =>
+  Effect.gen(function* () {
+    const manifest = compactManifest();
+    const firstPlan = createQualificationExecutionPlan(manifest, 0, "replayed-execution");
+    const secondPlan = createQualificationExecutionPlan(manifest, 1_000, "replayed-execution");
+    const { bucket, listed, retained } = memoryBucket();
+    const firstReport = yield* Effect.promise(() =>
+      runProductionQualification(
+        {
+          ARTIFACTS: bucket,
+          QUALIFICATION_OWNER: retainedOwner(retained, listed, manifest, firstPlan),
+        },
+        manifest,
+        firstPlan,
+      ),
+    );
+    const replayedReport = yield* Effect.promise(() =>
+      runProductionQualification(
+        {
+          ARTIFACTS: bucket,
+          QUALIFICATION_OWNER: retainedOwner(retained, listed, manifest, secondPlan),
+        },
+        manifest,
+        secondPlan,
+      ),
+    );
+
+    expect(firstReport.verdict).toBe("PASS");
+    expect(replayedReport).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "productionQualificationOwnerConflict" }),
+      ]),
+      verdict: "FAIL",
+    });
+  }),
+);
+
+it.effect("preserves an exact completed MISSING authority-source report", () =>
+  Effect.gen(function* () {
+    const manifest = compactManifest();
+    const plan = createQualificationExecutionPlan(manifest, 0, "missing-source-execution");
+    const { bucket, retained } = memoryBucket();
+    retainCohort(retained, manifest, plan);
+    const report = yield* Effect.promise(() =>
+      runProductionQualification(
+        {
+          ARTIFACTS: bucket,
+          QUALIFICATION_OWNER: {
+            fetch: () =>
+              Promise.resolve(
+                Response.json(
+                  {
+                    error: "qualificationAuthorityMaterialMissing",
+                    executionId: plan.executionId,
+                    manifestChecksum: manifest.manifestChecksum,
+                    missingSources: ["fault-controller-authority-export"],
+                    planChecksum: plan.planChecksum,
+                    verdict: "MISSING",
+                  },
+                  { status: 424 },
+                ),
+              ),
+          },
+        },
+        manifest,
+        plan,
+      ),
+    );
+
+    expect(report).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({
+          code: "productionQualificationAuthorityMissing",
+          detail: expect.stringContaining("fault-controller-authority-export"),
+        }),
+      ]),
+      verdict: "MISSING",
+    });
   }),
 );

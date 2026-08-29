@@ -17,6 +17,7 @@ import { ChannelAddress } from "./channel-link";
 import { OriginatingAuthority } from "./authority";
 import { CoreMemoryAuthorizationSnapshotEncoded } from "./core-memory-authorization";
 import { ManagedModelRoute } from "./model-access-policy";
+import { QualificationContext } from "./qualification-context";
 import {
   CapabilityId,
   governedCapabilitiesV1Version,
@@ -185,6 +186,7 @@ export const ManagedTurnMetadata = Schema.TaggedStruct("OsfoManagedTurn", {
   originatingAuthority: OriginatingAuthority,
   plan: Plan,
   planPolicyVersion: PlanPolicyVersion,
+  qualificationContext: Schema.optionalKey(QualificationContext),
   routeId: ConversationRouteId,
   route: ManagedModelRoute,
   sessionId: SessionId,

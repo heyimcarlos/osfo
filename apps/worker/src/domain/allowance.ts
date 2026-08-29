@@ -1,6 +1,12 @@
 import { Schema } from "effect";
 
-import { AllowancePeriodId, type IncludedPlanUsageMicros, Plan, UserId } from "../domain";
+import {
+  AllowancePeriodId,
+  type IncludedPlanUsageMicros,
+  Plan,
+  ResourcePriceVersion,
+  UserId,
+} from "../domain";
 
 /** Evolving persisted metrics interpreted by their pinned legacy or shared Usage policy. */
 export const AllowanceKind = Schema.Literals([
@@ -50,6 +56,7 @@ export type AllowanceItem = typeof AllowanceItem.Type;
 
 /** Existing product or effect identity used to make consumption idempotent. */
 export const AllowanceSource = Schema.Struct({
+  resourcePriceVersion: Schema.optionalKey(ResourcePriceVersion),
   sourceId: Schema.String.check(Schema.isMinLength(1)),
   sourceType: Schema.String.check(Schema.isMinLength(1)),
 });
@@ -158,6 +165,7 @@ export const BillingDatabaseOperation = Schema.Literals([
   "recordUsage",
   "recordUsageEvent",
   "readQualificationAcceptanceEvidence",
+  "readQualificationBillingAuthority",
   "loadBillingSubscription",
   "applyStripeSnapshot",
 ]);

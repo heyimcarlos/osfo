@@ -1,4 +1,8 @@
-import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
+import {
+  allowancePeriods,
+  allowanceUsage,
+  allowanceZeroUsageEvidence,
+} from "@osfo/db/schema/allowances";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect, Predicate, Schema } from "effect";
 
@@ -22,6 +26,7 @@ const StoredUsage = Schema.Struct({
   allowanceKind: AllowanceKind,
   basis: ConsumptionBasis,
   quantity: Schema.BigInt,
+  resourcePriceVersion: Schema.NullOr(Schema.String),
 });
 
 const RecordedPeriod = Schema.Struct({
@@ -59,9 +64,41 @@ export const recordUsage = (
   source: AllowanceSource,
   items: ReadonlyArray<AllowanceItem>,
   expectedUserId?: UserId,
-) => {
+): Effect.Effect<RecordUsageResult, RecordUsageError> => {
+  if (source.sourceType === "ModelCallAttempt" && source.resourcePriceVersion === undefined) {
+    return Effect.fail(
+      new UsageConflict({
+        allowanceKind: items[0]?.allowanceKind ?? "vendorUsdMicros",
+        allowancePeriodId,
+        message: "Model-call consumption must retain its Resource Price version",
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+      }),
+    );
+  }
   if (items.length === 0) {
-    return Effect.succeed({ outcome: ExistingUsage.make({}), period: null, usage: [] });
+    if (source.sourceType !== "ModelCallAttempt") {
+      return Effect.succeed({ outcome: ExistingUsage.make({}), period: null, usage: [] });
+    }
+    const resourcePriceVersion = source.resourcePriceVersion;
+    if (resourcePriceVersion === undefined) {
+      return Effect.fail(
+        new UsageConflict({
+          allowanceKind: "vendorUsdMicros",
+          allowancePeriodId,
+          message: "Model-call consumption must retain its Resource Price version",
+          sourceId: source.sourceId,
+          sourceType: source.sourceType,
+        }),
+      );
+    }
+    return recordProvenNoModelUse(
+      database,
+      allowancePeriodId,
+      source,
+      resourcePriceVersion,
+      expectedUserId,
+    );
   }
   const uniqueItems = [...new Map(items.map((item) => [item.allowanceKind, item])).values()];
   const duplicateConflict = items.find((item) => {
@@ -111,6 +148,7 @@ export const recordUsage = (
             allowanceKind: allowanceUsage.allowance_kind,
             basis: allowanceUsage.basis,
             quantity: allowanceUsage.quantity,
+            resourcePriceVersion: allowanceUsage.resource_price_version,
           })
           .from(allowanceUsage)
           .where(
@@ -126,7 +164,9 @@ export const recordUsage = (
           const stored = existingByKind.get(item.allowanceKind);
           return (
             stored !== undefined &&
-            (stored.quantity !== item.quantity || stored.basis !== item.basis)
+            (stored.quantity !== item.quantity ||
+              stored.basis !== item.basis ||
+              stored.resourcePriceVersion !== (source.resourcePriceVersion ?? null))
           );
         });
         if (conflict !== undefined) {
@@ -144,6 +184,7 @@ export const recordUsage = (
                     allowance_period_id: allowancePeriodId,
                     basis: item.basis,
                     quantity: item.quantity,
+                    resource_price_version: source.resourcePriceVersion,
                     source_id: source.sourceId,
                     source_type: source.sourceType,
                     user_id: UserId.make(period.userId),
@@ -156,6 +197,7 @@ export const recordUsage = (
             allowanceKind: allowanceUsage.allowance_kind,
             basis: allowanceUsage.basis,
             quantity: allowanceUsage.quantity,
+            resourcePriceVersion: allowanceUsage.resource_price_version,
           })
           .from(allowanceUsage)
           .where(
@@ -212,7 +254,8 @@ export const recordUsage = (
         (record) =>
           record.allowanceKind === item.allowanceKind &&
           record.quantity === item.quantity &&
-          record.basis === item.basis,
+          record.basis === item.basis &&
+          record.resourcePriceVersion === (source.resourcePriceVersion ?? null),
       )
         ? Effect.void
         : Effect.fail(
@@ -252,3 +295,97 @@ export const recordUsage = (
     };
   });
 };
+
+const recordProvenNoModelUse = (
+  database: BillingDatabase,
+  allowancePeriodId: AllowancePeriodId,
+  source: AllowanceSource,
+  resourcePriceVersion: string,
+  expectedUserId?: UserId,
+) =>
+  Effect.gen(function* () {
+    const result = yield* runBillingTransaction("recordUsage", () =>
+      // oxlint-disable-next-line effecttsgo/async-function -- Drizzle owns this Promise transaction boundary.
+      database.transaction(async (transaction) => {
+        const [period] = await transaction
+          .select({
+            plan: allowancePeriods.plan,
+            planPolicyVersion: allowancePeriods.plan_policy_version,
+            userId: allowancePeriods.user_id,
+          })
+          .from(allowancePeriods)
+          .where(
+            expectedUserId === undefined
+              ? eq(allowancePeriods.allowance_period_id, allowancePeriodId)
+              : and(
+                  eq(allowancePeriods.allowance_period_id, allowancePeriodId),
+                  eq(allowancePeriods.user_id, expectedUserId),
+                ),
+          )
+          .limit(1);
+        if (period === undefined) return { _tag: "PeriodNotFound" as const };
+        const inserted = await transaction
+          .insert(allowanceZeroUsageEvidence)
+          .values({
+            allowance_period_id: allowancePeriodId,
+            reason: "provenNoUse",
+            resource_price_version: resourcePriceVersion,
+            source_id: source.sourceId,
+            source_type: source.sourceType,
+            user_id: UserId.make(period.userId),
+          })
+          .onConflictDoNothing()
+          .returning({ sourceId: allowanceZeroUsageEvidence.source_id });
+        const [retained] = await transaction
+          .select({
+            reason: allowanceZeroUsageEvidence.reason,
+            resourcePriceVersion: allowanceZeroUsageEvidence.resource_price_version,
+            userId: allowanceZeroUsageEvidence.user_id,
+          })
+          .from(allowanceZeroUsageEvidence)
+          .where(
+            and(
+              eq(allowanceZeroUsageEvidence.allowance_period_id, allowancePeriodId),
+              eq(allowanceZeroUsageEvidence.source_type, source.sourceType),
+              eq(allowanceZeroUsageEvidence.source_id, source.sourceId),
+            ),
+          )
+          .limit(1);
+        return retained?.reason === "provenNoUse" &&
+          retained.userId === period.userId &&
+          retained.resourcePriceVersion === resourcePriceVersion
+          ? ({ _tag: "Stored" as const, inserted: inserted.length > 0, period } as const)
+          : ({ _tag: "Conflict" as const } as const);
+      }),
+    );
+    if (Predicate.isTagged(result, "PeriodNotFound")) {
+      return yield* new AllowancePeriodNotFound({
+        lookup: { _tag: "AllowancePeriod", allowancePeriodId },
+        message: "The admitted allowance period does not exist",
+      });
+    }
+    if (Predicate.isTagged(result, "Conflict")) {
+      return yield* new UsageConflict({
+        allowanceKind: "vendorUsdMicros",
+        allowancePeriodId,
+        message: "The zero-use evidence identity conflicts with retained authority",
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+      });
+    }
+    const period = yield* Schema.decodeEffect(RecordedPeriod)(result.period).pipe(
+      Effect.mapError(
+        (cause) =>
+          new DatabaseUnavailable({
+            cause,
+            message: "PostgreSQL returned an invalid zero-use Allowance period",
+            operation: "recordUsage",
+          }),
+      ),
+    );
+    return {
+      outcome: result.inserted ? Recorded.make({}) : ExistingUsage.make({}),
+      period,
+      usage: [],
+    };
+  });

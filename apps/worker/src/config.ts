@@ -27,6 +27,7 @@ type RawConfigBinding =
   | "COMPOSIO_API_KEY"
   | "INTEGRATION_PROVIDER_BASE_URL"
   | "OSFO_STAGE"
+  | "QUALIFICATION_EMAIL_RECIPIENT"
   | "QUALIFICATION_TRIGGER_TOKEN"
   | "RESEARCH_REPORT_PROVIDER_BASE_URL"
   | "STRIPE_ADVENTURER_PRICE_ID"
@@ -59,8 +60,14 @@ type GeneratedCloudflareBindings = Omit<Env, RawConfigBinding>;
 
 /** Generated Cloudflare bindings and raw Worker configuration values. */
 export interface CloudflareEnv extends GeneratedCloudflareBindings {
+  readonly CF_VERSION_METADATA?: {
+    readonly id: string;
+    readonly tag: string;
+    readonly timestamp: string;
+  };
   /** Optional private service binding for the bounded production qualification owner. */
   readonly QUALIFICATION_OWNER?: Fetcher;
+  readonly QUALIFICATION_EMAIL_RECIPIENT?: string;
   readonly QUALIFICATION_TRIGGER_TOKEN?: string;
   readonly BETTER_AUTH_API_KEY?: string;
   readonly BETTER_AUTH_API_URL?: string;

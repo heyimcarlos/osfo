@@ -142,4 +142,16 @@ export interface PendingModelCallUsage {
   readonly allowancePeriodId: AllowancePeriodId;
   readonly attemptId: ModelCallAttemptId;
   readonly items: ReadonlyArray<AllowanceItem>;
+  readonly qualification?: QualificationModelCallIdentity;
+}
+
+/** Server-owned root identity retained with a qualification model-call cost fact. */
+export interface QualificationModelCallIdentity {
+  readonly costReconciliationId: string;
+  readonly executionId: string;
+  readonly gatewayRequestId: string | null;
+  readonly modelRequestId: string;
+  readonly outcomeId: string;
+  readonly priceBookId: string;
+  readonly rootId: string;
 }

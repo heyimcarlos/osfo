@@ -288,13 +288,26 @@ type ProductAuthorityExportRecord =
   | (ProductExportRecordBase & {
       readonly deliveryId: string;
       readonly outcomeId: string;
-      readonly providerStatus: "failed" | "sent" | "succeeded";
+      readonly providerStatus: "failed" | "notApplied" | "sent" | "succeeded";
+    })
+  | (ProductExportRecordBase & {
+      readonly outcomeId: string;
+      readonly providerObligation: "notRequired";
     })
   | (ProductExportRecordBase & {
       readonly deliveryId: string;
       readonly gmailMessageId: string;
       readonly outcomeId: string;
       readonly deliveryStatus: "failed" | "succeeded";
+    })
+  | (ProductExportRecordBase & {
+      readonly deliveryId: string;
+      readonly deliveryStatus: "failed" | "notApplied";
+      readonly outcomeId: string;
+    })
+  | (ProductExportRecordBase & {
+      readonly gmailObligation: "notRequired";
+      readonly outcomeId: string;
     })
   | (ProductExportRecordBase & {
       readonly outcomeId: string;
@@ -310,9 +323,20 @@ type ProductAuthorityExportRecord =
       readonly requestStatus: "completed" | "failed";
     })
   | (ProductExportRecordBase & {
+      readonly modelObligation: "notRequired";
+      readonly outcomeId: string;
+      readonly terminalStatus: "aborted" | "error";
+    })
+  | (ProductExportRecordBase & {
       readonly memoryCommitId: string;
       readonly outcomeId: string;
       readonly commitStatus: "committed" | "failed";
+      readonly userMessageId: string;
+    })
+  | (ProductExportRecordBase & {
+      readonly memoryObligation: "notRequired";
+      readonly outcomeId: string;
+      readonly terminalStatus: "aborted" | "error";
       readonly userMessageId: string;
     })
   | (ProductExportRecordBase & {
@@ -434,22 +458,42 @@ export const ProductAuthorityExportBoundary = Schema.Union([
   ),
   productAuthorityExportBoundary(
     "provider_delivery_receipts",
-    Schema.Struct({
-      ...ProductExportRecordBaseBoundary,
-      deliveryId: QualificationId,
-      outcomeId: QualificationId,
-      providerStatus: Schema.Literals(["failed", "sent", "succeeded"]),
-    }),
+    Schema.Union([
+      Schema.Struct({
+        ...ProductExportRecordBaseBoundary,
+        deliveryId: QualificationId,
+        outcomeId: QualificationId,
+        providerStatus: Schema.Literals(["failed", "notApplied", "sent", "succeeded"]),
+      }),
+      Schema.Struct({
+        ...ProductExportRecordBaseBoundary,
+        outcomeId: QualificationId,
+        providerObligation: Schema.Literal("notRequired"),
+      }),
+    ]),
   ),
   productAuthorityExportBoundary(
     "gmail_provider_receipts",
-    Schema.Struct({
-      ...ProductExportRecordBaseBoundary,
-      deliveryId: QualificationId,
-      gmailMessageId: QualificationId,
-      outcomeId: QualificationId,
-      deliveryStatus: Schema.Literals(["failed", "succeeded"]),
-    }),
+    Schema.Union([
+      Schema.Struct({
+        ...ProductExportRecordBaseBoundary,
+        deliveryId: QualificationId,
+        gmailMessageId: QualificationId,
+        outcomeId: QualificationId,
+        deliveryStatus: Schema.Literal("succeeded"),
+      }),
+      Schema.Struct({
+        ...ProductExportRecordBaseBoundary,
+        deliveryId: QualificationId,
+        deliveryStatus: Schema.Literals(["failed", "notApplied"]),
+        outcomeId: QualificationId,
+      }),
+      Schema.Struct({
+        ...ProductExportRecordBaseBoundary,
+        gmailObligation: Schema.Literal("notRequired"),
+        outcomeId: QualificationId,
+      }),
+    ]),
   ),
   productAuthorityExportBoundary(
     "workflow_instance_receipts",
@@ -463,24 +507,41 @@ export const ProductAuthorityExportBoundary = Schema.Union([
   ),
   productAuthorityExportBoundary(
     "model_access_receipts",
-    Schema.Struct({
-      ...ProductExportRecordBaseBoundary,
-      costReconciliationId: QualificationId,
-      modelRequestId: QualificationId,
-      outcomeId: QualificationId,
-      priceBookId: QualificationId,
-      requestStatus: Schema.Literals(["completed", "failed"]),
-    }),
+    Schema.Union([
+      Schema.Struct({
+        ...ProductExportRecordBaseBoundary,
+        costReconciliationId: QualificationId,
+        modelRequestId: QualificationId,
+        outcomeId: QualificationId,
+        priceBookId: QualificationId,
+        requestStatus: Schema.Literals(["completed", "failed"]),
+      }),
+      Schema.Struct({
+        ...ProductExportRecordBaseBoundary,
+        modelObligation: Schema.Literal("notRequired"),
+        outcomeId: QualificationId,
+        terminalStatus: Schema.Literals(["aborted", "error"]),
+      }),
+    ]),
   ),
   productAuthorityExportBoundary(
     "memory_commit_receipts",
-    Schema.Struct({
-      ...ProductExportRecordBaseBoundary,
-      memoryCommitId: QualificationId,
-      outcomeId: QualificationId,
-      commitStatus: Schema.Literals(["committed", "failed"]),
-      userMessageId: QualificationId,
-    }),
+    Schema.Union([
+      Schema.Struct({
+        ...ProductExportRecordBaseBoundary,
+        memoryCommitId: QualificationId,
+        outcomeId: QualificationId,
+        commitStatus: Schema.Literals(["committed", "failed"]),
+        userMessageId: QualificationId,
+      }),
+      Schema.Struct({
+        ...ProductExportRecordBaseBoundary,
+        memoryObligation: Schema.Literal("notRequired"),
+        outcomeId: QualificationId,
+        terminalStatus: Schema.Literals(["aborted", "error"]),
+        userMessageId: QualificationId,
+      }),
+    ]),
   ),
   productAuthorityExportBoundary(
     "task_compute_receipts",
@@ -704,23 +765,30 @@ const evidenceFromAuthorityExport = (
         );
     case "provider_delivery_receipts":
       return artifact.records
-        .filter((record) => "providerStatus" in record)
+        .filter((record) => "providerStatus" in record || "providerObligation" in record)
         .map((record) =>
-          base(
-            record,
-            { deliveryId: record.deliveryId, outcomeId: record.outcomeId },
-            record.providerStatus === "succeeded",
-          ),
+          "providerObligation" in record
+            ? base(record, { outcomeId: record.outcomeId }, false)
+            : base(
+                record,
+                { deliveryId: record.deliveryId, outcomeId: record.outcomeId },
+                record.providerStatus === "succeeded",
+              ),
         );
     case "gmail_provider_receipts":
       return artifact.records
-        .filter((record) => "gmailMessageId" in record)
+        .filter(
+          (record) =>
+            "gmailMessageId" in record || "deliveryStatus" in record || "gmailObligation" in record,
+        )
         .map((record) =>
-          base(
-            record,
-            { deliveryId: record.deliveryId, outcomeId: record.outcomeId },
-            record.deliveryStatus === "succeeded",
-          ),
+          "gmailObligation" in record
+            ? base(record, { outcomeId: record.outcomeId }, false)
+            : base(
+                record,
+                { deliveryId: record.deliveryId, outcomeId: record.outcomeId },
+                record.deliveryStatus === "succeeded",
+              ),
         );
     case "workflow_instance_receipts":
       return artifact.records
@@ -740,27 +808,35 @@ const evidenceFromAuthorityExport = (
         );
     case "model_access_receipts":
       return artifact.records
-        .filter((record) => "modelRequestId" in record)
+        .filter((record) => "modelRequestId" in record || "modelObligation" in record)
         .map((record) =>
-          base(
-            record,
-            {
-              costReconciliationId: record.costReconciliationId,
-              outcomeId: record.outcomeId,
-              priceBookId: record.priceBookId,
-            },
-            record.requestStatus === "completed",
-          ),
+          "modelObligation" in record
+            ? base(record, { outcomeId: record.outcomeId }, false)
+            : base(
+                record,
+                {
+                  costReconciliationId: record.costReconciliationId,
+                  outcomeId: record.outcomeId,
+                  priceBookId: record.priceBookId,
+                },
+                record.requestStatus === "completed",
+              ),
         );
     case "memory_commit_receipts":
       return artifact.records
-        .filter((record) => "memoryCommitId" in record)
+        .filter((record) => "memoryCommitId" in record || "memoryObligation" in record)
         .map((record) =>
-          base(
-            record,
-            { outcomeId: record.outcomeId, userMessageId: record.userMessageId },
-            record.commitStatus === "committed",
-          ),
+          "memoryObligation" in record
+            ? base(
+                record,
+                { outcomeId: record.outcomeId, userMessageId: record.userMessageId },
+                false,
+              )
+            : base(
+                record,
+                { outcomeId: record.outcomeId, userMessageId: record.userMessageId },
+                record.commitStatus === "committed",
+              ),
         );
     case "task_compute_receipts":
       return artifact.records

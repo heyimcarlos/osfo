@@ -273,55 +273,64 @@ export function* qualificationRunArrivals(
   manifest: ProductionQualificationManifest,
   run: QualificationExecutionRun,
 ): IterableIterator<OpenWorkloadArrival | QualificationCharacterizationArrival> {
+  for (let index = 0; index < run.arrivalCount; index += 1) {
+    const arrival = qualificationRunArrivalAt(manifest, run, index);
+    if (arrival !== undefined) yield arrival;
+  }
+}
+
+/** Derive one canonical arrival without materializing or replaying the preceding workload. */
+export const qualificationRunArrivalAt = (
+  manifest: ProductionQualificationManifest,
+  run: QualificationExecutionRun,
+  index: number,
+): OpenWorkloadArrival | QualificationCharacterizationArrival | undefined => {
+  if (!Number.isInteger(index) || index < 0 || index >= run.arrivalCount) return undefined;
   if (run.kind === "lane") {
+    let windowOffset = index;
     for (const window of run.windows) {
       if (window.kind !== "offer" && window.kind !== "fault") continue;
       const count = openArrivalCount(window);
-      const input = {
-        identityPrefix: run.runId,
-        journeyMix: manifest.journeyMix,
-        planMixBasisPoints: manifest.planMixBasisPoints,
-        seed: run.seed,
-        startsAtEpochMs: window.startsAtEpochMs,
-        window,
-      };
-      for (let index = 0; index < count; index += 1) {
-        yield openWorkloadArrivalAt(input, index);
+      if (windowOffset >= count) {
+        windowOffset -= count;
+        continue;
       }
+      return openWorkloadArrivalAt(
+        {
+          identityPrefix: run.runId,
+          journeyMix: manifest.journeyMix,
+          planMixBasisPoints: manifest.planMixBasisPoints,
+          seed: run.seed,
+          startsAtEpochMs: window.startsAtEpochMs,
+          window,
+        },
+        windowOffset,
+      );
     }
-    return;
+    return undefined;
   }
-
-  if (run.kind === "challenge") {
-    const challenge = manifest.challengeLanes.find(({ kind }) => kind === run.challenge);
-    const window = run.windows[0];
-    if (challenge === undefined) return;
-    const rate = window.startRatePerSecond;
-    for (let index = 0; index < run.arrivalCount; index += 1) {
-      yield {
-        journey: journeyAt(manifest, challenge, index),
-        offeredAtEpochMs: window.startsAtEpochMs + Math.floor((index * 1_000) / rate),
-        plan:
-          challenge.planPolicy === "allAdventurer"
-            ? "adventurer"
-            : challenge.planPolicy === "referenceMix" && index % 10 === 9
-              ? "adventurer"
-              : "free",
-        rootId: `${run.runId}-${index}`,
-      };
-    }
-    return;
-  }
-
   const window = run.windows[0];
   const rate = window.startRatePerSecond;
-  for (let index = 0; index < run.arrivalCount; index += 1) {
-    yield {
+  if (run.kind === "challenge") {
+    const challenge = manifest.challengeLanes.find(({ kind }) => kind === run.challenge);
+    if (challenge === undefined) return undefined;
+    return {
+      journey: journeyAt(manifest, challenge, index),
       offeredAtEpochMs: window.startsAtEpochMs + Math.floor((index * 1_000) / rate),
-      rootId: `${run.runId}:${index}`,
+      plan:
+        challenge.planPolicy === "allAdventurer"
+          ? "adventurer"
+          : challenge.planPolicy === "referenceMix" && index % 10 === 9
+            ? "adventurer"
+            : "free",
+      rootId: `${run.runId}-${index}`,
     };
   }
-}
+  return {
+    offeredAtEpochMs: window.startsAtEpochMs + Math.floor((index * 1_000) / rate),
+    rootId: `${run.runId}:${index}`,
+  };
+};
 
 const plannedRuns = function* (
   manifest: ProductionQualificationManifest,

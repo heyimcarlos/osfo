@@ -1,0 +1,2171 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "8da18298-711e-4c07-90e8-c80a6a2fe91b",
+  "prevId": "877e91b8-9567-4ca1-8d16-42e61b448571",
+  "tables": {
+    "osfo_agent_initialization": {
+      "name": "osfo_agent_initialization",
+      "columns": {
+        "agent_id": {
+          "name": "agent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "initialization_id": {
+          "name": "initialization_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "initialized_at": {
+          "name": "initialized_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "initial_route_id": {
+          "name": "initial_route_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "initial_session_id": {
+          "name": "initial_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "singleton_key": {
+          "name": "singleton_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_agent_initialization_agent_id_unique": {
+          "name": "osfo_agent_initialization_agent_id_unique",
+          "columns": ["agent_id"],
+          "isUnique": true
+        },
+        "osfo_agent_initialization_initialization_id_unique": {
+          "name": "osfo_agent_initialization_initialization_id_unique",
+          "columns": ["initialization_id"],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "osfo_agent_initialization_initial_route_id_osfo_conversation_routes_route_id_fk": {
+          "name": "osfo_agent_initialization_initial_route_id_osfo_conversation_routes_route_id_fk",
+          "tableFrom": "osfo_agent_initialization",
+          "tableTo": "osfo_conversation_routes",
+          "columnsFrom": ["initial_route_id"],
+          "columnsTo": ["route_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        },
+        "osfo_agent_initialization_initial_session_id_osfo_session_ownership_session_id_fk": {
+          "name": "osfo_agent_initialization_initial_session_id_osfo_session_ownership_session_id_fk",
+          "tableFrom": "osfo_agent_initialization",
+          "tableTo": "osfo_session_ownership",
+          "columnsFrom": ["initial_session_id"],
+          "columnsTo": ["session_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_agent_initialization_singleton": {
+          "name": "osfo_agent_initialization_singleton",
+          "value": "\"osfo_agent_initialization\".\"singleton_key\" = 'agent'"
+        }
+      }
+    },
+    "osfo_committed_turns": {
+      "name": "osfo_committed_turns",
+      "columns": {
+        "assistant_message_id": {
+          "name": "assistant_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "observation_sequence": {
+          "name": "observation_sequence",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "observed_at": {
+          "name": "observed_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "CURRENT_TIMESTAMP"
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "think_request_id": {
+          "name": "think_request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_committed_turns_assistant_message_id_unique": {
+          "name": "osfo_committed_turns_assistant_message_id_unique",
+          "columns": ["assistant_message_id"],
+          "isUnique": true
+        },
+        "osfo_committed_turns_by_session": {
+          "name": "osfo_committed_turns_by_session",
+          "columns": ["session_id", "observation_sequence"],
+          "isUnique": false
+        },
+        "osfo_committed_turn_think_request_unique": {
+          "name": "osfo_committed_turn_think_request_unique",
+          "columns": ["think_request_id"],
+          "isUnique": true,
+          "where": "\"osfo_committed_turns\".\"think_request_id\" IS NOT NULL"
+        }
+      },
+      "foreignKeys": {
+        "osfo_committed_turns_session_id_osfo_session_ownership_session_id_fk": {
+          "name": "osfo_committed_turns_session_id_osfo_session_ownership_session_id_fk",
+          "tableFrom": "osfo_committed_turns",
+          "tableTo": "osfo_session_ownership",
+          "columnsFrom": ["session_id"],
+          "columnsTo": ["session_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_committed_turn_source": {
+          "name": "osfo_committed_turn_source",
+          "value": "\"osfo_committed_turns\".\"source\" IN ('hook', 'reconciliation')"
+        }
+      }
+    },
+    "osfo_conversation_routes": {
+      "name": "osfo_conversation_routes",
+      "columns": {
+        "is_primary": {
+          "name": "is_primary",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "route_id": {
+          "name": "route_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_one_primary_route": {
+          "name": "osfo_one_primary_route",
+          "columns": ["is_primary"],
+          "isUnique": true,
+          "where": "\"osfo_conversation_routes\".\"is_primary\" = 1"
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_conversation_route_primary_boolean": {
+          "name": "osfo_conversation_route_primary_boolean",
+          "value": "\"osfo_conversation_routes\".\"is_primary\" IN (0, 1)"
+        }
+      }
+    },
+    "osfo_file_analyses": {
+      "name": "osfo_file_analyses",
+      "columns": {
+        "allowance_period_id": {
+          "name": "allowance_period_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "analysis_id": {
+          "name": "analysis_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "failure": {
+          "name": "failure",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "file_id": {
+          "name": "file_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "prompt": {
+          "name": "prompt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "result_text": {
+          "name": "result_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "vendor_usd_micros": {
+          "name": "vendor_usd_micros",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_file_analyses_by_file": {
+          "name": "osfo_file_analyses_by_file",
+          "columns": ["file_id", "created_at"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "osfo_file_analyses_file_id_osfo_files_file_id_fk": {
+          "name": "osfo_file_analyses_file_id_osfo_files_file_id_fk",
+          "tableFrom": "osfo_file_analyses",
+          "tableTo": "osfo_files",
+          "columnsFrom": ["file_id"],
+          "columnsTo": ["file_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_file_analysis_state": {
+          "name": "osfo_file_analysis_state",
+          "value": "\"osfo_file_analyses\".\"state\" IN ('pending', 'ambiguous', 'completed_cleanup_pending', 'failed_cleanup_pending', 'completed', 'failed', 'deleted')"
+        }
+      }
+    },
+    "osfo_file_deletions": {
+      "name": "osfo_file_deletions",
+      "columns": {
+        "action_id": {
+          "name": "action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "analysis_count": {
+          "name": "analysis_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "file_id": {
+          "name": "file_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_object_key": {
+          "name": "source_object_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_sha256": {
+          "name": "source_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "osfo_file_deletions_file_id_osfo_files_file_id_fk": {
+          "name": "osfo_file_deletions_file_id_osfo_files_file_id_fk",
+          "tableFrom": "osfo_file_deletions",
+          "tableTo": "osfo_files",
+          "columnsFrom": ["file_id"],
+          "columnsTo": ["file_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "osfo_files": {
+      "name": "osfo_files",
+      "columns": {
+        "accepted_at": {
+          "name": "accepted_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "allowance_period_id": {
+          "name": "allowance_period_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "byte_length": {
+          "name": "byte_length",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "file_id": {
+          "name": "file_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "file_name": {
+          "name": "file_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "media_type": {
+          "name": "media_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "normalization_claimed_at": {
+          "name": "normalization_claimed_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "normalization_error": {
+          "name": "normalization_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "normalized_text": {
+          "name": "normalized_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "object_key": {
+          "name": "object_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provenance_json": {
+          "name": "provenance_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "upload_id": {
+          "name": "upload_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_files_object_key_unique": {
+          "name": "osfo_files_object_key_unique",
+          "columns": ["object_key"],
+          "isUnique": true
+        },
+        "osfo_files_upload_id_unique": {
+          "name": "osfo_files_upload_id_unique",
+          "columns": ["upload_id"],
+          "isUnique": true
+        },
+        "osfo_files_by_owner_state": {
+          "name": "osfo_files_by_owner_state",
+          "columns": ["user_id", "state"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_file_byte_length_positive": {
+          "name": "osfo_file_byte_length_positive",
+          "value": "\"osfo_files\".\"byte_length\" > 0"
+        },
+        "osfo_file_state": {
+          "name": "osfo_file_state",
+          "value": "\"osfo_files\".\"state\" IN ('pending_storage', 'stored', 'normalizing', 'ready', 'normalization_failed', 'deleting', 'deleted')"
+        },
+        "osfo_file_normalizing_state": {
+          "name": "osfo_file_normalizing_state",
+          "value": "(\"osfo_files\".\"state\" = 'normalizing' AND \"osfo_files\".\"normalization_claimed_at\" IS NOT NULL) OR (\"osfo_files\".\"state\" != 'normalizing' AND \"osfo_files\".\"normalization_claimed_at\" IS NULL)"
+        },
+        "osfo_file_deleted_state": {
+          "name": "osfo_file_deleted_state",
+          "value": "(\"osfo_files\".\"state\" = 'deleted' AND \"osfo_files\".\"deleted_at\" IS NOT NULL) OR (\"osfo_files\".\"state\" != 'deleted' AND \"osfo_files\".\"deleted_at\" IS NULL)"
+        }
+      }
+    },
+    "osfo_good_root_outcome_evaluations": {
+      "name": "osfo_good_root_outcome_evaluations",
+      "columns": {
+        "evaluation_id": {
+          "name": "evaluation_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "receipt_json": {
+          "name": "receipt_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "retained_at_epoch_millis": {
+          "name": "retained_at_epoch_millis",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_good_root_outcome_evaluations_by_owner": {
+          "name": "osfo_good_root_outcome_evaluations_by_owner",
+          "columns": ["owner_user_id", "retained_at_epoch_millis"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "osfo_memory_provider_configuration": {
+      "name": "osfo_memory_provider_configuration",
+      "columns": {
+        "configured_at": {
+          "name": "configured_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version": {
+          "name": "version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_memory_provider_configuration_scope": {
+          "name": "osfo_memory_provider_configuration_scope",
+          "value": "\"osfo_memory_provider_configuration\".\"scope\" IN ('organization', 'user')"
+        },
+        "osfo_memory_provider_configuration_status": {
+          "name": "osfo_memory_provider_configuration_status",
+          "value": "\"osfo_memory_provider_configuration\".\"status\" IN ('pending', 'configured')"
+        },
+        "osfo_memory_provider_configuration_completion": {
+          "name": "osfo_memory_provider_configuration_completion",
+          "value": "(\"osfo_memory_provider_configuration\".\"status\" = 'configured' AND \"osfo_memory_provider_configuration\".\"configured_at\" IS NOT NULL) OR (\"osfo_memory_provider_configuration\".\"status\" = 'pending' AND \"osfo_memory_provider_configuration\".\"configured_at\" IS NULL)"
+        }
+      }
+    },
+    "osfo_memory_provider_outbox": {
+      "name": "osfo_memory_provider_outbox",
+      "columns": {
+        "allowance_period_id": {
+          "name": "allowance_period_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "available_at": {
+          "name": "available_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "claim_expires_at": {
+          "name": "claim_expires_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "claim_token": {
+          "name": "claim_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "deletion_progress_json": {
+          "name": "deletion_progress_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "enqueued_at": {
+          "name": "enqueued_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "operation_type": {
+          "name": "operation_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "ordering_key": {
+          "name": "ordering_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "outbox_id": {
+          "name": "outbox_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "payload_json": {
+          "name": "payload_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provider_accepted_at": {
+          "name": "provider_accepted_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "provider_document_id": {
+          "name": "provider_document_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "provider_submission_ambiguous": {
+          "name": "provider_submission_ambiguous",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "provider_status": {
+          "name": "provider_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "usage_json": {
+          "name": "usage_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_memory_provider_outbox_sequence_unique": {
+          "name": "osfo_memory_provider_outbox_sequence_unique",
+          "columns": ["sequence"],
+          "isUnique": true
+        },
+        "osfo_memory_provider_outbox_reconciliation": {
+          "name": "osfo_memory_provider_outbox_reconciliation",
+          "columns": ["status", "available_at", "sequence"],
+          "isUnique": false
+        },
+        "osfo_memory_provider_outbox_order": {
+          "name": "osfo_memory_provider_outbox_order",
+          "columns": ["ordering_key", "sequence"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_memory_provider_outbox_operation": {
+          "name": "osfo_memory_provider_outbox_operation",
+          "value": "\"osfo_memory_provider_outbox\".\"operation_type\" IN ('saveConversation', 'deleteSessionConversation', 'deleteUserKnowledge', 'forgetKnowledge')"
+        },
+        "osfo_memory_provider_outbox_status": {
+          "name": "osfo_memory_provider_outbox_status",
+          "value": "\"osfo_memory_provider_outbox\".\"status\" IN ('pending', 'claimed', 'completed', 'failed')"
+        },
+        "osfo_memory_provider_outbox_provider_status": {
+          "name": "osfo_memory_provider_outbox_provider_status",
+          "value": "\"osfo_memory_provider_outbox\".\"provider_status\" IS NULL OR \"osfo_memory_provider_outbox\".\"provider_status\" IN ('processing', 'done', 'failed')"
+        },
+        "osfo_memory_provider_outbox_attempt_count": {
+          "name": "osfo_memory_provider_outbox_attempt_count",
+          "value": "\"osfo_memory_provider_outbox\".\"attempt_count\" >= 0"
+        }
+      }
+    },
+    "osfo_model_call_usage_evidence": {
+      "name": "osfo_model_call_usage_evidence",
+      "columns": {
+        "allowance_period_id": {
+          "name": "allowance_period_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "attempt_id": {
+          "name": "attempt_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "dispatched_at": {
+          "name": "dispatched_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "qualification_cost_reconciliation_id": {
+          "name": "qualification_cost_reconciliation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "qualification_execution_id": {
+          "name": "qualification_execution_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "qualification_model_request_id": {
+          "name": "qualification_model_request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "qualification_outcome_id": {
+          "name": "qualification_outcome_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "qualification_price_book_id": {
+          "name": "qualification_price_book_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "qualification_root_id": {
+          "name": "qualification_root_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "items_json": {
+          "name": "items_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_model_call_usage_pending": {
+          "name": "osfo_model_call_usage_pending",
+          "columns": ["recorded_at"],
+          "isUnique": false,
+          "where": "\"osfo_model_call_usage_evidence\".\"dispatched_at\" IS NULL"
+        },
+        "osfo_model_call_usage_by_qualification_root": {
+          "name": "osfo_model_call_usage_by_qualification_root",
+          "columns": ["qualification_execution_id", "qualification_root_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "osfo_personal_skill_learning_candidates": {
+      "name": "osfo_personal_skill_learning_candidates",
+      "columns": {
+        "accepted_skill_version": {
+          "name": "accepted_skill_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "candidate_id": {
+          "name": "candidate_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "candidate_json": {
+          "name": "candidate_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "claim_expires_at_epoch_millis": {
+          "name": "claim_expires_at_epoch_millis",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "claim_token": {
+          "name": "claim_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at_epoch_millis": {
+          "name": "created_at_epoch_millis",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "notification_delivered_at_epoch_millis": {
+          "name": "notification_delivered_at_epoch_millis",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "notification_text": {
+          "name": "notification_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "prior_skill_version": {
+          "name": "prior_skill_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "undo_target_skill_version": {
+          "name": "undo_target_skill_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "updated_at_epoch_millis": {
+          "name": "updated_at_epoch_millis",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_personal_skill_learning_by_owner_status": {
+          "name": "osfo_personal_skill_learning_by_owner_status",
+          "columns": ["owner_user_id", "status", "created_at_epoch_millis"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_personal_skill_learning_attempts": {
+          "name": "osfo_personal_skill_learning_attempts",
+          "value": "\"osfo_personal_skill_learning_candidates\".\"attempts\" >= 0"
+        },
+        "osfo_personal_skill_learning_status": {
+          "name": "osfo_personal_skill_learning_status",
+          "value": "\"osfo_personal_skill_learning_candidates\".\"status\" IN ('pending', 'claimed', 'accepted', 'rejected')"
+        },
+        "osfo_personal_skill_learning_claim": {
+          "name": "osfo_personal_skill_learning_claim",
+          "value": "(\"osfo_personal_skill_learning_candidates\".\"status\" = 'claimed' AND \"osfo_personal_skill_learning_candidates\".\"claim_token\" IS NOT NULL AND \"osfo_personal_skill_learning_candidates\".\"claim_expires_at_epoch_millis\" IS NOT NULL) OR (\"osfo_personal_skill_learning_candidates\".\"status\" != 'claimed' AND \"osfo_personal_skill_learning_candidates\".\"claim_token\" IS NULL AND \"osfo_personal_skill_learning_candidates\".\"claim_expires_at_epoch_millis\" IS NULL)"
+        }
+      }
+    },
+    "osfo_personal_skill_learning_model_attempts": {
+      "name": "osfo_personal_skill_learning_model_attempts",
+      "columns": {
+        "attempt_id": {
+          "name": "attempt_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "basis": {
+          "name": "basis",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "candidate_id": {
+          "name": "candidate_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "model_input_tokens": {
+          "name": "model_input_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "model_output_tokens": {
+          "name": "model_output_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "recorded_at_epoch_millis": {
+          "name": "recorded_at_epoch_millis",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "vendor_usd_micros": {
+          "name": "vendor_usd_micros",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_personal_skill_learning_model_attempts_by_candidate": {
+          "name": "osfo_personal_skill_learning_model_attempts_by_candidate",
+          "columns": ["candidate_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_personal_skill_learning_model_attempt_nonnegative": {
+          "name": "osfo_personal_skill_learning_model_attempt_nonnegative",
+          "value": "\"osfo_personal_skill_learning_model_attempts\".\"model_input_tokens\" >= 0 AND \"osfo_personal_skill_learning_model_attempts\".\"model_output_tokens\" >= 0 AND \"osfo_personal_skill_learning_model_attempts\".\"vendor_usd_micros\" >= 0"
+        }
+      }
+    },
+    "osfo_personal_skill_versions": {
+      "name": "osfo_personal_skill_versions",
+      "columns": {
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "skill_id": {
+          "name": "skill_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "skill_version": {
+          "name": "skill_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version_json": {
+          "name": "version_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_personal_skill_versions_skill_version_unique": {
+          "name": "osfo_personal_skill_versions_skill_version_unique",
+          "columns": ["skill_version"],
+          "isUnique": true
+        },
+        "osfo_personal_skill_version_revision": {
+          "name": "osfo_personal_skill_version_revision",
+          "columns": ["skill_id", "revision"],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "osfo_personal_skill_versions_skill_id_osfo_personal_skills_skill_id_fk": {
+          "name": "osfo_personal_skill_versions_skill_id_osfo_personal_skills_skill_id_fk",
+          "tableFrom": "osfo_personal_skill_versions",
+          "tableTo": "osfo_personal_skills",
+          "columnsFrom": ["skill_id"],
+          "columnsTo": ["skill_id"],
+          "onDelete": "cascade",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_personal_skill_version_revision_positive": {
+          "name": "osfo_personal_skill_version_revision_positive",
+          "value": "\"osfo_personal_skill_versions\".\"revision\" > 0"
+        }
+      }
+    },
+    "osfo_personal_skills": {
+      "name": "osfo_personal_skills",
+      "columns": {
+        "current_revision": {
+          "name": "current_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "current_skill_version": {
+          "name": "current_skill_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_used_at_epoch_millis": {
+          "name": "last_used_at_epoch_millis",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "skill_id": {
+          "name": "skill_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_personal_skills_current_skill_version_unique": {
+          "name": "osfo_personal_skills_current_skill_version_unique",
+          "columns": ["current_skill_version"],
+          "isUnique": true
+        },
+        "osfo_personal_skills_by_owner_status": {
+          "name": "osfo_personal_skills_by_owner_status",
+          "columns": ["owner_user_id", "status"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_personal_skill_revision_positive": {
+          "name": "osfo_personal_skill_revision_positive",
+          "value": "\"osfo_personal_skills\".\"current_revision\" > 0"
+        },
+        "osfo_personal_skill_status": {
+          "name": "osfo_personal_skill_status",
+          "value": "\"osfo_personal_skills\".\"status\" IN ('active', 'archived')"
+        }
+      }
+    },
+    "osfo_qualification_admissions": {
+      "name": "osfo_qualification_admissions",
+      "columns": {
+        "acceptance_receipt_id": {
+          "name": "acceptance_receipt_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "admission_decision": {
+          "name": "admission_decision",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "artifact_checksum": {
+          "name": "artifact_checksum",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "attempt_id": {
+          "name": "attempt_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "execution_id": {
+          "name": "execution_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "plan_checksum": {
+          "name": "plan_checksum",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "product_fact_id": {
+          "name": "product_fact_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "root_id": {
+          "name": "root_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "think_submission_id": {
+          "name": "think_submission_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "user_message_id": {
+          "name": "user_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_update_id": {
+          "name": "user_update_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_qualification_admissions_acceptance_receipt_id_unique": {
+          "name": "osfo_qualification_admissions_acceptance_receipt_id_unique",
+          "columns": ["acceptance_receipt_id"],
+          "isUnique": true
+        },
+        "osfo_qualification_admissions_product_fact_id_unique": {
+          "name": "osfo_qualification_admissions_product_fact_id_unique",
+          "columns": ["product_fact_id"],
+          "isUnique": true
+        },
+        "osfo_qualification_admission_root_unique": {
+          "name": "osfo_qualification_admission_root_unique",
+          "columns": ["execution_id", "root_id"],
+          "isUnique": true
+        },
+        "osfo_qualification_admissions_by_execution": {
+          "name": "osfo_qualification_admissions_by_execution",
+          "columns": ["execution_id", "run_id", "occurred_at"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_qualification_admission_decision": {
+          "name": "osfo_qualification_admission_decision",
+          "value": "\"osfo_qualification_admissions\".\"admission_decision\" IN ('accepted', 'capacityRejected', 'typedStressRejected')"
+        },
+        "osfo_qualification_admission_submission": {
+          "name": "osfo_qualification_admission_submission",
+          "value": "(\"osfo_qualification_admissions\".\"admission_decision\" = 'accepted' AND \"osfo_qualification_admissions\".\"think_submission_id\" IS NOT NULL) OR (\"osfo_qualification_admissions\".\"admission_decision\" != 'accepted' AND \"osfo_qualification_admissions\".\"think_submission_id\" IS NULL)"
+        }
+      }
+    },
+    "osfo_reminder_actions": {
+      "name": "osfo_reminder_actions",
+      "columns": {
+        "action_id": {
+          "name": "action_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "fingerprint_json": {
+          "name": "fingerprint_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reminder_id": {
+          "name": "reminder_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_reminder_actions_by_reminder": {
+          "name": "osfo_reminder_actions_by_reminder",
+          "columns": ["reminder_id", "revision"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "osfo_reminder_actions_reminder_id_osfo_reminders_reminder_id_fk": {
+          "name": "osfo_reminder_actions_reminder_id_osfo_reminders_reminder_id_fk",
+          "tableFrom": "osfo_reminder_actions",
+          "tableTo": "osfo_reminders",
+          "columnsFrom": ["reminder_id"],
+          "columnsTo": ["reminder_id"],
+          "onDelete": "cascade",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_reminder_action_revision": {
+          "name": "osfo_reminder_action_revision",
+          "value": "\"osfo_reminder_actions\".\"revision\" > 0"
+        }
+      }
+    },
+    "osfo_reminder_occurrences": {
+      "name": "osfo_reminder_occurrences",
+      "columns": {
+        "accounting_recorded_at": {
+          "name": "accounting_recorded_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "blocked_at": {
+          "name": "blocked_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "body_snapshot": {
+          "name": "body_snapshot",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "canceled_at": {
+          "name": "canceled_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "channel_link_id": {
+          "name": "channel_link_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "callback_capability": {
+          "name": "callback_capability",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "callback_capability_revoked_at": {
+          "name": "callback_capability_revoked_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "committed_at": {
+          "name": "committed_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "disposition_reason": {
+          "name": "disposition_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "exposed_at": {
+          "name": "exposed_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "nominal_due_at": {
+          "name": "nominal_due_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "original_period_id": {
+          "name": "original_period_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "policy_version": {
+          "name": "policy_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reminder_id": {
+          "name": "reminder_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "schedule_kind": {
+          "name": "schedule_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_identity": {
+          "name": "source_identity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_revoked_at": {
+          "name": "source_revoked_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "think_presented_at": {
+          "name": "think_presented_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "think_submission_id": {
+          "name": "think_submission_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "wakeup_prompted_at": {
+          "name": "wakeup_prompted_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "wakeup_requested_at": {
+          "name": "wakeup_requested_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_reminder_occurrences_source_identity_unique": {
+          "name": "osfo_reminder_occurrences_source_identity_unique",
+          "columns": ["source_identity"],
+          "isUnique": true
+        },
+        "osfo_reminder_occurrence_identity": {
+          "name": "osfo_reminder_occurrence_identity",
+          "columns": ["reminder_id", "revision", "nominal_due_at"],
+          "isUnique": true
+        },
+        "osfo_reminder_occurrences_pending_source": {
+          "name": "osfo_reminder_occurrences_pending_source",
+          "columns": ["owner_user_id", "exposed_at", "committed_at", "source_identity"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "osfo_reminder_occurrences_reminder_id_osfo_reminders_reminder_id_fk": {
+          "name": "osfo_reminder_occurrences_reminder_id_osfo_reminders_reminder_id_fk",
+          "tableFrom": "osfo_reminder_occurrences",
+          "tableTo": "osfo_reminders",
+          "columnsFrom": ["reminder_id"],
+          "columnsTo": ["reminder_id"],
+          "onDelete": "cascade",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_reminder_occurrence_revision": {
+          "name": "osfo_reminder_occurrence_revision",
+          "value": "\"osfo_reminder_occurrences\".\"revision\" > 0"
+        },
+        "osfo_reminder_occurrence_schedule_kind": {
+          "name": "osfo_reminder_occurrence_schedule_kind",
+          "value": "\"osfo_reminder_occurrences\".\"schedule_kind\" IN ('oneTime', 'recurring')"
+        },
+        "osfo_reminder_occurrence_disposition": {
+          "name": "osfo_reminder_occurrence_disposition",
+          "value": "((\"osfo_reminder_occurrences\".\"committed_at\" IS NOT NULL) + (\"osfo_reminder_occurrences\".\"blocked_at\" IS NOT NULL) + (\"osfo_reminder_occurrences\".\"canceled_at\" IS NOT NULL)) = 1"
+        },
+        "osfo_reminder_occurrence_delivery": {
+          "name": "osfo_reminder_occurrence_delivery",
+          "value": "(\"osfo_reminder_occurrences\".\"committed_at\" IS NOT NULL AND \"osfo_reminder_occurrences\".\"channel_link_id\" IS NOT NULL) OR (\"osfo_reminder_occurrences\".\"committed_at\" IS NULL AND \"osfo_reminder_occurrences\".\"channel_link_id\" IS NULL AND \"osfo_reminder_occurrences\".\"accounting_recorded_at\" IS NULL AND \"osfo_reminder_occurrences\".\"wakeup_requested_at\" IS NULL AND \"osfo_reminder_occurrences\".\"wakeup_prompted_at\" IS NULL AND \"osfo_reminder_occurrences\".\"exposed_at\" IS NULL AND \"osfo_reminder_occurrences\".\"think_presented_at\" IS NULL)"
+        },
+        "osfo_reminder_occurrence_think_presentation": {
+          "name": "osfo_reminder_occurrence_think_presentation",
+          "value": "(\"osfo_reminder_occurrences\".\"think_presented_at\" IS NULL AND \"osfo_reminder_occurrences\".\"think_submission_id\" IS NULL) OR (\"osfo_reminder_occurrences\".\"think_presented_at\" IS NOT NULL AND \"osfo_reminder_occurrences\".\"think_submission_id\" IS NOT NULL)"
+        },
+        "osfo_reminder_occurrence_source_revocation": {
+          "name": "osfo_reminder_occurrence_source_revocation",
+          "value": "\"osfo_reminder_occurrences\".\"source_revoked_at\" IS NULL OR \"osfo_reminder_occurrences\".\"committed_at\" IS NOT NULL"
+        }
+      }
+    },
+    "osfo_reminders": {
+      "name": "osfo_reminders",
+      "columns": {
+        "body": {
+          "name": "body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "callback_capability": {
+          "name": "callback_capability",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "creation_action_id": {
+          "name": "creation_action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "first_due_at": {
+          "name": "first_due_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "interval_milliseconds": {
+          "name": "interval_milliseconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "next_due_at": {
+          "name": "next_due_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "original_period_id": {
+          "name": "original_period_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "plan": {
+          "name": "plan",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "policy_version": {
+          "name": "policy_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reminder_id": {
+          "name": "reminder_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "schedule_kind": {
+          "name": "schedule_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "scheduler_id": {
+          "name": "scheduler_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_reminders_creation_action_id_unique": {
+          "name": "osfo_reminders_creation_action_id_unique",
+          "columns": ["creation_action_id"],
+          "isUnique": true
+        },
+        "osfo_reminders_by_owner_state": {
+          "name": "osfo_reminders_by_owner_state",
+          "columns": ["owner_user_id", "state", "created_at", "reminder_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_reminder_revision": {
+          "name": "osfo_reminder_revision",
+          "value": "\"osfo_reminders\".\"revision\" > 0"
+        },
+        "osfo_reminder_schedule_kind": {
+          "name": "osfo_reminder_schedule_kind",
+          "value": "\"osfo_reminders\".\"schedule_kind\" IN ('oneTime', 'recurring')"
+        },
+        "osfo_reminder_schedule_shape": {
+          "name": "osfo_reminder_schedule_shape",
+          "value": "(\"osfo_reminders\".\"schedule_kind\" = 'oneTime' AND \"osfo_reminders\".\"interval_milliseconds\" IS NULL) OR (\"osfo_reminders\".\"schedule_kind\" = 'recurring' AND \"osfo_reminders\".\"interval_milliseconds\" >= 86400000)"
+        },
+        "osfo_reminder_state": {
+          "name": "osfo_reminder_state",
+          "value": "\"osfo_reminders\".\"state\" IN ('active', 'paused', 'canceled', 'completed')"
+        },
+        "osfo_reminder_due_state": {
+          "name": "osfo_reminder_due_state",
+          "value": "(\"osfo_reminders\".\"state\" IN ('active', 'paused') AND \"osfo_reminders\".\"next_due_at\" IS NOT NULL) OR (\"osfo_reminders\".\"state\" IN ('canceled', 'completed') AND \"osfo_reminders\".\"next_due_at\" IS NULL)"
+        },
+        "osfo_reminder_schedule_binding": {
+          "name": "osfo_reminder_schedule_binding",
+          "value": "(\"osfo_reminders\".\"scheduler_id\" IS NULL AND \"osfo_reminders\".\"callback_capability\" IS NULL) OR (\"osfo_reminders\".\"scheduler_id\" IS NOT NULL AND \"osfo_reminders\".\"callback_capability\" IS NOT NULL)"
+        }
+      }
+    },
+    "osfo_session_ownership": {
+      "name": "osfo_session_ownership",
+      "columns": {
+        "became_current_at": {
+          "name": "became_current_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "ownership_sequence": {
+          "name": "ownership_sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "replaced_at": {
+          "name": "replaced_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "route_id": {
+          "name": "route_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_session_ownership_ownership_sequence_unique": {
+          "name": "osfo_session_ownership_ownership_sequence_unique",
+          "columns": ["ownership_sequence"],
+          "isUnique": true
+        },
+        "osfo_one_current_session_per_route": {
+          "name": "osfo_one_current_session_per_route",
+          "columns": ["route_id"],
+          "isUnique": true,
+          "where": "\"osfo_session_ownership\".\"replaced_at\" IS NULL"
+        },
+        "osfo_sessions_by_route": {
+          "name": "osfo_sessions_by_route",
+          "columns": ["route_id", "ownership_sequence"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "osfo_session_ownership_route_id_osfo_conversation_routes_route_id_fk": {
+          "name": "osfo_session_ownership_route_id_osfo_conversation_routes_route_id_fk",
+          "tableFrom": "osfo_session_ownership",
+          "tableTo": "osfo_conversation_routes",
+          "columnsFrom": ["route_id"],
+          "columnsTo": ["route_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "osfo_session_recall_cursors": {
+      "name": "osfo_session_recall_cursors",
+      "columns": {
+        "after_ownership_sequence": {
+          "name": "after_ownership_sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cursor": {
+          "name": "cursor",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+15 minutes'))"
+        },
+        "route_id": {
+          "name": "route_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "snapshot_current_session_id": {
+          "name": "snapshot_current_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "snapshot_max_ownership_sequence": {
+          "name": "snapshot_max_ownership_sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_session_recall_cursors_by_expiry": {
+          "name": "osfo_session_recall_cursors_by_expiry",
+          "columns": ["expires_at"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "osfo_session_recall_cursors_route_id_osfo_conversation_routes_route_id_fk": {
+          "name": "osfo_session_recall_cursors_route_id_osfo_conversation_routes_route_id_fk",
+          "tableFrom": "osfo_session_recall_cursors",
+          "tableTo": "osfo_conversation_routes",
+          "columnsFrom": ["route_id"],
+          "columnsTo": ["route_id"],
+          "onDelete": "cascade",
+          "onUpdate": "restrict"
+        },
+        "osfo_session_recall_cursors_snapshot_current_session_id_osfo_session_ownership_session_id_fk": {
+          "name": "osfo_session_recall_cursors_snapshot_current_session_id_osfo_session_ownership_session_id_fk",
+          "tableFrom": "osfo_session_recall_cursors",
+          "tableTo": "osfo_session_ownership",
+          "columnsFrom": ["snapshot_current_session_id"],
+          "columnsTo": ["session_id"],
+          "onDelete": "cascade",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "osfo_web_operations": {
+      "name": "osfo_web_operations",
+      "columns": {
+        "created_at_epoch_millis": {
+          "name": "created_at_epoch_millis",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "operation_id": {
+          "name": "operation_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reserved_pages": {
+          "name": "reserved_pages",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "result_json": {
+          "name": "result_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "turn_id": {
+          "name": "turn_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_web_operations_by_turn": {
+          "name": "osfo_web_operations_by_turn",
+          "columns": ["owner_user_id", "turn_id", "status"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_web_operation_kind": {
+          "name": "osfo_web_operation_kind",
+          "value": "\"osfo_web_operations\".\"kind\" IN ('page', 'search')"
+        },
+        "osfo_web_operation_status": {
+          "name": "osfo_web_operation_status",
+          "value": "\"osfo_web_operations\".\"status\" IN ('pending', 'completed')"
+        },
+        "osfo_web_operation_completion": {
+          "name": "osfo_web_operation_completion",
+          "value": "(\"osfo_web_operations\".\"status\" = 'completed' AND \"osfo_web_operations\".\"result_json\" IS NOT NULL) OR (\"osfo_web_operations\".\"status\" = 'pending' AND \"osfo_web_operations\".\"result_json\" IS NULL)"
+        },
+        "osfo_web_operation_pages": {
+          "name": "osfo_web_operation_pages",
+          "value": "\"osfo_web_operations\".\"reserved_pages\" BETWEEN 0 AND 3"
+        }
+      }
+    },
+    "osfo_web_results": {
+      "name": "osfo_web_results",
+      "columns": {
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "rank": {
+          "name": "rank",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "result_id": {
+          "name": "result_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "result_json": {
+          "name": "result_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "result_set_id": {
+          "name": "result_set_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "retained_at_epoch_millis": {
+          "name": "retained_at_epoch_millis",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_web_results_by_owner_set": {
+          "name": "osfo_web_results_by_owner_set",
+          "columns": ["owner_user_id", "retained_at_epoch_millis", "result_set_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_web_result_rank": {
+          "name": "osfo_web_result_rank",
+          "value": "\"osfo_web_results\".\"rank\" BETWEEN 1 AND 10"
+        }
+      }
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}

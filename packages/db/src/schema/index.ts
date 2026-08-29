@@ -4,6 +4,7 @@ export * from "./auth";
 export * from "./billing";
 export * from "./channel-links";
 export * from "./document-builds";
+export * from "./qualification-cohorts";
 export * from "./research-reports";
 export * from "./scheduled-emails";
 export * from "./user-lifecycle";

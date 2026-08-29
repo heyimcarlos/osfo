@@ -1,0 +1,3 @@
+ALTER TABLE "qualification_participant_provisions" RENAME COLUMN "enrollment_identifier" TO "enrollment_digest";--> statement-breakpoint
+ALTER TABLE "qualification_participant_provisions" DROP CONSTRAINT "qualification_participant_provisions_identifier_unique";--> statement-breakpoint
+ALTER TABLE "qualification_participant_provisions" ADD CONSTRAINT "qualification_participant_provisions_digest_unique" UNIQUE("enrollment_digest");

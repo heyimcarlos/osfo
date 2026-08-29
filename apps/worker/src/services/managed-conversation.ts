@@ -24,6 +24,7 @@ import {
 } from "./authorization";
 import { CoreMemoryAuthorizationSnapshot } from "../domain/core-memory-authorization";
 import { isDeletionOrDataRightsIntent } from "./capability-intent-policy";
+import type { QualificationContext } from "../domain/qualification-context";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Authority identities use the _tag discriminator. */
 
@@ -41,6 +42,11 @@ export const SubmitManagedConversationInput = Schema.Struct({
 
 /** Trusted managed-conversation input after the RPC boundary validates authorization separately. */
 export type SubmitManagedConversation = typeof SubmitManagedConversationInput.Type;
+
+/** Server-only extension admitted after the qualification proof has been verified. */
+export type SubmitQualifiedManagedConversation = SubmitManagedConversation & {
+  readonly qualificationContext: QualificationContext;
+};
 
 /** Successful managed-conversation admission ready for Think submission. */
 export interface ManagedConversationAdmitted {
@@ -75,7 +81,7 @@ export interface ManagedConversationSessionFacts {
 
 /** Admit one conversation with a server-owned route and its worst-case request cost. */
 export const admitManagedConversation = (
-  input: SubmitManagedConversation,
+  input: SubmitManagedConversation | SubmitQualifiedManagedConversation,
   session: ManagedConversationSessionFacts,
 ): Effect.Effect<
   ManagedConversationAdmitted | ManagedConversationDenied | ManagedSessionReplacementAdmitted,
@@ -204,6 +210,8 @@ export const admitManagedConversation = (
           : yield* Effect.die(
               new Error("A Channel Link turn was admitted without current Channel Link authority"),
             );
+    const qualificationMetadata =
+      "qualificationContext" in input ? { qualificationContext: input.qualificationContext } : {};
     return {
       _tag: "ManagedConversationAdmitted",
       idempotencyKey: input.idempotencyKey,
@@ -230,6 +238,7 @@ export const admitManagedConversation = (
         originatingAuthority: input.authorization.originatingAuthority,
         plan,
         planPolicyVersion,
+        ...qualificationMetadata,
         routeId: session.routeId,
         route: profile.route,
         sessionId: session.currentSessionId,

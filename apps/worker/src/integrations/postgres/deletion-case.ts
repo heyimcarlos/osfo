@@ -1,5 +1,6 @@
 import { sessions, users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
+import { qualificationParticipantAllocations } from "@osfo/db/schema/qualification-cohorts";
 import {
   accountDeletionActions,
   administrativeAuthorities,
@@ -232,6 +233,19 @@ export const make = Effect.gen(function* () {
           requested_by_user_id: userId,
           user_id: userId,
         });
+        await transaction
+          .update(qualificationParticipantAllocations)
+          .set({
+            deletion_case_id,
+            deletion_requested_at: sql`clock_timestamp()`,
+            state: "DELETION_REQUESTED",
+          })
+          .where(
+            and(
+              eq(qualificationParticipantAllocations.user_id, userId),
+              eq(qualificationParticipantAllocations.state, "ACTIVE"),
+            ),
+          );
         const consumed = await transaction
           .update(accountDeletionActions)
           .set({
@@ -315,6 +329,19 @@ export const make = Effect.gen(function* () {
             requested_by_admin_id: command.adminActorId,
             user_id: command.userId,
           });
+          await transaction
+            .update(qualificationParticipantAllocations)
+            .set({
+              deletion_case_id: deletion_case_id,
+              deletion_requested_at: sql`clock_timestamp()`,
+              state: "DELETION_REQUESTED",
+            })
+            .where(
+              and(
+                eq(qualificationParticipantAllocations.user_id, command.userId),
+                eq(qualificationParticipantAllocations.state, "ACTIVE"),
+              ),
+            );
           return { _tag: "Created" } as const;
         }),
       ),

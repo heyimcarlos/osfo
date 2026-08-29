@@ -211,6 +211,90 @@
       "when": 1787998738148,
       "tag": "0029_modern_gamora",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1788024703288,
+      "tag": "0030_quiet_emma_frost",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1788025287259,
+      "tag": "0031_futuristic_blob",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1788025605345,
+      "tag": "0032_worried_toad_men",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1788025703530,
+      "tag": "0033_violet_blob",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1788026651418,
+      "tag": "0034_rapid_dust",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1788027497028,
+      "tag": "0035_romantic_flatman",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1788027687506,
+      "tag": "0036_huge_colonel_america",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1788029050933,
+      "tag": "0037_milky_spyke",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1788029190970,
+      "tag": "0038_rich_dormammu",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1788030269060,
+      "tag": "0039_clammy_strong_guy",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1788031229914,
+      "tag": "0040_amusing_terror",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1788031265931,
+      "tag": "0041_watery_screwball",
+      "breakpoints": true
     }
   ]
 }

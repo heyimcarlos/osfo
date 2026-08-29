@@ -57,6 +57,7 @@ export const allowanceUsage = pgTable(
     basis: text({ enum: basisValues }).notNull(),
     quantity: bigint({ mode: "bigint" }).notNull(),
     recorded_at: timestamp({ mode: "date", withTimezone: true }).defaultNow().notNull(),
+    resource_price_version: text(),
     source_id: text().notNull(),
     source_type: text().notNull(),
     user_id: text().notNull(),
@@ -82,6 +83,35 @@ export const allowanceUsage = pgTable(
       name: "allowance_usage_user_period_fk",
     }).onDelete("cascade"),
     index("allowance_usage_period_kind_index").on(table.allowance_period_id, table.allowance_kind),
+  ],
+);
+
+/** Immutable proof that one provider attempt produced no counted Allowance Consumption. */
+export const allowanceZeroUsageEvidence = pgTable(
+  "allowance_zero_usage_evidence",
+  {
+    allowance_period_id: text().notNull(),
+    recorded_at: timestamp({ mode: "date", withTimezone: true }).defaultNow().notNull(),
+    reason: text({ enum: ["provenNoUse"] }).notNull(),
+    resource_price_version: text().notNull(),
+    source_id: text().notNull(),
+    source_type: text().notNull(),
+    user_id: text().notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.allowance_period_id, table.source_type, table.source_id],
+      name: "allowance_zero_usage_evidence_pk",
+    }),
+    foreignKey({
+      columns: [table.user_id, table.allowance_period_id],
+      foreignColumns: [allowancePeriods.user_id, allowancePeriods.allowance_period_id],
+      name: "allowance_zero_usage_evidence_user_period_fk",
+    }).onDelete("cascade"),
+    check(
+      "allowance_zero_usage_evidence_identity_check",
+      sql`${table.reason} = 'provenNoUse' and length(btrim(${table.source_id})) > 0 and length(btrim(${table.source_type})) > 0`,
+    ),
   ],
 );
 

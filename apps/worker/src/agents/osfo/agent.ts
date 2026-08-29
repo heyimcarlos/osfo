@@ -38,6 +38,7 @@ import {
 } from "effect";
 
 import type { AllowanceItem, AllowanceSource } from "../../domain/allowance";
+import { currentResourcePriceVersion } from "../../domain/usage";
 import {
   AgentId,
   AllowancePeriodId,
@@ -51,7 +52,7 @@ import {
   UserId,
   type Plan,
   type PlanPolicyVersion,
-  type ResourcePriceVersion,
+  ResourcePriceVersion,
 } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
 import { AuthSessionId } from "../../domain/auth-session";
@@ -104,14 +105,28 @@ import {
   modelCallAttemptId,
   type ModelCallEvidence,
   type PendingModelCallUsage,
+  type QualificationModelCallIdentity,
 } from "../../domain/model-call-attempt";
 import {
   admitManagedConversation,
-  type ManagedConversationDenied,
+  ManagedConversationDenied,
   type ManagedConversationAdmitted,
   type ManagedSessionReplacementAdmitted,
+  type SubmitManagedConversation,
+  type SubmitQualifiedManagedConversation,
   SubmitManagedConversationInput,
 } from "../../services/managed-conversation";
+import {
+  qualificationAdmissionReceipt,
+  qualificationRejectionDecision,
+  SubmitQualificationConversationInput,
+  type SubmitQualificationConversationRequest,
+  verifyQualificationConversationAttempt,
+} from "../../qualification/qualification-attempt";
+import {
+  readQualificationAdmissionReceipts,
+  retainQualificationAdmissionReceipt,
+} from "./db/qualification-admissions";
 import {
   launchModelAccessPolicy,
   type ManagedModelRoute,
@@ -248,7 +263,7 @@ import {
   ThinkSessionRecordInvalid,
 } from "./db/errors";
 import { applyAgentMigrations } from "./db/migrate";
-import { makeModelCallUsageStore } from "./db/model-call-usage";
+import { makeModelCallUsageStore, readQualificationModelAccess } from "./db/model-call-usage";
 import { makeSessionExecution } from "./session-execution";
 import { personalAgentSystemPrompt } from "./persona";
 import {
@@ -361,6 +376,7 @@ import {
   type ClaimedMemoryProviderWork,
   makeMemoryProviderOutboxStore,
   MemoryProviderOutboxId,
+  readQualificationMemoryOutcome,
 } from "./db/memory-provider-outbox";
 import {
   ProviderDeletionDeferred,
@@ -549,6 +565,17 @@ const GatewayCostSettlement = Schema.Struct({
   conservativeVendorUsdMicros: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0)),
   gatewayLogId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
   lookupAttempt: Schema.Int.check(Schema.isGreaterThan(0)),
+  qualification: Schema.optionalKey(
+    Schema.Struct({
+      costReconciliationId: Schema.String,
+      executionId: Schema.String,
+      gatewayRequestId: Schema.NullOr(Schema.String),
+      modelRequestId: Schema.String,
+      outcomeId: Schema.String,
+      priceBookId: Schema.String,
+      rootId: Schema.String,
+    }),
+  ),
 });
 type GatewayCostSettlement = typeof GatewayCostSettlement.Type;
 
@@ -644,6 +671,12 @@ export const SessionHistoryMessage = Schema.StructWithRest(
 
 /** Osfo-owned boundary shape for one message returned from Think Session history. */
 export type SessionHistoryMessage = typeof SessionHistoryMessage.Type;
+
+const QualificationThinkSubmissionAccepted = Schema.Struct({
+  accepted: Schema.Literal(true),
+  createdAt: Schema.Finite,
+  submissionId: Schema.String,
+});
 
 /** Think Session history read for one Agent-owned Session. */
 export interface SessionHistoryFound {
@@ -2240,6 +2273,7 @@ export class OsfoAgent extends Think<Env> {
         metadata.value.allowancePeriodId,
         attemptId,
         evidence.evidence,
+        qualificationModelCallIdentity(metadata.value, attemptId, evidence.gatewayRequestId),
       );
       return;
     }
@@ -2247,6 +2281,7 @@ export class OsfoAgent extends Think<Env> {
       metadata.value.allowancePeriodId,
       attemptId,
       conservativeStepEvidence(metadata.value, stepNumber),
+      qualificationModelCallIdentity(metadata.value, attemptId, null),
     );
   }
 
@@ -2277,9 +2312,10 @@ export class OsfoAgent extends Think<Env> {
     allowancePeriodId: AllowancePeriodId,
     attemptId: ModelCallAttemptId,
     evidence: ModelCallEvidence,
+    qualification?: QualificationModelCallIdentity,
   ): Promise<void> {
     await Effect.runPromise(
-      this.#modelCallUsage.record(allowancePeriodId, attemptId, evidence).pipe(
+      this.#modelCallUsage.record(allowancePeriodId, attemptId, evidence, qualification).pipe(
         Effect.catchTag("ModelCallUsageDispatchUnavailable", () =>
           Effect.promise(() => this.#scheduleModelCallUsageReconciliation()).pipe(
             Effect.andThen(
@@ -3643,17 +3679,27 @@ export class OsfoAgent extends Think<Env> {
     const settlement = await Effect.runPromise(Schema.decodeEffect(GatewayCostSettlement)(input));
     const vendorUsdMicros = await this.#readGatewayVendorCost(settlement.gatewayLogId);
     if (Option.isSome(vendorUsdMicros)) {
-      await this.#recordModelCallUsage(settlement.allowancePeriodId, settlement.attemptId, {
-        _tag: "Observed",
-        vendorUsdMicros: vendorUsdMicros.value,
-      });
+      await this.#recordModelCallUsage(
+        settlement.allowancePeriodId,
+        settlement.attemptId,
+        {
+          _tag: "Observed",
+          vendorUsdMicros: vendorUsdMicros.value,
+        },
+        settlement.qualification,
+      );
       return;
     }
     if (settlement.lookupAttempt >= gatewayCostMaximumLookups) {
-      await this.#recordModelCallUsage(settlement.allowancePeriodId, settlement.attemptId, {
-        _tag: "Ambiguous",
-        conservativeVendorUsdMicros: BigInt(settlement.conservativeVendorUsdMicros),
-      });
+      await this.#recordModelCallUsage(
+        settlement.allowancePeriodId,
+        settlement.attemptId,
+        {
+          _tag: "Ambiguous",
+          conservativeVendorUsdMicros: BigInt(settlement.conservativeVendorUsdMicros),
+        },
+        settlement.qualification,
+      );
       return;
     }
     await this.#scheduleGatewayCostSettlement({
@@ -4397,6 +4443,86 @@ export class OsfoAgent extends Think<Env> {
     await this.#migrationsReady;
     const decoded = Schema.decodeResult(SubmitManagedConversationInput)(input);
     if (Result.isFailure(decoded)) return invalidRequest("submitManagedConversation");
+    return this.#submitManagedConversation(decoded.success, "submitManagedConversation");
+  }
+
+  /** Submit one qualification turn only after retained producer authority proves its identity. */
+  async submitQualificationConversation(
+    input: SubmitQualificationConversationRequest,
+  ): Promise<
+    | AgentRequestInvalid
+    | AgentStateNotFound
+    | AgentStoreRecordInvalid
+    | AgentStoreUnavailable
+    | CurrentSessionActivationUnavailable
+    | CurrentSessionReplaced
+    | CurrentSessionReplacementConflict
+    | ManagedConversationDenied
+    | ManagedRouteUnavailable
+    | PlanPolicyNotFound
+    | SessionLifecycleNotFound
+    | SessionLifecycleUnavailable
+    | SubmitMessagesResult
+    | ThinkSubmissionUnavailable
+  > {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeResult(SubmitQualificationConversationInput)(input);
+    if (Result.isFailure(decoded)) return invalidRequest("submitQualificationConversation");
+    const proof = await this.env.ARTIFACTS.get(decoded.success.proofArtifactId);
+    if (
+      proof === null ||
+      !verifyQualificationConversationAttempt(
+        await proof.text(),
+        decoded.success,
+        AgentId.make(this.name),
+      )
+    ) {
+      return invalidRequest("submitQualificationConversation");
+    }
+    const {
+      proofArtifactChecksum: _proofArtifactChecksum,
+      proofArtifactId: _proofArtifactId,
+      ...qualified
+    } = decoded.success;
+    const outcome = await this.#submitManagedConversation(
+      qualified,
+      "submitQualificationConversation",
+    );
+    const accepted = Schema.decodeUnknownOption(QualificationThinkSubmissionAccepted)(outcome);
+    const admissionOutcome = Option.isSome(accepted)
+      ? {
+          decision: "accepted" as const,
+          occurredAt: new Date(accepted.value.createdAt).toISOString(),
+          thinkSubmissionId: accepted.value.submissionId,
+        }
+      : Schema.is(ManagedConversationDenied)(outcome)
+        ? {
+            decision: qualificationRejectionDecision(outcome.reason),
+            occurredAt: decoded.success.authorization.now.toISOString(),
+          }
+        : null;
+    if (admissionOutcome === null) return outcome;
+    const receipt = qualificationAdmissionReceipt(
+      decoded.success,
+      AgentId.make(this.name),
+      admissionOutcome,
+    );
+    const retained = await Effect.runPromiseExit(
+      retainQualificationAdmissionReceipt(this.#db, receipt),
+    );
+    return Exit.isSuccess(retained)
+      ? outcome
+      : new ThinkSubmissionUnavailable({
+          cause: retained.cause,
+          message: "Qualification admission authority could not be retained",
+          operation: "submitQualificationConversation",
+        });
+  }
+
+  #submitManagedConversation(
+    input: SubmitManagedConversation | SubmitQualifiedManagedConversation,
+    operationName: "submitManagedConversation" | "submitQualificationConversation",
+  ) {
     const lifecycle = this.#agentSessionLifecycle;
     const sessionLifecycle = this.#sessionLifecycle;
     const submitTurn = (admission: ManagedConversationAdmitted) =>
@@ -4413,8 +4539,8 @@ export class OsfoAgent extends Think<Env> {
         submissionId: admission.submissionId,
       });
     const operation = Effect.gen(function* () {
-      const session = yield* sessionLifecycle.readAuthorizationFacts(decoded.success.routeId);
-      const admission = yield* admitManagedConversation(decoded.success, session);
+      const session = yield* sessionLifecycle.readAuthorizationFacts(input.routeId);
+      const admission = yield* admitManagedConversation(input, session);
       if (Predicate.isTagged(admission, "ManagedSessionReplacementAdmitted")) {
         return yield* lifecycle.replaceCurrent(admission);
       }
@@ -4424,12 +4550,12 @@ export class OsfoAgent extends Think<Env> {
     const fenced = this.#accountDeletionFencedSessionExecution;
     const onClosed = () =>
       new ThinkSubmissionUnavailable({
-        cause: decoded.success.submissionId,
+        cause: input.submissionId,
         message: "Account deletion fenced this managed conversation",
-        operation: "submitManagedConversation",
+        operation: operationName,
       });
     return runRpc(
-      decoded.success.message.trim() === "/new"
+      input.message.trim() === "/new"
         ? fenced.runWhenIdle(operation, onClosed)
         : fenced.run(operation, onClosed),
     );
@@ -5318,6 +5444,10 @@ export class OsfoAgent extends Think<Env> {
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
     );
     const current = await Effect.runPromise(this.#currentDocumentBuildAuthorization(metadata));
+    const qualificationFields =
+      metadata.qualificationContext === undefined
+        ? {}
+        : { qualificationContext: metadata.qualificationContext };
     const effect = DocumentBuild.Service.pipe(
       Effect.flatMap((builds) =>
         builds.start({
@@ -5325,6 +5455,7 @@ export class OsfoAgent extends Think<Env> {
           agentId: AgentId.make(this.name),
           authorization: current,
           request: input,
+          ...qualificationFields,
           routeId: metadata.routeId,
           sessionId: metadata.sessionId,
         }),
@@ -5364,6 +5495,10 @@ export class OsfoAgent extends Think<Env> {
         presentation: approved.presentation,
       }),
     );
+    const qualificationFields =
+      metadata.qualificationContext === undefined
+        ? {}
+        : { qualificationContext: metadata.qualificationContext };
     const operation = ScheduledEmail.Service.pipe(
       Effect.flatMap((emails) =>
         emails.start({
@@ -5371,6 +5506,7 @@ export class OsfoAgent extends Think<Env> {
           agentId: AgentId.make(this.name),
           authorization: current,
           request: input,
+          ...qualificationFields,
           routeId: metadata.routeId,
           sessionId: metadata.sessionId,
         }),
@@ -6583,6 +6719,116 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  /** Read privacy-safe qualification admission facts owned by this exact Agent. */
+  async readQualificationAdmissionReceipts(executionId: string) {
+    await this.#migrationsReady;
+    if (executionId.length === 0 || executionId.length > 500) {
+      return { _tag: "QualificationAdmissionReadUnavailable" as const };
+    }
+    const retained = await Effect.runPromiseExit(
+      readQualificationAdmissionReceipts(this.#db, executionId),
+    );
+    return Exit.isSuccess(retained)
+      ? retained.value
+      : { _tag: "QualificationAdmissionReadUnavailable" as const };
+  }
+
+  /** Join qualification roots to terminal Think, Agent SQLite, and Memory authority. */
+  async readQualificationTurnAuthority(executionId: string, encodedSessionId: string) {
+    await this.#migrationsReady;
+    const sessionId = Schema.decodeOption(SessionId)(encodedSessionId);
+    if (executionId.length === 0 || executionId.length > 500 || Option.isNone(sessionId)) {
+      return { _tag: "QualificationTurnAuthorityUnavailable" as const };
+    }
+    const db = this.#db;
+    const store = this.#store;
+    const reconcileCommittedTurns = this.#reconcileCommittedTurns();
+    const thinkSession = Session.create(this);
+    const result = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        if (!(yield* store.ownsSession(sessionId.value))) return null;
+        yield* reconcileCommittedTurns;
+        const [admissions, committedTurns, history, modelAccess] = yield* Effect.all([
+          readQualificationAdmissionReceipts(db, executionId),
+          store.readCommittedTurns,
+          readThinkHistory(thinkSession, sessionId.value),
+          readQualificationModelAccess(db, executionId),
+        ]);
+        const accepted = admissions.filter((receipt) => receipt.admissionDecision === "accepted");
+        const terminals = projectTerminalMarkedCommittedTurns(history, sessionId.value);
+        return yield* Effect.forEach(accepted, (admission) =>
+          Effect.gen(function* () {
+            const terminal = terminals.find(
+              (candidate) => candidate.terminal.submissionId === admission.thinkSubmissionId,
+            );
+            if (terminal === undefined) {
+              return {
+                admission,
+                committedTurn: null,
+                memoryOutcome: null,
+                modelNoObligation: null,
+                modelAccess: modelAccess.filter((record) => record.rootId === admission.rootId),
+              } as const;
+            }
+            const committedTurn = committedTurns.find(
+              (candidate) =>
+                candidate.assistantMessageId === terminal.assistantMessageId &&
+                candidate.thinkRequestId === terminal.terminal.requestId,
+            );
+            if (committedTurn === undefined) {
+              return {
+                admission,
+                committedTurn: null,
+                memoryOutcome: null,
+                modelNoObligation: null,
+                modelAccess: modelAccess.filter((record) => record.rootId === admission.rootId),
+              } as const;
+            }
+            const rootModelAccess = modelAccess.filter(
+              (record) => record.rootId === admission.rootId,
+            );
+            const memoryOutcome =
+              terminal.terminal.status === "completed"
+                ? yield* readQualificationMemoryOutcome(
+                    db,
+                    sessionId.value,
+                    terminal.assistantMessageId,
+                  )
+                : {
+                    _tag: "NoMemoryObligation" as const,
+                    occurredAt: `${committedTurn.observedAt.replace(" ", "T")}Z`,
+                    productFactId: terminal.assistantMessageId,
+                    terminalStatus: terminal.terminal.status,
+                  };
+            return {
+              admission,
+              committedTurn: {
+                assistantMessageId: committedTurn.assistantMessageId,
+                observedAt: `${committedTurn.observedAt.replace(" ", "T")}Z`,
+                status: terminal.terminal.status,
+                thinkRequestId: terminal.terminal.requestId,
+              },
+              memoryOutcome,
+              modelAccess: rootModelAccess,
+              modelNoObligation:
+                terminal.terminal.status === "completed" || rootModelAccess.length > 0
+                  ? null
+                  : {
+                      _tag: "NoModelObligation" as const,
+                      occurredAt: `${committedTurn.observedAt.replace(" ", "T")}Z`,
+                      productFactId: terminal.assistantMessageId,
+                      terminalStatus: terminal.terminal.status,
+                    },
+            } as const;
+          }),
+        );
+      }),
+    );
+    return Exit.isSuccess(result) && result.value !== null
+      ? { _tag: "QualificationTurnAuthority" as const, roots: result.value }
+      : { _tag: "QualificationTurnAuthorityUnavailable" as const };
+  }
+
   /** Return the technical runtime identity for local smoke verification. */
   probeRuntime(): Promise<RuntimeProbeResult> {
     return Option.match(this.#runtime, {
@@ -6637,9 +6883,21 @@ export class OsfoAgent extends Think<Env> {
                 catalog: retainedCatalog,
                 now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
               });
+              const resourcePriceFields =
+                usage.qualification === undefined
+                  ? {}
+                  : {
+                      resourcePriceVersion: ResourcePriceVersion.make(
+                        usage.qualification.priceBookId,
+                      ),
+                    };
               yield* allowances.record(
                 usage.allowancePeriodId,
-                { sourceId: usage.attemptId, sourceType: "ModelCallAttempt" },
+                {
+                  ...resourcePriceFields,
+                  sourceId: usage.attemptId,
+                  sourceType: "ModelCallAttempt",
+                },
                 usage.items,
               );
             }),
@@ -6802,20 +7060,25 @@ export class OsfoAgent extends Think<Env> {
       return {
         _tag: "StepEvidenceReady" as const,
         evidence: conservativeStepEvidence(metadata, stepNumber),
+        gatewayRequestId: null,
       };
     }
     const cost = await this.#readGatewayVendorCost(logId.value);
     if (Option.isNone(cost)) {
+      const attemptId = modelCallAttemptId(metadata.submissionId, stepNumber);
+      const qualification = qualificationModelCallIdentity(metadata, attemptId, logId.value);
+      const qualificationFields = qualification === undefined ? {} : { qualification };
       return {
         _tag: "GatewayCostPending" as const,
         settlement: GatewayCostSettlement.make({
           allowancePeriodId: metadata.allowancePeriodId,
-          attemptId: modelCallAttemptId(metadata.submissionId, stepNumber),
+          attemptId,
           conservativeVendorUsdMicros: Number(
             conservativeStepEvidence(metadata, stepNumber).conservativeVendorUsdMicros,
           ),
           gatewayLogId: logId.value,
           lookupAttempt: 1,
+          ...qualificationFields,
         }),
       };
     }
@@ -6825,6 +7088,7 @@ export class OsfoAgent extends Think<Env> {
         _tag: "Observed" as const,
         vendorUsdMicros: cost.value,
       },
+      gatewayRequestId: logId.value,
     };
   }
 
@@ -7522,6 +7786,25 @@ const conservativeStepEvidence = (metadata: ManagedTurnMetadata, stepNumber: Mod
       stepNumber,
     ),
   };
+};
+
+const qualificationModelCallIdentity = (
+  metadata: ManagedTurnMetadata,
+  attemptId: ModelCallAttemptId,
+  gatewayRequestId: string | null,
+): QualificationModelCallIdentity | undefined => {
+  const context = metadata.qualificationContext;
+  return context === undefined
+    ? undefined
+    : {
+        costReconciliationId: `allowance:${attemptId}`,
+        executionId: context.executionId,
+        gatewayRequestId,
+        modelRequestId: attemptId,
+        outcomeId: `model-outcome:${attemptId}`,
+        priceBookId: currentResourcePriceVersion,
+        rootId: context.rootId,
+      };
 };
 
 const HeaderRecord = Schema.Record(Schema.String, Schema.String);

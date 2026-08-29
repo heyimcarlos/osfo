@@ -55,6 +55,7 @@ export const scheduledEmails = pgTable(
     cloudflare_instance_id: text().notNull(),
     provider_log_id: text(),
     provider_resource_id: text(),
+    qualification_context_json: text(),
     send_outcome: text({ enum: ["applied", "ambiguous", "notApplied"] }),
     send_accounting_basis: text({ enum: ["conservative", "observed"] }),
     safe_failure_code: text(),
@@ -83,6 +84,10 @@ export const scheduledEmails = pgTable(
     uniqueIndex("scheduled_emails_instance_unique").on(table.cloudflare_instance_id),
     index("scheduled_emails_user_state_index").on(table.user_id, table.state),
     index("scheduled_emails_due_index").on(table.state, table.due_at),
+    index("scheduled_emails_qualification_root_index").on(
+      sql`(${table.qualification_context_json}::jsonb ->> 'executionId')`,
+      sql`(${table.qualification_context_json}::jsonb ->> 'rootId')`,
+    ),
     check(
       "scheduled_emails_identity_check",
       sql`length(btrim(${table.workflow_id})) > 0
@@ -109,7 +114,8 @@ export const scheduledEmails = pgTable(
       "scheduled_emails_json_check",
       sql`jsonb_typeof(${table.originating_authority_json}::jsonb) = 'object'
         and jsonb_typeof(${table.approval_presentation}::jsonb) = 'object'
-        and jsonb_typeof(${table.request_json}::jsonb) = 'object'`,
+        and jsonb_typeof(${table.request_json}::jsonb) = 'object'
+        and (${table.qualification_context_json} is null or jsonb_typeof(${table.qualification_context_json}::jsonb) = 'object')`,
     ),
     check(
       "scheduled_emails_state_check",

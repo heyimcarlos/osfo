@@ -32,6 +32,7 @@ import { AuthSessionId } from "../../domain/auth-session";
 import { WebFileUpload } from "./web-file-upload";
 import { DocumentBuildFileResolution } from "./document-build-file-resolution";
 import type { DecideActionApprovalRequest } from "./think-action-approvals";
+import type { SubmitQualificationConversationRequest } from "../../qualification/qualification-attempt";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle, osfo/no-unknown-parameters -- Think RPC methods receive untrusted payloads and immediately schema-decode them at this messenger composition root. */
 
@@ -135,6 +136,38 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
           routeId: result.routeId,
         }
       : null;
+  }
+
+  /** Route a proof-bound qualification turn to an already registered User Agent. */
+  async submitQualificationConversation(
+    agentId: string,
+    input: SubmitQualificationConversationRequest,
+  ) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) {
+      return { _tag: "QualificationAgentNotFound" as const };
+    }
+    return (await this.subAgent(OsfoAgent, agentId)).submitQualificationConversation(input);
+  }
+
+  /** Read producer-owned qualification decisions from one exact registered Agent. */
+  async readQualificationAdmissionReceipts(agentId: string, executionId: string) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) {
+      return { _tag: "QualificationAgentNotFound" as const };
+    }
+    return (await this.subAgent(OsfoAgent, agentId)).readQualificationAdmissionReceipts(
+      executionId,
+    );
+  }
+
+  /** Read terminal qualification facts from their exact serialized Agent authority. */
+  async readQualificationTurnAuthority(agentId: string, executionId: string, sessionId: string) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) {
+      return { _tag: "QualificationAgentNotFound" as const };
+    }
+    return (await this.subAgent(OsfoAgent, agentId)).readQualificationTurnAuthority(
+      executionId,
+      sessionId,
+    );
   }
 
   /** Inspect one committed Reminder source through its owning User Agent. */

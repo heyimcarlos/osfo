@@ -1,6 +1,7 @@
 import { Redacted, Schema } from "effect";
 import { getAgentByName } from "agents";
 import { ContainerProxy, Sandbox } from "@cloudflare/sandbox";
+import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { App } from "./app";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/directory";
@@ -10,9 +11,14 @@ import { DocumentBuildHostReconciliation } from "./document-build-host-reconcili
 import { ScheduledEmailReconciliation } from "./scheduled-email-reconciliation";
 import { makeWhatsAppAdapter } from "./integrations/whatsapp";
 import { WhatsAppWakeUpComposition } from "./composition/whatsapp-wakeups";
-import { runQualificationTrigger } from "./integrations/cloudflare/qualification-trigger";
+import {
+  runQualificationTrigger,
+  sameQualificationTriggerSecret,
+} from "./integrations/cloudflare/qualification-trigger";
 import { qualificationExecutionListingBucket } from "./integrations/cloudflare/qualification-execution-artifacts";
 import { scheduledRunKind, settleScheduledBranches } from "./scheduled-lifecycle";
+import { handleQualificationProductAuthority } from "./qualification-product-authority-worker";
+import { runQualificationCohortProvisioner } from "./qualification-cohort-provisioner";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Cloudflare RPC tags and adapter boundaries require these forms. */
 
@@ -27,6 +33,13 @@ export { ResearchReportWorkflow } from "./workflows/research-report";
 export { ResearchReportTimerWorkflow } from "./workflows/research-report-timer";
 export { ScheduledEmailWorkflow } from "./workflows/scheduled-email";
 export { runProductionQualification } from "./integrations/cloudflare/production-qualification";
+
+/** Private product-owned qualification authority entrypoint. */
+export class QualificationProductAuthority extends WorkerEntrypoint<CloudflareEnv> {
+  override fetch(request: Request): Promise<Response> {
+    return handleQualificationProductAuthority(request, this.env);
+  }
+}
 /** Disposable artifact compute has no direct public-network path or injected credentials. */
 class ArtifactSandbox extends Sandbox {
   override enableInternet = false;
@@ -69,8 +82,35 @@ const worker = {
     if (path === "/internal/qualification-executions" && request.method === "POST") {
       return runQualificationTrigger(request, {
         ARTIFACTS: qualificationExecutionListingBucket(env.ARTIFACTS),
+        CF_VERSION_METADATA: env.CF_VERSION_METADATA,
         QUALIFICATION_OWNER: env.QUALIFICATION_OWNER,
         QUALIFICATION_TRIGGER_TOKEN: env.QUALIFICATION_TRIGGER_TOKEN,
+      });
+    }
+    if (path === "/internal/qualification-cohorts" && request.method === "POST") {
+      const token = env.QUALIFICATION_TRIGGER_TOKEN;
+      const version = env.CF_VERSION_METADATA;
+      if (token === undefined || version === undefined) {
+        return Response.json({ error: "qualificationProvisionerUnavailable" }, { status: 503 });
+      }
+      if (
+        !(await sameQualificationTriggerSecret(
+          request.headers.get("authorization") ?? "",
+          `Bearer ${token}`,
+        ))
+      ) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+      const config = loadConfig(env);
+      const qualificationEmailFields =
+        env.QUALIFICATION_EMAIL_RECIPIENT === undefined
+          ? {}
+          : { QUALIFICATION_EMAIL_RECIPIENT: env.QUALIFICATION_EMAIL_RECIPIENT };
+      return runQualificationCohortProvisioner(request, version.id, config.auth.secret, {
+        ARTIFACTS: env.ARTIFACTS,
+        DB: env.DB,
+        OSFO_DIRECTORY: env.OSFO_DIRECTORY,
+        ...qualificationEmailFields,
       });
     }
     let app: Awaited<ReturnType<typeof App.makeCloudflareApp>>;

@@ -27,8 +27,9 @@ it.effect("durably retains and reconciles an exact MISSING authority report", ()
       },
     };
 
-    yield* Effect.promise(() => retainMissingQualificationReport(bucket, payload));
-    yield* Effect.promise(() => retainMissingQualificationReport(bucket, payload));
+    const missingSources = ["fault-controller-authority-export"];
+    yield* Effect.promise(() => retainMissingQualificationReport(bucket, payload, missingSources));
+    yield* Effect.promise(() => retainMissingQualificationReport(bucket, payload, missingSources));
 
     expect(
       retained.get("qualification/executions/qualification-workflow-test/owner-response.json"),

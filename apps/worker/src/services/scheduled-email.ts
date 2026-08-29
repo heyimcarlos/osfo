@@ -17,6 +17,7 @@ import type { ActionId } from "../domain/action-execution";
 import { currentCapabilityCatalog } from "../domain/capability-catalog";
 import { GmailMessageInput } from "../domain/integration-manifest";
 import type { ManagedModelRoute } from "../domain/model-access-policy";
+import type { QualificationContext } from "../domain/qualification-context";
 import {
   launchModelAccessPolicy,
   selectManagedRoute,
@@ -240,6 +241,7 @@ export interface Record {
   readonly cloudflareInstanceId: CloudflareInstanceId;
   readonly providerLogId: string | null;
   readonly providerResourceId: string | null;
+  readonly qualificationContext?: QualificationContext;
   readonly sendOutcome: "applied" | "ambiguous" | "notApplied" | null;
   readonly sendAccountingBasis: "conservative" | "observed" | null;
   readonly safeFailureCode: string | null;
@@ -278,6 +280,7 @@ export interface StartInput {
   readonly agentId: AgentId;
   readonly authorization: AuthorizationContext;
   readonly request: Request;
+  readonly qualificationContext?: QualificationContext;
   readonly routeId: ConversationRouteId;
   readonly sessionId: SessionId;
 }
@@ -941,7 +944,11 @@ export const make = Effect.gen(function* () {
     const inputDigest = yield* digestRequest(userId, input.request);
     const existing = yield* ports.persistence.inspect(workflowId);
     if (existing !== null) {
-      if (existing.userId !== userId || existing.inputDigest !== inputDigest) {
+      if (
+        existing.userId !== userId ||
+        existing.inputDigest !== inputDigest ||
+        !sameQualificationContext(existing.qualificationContext, input.qualificationContext)
+      ) {
         return yield* new Conflict({
           message:
             "The Workflow identity was replayed with changed User, content, schedule, or Gmail resource",
@@ -1029,6 +1036,10 @@ export const make = Effect.gen(function* () {
       ),
     );
     const cloudflareInstanceId = yield* cloudflareInstanceIdFor(workflowId);
+    const qualificationFields =
+      input.qualificationContext === undefined
+        ? {}
+        : { qualificationContext: input.qualificationContext };
     const email: Record = {
       workflowId,
       actionId: input.actionId,
@@ -1053,6 +1064,7 @@ export const make = Effect.gen(function* () {
       cloudflareInstanceId,
       providerLogId: null,
       providerResourceId: null,
+      ...qualificationFields,
       sendOutcome: null,
       sendAccountingBasis: null,
       safeFailureCode: null,
@@ -1079,7 +1091,8 @@ export const make = Effect.gen(function* () {
     const persisted = yield* ports.persistence.admit(email, activeWorkflowLimit);
     if (
       persisted.email.userId !== email.userId ||
-      persisted.email.inputDigest !== email.inputDigest
+      persisted.email.inputDigest !== email.inputDigest ||
+      !sameQualificationContext(persisted.email.qualificationContext, email.qualificationContext)
     ) {
       return yield* new Conflict({
         message: "Concurrent admission retained different immutable Scheduled Email facts",
@@ -1130,6 +1143,21 @@ export const make = Effect.gen(function* () {
     start,
   });
 });
+
+const sameQualificationContext = (
+  left: QualificationContext | undefined,
+  right: QualificationContext | undefined,
+): boolean =>
+  left === undefined || right === undefined
+    ? left === right
+    : left.attemptId === right.attemptId &&
+      left.executionId === right.executionId &&
+      left.journey === right.journey &&
+      left.offeredAtEpochMs === right.offeredAtEpochMs &&
+      left.planChecksum === right.planChecksum &&
+      left.region === right.region &&
+      left.rootId === right.rootId &&
+      left.runId === right.runId;
 
 export const layerWithoutDependencies = Layer.effect(Service, make);
 

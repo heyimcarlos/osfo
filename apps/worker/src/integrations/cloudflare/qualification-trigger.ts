@@ -13,15 +13,6 @@ const TriggerInvocation = Schema.Struct({
   acceptanceLevel: Schema.Literals(["BoundedBeta", "ScaleQualifiedPublic"]),
   executionId: Schema.String,
   startsAtEpochMs: Schema.Int,
-  versions: Schema.Struct({
-    dependencyVersions: Schema.Record(Schema.String, Schema.String),
-    hardLimits: Schema.Array(
-      Schema.Struct({ maximum: Schema.Finite, name: Schema.String, unit: Schema.String }),
-    ),
-    sourceVersion: Schema.String,
-    topologyVersion: Schema.String,
-    workloadSeed: Schema.Int,
-  }),
 });
 const decodeTriggerInvocation = Schema.decodeUnknownPromise(
   Schema.fromJsonString(TriggerInvocation),
@@ -29,6 +20,13 @@ const decodeTriggerInvocation = Schema.decodeUnknownPromise(
 
 export interface QualificationTriggerBindings {
   readonly ARTIFACTS: QualificationExecutionListingBucket;
+  readonly CF_VERSION_METADATA:
+    | {
+        readonly id: string;
+        readonly tag: string;
+        readonly timestamp: string;
+      }
+    | undefined;
   readonly QUALIFICATION_OWNER:
     | {
         readonly fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -38,7 +36,10 @@ export interface QualificationTriggerBindings {
 }
 
 // oxlint-disable-next-line effecttsgo/async-function -- Web Crypto's digest boundary is Promise-native.
-const sameSecret = async (left: string, right: string): Promise<boolean> => {
+export const sameQualificationTriggerSecret = async (
+  left: string,
+  right: string,
+): Promise<boolean> => {
   const encoder = new TextEncoder();
   const [leftHash, rightHash] = await Promise.all([
     crypto.subtle.digest("SHA-256", encoder.encode(left)),
@@ -61,11 +62,17 @@ export const runQualificationTrigger = async (
 ): Promise<Response> => {
   const token = env.QUALIFICATION_TRIGGER_TOKEN;
   const owner = env.QUALIFICATION_OWNER;
-  if (token === undefined || token.length === 0 || owner === undefined) {
+  const deployedVersion = env.CF_VERSION_METADATA;
+  if (
+    token === undefined ||
+    token.length === 0 ||
+    owner === undefined ||
+    deployedVersion === undefined
+  ) {
     return Response.json({ error: "qualificationExecutionUnavailable" }, { status: 503 });
   }
   const authorization = request.headers.get("authorization") ?? "";
-  if (!(await sameSecret(authorization, `Bearer ${token}`))) {
+  if (!(await sameQualificationTriggerSecret(authorization, `Bearer ${token}`))) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
   let invocation: typeof TriggerInvocation.Type;
@@ -74,10 +81,24 @@ export const runQualificationTrigger = async (
   } catch {
     return Response.json({ error: "invalidQualificationInvocation" }, { status: 400 });
   }
+  const versions = {
+    dependencyVersions: {
+      "@cloudflare/think": "0.15.1",
+      agents: "0.20.1",
+      effect: "4.0.0-rc.111",
+    },
+    hardLimits: [
+      { maximum: 128, name: "workerMemory", unit: "MiB" },
+      { maximum: 1_000, name: "workerSubrequests", unit: "requests" },
+    ],
+    sourceVersion: deployedVersion.id,
+    topologyVersion: "cloudflare-v1",
+    workloadSeed: 17,
+  } as const;
   const manifest =
     invocation.acceptanceLevel === "BoundedBeta"
-      ? createBoundedBetaManifest(invocation.versions)
-      : createScaleQualifiedPublicManifest(invocation.versions);
+      ? createBoundedBetaManifest(versions)
+      : createScaleQualifiedPublicManifest(versions);
   const plan = createQualificationExecutionPlan(
     manifest,
     invocation.startsAtEpochMs,

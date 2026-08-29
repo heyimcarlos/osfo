@@ -18,18 +18,14 @@ const responseArtifactId = (executionId: string) =>
 export const retainMissingQualificationReport = async (
   bucket: QualificationOwnerResponseBucket,
   payload: QualificationOwnerWorkflowPayload,
+  missingSources: ReadonlyArray<string>,
 ): Promise<void> => {
   const report = {
     body: {
       error: "qualificationAuthorityMaterialMissing",
       executionId: payload.executionId,
       manifestChecksum: payload.manifestChecksum,
-      missingSources: [
-        "agent-sqlite-authority-export",
-        "fault-controller-authority-export",
-        "postgres-authority-export",
-        "provider-authority-export",
-      ],
+      missingSources,
       planChecksum: payload.planChecksum,
       verdict: "MISSING",
     },

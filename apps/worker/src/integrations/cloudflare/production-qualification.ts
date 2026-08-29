@@ -2,12 +2,21 @@ import { Data, Effect, Schema } from "effect";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 import type { CostSummaryEvidence } from "../../qualification/cost-evidence";
-import type { QualificationExecutionPlan } from "../../qualification/execution";
+import type {
+  QualificationExecutionArtifactStore,
+  QualificationExecutionPlan,
+} from "../../qualification/execution";
 import {
   canonicalQualificationJson,
   qualificationChecksum,
 } from "../../qualification/qualification-checksum";
 import type { ProductionQualificationManifest } from "../../qualification/qualification-manifest";
+import { qualificationAuthoritySources } from "../../qualification/authority-sources";
+import {
+  decodeQualificationCohortManifest,
+  qualificationCohortArtifactId,
+  type QualificationCohortManifest,
+} from "../../qualification/qualification-cohort";
 import {
   unavailableProductionQualificationReport,
   type ProductionQualificationReport,
@@ -32,22 +41,6 @@ const authorityStreamComponents = [
 ] as const;
 type AuthorityStreamComponent = (typeof authorityStreamComponents)[number];
 
-const requiredAuthoritySources = [
-  "allowance_and_billing_ledger",
-  "gmail_provider_receipts",
-  "memory_commit_receipts",
-  "model_access_receipts",
-  "osfo_agent_activation_log",
-  "osfo_committed_turns",
-  "provider_delivery_receipts",
-  "qualification_fault_controller_receipts",
-  "r2_object_metadata",
-  "task_compute_receipts",
-  "think_submission_receipts",
-  "whatsapp_delivery_receipts",
-  "worker_admission_receipts",
-  "workflow_instance_receipts",
-] as const;
 const costDimensions = [
   "acceptedMessage",
   "betaMonth",
@@ -114,6 +107,14 @@ const OwnerResponse = Schema.Struct({
   manifestChecksum: Schema.String,
   planChecksum: Schema.String,
 });
+const OwnerMissingResponse = Schema.Struct({
+  error: Schema.Literal("qualificationAuthorityMaterialMissing"),
+  executionId: Schema.String,
+  manifestChecksum: Schema.String,
+  missingSources: Schema.Array(Schema.String),
+  planChecksum: Schema.String,
+  verdict: Schema.Literal("MISSING"),
+});
 const OwnerReport = Schema.Struct({
   adventurerContributionMargin: Schema.NullOr(Schema.Finite),
   costSummaries: Schema.Array(
@@ -171,6 +172,7 @@ const AuthorityShardMetadata = Schema.Struct({
 });
 const EncodedOwnerBundleDescriptor = Schema.fromJsonString(OwnerBundleDescriptor);
 const EncodedOwnerResponse = Schema.fromJsonString(OwnerResponse);
+const EncodedOwnerMissingResponse = Schema.fromJsonString(OwnerMissingResponse);
 const EncodedOwnerReport = Schema.fromJsonString(OwnerReport);
 
 type OwnerBundleDescriptor = typeof OwnerBundleDescriptor.Type;
@@ -206,7 +208,7 @@ const readRequired = (
     );
 
 const exactAuthoritySources = (actual: ReadonlyArray<string>): boolean => {
-  const expected = new Set<string>(requiredAuthoritySources);
+  const expected = new Set<string>(qualificationAuthoritySources);
   return actual.length === expected.size && actual.every((source) => expected.delete(source));
 };
 
@@ -412,9 +414,12 @@ export const makeProductionQualificationComposition = (
 const ownerRequest = (
   manifest: ProductionQualificationManifest,
   plan: QualificationExecutionPlan,
+  cohort: QualificationCohortManifest,
 ) => {
   const content = {
-    authoritySources: requiredAuthoritySources,
+    authoritySources: qualificationAuthoritySources,
+    cohortArtifactChecksum: cohort.artifactChecksum,
+    cohortArtifactId: qualificationCohortArtifactId(plan.executionId),
     executionId: plan.executionId,
     manifest,
     manifestChecksum: manifest.manifestChecksum,
@@ -425,6 +430,24 @@ const ownerRequest = (
   };
   return { ...content, artifactChecksum: qualificationChecksum(content) };
 };
+
+const retainOwnerRequest = (
+  artifacts: QualificationExecutionArtifactStore<QualificationExecutionArtifactUnavailable>,
+  artifactId: string,
+  encoded: string,
+): Effect.Effect<
+  void,
+  QualificationExecutionArtifactUnavailable | ProductionQualificationOwnerConflict
+> =>
+  Effect.gen(function* () {
+    const retained = yield* artifacts.read(artifactId);
+    if (retained === encoded) return undefined;
+    if (retained !== null) {
+      return yield* ownerConflict("Qualification execution identity has another frozen plan");
+    }
+    yield* artifacts.writeImmutable(artifactId, encoded);
+    return undefined;
+  });
 
 /**
  * Submit a compact frozen plan to the private bounded owner and verify every retained authority
@@ -448,9 +471,22 @@ export const runProductionQualification = (
   }
   const owner = composition.owner;
   const execute = Effect.gen(function* () {
-    const requestArtifact = ownerRequest(manifest, plan);
+    const cohortArtifactId = qualificationCohortArtifactId(plan.executionId);
+    const encodedCohort = yield* readRequired(composition.artifacts, cohortArtifactId);
+    const cohort = decodeQualificationCohortManifest(encodedCohort);
+    if (
+      cohort === null ||
+      cohort.executionId !== plan.executionId ||
+      cohort.manifestChecksum !== manifest.manifestChecksum ||
+      cohort.planChecksum !== plan.planChecksum ||
+      cohort.sourceVersion !== manifest.sourceVersion
+    ) {
+      return yield* ownerConflict("Disposable qualification cohort conflicts with the plan");
+    }
+    const requestArtifact = ownerRequest(manifest, plan, cohort);
     const requestArtifactId = `qualification/executions/${encodeURIComponent(plan.executionId)}/owner-request.json`;
-    yield* composition.artifacts.writeImmutable(
+    yield* retainOwnerRequest(
+      composition.artifacts,
       requestArtifactId,
       canonicalQualificationJson(requestArtifact),
     );
@@ -471,6 +507,27 @@ export const runProductionQualification = (
     });
     if (response.status === 202) {
       return yield* ownerUnavailable("Qualification owner execution remains in progress");
+    }
+    if (response.status === 424) {
+      const encodedMissing = yield* Effect.tryPromise({
+        catch: (cause) => ownerUnavailable("Qualification owner MISSING body failed", cause),
+        try: () => response.text(),
+      });
+      const missing = yield* decode(EncodedOwnerMissingResponse, encodedMissing);
+      if (
+        missing.executionId !== plan.executionId ||
+        missing.manifestChecksum !== manifest.manifestChecksum ||
+        missing.planChecksum !== plan.planChecksum ||
+        missing.missingSources.length === 0
+      ) {
+        return yield* ownerConflict("Qualification owner MISSING report conflicts with the plan");
+      }
+      return unavailableProductionQualificationReport(
+        manifest,
+        "productionQualificationAuthorityMissing",
+        `Missing product authority sources: ${missing.missingSources.join(", ")}`,
+        "MISSING",
+      );
     }
     if (!response.ok)
       return yield* ownerUnavailable(`Qualification owner returned ${response.status}`);

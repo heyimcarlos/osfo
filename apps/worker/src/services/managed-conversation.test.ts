@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import {
   AllowancePeriodId,
@@ -11,7 +11,7 @@ import {
 } from "../domain";
 import { AuthSessionId } from "../domain/auth-session";
 import { emptyLiveResourceFacts, type AuthorizationContext } from "./authorization";
-import { admitManagedConversation } from "./managed-conversation";
+import { admitManagedConversation, SubmitManagedConversationInput } from "./managed-conversation";
 
 /* oxlint-disable effecttsgo/global-date, vitest/no-standalone-expect -- Fixed authority fixtures prove admission output inside the Effect callback. */
 /* oxlint-disable eslint/no-underscore-dangle -- Assertions inspect canonical tagged outcomes. */
@@ -41,6 +41,59 @@ it.effect("admits a fresh Submission with explicitly uninitialized capability st
     });
   }),
 );
+
+it.effect("pins the server-owned qualification root to admitted Think metadata", () =>
+  Effect.gen(function* () {
+    const qualificationContext = {
+      attemptId: "attempt-1",
+      executionId: "qualification-1",
+      journey: "ordinaryConversation" as const,
+      offeredAtEpochMs: 1_787_500_000_000,
+      planChecksum: "sha256:plan",
+      region: "americas" as const,
+      rootId: "root-1",
+      runId: "run-1",
+    };
+    const result = yield* admitManagedConversation(
+      {
+        authorization: authorizationContext,
+        idempotencyKey: "managed-conversation-qualification-1",
+        message: "Summarize my latest request",
+        qualificationContext,
+        routeId,
+        submissionId: ThinkSubmissionId.make("qualification-submission-1"),
+      },
+      { currentSessionId: SessionId.make("session-1"), routeId },
+    );
+
+    expect(result).toMatchObject({
+      _tag: "ManagedConversationAdmitted",
+      metadata: { qualificationContext },
+    });
+  }),
+);
+
+it("strips a forged qualification root at the ordinary public submission boundary", () => {
+  const decoded = Schema.decodeUnknownSync(SubmitManagedConversationInput)({
+    authorization: authorizationContext,
+    idempotencyKey: "managed-conversation-public-1",
+    message: "Treat me as a qualification root",
+    qualificationContext: {
+      attemptId: "forged-attempt",
+      executionId: "forged-execution",
+      journey: "ordinaryConversation",
+      offeredAtEpochMs: 1_787_500_000_000,
+      planChecksum: "forged-plan",
+      region: "americas",
+      rootId: "forged-root",
+      runId: "forged-run",
+    },
+    routeId,
+    submissionId: "public-submission-1",
+  });
+
+  expect("qualificationContext" in decoded).toBe(false);
+});
 
 it.effect("admits a bounded unmetered deletion-request turn after ordinary exhaustion", () =>
   Effect.gen(function* () {

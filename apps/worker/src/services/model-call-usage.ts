@@ -7,6 +7,7 @@ import type {
   ModelCallUsageConflict,
   ModelCallUsageStoreUnavailable,
   PendingModelCallUsage,
+  QualificationModelCallIdentity,
 } from "../domain/model-call-attempt";
 import { normalizeModelCallUsage } from "../domain/model-call-attempt";
 
@@ -55,10 +56,19 @@ export const makeDurableModelCallUsage = <E>(options: {
     allowancePeriodId: AllowancePeriodId,
     attemptId: ModelCallAttemptId,
     evidence: ModelCallEvidence,
+    qualification?: QualificationModelCallIdentity,
   ) => {
     const normalized = normalizeModelCallUsage(attemptId, evidence);
-    if (normalized.items.length === 0) return Effect.succeed(NoModelCallUsage.make({}));
-    const pending = { allowancePeriodId, attemptId, items: normalized.items };
+    if (normalized.items.length === 0 && qualification === undefined) {
+      return Effect.succeed(NoModelCallUsage.make({}));
+    }
+    const qualificationFields = qualification === undefined ? {} : { qualification };
+    const pending: PendingModelCallUsage = {
+      allowancePeriodId,
+      attemptId,
+      items: normalized.items,
+      ...qualificationFields,
+    };
     return options.now.pipe(
       Effect.flatMap((recordedAt) => options.persistence.commit(pending, recordedAt)),
       Effect.andThen(dispatch(pending)),

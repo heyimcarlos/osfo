@@ -1,0 +1,4 @@
+ALTER TABLE "qualification_root_attempts" ADD COLUMN "auth_session_expires_at" timestamp with time zone NOT NULL;--> statement-breakpoint
+ALTER TABLE "qualification_root_attempts" ADD COLUMN "auth_session_id" text NOT NULL;--> statement-breakpoint
+ALTER TABLE "qualification_root_attempts" ADD CONSTRAINT "qualification_root_attempts_auth_session_fk" FOREIGN KEY ("auth_session_id") REFERENCES "public"."sessions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "qualification_root_attempts" ADD CONSTRAINT "qualification_root_attempts_auth_session_lifetime_check" CHECK ("qualification_root_attempts"."offered_at" < "qualification_root_attempts"."auth_session_expires_at");

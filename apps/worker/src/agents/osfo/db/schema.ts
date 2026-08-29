@@ -317,6 +317,45 @@ export const committedTurns = sqliteTable(
   ],
 );
 
+/** Append-only authority for qualification decisions made by this serialized Agent. */
+export const qualificationAdmissions = sqliteTable(
+  "osfo_qualification_admissions",
+  {
+    acceptance_receipt_id: text().notNull().unique(),
+    admission_decision: text({
+      enum: ["accepted", "capacityRejected", "typedStressRejected"],
+    }).notNull(),
+    agent_id: agentId().notNull(),
+    artifact_checksum: text().notNull(),
+    attempt_id: text().primaryKey(),
+    execution_id: text().notNull(),
+    occurred_at: text().notNull(),
+    plan_checksum: text().notNull(),
+    product_fact_id: text().notNull().unique(),
+    root_id: text().notNull(),
+    run_id: text().notNull(),
+    think_submission_id: thinkSubmissionId(),
+    user_message_id: text().notNull(),
+    user_update_id: text().notNull(),
+  },
+  (table) => [
+    check(
+      "osfo_qualification_admission_decision",
+      sql`${table.admission_decision} IN ('accepted', 'capacityRejected', 'typedStressRejected')`,
+    ),
+    check(
+      "osfo_qualification_admission_submission",
+      sql`(${table.admission_decision} = 'accepted' AND ${table.think_submission_id} IS NOT NULL) OR (${table.admission_decision} != 'accepted' AND ${table.think_submission_id} IS NULL)`,
+    ),
+    uniqueIndex("osfo_qualification_admission_root_unique").on(table.execution_id, table.root_id),
+    index("osfo_qualification_admissions_by_execution").on(
+      table.execution_id,
+      table.run_id,
+      table.occurred_at,
+    ),
+  ],
+);
+
 /** Durable normalized model-call evidence awaiting idempotent Allowance recording. */
 export const modelCallUsageEvidence = sqliteTable(
   "osfo_model_call_usage_evidence",
@@ -324,6 +363,13 @@ export const modelCallUsageEvidence = sqliteTable(
     allowance_period_id: allowancePeriodId().notNull(),
     attempt_id: modelCallAttemptId().primaryKey(),
     dispatched_at: timestamp(),
+    qualification_cost_reconciliation_id: text(),
+    qualification_execution_id: text(),
+    qualification_gateway_request_id: text(),
+    qualification_model_request_id: text(),
+    qualification_outcome_id: text(),
+    qualification_price_book_id: text(),
+    qualification_root_id: text(),
     items_json: text().notNull(),
     recorded_at: timestamp().notNull(),
   },
@@ -331,6 +377,10 @@ export const modelCallUsageEvidence = sqliteTable(
     index("osfo_model_call_usage_pending")
       .on(table.recorded_at)
       .where(sql`${table.dispatched_at} IS NULL`),
+    index("osfo_model_call_usage_by_qualification_root").on(
+      table.qualification_execution_id,
+      table.qualification_root_id,
+    ),
   ],
 );
 

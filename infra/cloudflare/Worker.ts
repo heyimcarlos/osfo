@@ -1,6 +1,6 @@
-import { Container, DurableObject, Worker, Workers } from "alchemy/Cloudflare";
+import { Container, Workers } from "alchemy/Cloudflare";
 import { Stack } from "alchemy/Stack";
-import { Config, Effect, Redacted } from "effect";
+import { Config, Effect, Layer, Redacted } from "effect";
 
 import { DatabaseHyperdrive } from "./Db";
 import { ExecutionUnitWorkflow } from "./ExecutionUnitWorkflow";
@@ -11,11 +11,12 @@ import { ResearchReportTimerWorkflow } from "./ResearchReportTimerWorkflow";
 import { ScheduledEmailWorkflow } from "./ScheduledEmailWorkflow";
 import { Files } from "./Files";
 import { Artifacts } from "./Artifacts";
-import { QualificationOwner } from "./QualificationOwner";
+import { QualificationOwnerLayer } from "./QualificationOwner";
+import { OsfoDirectory } from "./OsfoDirectory";
+import { ApiWorker, QualificationOwnerWorker } from "./WorkerBindings";
 
 /** Cloudflare Worker and execution-unit bindings for one Osfo runtime stage. */
-const worker = Worker(
-  "Api",
+const apiLayer = ApiWorker.make(
   Stack.useSync(({ stage }) => {
     const authBaseUrl =
       stage === "production" ? "https://api.osfo.ai" : Config.string("BETTER_AUTH_BASE_URL");
@@ -39,6 +40,7 @@ const worker = Worker(
         COMPOSIO_API_KEY: Config.redacted("COMPOSIO_API_KEY").pipe(
           Config.withDefault(Redacted.make("")),
         ),
+        CF_VERSION_METADATA: Workers.VersionMetadata(),
         COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT: Config.string(
           "COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT",
         ).pipe(Config.withDefault("")),
@@ -55,11 +57,12 @@ const worker = Worker(
         RESEARCH_REPORT_TIMER_WORKFLOW: ResearchReportTimerWorkflow,
         SCHEDULED_EMAIL_WORKFLOW: ScheduledEmailWorkflow,
         FILES: Files,
-        OSFO_DIRECTORY: DurableObject("OsfoDirectory", {
-          className: "OsfoDirectory",
-        }),
+        OSFO_DIRECTORY: OsfoDirectory,
         OSFO_STAGE: stage === "development" || stage === "production" ? stage : "preview",
-        QUALIFICATION_OWNER: QualificationOwner,
+        QUALIFICATION_EMAIL_RECIPIENT: Config.string("QUALIFICATION_EMAIL_RECIPIENT").pipe(
+          Config.withDefault(""),
+        ),
+        QUALIFICATION_OWNER: QualificationOwnerWorker,
         QUALIFICATION_TRIGGER_TOKEN: Config.redacted("QUALIFICATION_TRIGGER_TOKEN").pipe(
           Config.withDefault(Redacted.make("")),
         ),
@@ -110,6 +113,7 @@ const worker = Worker(
 
     return stage === "production" ? { ...workerOptions, domain: "api.osfo.ai" } : workerOptions;
   }),
+  Effect.succeed({}),
 );
 
 // SAFETY: Wrangler 4.127 and the Cloudflare Workers API recognize this
@@ -121,6 +125,9 @@ const webSearchBinding = {
   name: "WEBSEARCH",
   type: "websearch",
 } as unknown as Workers.WorkerBinding;
+
+// oxlint-disable-next-line effecttsgo/strict-effect-provide -- This module is the infrastructure composition root for the circular service bindings.
+const worker = ApiWorker.pipe(Effect.provide(Layer.merge(apiLayer, QualificationOwnerLayer)));
 
 export default worker.pipe(
   Effect.tap((deployed) => deployed.bind`WEBSEARCH`({ bindings: [webSearchBinding] })),

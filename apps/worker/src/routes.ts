@@ -63,7 +63,7 @@ export const layer = (options: Options) => {
       ScheduledEmailComposition.followUpLayer.pipe(Layer.provide(options.authDependencies)),
     ),
     Layer.provide(ChannelLinks.layerFromConfig(options.config)),
-    Layer.provide(Registration.layerWithoutDependencies),
+    Layer.provide(Registration.layerWithoutDependencies(options.config.auth.secret)),
     Layer.provide(RegistrationCloudflare.layer(options.env)),
     Layer.provide(AuthMiddleware.layer(options.config.auth)),
     Layer.provide(AuthMiddleware.accountDeletionLayer(options.config.auth)),

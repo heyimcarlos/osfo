@@ -38,6 +38,7 @@ import { ActionId } from "../../domain/action-execution";
 import { RecordedAllowanceUse } from "../../domain/allowance";
 import { ChannelAuthorId, ChannelId } from "../../domain/channel-link";
 import { ManagedModelRoute } from "../../domain/model-access-policy";
+import { QualificationContext } from "../../domain/qualification-context";
 import {
   ApprovalPresentation,
   AuthorizationContext,
@@ -102,6 +103,7 @@ const EncodedRecord = Schema.Struct({
   planPolicyVersion: PlanPolicyVersion,
   providerLogId: Schema.NullOr(Schema.String),
   providerResourceId: Schema.NullOr(Schema.String),
+  qualificationContext: Schema.optionalKey(QualificationContext),
   request: ScheduledEmail.Request,
   resourcePriceVersion: ResourcePriceVersion,
   routeId: ConversationRouteId,
@@ -1078,14 +1080,30 @@ const decodeRow = (row: Row): Effect.Effect<ScheduledEmail.Record, ScheduledEmai
     row.originating_authority_json,
   );
   const request = Schema.decodeResult(Schema.fromJsonString(StoredRequest))(row.request_json);
-  if (Result.isFailure(authority) || Result.isFailure(request)) {
+  const qualificationContext =
+    row.qualification_context_json === null
+      ? null
+      : Schema.decodeResult(Schema.fromJsonString(QualificationContext))(
+          row.qualification_context_json,
+        );
+  if (
+    Result.isFailure(authority) ||
+    Result.isFailure(request) ||
+    (qualificationContext !== null && Result.isFailure(qualificationContext))
+  ) {
     return Effect.fail(
       unavailable("decode", "PostgreSQL returned invalid Scheduled Email JSON", {
         authority: Result.isFailure(authority),
         request: Result.isFailure(request),
+        qualificationContext:
+          qualificationContext !== null && Result.isFailure(qualificationContext),
       }),
     );
   }
+  const qualificationFields =
+    qualificationContext === null || Result.isFailure(qualificationContext)
+      ? {}
+      : { qualificationContext: qualificationContext.success };
   return Schema.decodeEffect(EncodedRecord)({
     acceptedAt: row.accepted_at,
     actionId: row.action_id,
@@ -1106,6 +1124,7 @@ const decodeRow = (row: Row): Effect.Effect<ScheduledEmail.Record, ScheduledEmai
     planPolicyVersion: row.plan_policy_version,
     providerLogId: row.provider_log_id,
     providerResourceId: row.provider_resource_id,
+    ...qualificationFields,
     request: request.success,
     resourcePriceVersion: row.resource_price_version,
     routeId: row.route_id,
@@ -1133,6 +1152,46 @@ const decodeRow = (row: Row): Effect.Effect<ScheduledEmail.Record, ScheduledEmai
   );
 };
 
+export type QualificationScheduledEmailAuthority =
+  | { readonly _tag: "Conflict" | "Missing"; readonly rootId: string }
+  | { readonly _tag: "Ready"; readonly records: ReadonlyArray<ScheduledEmail.Record> };
+
+/** Read exact Scheduled Email product rows by their transactionally retained qualification roots. */
+export const readQualificationScheduledEmailAuthority = (
+  database: Database,
+  executionId: string,
+  rootIds: ReadonlyArray<string>,
+): Effect.Effect<QualificationScheduledEmailAuthority, ScheduledEmail.Unavailable> => {
+  if (rootIds.length === 0) return Effect.succeed({ _tag: "Ready", records: [] });
+  const executionIdentity = sql<string>`${scheduledEmails.qualification_context_json}::jsonb ->> 'executionId'`;
+  const rootIdentity = sql<string>`${scheduledEmails.qualification_context_json}::jsonb ->> 'rootId'`;
+  return attempt("qualificationAuthority", () =>
+    database
+      .select()
+      .from(scheduledEmails)
+      .where(and(eq(executionIdentity, executionId), inArray(rootIdentity, rootIds)))
+      .limit(rootIds.length + 1),
+  ).pipe(
+    Effect.flatMap((rows) => Effect.forEach(rows, decodeRow)),
+    Effect.map((records): QualificationScheduledEmailAuthority => {
+      for (const rootId of rootIds) {
+        const matches = records.filter((record) => record.qualificationContext?.rootId === rootId);
+        if (matches.length === 0) return { _tag: "Missing", rootId };
+        if (
+          matches.length !== 1 ||
+          matches[0]?.qualificationContext?.executionId !== executionId ||
+          matches[0]?.qualificationContext?.journey !== "scheduledEmail"
+        ) {
+          return { _tag: "Conflict", rootId };
+        }
+      }
+      return records.length === rootIds.length
+        ? { _tag: "Ready", records }
+        : { _tag: "Conflict", rootId: rootIds[0] ?? executionId };
+    }),
+  );
+};
+
 const encodeInsert = (record: ScheduledEmail.Record): typeof scheduledEmails.$inferInsert => ({
   accepted_at: record.acceptedAt,
   action_id: record.actionId,
@@ -1155,6 +1214,10 @@ const encodeInsert = (record: ScheduledEmail.Record): typeof scheduledEmails.$in
   plan_policy_version: record.planPolicyVersion,
   provider_log_id: record.providerLogId,
   provider_resource_id: record.providerResourceId,
+  qualification_context_json:
+    record.qualificationContext === undefined
+      ? null
+      : Schema.encodeSync(Schema.fromJsonString(QualificationContext))(record.qualificationContext),
   request_json: Schema.encodeSync(Schema.fromJsonString(StoredRequest))(record.request),
   resource_price_version: record.resourcePriceVersion,
   route_id: record.routeId,
