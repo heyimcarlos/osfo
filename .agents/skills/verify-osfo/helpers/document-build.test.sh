@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 control="$repo_root/.agents/skills/verify-osfo/helpers/control-osfo"
 feature="$repo_root/.agents/skills/verify-osfo/features/document-build.md"
+account_deletion_feature="$repo_root/.agents/skills/verify-osfo/features/account-deletion.md"
 feature_map="$repo_root/.agents/skills/verify-osfo/features/README.md"
 skill="$repo_root/.agents/skills/verify-osfo/SKILL.md"
 emulator="$repo_root/apps/worker/test/emulators/provider-emulator.ts"
@@ -12,6 +13,7 @@ agent_runtime_test="$repo_root/apps/worker/src/agents/osfo/document-build-agent.
 free_denial_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-free-denial"
 free_state_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-free-state"
 artifact_state_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-artifact-state"
+deletion_state_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-deletion-state"
 tab_sequence_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-tab-sequence"
 fixture_dir="$(mktemp -d)"
 trap 'rm -rf -- "$fixture_dir"' EXIT
@@ -23,10 +25,13 @@ for required in \
   'observe_document_build_free_denial()' \
   'document-build-free-denial-attempted' \
   'provider_browser_boundary=telegram-delivery-ledger' \
+  'r2_object_sha256' \
+  'artifactObjectSha256' \
   "a.source_type = 'documentBuild' and a.allowance_kind = 'workflowStarts'" \
   "a.source_type = 'documentBuild' and a.allowance_kind = 'generatedDocuments'" \
   'assert-document-build-free-state' \
   'assert-document-build-artifact-state' \
+  'assert-document-build-deletion-state' \
   '.actionId != $freeActionId' \
   'observe_document_build()' \
   '.artifactContentId == ("document:workflow:" + .workflowId)' \
@@ -48,6 +53,12 @@ if ! grep -F -q 'Use the same authenticated dashboard tab for registration and c
   ! grep -F -q 'Preserve tabs the selected feature explicitly marks mounted' "$feature_map" || \
   ! grep -F -q 'close or leave tabs it marks temporary' "$feature_map"; then
   printf 'Shared browser guidance conflicts with the Document Build tab sequence\n' >&2
+  exit 1
+fi
+if ! grep -F -q 'Each Workflow instance must be terminal' "$account_deletion_feature" || \
+  ! grep -F -q '`complete` when it finished before deletion' "$account_deletion_feature" || \
+  ! grep -F -q '`terminated` when deletion interrupted it' "$account_deletion_feature"; then
+  printf 'Account deletion misstates terminal Document Build Workflow evidence\n' >&2
   exit 1
 fi
 
@@ -151,6 +162,7 @@ jq --null-input '
     userId: "verification-user",
     workflowId: "document-build:verification",
     artifactContentId: "document:workflow:document-build:verification",
+    artifactObjectSha256: ("b" * 64),
     format: "pdf",
     sourceSha256: ("sha256:" + ("a" * 64)),
     sourceByteLength: "109",
@@ -161,7 +173,7 @@ jq --null-input '
     agentRuntime: {
       documentContent: {
         size: 123,
-        checksums: { sha256: ("b" * 64) },
+        checksums: { md5: ("c" * 32), sha256: null },
         customMetadata: {
           osfo: ({
             userId: "verification-user",
@@ -219,6 +231,12 @@ jq --null-input '
   }
 ' >"$fixture_dir/artifact-state.json"
 "$artifact_state_assertion" "$fixture_dir/artifact-state.json"
+if jq '.artifactObjectSha256 = ("c" * 64)' \
+  "$fixture_dir/artifact-state.json" >"$fixture_dir/mismatched-artifact-digest.json" && \
+  "$artifact_state_assertion" "$fixture_dir/mismatched-artifact-digest.json" 2>/dev/null; then
+  printf 'A generated artifact with mismatched stored bytes falsely qualified\n' >&2
+  exit 1
+fi
 if jq '
     .agentRuntime.documentAttempt.customMetadata.osfo |=
       (fromjson | .status = "failed" | tojson)
@@ -226,6 +244,45 @@ if jq '
   "$artifact_state_assertion" "$fixture_dir/failed-artifact-state.json" 2>/dev/null; then
   printf 'A failed Document Build attempt falsely qualified as successful artifact state\n' >&2
   exit 1
+fi
+
+jq --null-input '{
+  documentProofExpected: true,
+  documentSourceExists: false,
+  documentArtifactExists: false,
+  documentAttemptExists: false,
+  documentOwnerExists: false,
+  agentRuntime: {
+    documentBuildSource: { _tag: "Unavailable" },
+    documentBuildMain: { status: "complete" },
+    documentBuildTimer: { status: "terminated" }
+  }
+}' >"$fixture_dir/deleted-document-build-state.json"
+"$deletion_state_assertion" "$fixture_dir/deleted-document-build-state.json"
+printf '%s\n' '{"documentProofExpected":false}' \
+  >"$fixture_dir/no-document-build-state.json"
+"$deletion_state_assertion" "$fixture_dir/no-document-build-state.json"
+if jq '.agentRuntime.documentBuildMain.status = "running"' \
+  "$fixture_dir/deleted-document-build-state.json" >"$fixture_dir/running-main-state.json" && \
+  "$deletion_state_assertion" "$fixture_dir/running-main-state.json" 2>/dev/null; then
+  printf 'A running Document Build host falsely qualified after account deletion\n' >&2
+  exit 1
+fi
+if jq '.agentRuntime.documentBuildTimer.status = "running"' \
+  "$fixture_dir/deleted-document-build-state.json" >"$fixture_dir/running-timer-state.json" && \
+  "$deletion_state_assertion" "$fixture_dir/running-timer-state.json" 2>/dev/null; then
+  printf 'A running Document Build timer falsely qualified after account deletion\n' >&2
+  exit 1
+fi
+if jq '.documentArtifactExists = true' \
+  "$fixture_dir/deleted-document-build-state.json" >"$fixture_dir/retained-artifact-state.json" && \
+  "$deletion_state_assertion" "$fixture_dir/retained-artifact-state.json" 2>/dev/null; then
+  printf 'A retained Document Build artifact falsely qualified after account deletion\n' >&2
+  exit 1
+fi
+if jq '.agentRuntime.documentBuildMain.status = "terminated"' \
+  "$fixture_dir/deleted-document-build-state.json" >"$fixture_dir/terminated-main-state.json"; then
+  "$deletion_state_assertion" "$fixture_dir/terminated-main-state.json"
 fi
 
 for required in \

@@ -17,7 +17,8 @@ jq --exit-status '
   $content.format == .format and $content.retention == "accounted" and
   $content.artifact.content.contentId == .artifactContentId and
   ($content.artifact.content.byteLength | tostring) == (.agentRuntime.documentContent.size | tostring) and
-  .agentRuntime.documentContent.checksums.sha256 == $content.artifact.content.sha256 and
+  (.artifactObjectSha256 | test("^[0-9a-f]{64}$")) and
+  .artifactObjectSha256 == $content.artifact.content.sha256 and
   $content.artifact.artifactRole._tag == "GeneratedDocumentV1" and
   $content.artifact.artifactRole.format == .format and
   $content.artifact.artifactRole.pageCount >= 1 and
