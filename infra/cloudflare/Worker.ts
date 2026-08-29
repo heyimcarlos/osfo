@@ -58,6 +58,7 @@ const worker = Worker(
           className: "OsfoDirectory",
         }),
         OSFO_STAGE: stage === "development" || stage === "production" ? stage : "preview",
+        SANDBOX_TRANSPORT: "rpc",
         STRIPE_ADVENTURER_PRICE_ID: Config.string("STRIPE_ADVENTURER_PRICE_ID"),
         STRIPE_ADVENTURER_PRODUCT_ID: Config.string("STRIPE_ADVENTURER_PRODUCT_ID"),
         STRIPE_PORTAL_CONFIGURATION_ID: Config.string("STRIPE_PORTAL_CONFIGURATION_ID"),
