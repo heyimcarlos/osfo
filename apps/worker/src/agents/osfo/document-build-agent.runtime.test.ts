@@ -1,8 +1,8 @@
 /* oxlint-disable effecttsgo/async-function -- Durable Object and AI Tool test boundaries are Promise APIs. */
 import { env } from "cloudflare:workers";
 import { action } from "@cloudflare/think";
+import { expect, it } from "@effect/vitest";
 import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
 import { simulateReadableStream, tool, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { Schema } from "effect";
