@@ -525,7 +525,7 @@ describe("ScheduledEmail", () => {
   });
 
   it.effect(
-    "recovers an in-horizon NotApplied result after its completion persistence fails",
+    "recovers NotApplied after initial and explicit-recovery completion persistence failures",
     () => {
       const fixture = makeFixture({ sendOutcome: "ambiguous" });
       return Effect.gen(function* () {
@@ -556,8 +556,20 @@ describe("ScheduledEmail", () => {
           sendReconciliationRecoveryUsed: false,
         });
 
-        fixture.failTerminalReconciliationCompletion = false;
         yield* TestClock.setTime(scheduledAt.getTime() + 301_001);
+        expect(yield* emails.recoverClaimed(payload).pipe(Effect.result)).toMatchObject({
+          failure: { operation: "terminal-reconciliation-completion" },
+        });
+        expect(fixture.stored).toMatchObject({
+          sendAccountingBasis: null,
+          sendOutcome: "ambiguous",
+          sendReconciliationClaimedAt: new Date(scheduledAt.getTime() + 301_001),
+          sendReconciliationLeaseExpiresAt: new Date(scheduledAt.getTime() + 361_000),
+          sendReconciliationRecoveryUsed: true,
+        });
+
+        fixture.failTerminalReconciliationCompletion = false;
+        yield* TestClock.setTime(scheduledAt.getTime() + 330_000);
         expect(yield* emails.recoverClaimed(payload)).toMatchObject({
           providerLogId: "persisted-after-recovery",
           sendAccountingBasis: null,
@@ -565,7 +577,7 @@ describe("ScheduledEmail", () => {
           sendOutcome: "notApplied",
           sendReconciliationRecoveryUsed: false,
         });
-        expect(fixture.reconciliationAttempts).toBe(3);
+        expect(fixture.reconciliationAttempts).toBe(4);
         expect(fixture.gmailSendFacts).toBe(0);
       }).pipe(Effect.provide(layer(fixture.port)));
     },

@@ -180,15 +180,32 @@ export const terminalReconciliationBlocksFinalization = (
   );
 };
 
+export const terminalReconciliationClaimToResume = (email: Record, now: Date) => {
+  if (
+    !email.sendReconciliationRecoveryUsed ||
+    email.sendReconciliationClaimedAt === null ||
+    email.sendReconciliationLeaseExpiresAt === null
+  ) {
+    return null;
+  }
+  const nowMilliseconds = now.getTime();
+  return nowMilliseconds >= email.sendReconciliationClaimedAt.getTime() &&
+    nowMilliseconds < email.sendReconciliationLeaseExpiresAt.getTime()
+    ? email.sendReconciliationClaimedAt
+    : null;
+};
+
 export const terminalReconciliationCanRun = (email: Record, now: Date) => {
   if (email.sendStartedAt === null) return false;
+  if (email.sendReconciliationRecoveryUsed) {
+    return terminalReconciliationClaimToResume(email, now) !== null;
+  }
   const evidenceDeadline = email.sendStartedAt.getTime() + providerEvidenceHorizonMilliseconds;
   if (now.getTime() <= evidenceDeadline) return true;
   return (
     email.sendReconciliationClaimedAt !== null &&
     email.sendReconciliationClaimedAt.getTime() <= evidenceDeadline &&
     email.sendReconciliationLeaseExpiresAt !== null &&
-    !email.sendReconciliationRecoveryUsed &&
     now.getTime() >= email.sendReconciliationLeaseExpiresAt.getTime() &&
     now.getTime() <
       email.sendReconciliationLeaseExpiresAt.getTime() + providerReconciliationRecoveryMilliseconds
@@ -835,11 +852,15 @@ export const make = Effect.gen(function* () {
     email: Record,
   ) {
     const claimedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-    const claim = yield* ports.persistence.claimTerminalReconciliation(
-      email.workflowId,
-      email.inputDigest,
-      claimedAt,
-    );
+    const resumedClaimedAt = terminalReconciliationClaimToResume(email, claimedAt);
+    const claim =
+      resumedClaimedAt === null
+        ? yield* ports.persistence.claimTerminalReconciliation(
+            email.workflowId,
+            email.inputDigest,
+            claimedAt,
+          )
+        : { _tag: "Acquired" as const, claimedAt: resumedClaimedAt, email };
     if (claim._tag === "Existing") return yield* settleTerminal(claim.email);
     const reconciliation = yield* ports.reconcileSend(claim.email);
     const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));

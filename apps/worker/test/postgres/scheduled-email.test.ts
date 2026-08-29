@@ -663,6 +663,15 @@ it.effect("lets the explicit recovery claim beat a stale completion at the 6-min
         sendReconciliationRecoveryUsed: true,
       });
       expect(
+        yield* ScheduledEmailPostgres.reconciliationBatch(
+          database,
+          new Date(sendAt.getTime() + 390_000),
+          20,
+        ),
+      ).toContainEqual(
+        expect.objectContaining({ kind: "settlement", workflowId: email.workflowId }),
+      );
+      expect(
         yield* persistence.completeTerminalReconciliation(
           email.workflowId,
           email.inputDigest,
