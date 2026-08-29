@@ -4,11 +4,14 @@ set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 control="$repo_root/.agents/skills/verify-osfo/helpers/control-osfo"
 feature="$repo_root/.agents/skills/verify-osfo/features/document-build.md"
+feature_map="$repo_root/.agents/skills/verify-osfo/features/README.md"
+skill="$repo_root/.agents/skills/verify-osfo/SKILL.md"
 emulator="$repo_root/apps/worker/test/emulators/provider-emulator.ts"
 emulator_test="$repo_root/apps/worker/src/integrations/cloudflare/research-verification-provider.node.test.ts"
 agent_runtime_test="$repo_root/apps/worker/src/agents/osfo/document-build-agent.runtime.test.ts"
 free_denial_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-free-denial"
 free_state_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-free-state"
+tab_sequence_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-tab-sequence"
 fixture_dir="$(mktemp -d)"
 trap 'rm -rf -- "$fixture_dir"' EXIT
 
@@ -34,6 +37,27 @@ for required in \
     exit 1
   fi
 done
+
+if ! grep -F -q 'Keep each run in one Chrome session' "$skill" || \
+  ! grep -F -q "Follow the selected feature's tab sequence" "$feature_map"; then
+  printf 'Shared browser guidance conflicts with the Document Build tab sequence\n' >&2
+  exit 1
+fi
+
+"$tab_sequence_assertion" "$feature"
+printf '%s\n' \
+  'capture that ready File ID as `action.png`' \
+  'Start `document-build` evidence there' \
+  'require the same `Ready. File ID:` value to remain visible' \
+  'Return to the original dashboard tab' \
+  'After the paid state is visible' \
+  'Open a second Chrome tab in the same Chrome session' \
+  'Keep the original authenticated Agent dashboard tab mounted' \
+  'Choose text file' >"$fixture_dir/reversed-tab-sequence.md"
+if "$tab_sequence_assertion" "$fixture_dir/reversed-tab-sequence.md" 2>/dev/null; then
+  printf 'A reversed Document Build browser tab sequence falsely qualified\n' >&2
+  exit 1
+fi
 
 for required in \
   '.documentBuildCount == 0' \
@@ -203,9 +227,6 @@ for required in \
   'run-owned local provider inbox' \
   'Adventurer Plan' \
   'Choose text file' \
-  'Keep the original authenticated Agent dashboard tab mounted' \
-  'second Chrome tab' \
-  'Return to the original dashboard tab' \
   'telegram-reply' \
   'Download PDF' \
   'Do not seed a FileRecord'; do

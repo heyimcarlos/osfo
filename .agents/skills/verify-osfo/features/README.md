@@ -7,7 +7,7 @@ This map covers User-visible behavior that the local Worker and web UI can drive
 - Start a unique run and require `control-osfo doctor <run-id>` to pass at the current commit.
 - Drive the public UI in Chrome with accessible roles and names.
 - Use the run-owned fictional phone and local OTP from `control-osfo identity <run-id>`.
-- Keep the same Chrome tab when a later feature depends on the registered session.
+- Keep the same Chrome session when a later feature depends on the registered User. Follow the selected feature's tab sequence and leave any tab it names mounted.
 - Capture the visible action and result, then prove committed state with the read-only observer.
 - Treat Vitest and direct Worker requests as qualification, never browser verification.
 

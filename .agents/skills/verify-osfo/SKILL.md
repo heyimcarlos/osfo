@@ -30,7 +30,7 @@ The run is ready when all of these hold:
 - PostgreSQL answers `pg_isready` inside the run-labeled container;
 - `doctor` reports the same launch commit as the current checkout.
 
-Two runs may coexist because their ports, container, Worker storage, User identity, Telegram address, and evidence directory differ. Use one Chrome tab per run. Never drive another run's URL.
+Two runs may coexist because their ports, container, Worker storage, User identity, Telegram address, and evidence directory differ. Keep each run in one Chrome session. A feature may require more than one tab in that session to preserve visible state; follow its tab sequence. Never drive another run's URL in any tab.
 
 ## Doctor
 
