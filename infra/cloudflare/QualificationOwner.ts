@@ -1,9 +1,12 @@
 import { WorkerEntrypoint, type Worker } from "alchemy/Cloudflare";
 import { Effect } from "effect";
 
+import { qualificationWorkflowSubrequestLimit } from "@osfo/worker/qualification-limits";
+
 import { Artifacts } from "./Artifacts";
 import { QualificationOwnerWorkflow } from "./QualificationOwnerWorkflow";
 import { QualificationOwnerPartitionWorkflow } from "./QualificationOwnerPartitionWorkflow";
+import { QualificationEvaluationCorrectnessReducerWorkflow } from "./QualificationEvaluationCorrectnessReducerWorkflow";
 import { QualificationEvaluationReducerWorkflow } from "./QualificationEvaluationReducerWorkflow";
 import { QualificationEvaluationLeafWorkflow } from "./QualificationEvaluationLeafWorkflow";
 import { ApiWorker, QualificationOwnerWorker } from "./WorkerBindings";
@@ -28,11 +31,14 @@ export const QualificationOwnerLayer = QualificationOwnerWorker.make(
     env: {
       ARTIFACTS: Artifacts,
       PRODUCT_AUTHORITY: qualificationProductAuthority,
+      QUALIFICATION_EVALUATION_CORRECTNESS_REDUCER_WORKFLOW:
+        QualificationEvaluationCorrectnessReducerWorkflow,
       QUALIFICATION_EVALUATION_LEAF_WORKFLOW: QualificationEvaluationLeafWorkflow,
       QUALIFICATION_EVALUATION_REDUCER_WORKFLOW: QualificationEvaluationReducerWorkflow,
       QUALIFICATION_OWNER_PARTITION_WORKFLOW: QualificationOwnerPartitionWorkflow,
       QUALIFICATION_OWNER_WORKFLOW: QualificationOwnerWorkflow,
     },
+    limits: { subrequests: qualificationWorkflowSubrequestLimit },
     main: "./apps/worker/src/qualification-owner-worker.ts",
     observability: {
       enabled: true,

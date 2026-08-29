@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./config": "./src/config.ts",
+    "./qualification-limits": "./src/qualification/qualification-evaluation-limits.ts",
     "./workflow-contracts": "./src/workflow-contracts.ts"
   },
   "scripts": {

@@ -415,6 +415,7 @@ it("refuses the first arrival until the complete cohort inventory receipt exists
     hardLimits: [
       { maximum: 128, name: "workerMemory", unit: "MiB" },
       { maximum: 1_000, name: "workerSubrequests", unit: "requests" },
+      { maximum: 250_000, name: "qualificationWorkflowSubrequests", unit: "requests" },
     ],
     sourceVersion: "inventory-test-sha",
     topologyVersion: "cloudflare-v1",
@@ -495,6 +496,7 @@ it("resumes an immutable canonical arrival chunk without replaying product effec
     hardLimits: [
       { maximum: 128, name: "workerMemory", unit: "MiB" },
       { maximum: 1_000, name: "workerSubrequests", unit: "requests" },
+      { maximum: 250_000, name: "qualificationWorkflowSubrequests", unit: "requests" },
     ],
     sourceVersion: "resume-test-sha",
     topologyVersion: "cloudflare-v1",

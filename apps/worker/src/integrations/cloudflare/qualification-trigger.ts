@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 import { createQualificationExecutionPlan } from "../../qualification/execution";
 import { canonicalQualificationJson } from "../../qualification/qualification-checksum";
+import { qualificationWorkflowSubrequestHardLimit } from "../../qualification/qualification-evaluation-limits";
 import {
   createBoundedBetaManifest,
   createScaleQualifiedPublicManifest,
@@ -90,6 +91,7 @@ export const runQualificationTrigger = async (
     hardLimits: [
       { maximum: 128, name: "workerMemory", unit: "MiB" },
       { maximum: 1_000, name: "workerSubrequests", unit: "requests" },
+      qualificationWorkflowSubrequestHardLimit,
     ],
     sourceVersion: deployedVersion.id,
     topologyVersion: "cloudflare-v1",

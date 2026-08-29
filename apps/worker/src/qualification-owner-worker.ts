@@ -5,6 +5,7 @@ import type { QualificationOwnerWorkflowPayload } from "./workflow-contracts";
 
 export { QualificationOwnerWorkflow } from "./workflows/qualification-owner";
 export { QualificationOwnerPartitionWorkflow } from "./workflows/qualification-owner-partition";
+export { QualificationEvaluationCorrectnessReducerWorkflow } from "./workflows/qualification-evaluation-correctness-reducer";
 export { QualificationEvaluationReducerWorkflow } from "./workflows/qualification-evaluation-reducer";
 export { QualificationEvaluationLeafWorkflow } from "./workflows/qualification-evaluation-leaf";
 

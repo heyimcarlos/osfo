@@ -12,6 +12,7 @@ import {
   canonicalQualificationJson,
   qualificationChecksum,
 } from "./qualification/qualification-checksum";
+import { qualificationWorkflowSubrequestHardLimit } from "./qualification/qualification-evaluation-limits";
 import {
   createQualificationExecutionPlan,
   type QualificationExecutionPlan,
@@ -98,6 +99,7 @@ const frozenQualification = (
     hardLimits: [
       { maximum: 128, name: "workerMemory", unit: "MiB" },
       { maximum: 1_000, name: "workerSubrequests", unit: "requests" },
+      qualificationWorkflowSubrequestHardLimit,
     ],
     sourceVersion,
     topologyVersion: "cloudflare-v1",

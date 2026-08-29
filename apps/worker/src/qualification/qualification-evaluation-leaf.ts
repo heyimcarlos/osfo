@@ -41,6 +41,13 @@ const Identity = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1
 const DecimalCount = Schema.String.check(Schema.isPattern(/^(0|[1-9][0-9]*)$/));
 const NonNegativeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
+export const qualificationEvaluationLeafRootLimit = 256;
+// One root can contribute source, component, correlation, stage, and global-identity findings.
+// The evaluator's closed loops remain below this bound; retaining more indicates a contract bug.
+export const qualificationEvaluationLeafMaximumFindingsPerRoot = 128;
+export const qualificationEvaluationLeafMaximumFindingShardCount =
+  qualificationEvaluationLeafMaximumFindingsPerRoot;
+
 const ReferenceJourney = Schema.Literals([
   "accountBillingSafetyDataRights",
   "documentBuild",
@@ -1361,6 +1368,15 @@ export const runQualificationEvaluationLeaf = async (input: {
       evaluated.rootAccumulator.artifactId,
     );
   const sortedFindings = [...evaluated.findings];
+  if (
+    sortedFindings.length >
+    qualificationEvaluationLeafRootLimit * qualificationEvaluationLeafMaximumFindingsPerRoot
+  ) {
+    return failedLeafOutcome(
+      "qualificationEvaluationOutputConflict",
+      `${prefix}/findings/overflow`,
+    );
+  }
   // oxlint-disable-next-line unicorn/no-array-sort -- ES2023 toSorted is outside the Worker target. This is a fresh copy.
   sortedFindings.sort((left, right) =>
     [left.verdict, left.code, left.subject, left.detail]

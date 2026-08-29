@@ -75,6 +75,11 @@ it.effect("forwards one authorized retained execution to the private owner", () 
       hardLimits: [
         { maximum: 128, name: "workerMemory", unit: "MiB" },
         { maximum: 1_000, name: "workerSubrequests", unit: "requests" },
+        {
+          maximum: 250_000,
+          name: "qualificationWorkflowSubrequests",
+          unit: "requests",
+        },
       ],
       sourceVersion: "deployed-sha",
       topologyVersion: "cloudflare-v1",

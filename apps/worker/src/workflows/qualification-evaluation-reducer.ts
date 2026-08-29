@@ -344,11 +344,10 @@ export const runQualificationEvaluationReducer = async (input: {
     throw new Error("Qualification reducer inputs conflict");
   }
   const verifiedInputs = await input.step.do("verify evaluation input receipts", async () => {
-    const receipts = await Promise.all(
-      input.payload.inputs.map((reference) =>
-        readInputReceipt(input.env, input.payload, reference),
-      ),
-    );
+    const receipts = new Array<Awaited<ReturnType<typeof readInputReceipt>>>();
+    for (const reference of input.payload.inputs) {
+      receipts.push(await readInputReceipt(input.env, input.payload, reference));
+    }
     if (receipts.some((receipt) => receipt === null)) {
       throw new Error("Qualification reducer input receipt conflicts");
     }
@@ -440,19 +439,21 @@ export const runQualificationEvaluationReducer = async (input: {
     continuation += 1
   ) {
     const result = await input.step.do(`merge evaluation page ${continuation}`, async () => {
-      const inputShards = await Promise.all(
-        verifiedInputs.map((descriptor, index) => {
-          const cursor = checkpoint.cursors[index];
-          if (cursor === undefined) return Promise.resolve(undefined);
-          return readInputShard({
-            bucket: input.env.ARTIFACTS,
-            cursor,
-            descriptor,
-            executionId: input.payload.executionId,
-            planChecksum: input.payload.planChecksum,
-          });
-        }),
-      );
+      const inputShards = new Array<Awaited<ReturnType<typeof readInputShard>>>();
+      for (const [index, descriptor] of verifiedInputs.entries()) {
+        const cursor = checkpoint.cursors[index];
+        inputShards.push(
+          cursor === undefined
+            ? undefined
+            : await readInputShard({
+                bucket: input.env.ARTIFACTS,
+                cursor,
+                descriptor,
+                executionId: input.payload.executionId,
+                planChecksum: input.payload.planChecksum,
+              }),
+        );
+      }
       if (inputShards.some((shard) => shard === undefined)) {
         throw new Error("Qualification reducer input shard conflicts");
       }

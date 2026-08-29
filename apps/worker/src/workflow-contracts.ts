@@ -56,6 +56,25 @@ export interface QualificationEvaluationReducerWorkflowPayload {
   readonly valueType: "identity" | "latencyMs";
 }
 
+/** One bounded correctness/root reduction over an exact ordered child range. */
+export interface QualificationEvaluationCorrectnessReducerWorkflowPayload {
+  readonly acceptedCount: number;
+  readonly executionId: string;
+  readonly firstPartitionIndex: number;
+  readonly index: number;
+  readonly inputKind: "correctness" | "leafCompletion";
+  readonly inputReceiptChainDigest: string;
+  readonly inputs: ReadonlyArray<{
+    readonly artifactId: string;
+    readonly checksum: string;
+  }>;
+  readonly lastPartitionIndex: number;
+  readonly level: number;
+  readonly outputArtifactPrefix: string;
+  readonly planChecksum: string;
+  readonly rootCount: number;
+}
+
 /** One bounded, independently replayable authority-leaf evaluation. */
 export interface QualificationEvaluationLeafWorkflowPayload {
   readonly executionId: string;
