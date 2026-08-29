@@ -103,6 +103,50 @@ it("publishes loadSkill for the verifier's natural Document Build request", asyn
   });
 });
 
+it("publishes loadSkill for the verifier's exact Document Build status request", async () => {
+  // SAFETY: wrangler.runtime.jsonc owns this test-only direct binding to OsfoAgent.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The checked runtime config declares the binding that generated production Env types omit.
+  const runtimeEnv = env as typeof env & {
+    readonly OSFO_AGENT_TEST: DurableObjectNamespace<OsfoAgent>;
+  };
+  const stub = runtimeEnv.OSFO_AGENT_TEST.get(
+    runtimeEnv.OSFO_AGENT_TEST.idFromName("document-build-status-runtime-agent"),
+  );
+
+  await runInDurableObject(stub, async (_boundAgent, state) => {
+    const agent = new OsfoAgent(state, runtimeEnv);
+    await agent.initialize({
+      agentId: AgentId.make("document-build-status-runtime-agent"),
+      initializationId: "document-build-status-runtime-initialization",
+      initializedAt: "2026-08-29T12:00:00.000Z",
+      routeId: "document-build-status-runtime-route",
+      sessionId: "document-build-status-runtime-session",
+    });
+    await agent.onStart();
+    const metadata = documentBuildTurnMetadata();
+    const request = "Inspect Document Build document-build:verification-status-00000001 status.";
+    const userMessage: UIMessage = {
+      id: "document-build-status-runtime-message",
+      metadata: { turnMetadata: metadata },
+      parts: [{ text: request, type: "text" }],
+      role: "user",
+    };
+    await agent.addMessages([userMessage]);
+
+    const turn = await agent.beforeTurn({
+      continuation: false,
+      messages: [{ content: request, role: "user" }] satisfies Array<ModelMessage>,
+      model: new MockLanguageModelV4(),
+      system: "",
+      tools: documentBuildTools(agent),
+    });
+
+    expect(turn.activeTools).toEqual(["loadSkill"]);
+    expect(turn.instructions).toContain("document-build@system-document-build-v1");
+    expect(turn.tools?.loadSkill).toBe(agent.getTools().loadSkill);
+  });
+});
+
 it("returns a ready stored source across the Agent RPC boundary", async () => {
   // SAFETY: wrangler.runtime.jsonc owns this test-only direct binding to OsfoAgent.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The checked runtime config declares the binding that generated production Env types omit.

@@ -261,6 +261,29 @@ it.effect("publishes Document Build start, inspect, and cancel only after its Sk
       "loadSkill",
       "startDocumentBuild",
     ]);
+
+    const statusRequest =
+      "Inspect Document Build document-build:verification-status-00000001 status.";
+    const statusIndex = yield* capabilities.eligibleIndex({
+      ...baseInput,
+      availableRequirements: [...baseInput.availableRequirements, "workflow-store"],
+      availableToolNames,
+      plan: "free",
+      taskDescription: statusRequest,
+      taskKinds: Capabilities.taskKindsFor(statusRequest),
+    });
+    expect(statusIndex.selectedCapabilityIds).toContain("document-build");
+    expect(statusIndex.selectedCapabilityIds).not.toContain("workflows");
+    expect(statusIndex.candidates).toContainEqual(
+      expect.objectContaining({ skillId: "document-build" }),
+    );
+    expect(
+      capabilities.assembleToolBundle({
+        availableToolNames,
+        index: statusIndex,
+        loadedSkills: [],
+      }).activeToolNames,
+    ).toEqual(["loadSkill"]);
   }),
 );
 

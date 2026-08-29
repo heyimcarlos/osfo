@@ -482,3 +482,129 @@ it.effect("loads Document Build before selecting and safely presenting its denie
     (emulator) => Effect.promise(emulator.close),
   ),
 );
+
+it.effect("loads Document Build before inspecting the verifier's exact status request", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(startProviderEmulator),
+    (emulator) =>
+      Effect.gen(function* () {
+        const binding = ResearchVerificationProvider.makeAiBinding({
+          _tag: "LocalVerification",
+          baseURL: emulator.origin,
+        });
+        const workflowId = "document-build:verification-status-00000001";
+        const request = `Inspect Document Build ${workflowId} status.`;
+        const loadSkillTool = {
+          function: {
+            name: "loadSkill",
+            parameters: { properties: {}, type: "object" },
+          },
+          type: "function" as const,
+        };
+        const inspectDocumentBuildTool = {
+          function: {
+            name: "inspectDocumentBuild",
+            parameters: { properties: {}, type: "object" },
+          },
+          type: "function" as const,
+        };
+        const loadResponse = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            messages: [{ content: request, role: "user" }],
+            tools: [loadSkillTool],
+          }),
+        );
+        expect(loadResponse).toMatchObject({
+          tool_calls: [
+            {
+              arguments: {
+                skillId: "document-build",
+                skillVersion: "system-document-build-v1",
+              },
+              name: "loadSkill",
+            },
+          ],
+        });
+        const inspectResponse = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            messages: [
+              { content: request, role: "user" },
+              {
+                content: '{"skillId":"document-build","skillVersion":"system-document-build-v1"}',
+                name: "loadSkill",
+                role: "tool",
+                tool_call_id: "verification-loadSkill",
+              },
+            ],
+            tools: [loadSkillTool, inspectDocumentBuildTool],
+          }),
+        );
+        expect(inspectResponse).toMatchObject({
+          tool_calls: [
+            {
+              arguments: { workflowId },
+              name: "inspectDocumentBuild",
+            },
+          ],
+        });
+        const finalResponse = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            messages: [
+              { content: request, role: "user" },
+              {
+                content: '{"skillId":"document-build","skillVersion":"system-document-build-v1"}',
+                name: "loadSkill",
+                role: "tool",
+                tool_call_id: "verification-loadSkill",
+              },
+              {
+                content: `{"_tag":"Succeeded","workflowId":"${workflowId}"}`,
+                name: "inspectDocumentBuild",
+                role: "tool",
+                tool_call_id: "verification-inspectDocumentBuild",
+              },
+            ],
+            tools: [loadSkillTool, inspectDocumentBuildTool],
+          }),
+        );
+        expect(finalResponse).toMatchObject({
+          finish_reason: "stop",
+          response: expect.stringContaining(`"workflowId":"${workflowId}"`),
+        });
+        expect(finalResponse).not.toHaveProperty("tool_calls");
+        const ledger = yield* Effect.promise(() =>
+          fetch(`${emulator.origin}/_test/research/ledger`).then((response) => response.json()),
+        );
+        expect(ledger).toEqual([
+          {
+            kind: "agent",
+            operationId: null,
+            subject: expect.stringContaining(request),
+          },
+          {
+            kind: "tool-selection",
+            operationId: "verification-loadSkill",
+            selectedTool: "loadSkill",
+            subject: "document-build@system-document-build-v1",
+          },
+          {
+            kind: "agent",
+            operationId: null,
+            subject: expect.stringContaining("system-document-build-v1"),
+          },
+          {
+            kind: "tool-selection",
+            operationId: null,
+            selectedTool: "inspectDocumentBuild",
+            subject: workflowId,
+          },
+          {
+            kind: "agent",
+            operationId: null,
+            subject: expect.stringContaining(workflowId),
+          },
+        ]);
+      }),
+    (emulator) => Effect.promise(emulator.close),
+  ),
+);

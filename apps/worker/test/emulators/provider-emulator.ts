@@ -735,13 +735,20 @@ const handleResearch = (
         });
         const documentBuildRequest = latestUserMessageContent(input);
         const documentBuildFileId = /web:[0-9a-f-]{36}/iu.exec(documentBuildRequest)?.[0];
+        const documentBuildWorkflowId = /document-build:[\w:-]{8,300}/iu.exec(
+          documentBuildRequest,
+        )?.[0];
         const isDocumentBuildRequest =
           documentBuildFileId !== undefined &&
           /(?:build|document|pdf)/iu.test(documentBuildRequest);
+        const isDocumentBuildStatusRequest =
+          documentBuildWorkflowId !== undefined &&
+          /(?:inspect|status|check)/iu.test(documentBuildRequest);
         if (
-          isDocumentBuildRequest &&
+          (isDocumentBuildRequest || isDocumentBuildStatusRequest) &&
           toolNames.includes("loadSkill") &&
           !toolNames.includes("startDocumentBuild") &&
+          !toolNames.includes("inspectDocumentBuild") &&
           lastMessageRole(input) === "user"
         ) {
           ledger.push({
@@ -773,7 +780,6 @@ const handleResearch = (
           return;
         }
         const workflowId = /research[:\w-]{8,300}/iu.exec(lastMessage)?.[0];
-        const documentBuildWorkflowId = /document-build:[\w:-]{8,300}/iu.exec(lastMessage)?.[0];
         const scheduledEmailWorkflowId = /scheduled-email:[\w:-]{8,300}/iu.exec(lastMessage)?.[0];
         const scheduledEmailFixture =
           /recipient=([^;]+); subject=([^;]+); body=([^;]+); sendAt=([^;\s]+)/iu.exec(lastMessage);
@@ -833,8 +839,8 @@ const handleResearch = (
         if (
           documentBuildWorkflowId !== undefined &&
           toolNames.includes("inspectDocumentBuild") &&
-          lastMessageRole(input) === "user" &&
-          /(?:inspect|status|check)/iu.test(lastMessage)
+          isDocumentBuildStatusRequest &&
+          (lastMessageRole(input) === "user" || isDocumentBuildSkillLoadResult(input))
         ) {
           ledger.push({
             kind: "tool-selection",
