@@ -183,6 +183,8 @@ export const scheduledEmailNotifications = pgTable(
     model_access_policy_version: text().notNull(),
     model_route: text().notNull(),
     resource_price_version: text().notNull(),
+    state: text({ enum: ["success", "failure", "canceled"] }).notNull(),
+    send_outcome: text({ enum: ["applied", "ambiguous", "notApplied"] }),
     claimed_at: timestamp({ withTimezone: true }).notNull(),
     think_submission_id: text(),
     accepted_at: timestamp({ withTimezone: true }),

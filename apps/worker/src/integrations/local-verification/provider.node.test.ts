@@ -52,6 +52,25 @@ it.effect("connects and sends through one deterministic local Gmail provider bou
         error: null,
         logId: "local-gmail-log-1",
       });
+      const inspectExecution = created.session.inspectExecution;
+      if (inspectExecution === undefined) throw new Error("provider inspection is missing");
+      expect(
+        yield* inspectExecution(
+          {
+            connectedAccountId: accountId,
+            providerSessionId: created.providerSessionId,
+            providerTool: "GMAIL_SEND_EMAIL",
+            startedAt: 0,
+          },
+          {
+            body: "Scheduled Email local provider boundary proof.",
+            is_html: false,
+            recipient_email: "recipient@example.test",
+            subject: "Scheduled Email verification",
+            user_id: "me",
+          },
+        ),
+      ).toMatchObject({ _tag: "Applied", execution: { logId: "local-gmail-log-1" } });
       const ledger = yield* Effect.promise(() =>
         fetch(new URL("/_test/integrations/ledger", emulator.origin)).then((response) =>
           response.json(),

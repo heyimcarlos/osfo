@@ -37,6 +37,7 @@ export const ScheduledEmailApprovalDecisionAccepted = Schema.Struct({
 
 export const ScheduledEmailNotificationSummary = Schema.Struct({
   deliveredAt: Schema.DateFromString,
+  sendOutcome: Schema.NullOr(Schema.Literals(["applied", "ambiguous", "notApplied"])),
   state: Schema.Literals(["success", "failure", "canceled"]),
   workflowId: bounded(300),
 });

@@ -234,7 +234,9 @@ export function ScheduledEmailControlContent({
                         ? "Scheduled Email sent"
                         : notification.state === "canceled"
                           ? "Scheduled Email canceled"
-                          : "Scheduled Email failed"}
+                          : notification.sendOutcome === "ambiguous"
+                            ? "Scheduled Email delivery unconfirmed — it may have been sent"
+                            : "Scheduled Email not sent"}
                     </p>
                     <p className="mt-1 break-all text-xs text-[#687896]">
                       Workflow: {notification.workflowId}

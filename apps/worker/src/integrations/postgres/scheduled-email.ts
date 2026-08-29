@@ -63,6 +63,12 @@ type Persisted =
   | { readonly _tag: "Created"; readonly email: ScheduledEmail.Record }
   | { readonly _tag: "Existing"; readonly email: ScheduledEmail.Record };
 
+type SendClaimOutcome =
+  | { readonly _tag: "Acquired"; readonly row: Row }
+  | { readonly _tag: "Conflict" }
+  | { readonly _tag: "Existing"; readonly row: Row }
+  | { readonly _tag: "Missing" };
+
 const EncodedRecord = Schema.Struct({
   acceptedAt: Schema.NullOr(Schema.Date),
   actionId: ActionId,
@@ -145,32 +151,41 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
       }),
     ).pipe(Effect.flatMap((outcome) => decodeAdmission(record.workflowId, outcome))),
   beginSend: (workflowId, inputDigest, startedAt) =>
-    transition(database, workflowId, inputDigest, "beginSend", async (transaction, row) => {
-      if (row.state === "sending" || row.state === "send_pending_reconciliation") {
-        return found(row);
-      }
-      if (
-        row.state !== "waiting" ||
-        row.cancel_requested_at !== null ||
-        startedAt.getTime() < row.due_at.getTime()
-      ) {
-        return changed();
-      }
-      const [updated] = await transaction
-        .update(scheduledEmails)
-        .set({ send_started_at: startedAt, state: "sending", updated_at: sql`clock_timestamp()` })
-        .where(eq(scheduledEmails.workflow_id, workflowId))
-        .returning();
-      return updated === undefined ? changed() : found(updated);
-    }),
+    attempt("beginSend", () =>
+      database.transaction(async (transaction): Promise<SendClaimOutcome> => {
+        const [row] = await transaction
+          .select()
+          .from(scheduledEmails)
+          .where(eq(scheduledEmails.workflow_id, workflowId))
+          .for("update")
+          .limit(1);
+        if (row === undefined) return { _tag: "Missing" };
+        if (row.input_digest !== inputDigest) return { _tag: "Conflict" };
+        if (row.state === "sending" || row.state === "send_pending_reconciliation") {
+          return { _tag: "Existing", row };
+        }
+        if (
+          row.state !== "waiting" ||
+          row.cancel_requested_at !== null ||
+          startedAt.getTime() < row.due_at.getTime()
+        ) {
+          return { _tag: "Conflict" };
+        }
+        const [updated] = await transaction
+          .update(scheduledEmails)
+          .set({ send_started_at: startedAt, state: "sending", updated_at: sql`clock_timestamp()` })
+          .where(eq(scheduledEmails.workflow_id, workflowId))
+          .returning();
+        return updated === undefined ? { _tag: "Conflict" } : { _tag: "Acquired", row: updated };
+      }),
+    ).pipe(Effect.flatMap((outcome) => decodeSendClaim(workflowId, outcome))),
   finishApplied: (workflowId, inputDigest, result, outcomeAt) =>
     transition(database, workflowId, inputDigest, "finishApplied", async (transaction, row) => {
       if (row.state === "success") return found(row);
       const canRefineUnaccountedAmbiguity =
         row.state === "failure" &&
         row.send_outcome === "ambiguous" &&
-        row.send_accounting_basis === "conservative" &&
-        row.send_accounted_at === null;
+        row.send_accounting_basis === "conservative";
       if (
         row.state !== "sending" &&
         row.state !== "send_pending_reconciliation" &&
@@ -241,8 +256,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
       if (
         row.state !== "failure" ||
         row.send_outcome !== "ambiguous" ||
-        row.send_accounting_basis !== "conservative" ||
-        row.send_accounted_at !== null
+        row.send_accounting_basis !== "conservative"
       ) {
         return changed();
       }
@@ -598,6 +612,7 @@ export const reconciliationBatch = (database: Database, now: Date, limit: number
           dueAt: scheduledEmails.due_at,
           inputDigest: scheduledEmails.input_digest,
           kind: sql<"claimed" | "due" | "host" | "settlement">`case
+            when ${scheduledEmails.cancel_requested_at} is not null and ${scheduledEmails.state} not in ('success', 'failure', 'canceled') then 'claimed'
             when ${scheduledEmails.state} in ('admitted', 'accepted') then 'host'
             when ${scheduledEmails.state} = 'waiting' and ${scheduledEmails.workflow_start_accounted_at} is null then 'settlement'
             when ${scheduledEmails.state} = 'waiting' then 'due'
@@ -623,6 +638,18 @@ export const reconciliationBatch = (database: Database, now: Date, limit: number
               accessIsAvailable,
             ),
             inArray(scheduledEmails.state, ["sending", "send_pending_reconciliation"]),
+            and(
+              isNotNull(scheduledEmails.cancel_requested_at),
+              inArray(scheduledEmails.state, ["admitted", "accepted", "waiting"]),
+              accessIsAvailable,
+            ),
+            and(
+              eq(scheduledEmails.state, "failure"),
+              eq(scheduledEmails.send_outcome, "ambiguous"),
+              isNotNull(scheduledEmails.send_started_at),
+              sql`${scheduledEmails.send_started_at} + interval '5 minutes' >= ${now.toISOString()}::timestamptz`,
+              accessIsAvailable,
+            ),
             and(
               inArray(scheduledEmails.state, ["success", "failure", "canceled"]),
               or(
@@ -747,6 +774,24 @@ const decodeCancel = (
   row: Row | null,
 ): Effect.Effect<ScheduledEmail.Record, ScheduledEmail.NotFound | ScheduledEmail.Unavailable> =>
   row === null ? Effect.fail(new ScheduledEmail.NotFound({ workflowId })) : decodeRow(row);
+
+const decodeSendClaim = (
+  workflowId: ScheduledEmail.WorkflowId,
+  outcome: SendClaimOutcome,
+): Effect.Effect<
+  ScheduledEmail.SendClaim,
+  ScheduledEmail.Conflict | ScheduledEmail.NotFound | ScheduledEmail.Unavailable
+> => {
+  if (outcome._tag === "Missing") {
+    return Effect.fail(new ScheduledEmail.NotFound({ workflowId }));
+  }
+  if (outcome._tag === "Conflict") {
+    return Effect.fail(conflict(workflowId, "beginSend lost to changed lifecycle truth"));
+  }
+  return decodeRow(outcome.row).pipe(
+    Effect.map((email): ScheduledEmail.SendClaim => ({ _tag: outcome._tag, email })),
+  );
+};
 
 const decodeTransition = (
   workflowId: ScheduledEmail.WorkflowId,

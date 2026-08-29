@@ -25,7 +25,9 @@ const selection = {
   planPolicyVersion: scheduledEmailNotifications.plan_policy_version,
   resourcePriceVersion: scheduledEmailNotifications.resource_price_version,
   routeId: scheduledEmailNotifications.route_id,
+  sendOutcome: scheduledEmailNotifications.send_outcome,
   sourceExposedAt: scheduledEmailNotifications.source_exposed_at,
+  state: scheduledEmailNotifications.state,
   submissionId: scheduledEmailNotifications.think_submission_id,
   userId: scheduledEmailNotifications.user_id,
   wakeRequestedAt: scheduledEmailNotifications.wake_requested_at,
@@ -45,7 +47,7 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
   deliveredForUser: (userId) =>
     attempt("deliveredForUser", () =>
       database
-        .select({ ...selection, state: scheduledEmails.state })
+        .select(selection)
         .from(scheduledEmailNotifications)
         .innerJoin(
           scheduledEmails,
@@ -70,7 +72,7 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
         )
         .orderBy(desc(scheduledEmailNotifications.accepted_at))
         .limit(20),
-    ).pipe(Effect.flatMap((rows) => Effect.forEach(rows, (row) => decode(row, row.state)))),
+    ).pipe(Effect.flatMap((rows) => Effect.forEach(rows, decode))),
   claimTerminal: (email, notificationId, claimedAt) =>
     attempt("claimTerminal", () =>
       database.transaction(async (transaction) => {
@@ -80,6 +82,7 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
           .select({
             inputDigest: scheduledEmails.input_digest,
             state: scheduledEmails.state,
+            sendOutcome: scheduledEmails.send_outcome,
             terminalAt: scheduledEmails.terminal_at,
             userId: scheduledEmails.user_id,
           })
@@ -96,6 +99,11 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
         ) {
           return { _tag: "NotTerminal" as const };
         }
+        const terminalState =
+          current.state === "success" || current.state === "failure" || current.state === "canceled"
+            ? current.state
+            : null;
+        if (terminalState === null) return { _tag: "NotTerminal" as const };
         const [deletion] = await transaction
           .select({ id: deletionCases.deletion_case_id })
           .from(deletionCases)
@@ -119,6 +127,8 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
             plan_policy_version: email.planPolicyVersion,
             resource_price_version: email.resourcePriceVersion,
             route_id: email.routeId,
+            send_outcome: current.sendOutcome,
+            state: terminalState,
             user_id: email.userId,
             workflow_id: email.workflowId,
           })
@@ -134,7 +144,7 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
           .limit(1);
         return retained === undefined
           ? { _tag: "Suppressed" as const }
-          : { _tag: "Claimed" as const, row: retained, state: current.state };
+          : { _tag: "Claimed" as const, row: retained };
       }),
     ).pipe(
       Effect.flatMap(
@@ -142,7 +152,7 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
           outcome,
         ): Effect.Effect<ScheduledEmailFollowUp.Claim, ScheduledEmailFollowUp.Unavailable> => {
           if (outcome._tag !== "Claimed") return Effect.succeed(outcome);
-          return decode(outcome.row, outcome.state).pipe(
+          return decode(outcome.row).pipe(
             Effect.map((notification) => ({ _tag: "Claimed" as const, notification })),
           );
         },
@@ -151,7 +161,7 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
   inspect: (notificationId) =>
     attempt("inspect", () =>
       database
-        .select({ ...selection, state: scheduledEmails.state })
+        .select(selection)
         .from(scheduledEmailNotifications)
         .innerJoin(
           scheduledEmails,
@@ -174,11 +184,7 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
           ),
         )
         .limit(1),
-    ).pipe(
-      Effect.flatMap(([row]) =>
-        row === undefined ? Effect.succeed(null) : decode(row, row.state),
-      ),
-    ),
+    ).pipe(Effect.flatMap(([row]) => (row === undefined ? Effect.succeed(null) : decode(row)))),
   markAccepted: (notificationId, submissionId, acceptedAt) =>
     attempt("markAccepted", () =>
       database.transaction(async (transaction) => {
@@ -206,7 +212,7 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
         if (email === undefined || (await isAccessFenced(transaction, identity.userId)))
           return null;
         const [current] = await transaction
-          .select({ ...selection, state: scheduledEmails.state })
+          .select(selection)
           .from(scheduledEmailNotifications)
           .innerJoin(
             scheduledEmails,
@@ -251,7 +257,7 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
         if (email === undefined || (await isAccessFenced(transaction, identity.userId)))
           return null;
         const [current] = await transaction
-          .select({ ...selection, state: scheduledEmails.state })
+          .select(selection)
           .from(scheduledEmailNotifications)
           .innerJoin(
             scheduledEmails,
@@ -296,7 +302,7 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
         if (email === undefined || (await isAccessFenced(transaction, identity.userId)))
           return null;
         const [current] = await transaction
-          .select({ ...selection, state: scheduledEmails.state })
+          .select(selection)
           .from(scheduledEmailNotifications)
           .innerJoin(
             scheduledEmails,
@@ -325,7 +331,7 @@ export const make = (database: Database): ScheduledEmailFollowUp.PortInterface =
 export const pendingSources = (database: Database, userId: string) =>
   attempt("pendingSources", () =>
     database
-      .select({ ...selection, state: scheduledEmails.state })
+      .select(selection)
       .from(scheduledEmailNotifications)
       .innerJoin(
         scheduledEmails,
@@ -346,7 +352,7 @@ export const pendingSources = (database: Database, userId: string) =>
           ),
         ),
       ),
-  ).pipe(Effect.flatMap((rows) => Effect.forEach(rows, (row) => decode(row, row.state))));
+  ).pipe(Effect.flatMap((rows) => Effect.forEach(rows, decode)));
 
 export const exposeSources = (
   database: Database,
@@ -410,20 +416,16 @@ const isAccessFenced = async (
 };
 
 type EncodedNotification = typeof ScheduledEmailFollowUp.Notification.Encoded;
-type EncodedNotificationWithoutState = Omit<EncodedNotification, "state">;
 
-const decode = (row: EncodedNotificationWithoutState, state: ScheduledEmail.State) =>
-  Schema.decodeUnknownEffect(ScheduledEmailFollowUp.Notification.fields.state)(state).pipe(
-    Effect.flatMap((terminalState) =>
-      Schema.decodeEffect(ScheduledEmailFollowUp.Notification)({ ...row, state: terminalState }),
-    ),
+const decode = (row: EncodedNotification) =>
+  Schema.decodeEffect(ScheduledEmailFollowUp.Notification)(row).pipe(
     Effect.mapError((cause) => unavailable("decode", cause)),
   );
 
 const requireNotification = (
   notificationId: ScheduledEmailFollowUp.NotificationId,
-  row: (EncodedNotificationWithoutState & { readonly state: ScheduledEmail.State }) | null,
-) => (row === null ? Effect.fail(unavailable("identity", notificationId)) : decode(row, row.state));
+  row: EncodedNotification | null,
+) => (row === null ? Effect.fail(unavailable("identity", notificationId)) : decode(row));
 
 const attempt = <Value>(operation: string, run: () => PromiseLike<Value>) =>
   Effect.tryPromise({ try: run, catch: (cause) => unavailable(operation, cause) });

@@ -106,6 +106,7 @@ export const State = Schema.Literals([
 export type State = typeof State.Type;
 
 export const terminalStates = new Set<State>(["success", "failure", "canceled"]);
+export const providerEvidenceHorizonMilliseconds = 300_000;
 
 export interface Record {
   readonly workflowId: WorkflowId;
@@ -219,6 +220,10 @@ type Persisted =
   | { readonly _tag: "Created"; readonly email: Record }
   | { readonly _tag: "Existing"; readonly email: Record };
 
+export type SendClaim =
+  | { readonly _tag: "Acquired"; readonly email: Record }
+  | { readonly _tag: "Existing"; readonly email: Record };
+
 export interface PortInterface {
   readonly currentAuthorization: (
     email: Record,
@@ -266,7 +271,7 @@ export interface PortInterface {
       workflowId: WorkflowId,
       inputDigest: InputDigest,
       startedAt: Date,
-    ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+    ) => Effect.Effect<SendClaim, Conflict | NotFound | Unavailable>;
     readonly finishApplied: (
       workflowId: WorkflowId,
       inputDigest: InputDigest,
@@ -633,13 +638,15 @@ export const make = Effect.gen(function* () {
 
   const reconcileClaimedSend = Effect.fn("ScheduledEmail.reconcileClaimedSend")(function* (
     email: Record,
+    retryNotStarted = true,
   ) {
     const reconciliation = yield* ports.reconcileSend(email);
     const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     if (reconciliation._tag === "NotStarted") {
-      return email.cancelRequestedAt === null
-        ? yield* executeClaimedSend(email)
-        : yield* finishCanceled(email, "cancel-requested", outcomeAt);
+      if (email.cancelRequestedAt !== null) {
+        return yield* finishCanceled(email, "cancel-requested", outcomeAt);
+      }
+      return retryNotStarted ? yield* executeClaimedSend(email) : email;
     }
     if (reconciliation._tag === "Applied") {
       const completed = yield* ports.persistence.finishApplied(
@@ -675,37 +682,37 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const refineUnaccountedAmbiguity = Effect.fn("ScheduledEmail.refineUnaccountedAmbiguity")(
-    function* (email: Record) {
-      const reconciliation = yield* ports.reconcileSend(email);
-      const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-      if (reconciliation._tag === "NotApplied") {
-        const preserveAccounting = yield* ports.sendAccountingRecorded(email);
-        const completed = yield* ports.persistence.refineNotApplied(
-          email.workflowId,
-          email.inputDigest,
-          reconciliation.providerLogId,
-          preserveAccounting,
-          outcomeAt,
-        );
-        return yield* settleTerminal(completed);
-      }
-      if (reconciliation._tag !== "Applied") return yield* settleTerminal(email);
-      const completed = yield* ports.persistence.finishApplied(
+  const refineTerminalAmbiguity = Effect.fn("ScheduledEmail.refineTerminalAmbiguity")(function* (
+    email: Record,
+  ) {
+    const reconciliation = yield* ports.reconcileSend(email);
+    const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    if (reconciliation._tag === "NotApplied") {
+      const preserveAccounting = yield* ports.sendAccountingRecorded(email);
+      const completed = yield* ports.persistence.refineNotApplied(
         email.workflowId,
         email.inputDigest,
-        reconciliation.result,
+        reconciliation.providerLogId,
+        preserveAccounting,
         outcomeAt,
       );
       return yield* settleTerminal(completed);
-    },
-  );
+    }
+    if (reconciliation._tag !== "Applied") return yield* settleTerminal(email);
+    const completed = yield* ports.persistence.finishApplied(
+      email.workflowId,
+      email.inputDigest,
+      reconciliation.result,
+      outcomeAt,
+    );
+    return yield* settleTerminal(completed);
+  });
 
   const sendDue = Effect.fn("ScheduledEmail.sendDue")(function* (payload: WorkflowPayload) {
     const email = yield* inspectExecution(payload);
     if (terminalStates.has(email.state)) return yield* settleTerminal(email);
     if (email.state === "sending" || email.state === "send_pending_reconciliation") {
-      return yield* reconcileClaimedSend(email);
+      return yield* reconcileClaimedSend(email, false);
     }
     const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     if (email.cancelRequestedAt !== null)
@@ -722,21 +729,28 @@ export const make = Effect.gen(function* () {
         workflowId: email.workflowId,
       });
     }
-    const begun = yield* ports.persistence.beginSend(email.workflowId, email.inputDigest, now);
-    return yield* executeClaimedSend(begun);
+    const claim = yield* ports.persistence.beginSend(email.workflowId, email.inputDigest, now);
+    return claim._tag === "Acquired"
+      ? yield* executeClaimedSend(claim.email)
+      : yield* reconcileClaimedSend(claim.email, false);
   });
 
   const recoverClaimed = Effect.fn("ScheduledEmail.recoverClaimed")(function* (
     payload: WorkflowPayload,
   ) {
     const email = yield* inspectExecution(payload);
+    const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    if (!terminalStates.has(email.state) && email.cancelRequestedAt !== null) {
+      return yield* finishCanceled(email, "cancel-requested", now);
+    }
     if (
       email.state === "failure" &&
       email.sendOutcome === "ambiguous" &&
       email.sendAccountingBasis === "conservative" &&
-      email.sendAccountedAt === null
+      email.sendStartedAt !== null &&
+      now.getTime() - email.sendStartedAt.getTime() <= providerEvidenceHorizonMilliseconds
     ) {
-      return yield* refineUnaccountedAmbiguity(email);
+      return yield* refineTerminalAmbiguity(email);
     }
     if (terminalStates.has(email.state)) return yield* settleTerminal(email);
     if (email.state === "admitted" || email.state === "accepted") {

@@ -48,6 +48,7 @@ export const Notification = Schema.Struct({
   planPolicyVersion: PlanPolicyVersion,
   resourcePriceVersion: ResourcePriceVersion,
   routeId: ConversationRouteId,
+  sendOutcome: Schema.NullOr(Schema.Literals(["applied", "ambiguous", "notApplied"])),
   state: Schema.Literals(["success", "failure", "canceled"]),
   sourceExposedAt: Schema.NullOr(Schema.Date),
   submissionId: Schema.NullOr(ThinkSubmissionId),
@@ -170,6 +171,8 @@ export const message = (notification: Notification) =>
     ? "The scheduled email was sent. Confirm the completed delivery concisely."
     : notification.state === "canceled"
       ? "The scheduled email was canceled before provider use. Confirm that no email was sent."
-      : "The scheduled email could not be sent. Explain the safe outcome without claiming delivery.";
+      : notification.sendOutcome === "ambiguous"
+        ? "The scheduled email delivery could not be confirmed and it may have been sent. Tell the User not to resend it blindly."
+        : "The scheduled email was not sent. Explain the safe outcome without claiming delivery.";
 
 export * as ScheduledEmailFollowUp from "./scheduled-email-follow-up";

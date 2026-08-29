@@ -1551,7 +1551,7 @@ observe_scheduled_email() {
       'sendToTerminalMilliseconds', extract(epoch from (se.terminal_at - se.send_started_at)) * 1000,
       'terminalToFollowUpMilliseconds', extract(epoch from ((select n.accepted_at from scheduled_email_notifications n where n.workflow_id = se.workflow_id limit 1) - se.terminal_at)) * 1000,
       'notificationCount', (select count(*) from scheduled_email_notifications n where n.workflow_id = se.workflow_id),
-      'acceptedNotifications', (select count(*) from scheduled_email_notifications n where n.workflow_id = se.workflow_id and n.accepted_at is not null and n.submission_id is not null),
+      'acceptedNotifications', (select count(*) from scheduled_email_notifications n where n.workflow_id = se.workflow_id and n.accepted_at is not null and n.think_submission_id is not null),
       'workflowStartUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_type = 'workflow' and a.source_id = se.workflow_id and a.allowance_kind = 'workflowStarts'),
       'gmailSendUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_type = 'integrationAction' and a.source_id = se.action_id and a.allowance_kind = 'gmailSends'),
       'gmailSendBasis', (select a.basis from allowance_usage a where a.user_id = u.id and a.source_type = 'integrationAction' and a.source_id = se.action_id and a.allowance_kind = 'gmailSends' limit 1)
@@ -1600,6 +1600,10 @@ observe_scheduled_email() {
       .workflowStartUsage == 1 and .gmailSendUsage == 1 and .gmailSendBasis == "observed" and
       .agentRuntime.inspectable == true and .agentRuntime.registered == true and
       .agentRuntime.scheduledEmailWorkflow.status == "complete"' \
+    "$feature_dir/state.json" >/dev/null
+  jq --exit-status \
+    --arg recipient "$recipient" --arg subject "$subject" --arg body "$body" --arg dueAt "$due_at" \
+    --from-file "$repo_root/.agents/skills/verify-osfo/helpers/scheduled-email-approval.jq" \
     "$feature_dir/state.json" >/dev/null
   jq --exit-status \
     --arg recipient "$recipient" --arg subject "$subject" --arg body "$body" --arg dueAt "$due_at" \

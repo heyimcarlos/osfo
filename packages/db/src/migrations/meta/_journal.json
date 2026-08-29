@@ -183,6 +183,13 @@
       "when": 1787958168400,
       "tag": "0025_nervous_giant_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1787962022142,
+      "tag": "0026_open_yellowjacket",
+      "breakpoints": true
     }
   ]
 }

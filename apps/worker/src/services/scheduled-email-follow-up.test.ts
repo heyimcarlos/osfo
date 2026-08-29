@@ -26,6 +26,7 @@ describe("ScheduledEmailFollowUp delivery Session selection", () => {
     planPolicyVersion: email.planPolicyVersion,
     resourcePriceVersion: email.resourcePriceVersion,
     routeId: email.routeId,
+    sendOutcome: "applied",
     state: "success",
     sourceExposedAt: null,
     submissionId: null,
@@ -76,4 +77,23 @@ describe("ScheduledEmailFollowUp delivery Session selection", () => {
       expect(replay).toBe(first);
     }),
   );
+
+  it("states ambiguous and definite non-delivery outcomes without inviting a duplicate", () => {
+    expect(
+      ScheduledEmailFollowUp.message({
+        ...notification,
+        sendOutcome: "ambiguous",
+        state: "failure",
+      }),
+    ).toBe(
+      "The scheduled email delivery could not be confirmed and it may have been sent. Tell the User not to resend it blindly.",
+    );
+    expect(
+      ScheduledEmailFollowUp.message({
+        ...notification,
+        sendOutcome: "notApplied",
+        state: "failure",
+      }),
+    ).toBe("The scheduled email was not sent. Explain the safe outcome without claiming delivery.");
+  });
 });

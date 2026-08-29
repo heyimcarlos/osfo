@@ -398,6 +398,9 @@ const parseIntegrationProvider = (
       ? null
       : { apiKey: Redacted.make(env.COMPOSIO_API_KEY) };
   if (value === undefined || value.length === 0) return { _tag: "Composio", config: composio };
+  if (composio !== null) {
+    return invalid("COMPOSIO_API_KEY cannot be configured with INTEGRATION_PROVIDER_BASE_URL");
+  }
   if (stage !== "development" && stage !== "test") {
     return invalid("INTEGRATION_PROVIDER_BASE_URL is restricted to local verification");
   }

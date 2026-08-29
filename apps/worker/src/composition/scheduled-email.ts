@@ -135,34 +135,7 @@ export const serviceLayerFromDatabase = (
         };
       }),
     persistence: ScheduledEmailPostgres.make(database),
-    reconcileSend: (email) =>
-      integrations === null
-        ? Effect.fail(
-            unavailable(
-              "send.reconcile.integrations",
-              new Error("Integration provider is unavailable"),
-            ),
-          )
-        : integrations
-            .inspectAction({
-              actionId: email.actionId,
-              identity: integrationIdentity(email),
-              input: gmailInput(email),
-              userId: email.userId,
-            })
-            .pipe(
-              Effect.map((inspection): ScheduledEmail.SendReconciliation => {
-                if (inspection._tag === "Applied") return inspection;
-                if (inspection._tag === "NotApplied") {
-                  return { _tag: "NotApplied", providerLogId: inspection.providerLogId };
-                }
-                if (inspection._tag === "NotStarted" || inspection._tag === "Pending") {
-                  return inspection;
-                }
-                return { _tag: "Ambiguous" };
-              }),
-              Effect.mapError((cause) => unavailable("send.reconcile", cause)),
-            ),
+    reconcileSend: makeSendReconciler(integrations?.inspectAction ?? null),
     recordSendOutcome: (email) =>
       accounting
         .recordSendOutcome(email)
@@ -234,6 +207,42 @@ export const serviceLayerFromDatabase = (
     Layer.provide(Layer.succeed(ScheduledEmail.Port, port)),
   );
 };
+
+export const makeSendReconciler =
+  (
+    inspectAction: Integrations.Interface["inspectAction"] | null,
+  ): ScheduledEmail.PortInterface["reconcileSend"] =>
+  (email) =>
+    inspectAction === null
+      ? Effect.fail(
+          unavailable(
+            "send.reconcile.integrations",
+            new Error("Integration provider is unavailable"),
+          ),
+        )
+      : inspectAction({
+          actionId: email.actionId,
+          identity: integrationIdentity(email),
+          input: gmailInput(email),
+          userId: email.userId,
+        }).pipe(
+          Effect.catchTag("IntegrationExecutionRejected", (cause) =>
+            cause.code === "resultInvalid"
+              ? Effect.succeed({ _tag: "Ambiguous" as const })
+              : Effect.fail(cause),
+          ),
+          Effect.map((inspection): ScheduledEmail.SendReconciliation => {
+            if (inspection._tag === "Applied") return inspection;
+            if (inspection._tag === "NotApplied") {
+              return { _tag: "NotApplied", providerLogId: inspection.providerLogId };
+            }
+            if (inspection._tag === "NotStarted" || inspection._tag === "Pending") {
+              return inspection;
+            }
+            return { _tag: "Ambiguous" };
+          }),
+          Effect.mapError((cause) => unavailable("send.reconcile", cause)),
+        );
 
 export const effect = <Value, Failure>(
   bindings: Bindings,

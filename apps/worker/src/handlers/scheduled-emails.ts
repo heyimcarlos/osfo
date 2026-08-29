@@ -52,6 +52,7 @@ export const layer = (bindings: Bindings) =>
               Effect.map((items) => ({
                 items: items.map((item) => ({
                   deliveredAt: item.acceptedAt ?? item.claimedAt,
+                  sendOutcome: item.sendOutcome,
                   state: item.state,
                   workflowId: item.workflowId,
                 })),

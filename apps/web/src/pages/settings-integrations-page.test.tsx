@@ -73,8 +73,15 @@ describe("ScheduledEmailControlContent", () => {
           notifications: [
             {
               deliveredAt: new Date("2026-08-29T12:00:30.000Z"),
+              sendOutcome: "applied",
               state: "success",
               workflowId: "scheduled-email:verification",
+            },
+            {
+              deliveredAt: new Date("2026-08-29T12:01:30.000Z"),
+              sendOutcome: "ambiguous",
+              state: "failure",
+              workflowId: "scheduled-email:unconfirmed",
             },
           ],
         }}
@@ -90,6 +97,7 @@ describe("ScheduledEmailControlContent", () => {
     expect(html).toContain("Connected primary Gmail mailbox");
     expect(html).toContain("Approve exact Scheduled Email");
     expect(html).toContain("Scheduled Email sent");
+    expect(html).toContain("Scheduled Email delivery unconfirmed — it may have been sent");
     expect(html).not.toContain("providerLogId");
   });
 });

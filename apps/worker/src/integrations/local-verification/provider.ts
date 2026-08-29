@@ -44,17 +44,23 @@ type LocalVerificationRequest =
   | {
       readonly correlation: ProviderAttemptCorrelation;
       readonly input: ProviderInput;
+      readonly userId: UserId;
     }
   | { readonly toolkits: ReadonlyArray<string>; readonly userId: UserId }
   | { readonly userId: UserId };
 
+type LocalVerificationFetch = (input: URL, init: RequestInit) => Promise<Response>;
+
 /** Deterministic loopback Integration adapter used only by explicit local verification config. */
-export const make = (baseURL: string): IntegrationProvider => ({
+export const make = (
+  baseURL: string,
+  fetchRequest: LocalVerificationFetch = fetch,
+): IntegrationProvider => ({
   createSession: (userId) =>
-    request(baseURL, "sessions", "POST", { userId }, SessionCreated).pipe(
+    request(baseURL, "sessions", "POST", { userId }, SessionCreated, fetchRequest).pipe(
       Effect.map(({ providerSessionId }) => ({
         providerSessionId,
-        session: session(baseURL, userId, providerSessionId),
+        session: session(baseURL, userId, providerSessionId, fetchRequest),
       })),
     ),
   useSession: (userId, providerSessionId) =>
@@ -64,10 +70,16 @@ export const make = (baseURL: string): IntegrationProvider => ({
       "GET",
       undefined,
       SessionCreated,
-    ).pipe(Effect.as(session(baseURL, userId, providerSessionId))),
+      fetchRequest,
+    ).pipe(Effect.as(session(baseURL, userId, providerSessionId, fetchRequest))),
 });
 
-const session = (baseURL: string, userId: UserId, providerSessionId: string): ProviderSession => ({
+const session = (
+  baseURL: string,
+  userId: UserId,
+  providerSessionId: string,
+  fetchRequest: LocalVerificationFetch,
+): ProviderSession => ({
   authorize: (toolkit, callbackUrl) =>
     request(
       baseURL,
@@ -75,6 +87,7 @@ const session = (baseURL: string, userId: UserId, providerSessionId: string): Pr
       "POST",
       { callbackUrl: callbackUrl.href, toolkit, userId },
       ConnectRedirect,
+      fetchRequest,
     ).pipe(Effect.map(({ redirectUrl }) => redirectUrl)),
   disconnect: (connectedAccountId) =>
     request(
@@ -83,6 +96,7 @@ const session = (baseURL: string, userId: UserId, providerSessionId: string): Pr
       "POST",
       { connectedAccountId, userId },
       Schema.Struct({ disconnected: Schema.Literal(true) }),
+      fetchRequest,
     ).pipe(Effect.asVoid),
   execute: (providerTool, input, connectedAccountId) =>
     request(
@@ -91,9 +105,10 @@ const session = (baseURL: string, userId: UserId, providerSessionId: string): Pr
       "POST",
       { connectedAccountId, input, providerTool, userId },
       ExecutionResult,
+      fetchRequest,
     ),
   inspectExecution: (correlation, input) =>
-    inspectExecution(baseURL, providerSessionId, correlation, input),
+    inspectExecution(baseURL, userId, providerSessionId, correlation, input, fetchRequest),
   inspectToolkits: (toolkits) =>
     request(
       baseURL,
@@ -101,22 +116,26 @@ const session = (baseURL: string, userId: UserId, providerSessionId: string): Pr
       "POST",
       { toolkits, userId },
       ToolkitEvidence,
+      fetchRequest,
     ),
   stageFile: (_artifact: IntegrationArtifact) => Effect.fail(unavailable("stageFile")),
 });
 
 const inspectExecution = (
   baseURL: string,
+  userId: UserId,
   providerSessionId: string,
   correlation: ProviderAttemptCorrelation,
   input: ProviderInput,
+  fetchRequest: LocalVerificationFetch,
 ): Effect.Effect<ProviderExecutionEvidence, IntegrationProviderUnavailable> =>
   request(
     baseURL,
     `sessions/${encodeURIComponent(providerSessionId)}/inspect`,
     "POST",
-    { correlation, input },
+    { correlation, input, userId },
     ExecutionEvidence,
+    fetchRequest,
   );
 
 const request = <S extends Schema.Top>(
@@ -125,6 +144,7 @@ const request = <S extends Schema.Top>(
   method: "GET" | "POST",
   body: LocalVerificationRequest | undefined,
   schema: S,
+  fetchRequest: LocalVerificationFetch,
 ): Effect.Effect<S["Type"], IntegrationProviderUnavailable, S["DecodingServices"]> =>
   Effect.gen(function* () {
     const encoded =
@@ -137,17 +157,17 @@ const request = <S extends Schema.Top>(
       try: () => {
         const url = new URL(`_local/integrations/${path}`, baseURL);
         if (method === "GET") {
-          return fetch(url, {
+          return fetchRequest(url, {
             method,
-            redirect: "error",
+            redirect: "manual",
             signal: AbortSignal.timeout(15_000),
           });
         }
-        return fetch(url, {
+        return fetchRequest(url, {
           body: encoded ?? null,
           headers: { "content-type": "application/json" },
           method: "POST",
-          redirect: "error",
+          redirect: "manual",
           signal: AbortSignal.timeout(15_000),
         });
       },
