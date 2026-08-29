@@ -49,50 +49,7 @@ it.effect("rejects source content that requires more than twenty pages", () =>
 
 it.effect("denies launch-v1 Free Document Build before costly work", () =>
   Effect.gen(function* () {
-    const effects: Array<string> = [];
-    const port = DocumentBuild.Port.of({
-      commitPreviewReadyFollowUp: () => Effect.void,
-      commitTerminalFollowUp: () => Effect.void,
-      currentAuthorization: () => Effect.succeed(exhaustedAuthorization("free", false)),
-      discardPendingArtifact: () => Effect.sync(() => void effects.push("artifact")),
-      files: {
-        resolve: () =>
-          Effect.sync(() => {
-            effects.push("source");
-            return [resolvedFile("source text")];
-          }),
-      },
-      persistence: {
-        admit: (build) =>
-          Effect.sync(() => {
-            effects.push("persistence");
-            return { _tag: "Created" as const, build };
-          }),
-        beginExecution: () => Effect.die(new Error("Unexpected execution")),
-        commitPublication: () => Effect.die(new Error("Unexpected publication")),
-        enforceDeadline: () => Effect.die(new Error("Unexpected deadline")),
-        finishSuccess: () => Effect.die(new Error("Unexpected success")),
-        finishTerminal: () => Effect.die(new Error("Unexpected terminal transition")),
-        inspect: () => Effect.succeed(null),
-        markAccepted: () => Effect.die(new Error("Unexpected acceptance")),
-        markAccountingCommitted: () => Effect.die(new Error("Unexpected accounting")),
-        markPreviewStored: () => Effect.die(new Error("Unexpected preview")),
-        recordProviderCost: () =>
-          Effect.sync(() => {
-            effects.push("provider");
-            throw new Error("Unexpected provider cost");
-          }),
-        requestCancel: () => Effect.die(new Error("Unexpected cancel")),
-      },
-      recordWorkflowStart: () => Effect.sync(() => void effects.push("accounting")),
-      workflow: {
-        create: () => Effect.sync(() => void effects.push("workflow")),
-        terminate: () => Effect.void,
-      },
-    });
-    const layer = DocumentBuild.layerWithoutDependencies.pipe(
-      Layer.provide(Layer.succeed(DocumentBuild.Port, port)),
-    );
+    const fixture = startFixture();
     const result = yield* DocumentBuild.Service.pipe(
       Effect.flatMap((builds) =>
         builds.start({
@@ -104,12 +61,40 @@ it.effect("denies launch-v1 Free Document Build before costly work", () =>
           sessionId: SessionId.make("free-document-build-session"),
         }),
       ),
-      Effect.provide(layer),
+      Effect.provide(fixture.layer),
       Effect.result,
     );
 
     expect(result).toMatchObject({ failure: { _tag: "Denied", reason: "missingEntitlement" } });
-    expect(effects).toEqual([]);
+    expect(fixture.effects).toEqual([]);
+  }),
+);
+
+it.effect("starts launch-v1 Adventurer Document Build through normal admission", () =>
+  Effect.gen(function* () {
+    const fixture = startFixture();
+    const result = yield* DocumentBuild.Service.pipe(
+      Effect.flatMap((builds) =>
+        builds.start({
+          actionId: ActionId.make("adventurer-document-build-action"),
+          agentId: AgentId.make("adventurer-document-build-agent"),
+          authorization: availableAuthorization(),
+          request: { fileIds: [FileId.make("document-build-source")], format: "pdf" },
+          routeId: ConversationRouteId.make("adventurer-document-build-route"),
+          sessionId: SessionId.make("adventurer-document-build-session"),
+        }),
+      ),
+      Effect.provide(fixture.layer),
+    );
+
+    expect(result).toMatchObject({ _tag: "Started", build: { state: "accepted" } });
+    expect(fixture.effects).toEqual([
+      "source",
+      "persistence",
+      "workflow",
+      "acceptance",
+      "accounting",
+    ]);
   }),
 );
 
@@ -646,6 +631,64 @@ const resolvedFile = (normalizedText: string): DocumentBuild.ResolvedFile => ({
   normalizedText,
   sha256: FileDigest.make(`sha256:${"a".repeat(64)}`),
 });
+
+const startFixture = () => {
+  const effects: Array<string> = [];
+  let retained: DocumentBuild.Record | null = null;
+  const port = DocumentBuild.Port.of({
+    commitPreviewReadyFollowUp: () => Effect.void,
+    commitTerminalFollowUp: () => Effect.void,
+    currentAuthorization: () => Effect.succeed(availableAuthorization()),
+    discardPendingArtifact: () => Effect.sync(() => void effects.push("artifact")),
+    files: {
+      resolve: () =>
+        Effect.sync(() => {
+          effects.push("source");
+          return [resolvedFile("source text")];
+        }),
+    },
+    persistence: {
+      admit: (build) =>
+        Effect.sync(() => {
+          effects.push("persistence");
+          retained = build;
+          return { _tag: "Created" as const, build };
+        }),
+      beginExecution: () => Effect.die(new Error("Unexpected execution")),
+      commitPublication: () => Effect.die(new Error("Unexpected publication")),
+      enforceDeadline: () => Effect.die(new Error("Unexpected deadline")),
+      finishSuccess: () => Effect.die(new Error("Unexpected success")),
+      finishTerminal: () => Effect.die(new Error("Unexpected terminal transition")),
+      inspect: () => Effect.succeed(retained),
+      markAccepted: (_workflowId, _inputDigest, acceptedAt) =>
+        Effect.gen(function* () {
+          if (retained === null) return yield* Effect.die(new Error("Missing admitted build"));
+          effects.push("acceptance");
+          retained = { ...retained, acceptedAt, state: "accepted" };
+          return retained;
+        }),
+      markAccountingCommitted: () => Effect.die(new Error("Unexpected accounting")),
+      markPreviewStored: () => Effect.die(new Error("Unexpected preview")),
+      recordProviderCost: () =>
+        Effect.sync(() => {
+          effects.push("provider");
+          throw new Error("Unexpected provider cost");
+        }),
+      requestCancel: () => Effect.die(new Error("Unexpected cancel")),
+    },
+    recordWorkflowStart: () => Effect.sync(() => void effects.push("accounting")),
+    workflow: {
+      create: () => Effect.sync(() => void effects.push("workflow")),
+      terminate: () => Effect.void,
+    },
+  });
+  return {
+    effects,
+    layer: DocumentBuild.layerWithoutDependencies.pipe(
+      Layer.provide(Layer.succeed(DocumentBuild.Port, port)),
+    ),
+  };
+};
 
 const revalidationFixture = (
   initial: DocumentBuild.Record,
