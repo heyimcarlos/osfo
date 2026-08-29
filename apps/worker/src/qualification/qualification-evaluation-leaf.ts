@@ -241,6 +241,42 @@ export const QualificationEvaluationLeafReceipt = Schema.Struct({
   version: Schema.Literal("qualification-evaluation-leaf-v1"),
 });
 
+const QualificationEvaluationLeafFailureCode = Schema.Literals([
+  "qualificationEvaluationArrivalConflict",
+  "qualificationEvaluationAuthorityConflict",
+  "qualificationEvaluationLeafInputConflict",
+  "qualificationEvaluationOwnerRequestConflict",
+  "qualificationEvaluationOutputConflict",
+]);
+const QualificationEvaluationLeafMissingCode = Schema.Literals([
+  "qualificationEvaluationArrivalMissing",
+  "qualificationEvaluationAuthorityMissing",
+  "qualificationEvaluationLeafInputMissing",
+  "qualificationEvaluationOwnerRequestMissing",
+]);
+
+/** Closed material outcome retained by the bounded leaf-evaluation Workflow. */
+export const QualificationEvaluationLeafOutcome = Schema.Union([
+  Schema.Struct({
+    receipt: QualificationEvaluationLeafReceipt,
+    status: Schema.Literal("COMPLETE"),
+  }),
+  Schema.Struct({
+    artifactId: Identity,
+    code: QualificationEvaluationLeafFailureCode,
+    source: Schema.NullOr(Schema.Literals(qualificationAuthoritySources)),
+    status: Schema.Literal("FAIL"),
+  }),
+  Schema.Struct({
+    artifactId: Identity,
+    code: QualificationEvaluationLeafMissingCode,
+    source: Schema.NullOr(Schema.Literals(qualificationAuthoritySources)),
+    status: Schema.Literal("MISSING"),
+  }),
+]);
+
+export type QualificationEvaluationLeafOutcome = typeof QualificationEvaluationLeafOutcome.Type;
+
 export type QualificationEvaluationLeafBucket = QualificationEvaluationArtifactBucket;
 
 interface NormalizedAuthorityRecord {
@@ -1018,29 +1054,17 @@ export const evaluateQualificationLeaf = (input: {
   };
 };
 
-const readAuthenticated = async (input: {
-  readonly artifactId: string;
-  readonly bucket: QualificationEvaluationLeafBucket;
-  readonly checksum: string;
-  readonly executionId: string;
-  readonly kind: string;
-  readonly planChecksum: string;
-}): Promise<{
-  readonly encoded: string;
-  readonly object: { readonly customMetadata?: Readonly<Record<string, string>> };
-} | null> => {
-  const object = await input.bucket.get(input.artifactId);
-  if (object === null) return null;
-  const encoded = await object.text();
-  return (await exactMetadata(object, encoded, {
-    "osfo-artifact-checksum": input.checksum,
-    "osfo-execution-id": input.executionId,
-    "osfo-kind": input.kind,
-    "osfo-plan-checksum": input.planChecksum,
-  }))
-    ? { encoded, object }
-    : null;
-};
+const failedLeafOutcome = (
+  code: typeof QualificationEvaluationLeafFailureCode.Type,
+  artifactId: string,
+  source: QualificationAuthoritySource | null = null,
+): QualificationEvaluationLeafOutcome => ({ artifactId, code, source, status: "FAIL" });
+
+const missingLeafOutcome = (
+  code: typeof QualificationEvaluationLeafMissingCode.Type,
+  artifactId: string,
+  source: QualificationAuthoritySource | null = null,
+): QualificationEvaluationLeafOutcome => ({ artifactId, code, source, status: "MISSING" });
 
 /** Read, authenticate, evaluate, and retain exactly one bounded leaf result. */
 export const runQualificationEvaluationLeaf = async (input: {
@@ -1052,20 +1076,25 @@ export const runQualificationEvaluationLeaf = async (input: {
   readonly partitionIndex: number;
   readonly planChecksum: string;
   readonly run: QualificationExecutionRun;
-}): Promise<typeof QualificationEvaluationLeafReceipt.Type | null> => {
-  const leafObject = await readAuthenticated({
-    artifactId: input.leafInputArtifactId,
-    bucket: input.bucket,
-    checksum: input.leafInputChecksum,
-    executionId: input.executionId,
-    kind: "qualification-evaluation-leaf-input-v1",
-    planChecksum: input.planChecksum,
-  });
-  if (leafObject === null) return null;
+}): Promise<QualificationEvaluationLeafOutcome> => {
+  const retainedLeafObject = await input.bucket.get(input.leafInputArtifactId);
+  if (retainedLeafObject === null)
+    return missingLeafOutcome("qualificationEvaluationLeafInputMissing", input.leafInputArtifactId);
+  const leafEncoded = await retainedLeafObject.text();
+  if (
+    !(await exactMetadata(retainedLeafObject, leafEncoded, {
+      "osfo-artifact-checksum": input.leafInputChecksum,
+      "osfo-execution-id": input.executionId,
+      "osfo-kind": "qualification-evaluation-leaf-input-v1",
+      "osfo-plan-checksum": input.planChecksum,
+    }))
+  )
+    return failedLeafOutcome("qualificationEvaluationLeafInputConflict", input.leafInputArtifactId);
   const decodedLeaf = Schema.decodeOption(
     Schema.fromJsonString(QualificationEvaluationLeafInputReceipt),
-  )(leafObject.encoded);
-  if (Option.isNone(decodedLeaf)) return null;
+  )(leafEncoded);
+  if (Option.isNone(decodedLeaf))
+    return failedLeafOutcome("qualificationEvaluationLeafInputConflict", input.leafInputArtifactId);
   const leaf = decodedLeaf.value;
   const { checksum: leafChecksum, ...leafContent } = leaf;
   if (
@@ -1089,15 +1118,17 @@ export const runQualificationEvaluationLeaf = async (input: {
         streamChunkIndex: leaf.streamChunkIndex,
       })
   )
-    return null;
+    return failedLeafOutcome("qualificationEvaluationLeafInputConflict", input.leafInputArtifactId);
   const arrivalId = arrivalShardArtifactId(leaf.executionId, leaf.streamChunkIndex);
   const arrivalObject = await input.bucket.get(arrivalId);
-  if (arrivalObject === null) return null;
+  if (arrivalObject === null)
+    return missingLeafOutcome("qualificationEvaluationArrivalMissing", arrivalId);
   const arrivalEncoded = await arrivalObject.text();
   const decodedArrival = Schema.decodeOption(
     Schema.fromJsonString(QualificationEvaluationArrivalShard),
   )(arrivalEncoded);
-  if (Option.isNone(decodedArrival)) return null;
+  if (Option.isNone(decodedArrival))
+    return failedLeafOutcome("qualificationEvaluationArrivalConflict", arrivalId);
   const arrival = decodedArrival.value;
   const { bodyChecksum, ...arrivalContent } = arrival;
   const arrivalBodySha256 = await sha256Hex(arrivalEncoded);
@@ -1127,8 +1158,9 @@ export const runQualificationEvaluationLeaf = async (input: {
       "osfo-stream-chunk-index": String(leaf.streamChunkIndex),
     }))
   )
-    return null;
+    return failedLeafOutcome("qualificationEvaluationArrivalConflict", arrivalId);
   const authorityShards = new globalThis.Array<typeof QualificationEvaluationAuthorityShard.Type>();
+  const sourceOutcomes = new globalThis.Array<QualificationEvaluationLeafOutcome>();
   for (const authorityInput of leaf.authorityInputs) {
     const artifactId = authorityShardArtifactId(
       leaf.executionId,
@@ -1136,12 +1168,30 @@ export const runQualificationEvaluationLeaf = async (input: {
       leaf.streamChunkIndex,
     );
     const object = await input.bucket.get(artifactId);
-    if (object === null) return null;
+    if (object === null) {
+      sourceOutcomes.push(
+        missingLeafOutcome(
+          "qualificationEvaluationAuthorityMissing",
+          artifactId,
+          authorityInput.source,
+        ),
+      );
+      continue;
+    }
     const encoded = await object.text();
     const decoded = Schema.decodeOption(
       Schema.fromJsonString(QualificationEvaluationAuthorityShard),
     )(encoded);
-    if (Option.isNone(decoded)) return null;
+    if (Option.isNone(decoded)) {
+      sourceOutcomes.push(
+        failedLeafOutcome(
+          "qualificationEvaluationAuthorityConflict",
+          artifactId,
+          authorityInput.source,
+        ),
+      );
+      continue;
+    }
     const shard = decoded.value;
     const { checksum, ...content } = shard;
     if (
@@ -1163,10 +1213,22 @@ export const runQualificationEvaluationLeaf = async (input: {
         "osfo-source": authorityInput.source,
         "osfo-stream-chunk-index": String(leaf.streamChunkIndex),
       }))
-    )
-      return null;
+    ) {
+      sourceOutcomes.push(
+        failedLeafOutcome(
+          "qualificationEvaluationAuthorityConflict",
+          artifactId,
+          authorityInput.source,
+        ),
+      );
+      continue;
+    }
     authorityShards.push(shard);
   }
+  const failedSource = sourceOutcomes.find(({ status }) => status === "FAIL");
+  if (failedSource !== undefined) return failedSource;
+  const missingSource = sourceOutcomes.find(({ status }) => status === "MISSING");
+  if (missingSource !== undefined) return missingSource;
   const evaluated = evaluateQualificationLeaf({
     arrivalShard: arrival,
     authorityShards,
@@ -1195,7 +1257,7 @@ export const runQualificationEvaluationLeaf = async (input: {
           planChecksum: input.planChecksum,
         })) === "CONFLICT"
       )
-        return null;
+        return failedLeafOutcome("qualificationEvaluationOutputConflict", shard.artifactId);
     }
   }
   if (
@@ -1210,7 +1272,10 @@ export const runQualificationEvaluationLeaf = async (input: {
       planChecksum: input.planChecksum,
     })) === "CONFLICT"
   )
-    return null;
+    return failedLeafOutcome(
+      "qualificationEvaluationOutputConflict",
+      evaluated.rootAccumulator.artifactId,
+    );
   const sortedFindings = [...evaluated.findings];
   // oxlint-disable-next-line unicorn/no-array-sort -- ES2023 toSorted is outside the Worker target. This is a fresh copy.
   sortedFindings.sort((left, right) =>
@@ -1251,7 +1316,7 @@ export const runQualificationEvaluationLeaf = async (input: {
         planChecksum: input.planChecksum,
       })) === "CONFLICT"
     )
-      return null;
+      return failedLeafOutcome("qualificationEvaluationOutputConflict", findingShard.artifactId);
     findingShards.push(findingShard);
     previousFindingChecksum = findingShard.checksum;
   }
@@ -1279,7 +1344,7 @@ export const runQualificationEvaluationLeaf = async (input: {
     version: "qualification-evaluation-leaf-v1" as const,
   };
   const receipt = { ...receiptContent, checksum: qualificationChecksum(receiptContent) };
-  return (await retainQualificationEvaluationArtifact({
+  const retainedReceipt = await retainQualificationEvaluationArtifact({
     artifactId: receipt.artifactId,
     bucket: input.bucket,
     checksum: receipt.checksum,
@@ -1291,7 +1356,8 @@ export const runQualificationEvaluationLeaf = async (input: {
       "osfo-verdict": receipt.verdict,
     },
     planChecksum: input.planChecksum,
-  })) === "CONFLICT"
-    ? null
-    : receipt;
+  });
+  return retainedReceipt === "CONFLICT"
+    ? failedLeafOutcome("qualificationEvaluationOutputConflict", receipt.artifactId)
+    : { receipt, status: "COMPLETE" };
 };

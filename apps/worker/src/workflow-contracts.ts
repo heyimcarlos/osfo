@@ -48,3 +48,16 @@ export interface QualificationEvaluationReducerWorkflowPayload {
   readonly outputRunId: string;
   readonly planChecksum: string;
 }
+
+/** One bounded, independently replayable authority-leaf evaluation. */
+export interface QualificationEvaluationLeafWorkflowPayload {
+  readonly executionId: string;
+  readonly leafInputArtifactId: string;
+  readonly leafInputChecksum: string;
+  readonly manifestChecksum: string;
+  readonly partitionIndex: number;
+  readonly planChecksum: string;
+  readonly requestArtifactChecksum: string;
+  readonly requestArtifactId: string;
+  readonly runId: string;
+}

@@ -558,11 +558,13 @@ const sha256Hex = async (encoded: string) => {
 const retainedLeafRuntime = async (
   input: ReturnType<typeof fixture>,
   tamper: "leafMetadata" | "sourceMetadata" | null = null,
+  options: { readonly failAfterFirstOutputPut?: boolean } = {},
 ) => {
   const retained = new Map<
     string,
     { readonly customMetadata: Record<string, string>; readonly value: string }
   >();
+  let failAfterFirstOutputPut = options.failAfterFirstOutputPut === true;
   const store = async (
     artifactId: string,
     encoded: string,
@@ -632,12 +634,16 @@ const retainedLeafRuntime = async (
             },
       );
     },
-    put: (key, value, options) => {
+    put: (key, value, putOptions) => {
       if (retained.has(key)) return Promise.resolve(null);
       retained.set(key, {
-        customMetadata: options.customMetadata ?? {},
+        customMetadata: putOptions.customMetadata ?? {},
         value,
       });
+      if (failAfterFirstOutputPut && key.includes("/evaluation-leaves/")) {
+        failAfterFirstOutputPut = false;
+        return Promise.reject(new Error("lost host response after immutable output put"));
+      }
       return Promise.resolve({ etag: key });
     },
   };
@@ -660,10 +666,12 @@ it("re-authenticates retained leaf/source metadata and replays create-or-identic
   const runtime = await retainedLeafRuntime(input);
   const first = await runtime.runLeaf();
   const second = await runtime.runLeaf();
-  expect(first).not.toBeNull();
+  expect(first.status).toBe("COMPLETE");
   expect(second).toEqual(first);
-  expect(await (await retainedLeafRuntime(input, "leafMetadata")).runLeaf()).toBeNull();
-  expect(await (await retainedLeafRuntime(input, "sourceMetadata")).runLeaf()).toBeNull();
+  expect((await (await retainedLeafRuntime(input, "leafMetadata")).runLeaf()).status).toBe("FAIL");
+  expect((await (await retainedLeafRuntime(input, "sourceMetadata")).runLeaf()).status).toBe(
+    "FAIL",
+  );
 
   const substitutedBody = await retainedLeafRuntime(input);
   const workerArtifactId = input.authorityShards.find(
@@ -676,13 +684,51 @@ it("re-authenticates retained leaf/source metadata and replays create-or-identic
     ...workerBody,
     value: `${workerBody.value} `,
   });
-  expect(await substitutedBody.runLeaf()).toBeNull();
+  expect((await substitutedBody.runLeaf()).status).toBe("FAIL");
 
-  if (first === null) throw new Error("Expected retained leaf receipt");
-  const root = runtime.retained.get(first.rootAccumulatorId);
+  if (first.status !== "COMPLETE") throw new Error("Expected retained leaf receipt");
+  const root = runtime.retained.get(first.receipt.rootAccumulatorId);
   if (root === undefined) throw new Error("Expected root accumulator");
-  runtime.retained.set(first.rootAccumulatorId, { ...root, value: `${root.value} ` });
-  expect(await runtime.runLeaf()).toBeNull();
+  runtime.retained.set(first.receipt.rootAccumulatorId, { ...root, value: `${root.value} ` });
+  expect((await runtime.runLeaf()).status).toBe("FAIL");
+});
+
+it("makes authenticated source failure outrank absence and absence outrank complete sources", async () => {
+  const input = fixture([{ decision: "typedStressRejected", rootId: "root-1" }]);
+  const missingRuntime = await retainedLeafRuntime(input);
+  const missingSource = input.authorityShards[0];
+  if (missingSource === undefined) throw new Error("Expected authority source");
+  missingRuntime.retained.delete(missingSource.artifactId);
+  const missing = await missingRuntime.runLeaf();
+  expect(missing).toMatchObject({
+    artifactId: missingSource.artifactId,
+    code: "qualificationEvaluationAuthorityMissing",
+    status: "MISSING",
+  });
+
+  const mixedRuntime = await retainedLeafRuntime(input);
+  mixedRuntime.retained.delete(missingSource.artifactId);
+  const conflictingSource = input.authorityShards[1];
+  if (conflictingSource === undefined) throw new Error("Expected second authority source");
+  const conflictingBody = mixedRuntime.retained.get(conflictingSource.artifactId);
+  if (conflictingBody === undefined) throw new Error("Expected retained source");
+  mixedRuntime.retained.set(conflictingSource.artifactId, {
+    ...conflictingBody,
+    value: `${conflictingBody.value} `,
+  });
+  expect(await mixedRuntime.runLeaf()).toMatchObject({
+    artifactId: conflictingSource.artifactId,
+    code: "qualificationEvaluationAuthorityConflict",
+    status: "FAIL",
+  });
+});
+
+it("replays an immutable partial output after a lost host response", async () => {
+  const input = fixture([{ decision: "typedStressRejected", rootId: "root-1" }]);
+  const runtime = await retainedLeafRuntime(input, null, { failAfterFirstOutputPut: true });
+  await expect(runtime.runLeaf()).rejects.toThrow("lost host response");
+  const replay = await runtime.runLeaf();
+  expect(replay.status).toBe("COMPLETE");
 });
 
 it("retains more than 256 findings as a deterministic bounded chain", async () => {
@@ -693,9 +739,10 @@ it("retains more than 256 findings as a deterministic bounded chain", async () =
     })),
   );
   const runtime = await retainedLeafRuntime(input);
-  const receipt = await runtime.runLeaf();
-  expect(receipt).not.toBeNull();
-  if (receipt === null) throw new Error("Expected retained finding chain");
+  const outcome = await runtime.runLeaf();
+  expect(outcome.status).toBe("COMPLETE");
+  if (outcome.status !== "COMPLETE") throw new Error("Expected retained finding chain");
+  const receipt = outcome.receipt;
   expect(Number(receipt.findingShardCount)).toBeGreaterThan(1);
   expect(receipt.findingExemplars).toEqual(
     // oxlint-disable-next-line unicorn/no-array-sort -- ES2023 toSorted is outside the Worker target. This is a fresh copy.
