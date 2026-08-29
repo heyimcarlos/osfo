@@ -22,6 +22,7 @@ import {
 
 export type { ProviderInput } from "./integration-provider-input";
 
+/* oxlint-disable effecttsgo/crypto-random-uuid-in-effect -- Provider request UUIDs are opaque durable attempt identities, not deterministic test inputs. */
 /* oxlint-disable eslint/no-underscore-dangle -- Integration outcomes use the repository's _tag discriminator. */
 
 const providerTools = [
@@ -70,6 +71,7 @@ export type ProviderExecutionEvidence =
 
 export interface ProviderAttemptCorrelation {
   readonly connectedAccountId: string;
+  readonly providerRequestId: string | null;
   readonly providerSessionId: string | null;
   readonly providerTool: string;
   readonly startedAt: number;
@@ -102,6 +104,7 @@ export interface ProviderSession {
     input: ProviderInput,
     connectedAccountId: string,
     constraints?: ProviderExecutionConstraints,
+    correlation?: ProviderAttemptCorrelation,
   ) => Effect.Effect<ProviderExecutionResult, IntegrationProviderUnavailable>;
   readonly disconnect: (
     connectedAccountId: string,
@@ -154,6 +157,11 @@ export type PersistedIntegrationAction =
       readonly result: IntegrationEffectCompleted;
     };
 
+export type PersistedIntegrationActionSettlement = Extract<
+  PersistedIntegrationAction,
+  { readonly _tag: "Applied" | "NotApplied" }
+>;
+
 /** Osfo-owned durable state. Provider session identities never cross this persistence seam. */
 export interface IntegrationPersistence {
   readonly readAction: (
@@ -166,6 +174,11 @@ export interface IntegrationPersistence {
     actionId: ActionId,
     value: PersistedIntegrationAction,
   ) => Effect.Effect<void, IntegrationPersistenceUnavailable>;
+  readonly settleAction: (
+    actionId: ActionId,
+    providerRequestId: string,
+    value: PersistedIntegrationActionSettlement,
+  ) => Effect.Effect<PersistedIntegrationAction, IntegrationPersistenceUnavailable>;
   readonly retainSession: (
     userId: UserId,
     providerSessionId: string,
@@ -564,6 +577,7 @@ export const make = (
           };
           const correlation = {
             connectedAccountId: connection.connectedAccountId,
+            providerRequestId: crypto.randomUUID(),
             providerSessionId: actionSession.providerSessionId,
             providerTool: manifest.providerTool,
             startedAt: yield* Clock.currentTimeMillis,
@@ -632,6 +646,8 @@ export const make = (
               manifest.providerTool,
               providerInput,
               connection.connectedAccountId,
+              undefined,
+              correlation,
             ),
           );
           if (Predicate.isTagged(attempted, "Failure")) {
@@ -642,11 +658,18 @@ export const make = (
             });
           }
           if (attempted.value.error !== null) {
-            yield* ports.retainAction(actionId, {
+            const settled = yield* ports.settleAction(actionId, correlation.providerRequestId, {
               _tag: "NotApplied",
               digest,
               providerLogId: attempted.value.logId,
             });
+            if (settled._tag === "Applied") return settled.result;
+            if (settled._tag !== "NotApplied") {
+              return yield* new IntegrationActionAmbiguous({
+                actionId,
+                message: "The integration provider evidence belongs to another Action",
+              });
+            }
             return yield* providerRejection(manifest, attempted.value);
           }
           const result = yield* normalizeEffect(manifest, attempted.value, decoded.success).pipe(
@@ -654,8 +677,18 @@ export const make = (
               ports.retainAction(actionId, { _tag: "Ambiguous", correlation, digest }),
             ),
           );
-          yield* ports.retainAction(actionId, { _tag: "Applied", digest, result });
-          return result;
+          const settled = yield* ports.settleAction(actionId, correlation.providerRequestId, {
+            _tag: "Applied",
+            digest,
+            result,
+          });
+          if (settled._tag !== "Applied") {
+            return yield* new IntegrationActionAmbiguous({
+              actionId,
+              message: "The integration provider evidence belongs to another Action",
+            });
+          }
+          return settled.result;
         }),
       );
     });
@@ -707,6 +740,9 @@ export const make = (
         if (retained.correlation.providerSessionId === null) {
           return { _tag: "Ambiguous" as const };
         }
+        if (retained.correlation.providerRequestId === null) {
+          return { _tag: "Ambiguous" as const };
+        }
         const session = yield* ports.useSession(
           input.userId,
           retained.correlation.providerSessionId,
@@ -715,16 +751,36 @@ export const make = (
         const evidence = yield* session.inspectExecution(retained.correlation, providerInput);
         if (evidence._tag === "Unknown") return { _tag: "Ambiguous" as const };
         if (evidence._tag === "NotApplied") {
-          yield* ports.retainAction(input.actionId, {
-            _tag: "NotApplied",
-            digest,
-            providerLogId: evidence.providerLogId,
-          });
+          const settled = yield* ports.settleAction(
+            input.actionId,
+            retained.correlation.providerRequestId,
+            {
+              _tag: "NotApplied",
+              digest,
+              providerLogId: evidence.providerLogId,
+            },
+          );
+          if (settled._tag === "Applied") {
+            return { _tag: "Applied" as const, result: settled.result };
+          }
+          if (settled._tag !== "NotApplied") return { _tag: "Ambiguous" as const };
           return { _tag: "NotApplied" as const, providerLogId: evidence.providerLogId };
         }
         const result = yield* normalizeEffect(manifest, evidence.execution, decoded.success);
-        yield* ports.retainAction(input.actionId, { _tag: "Applied", digest, result });
-        return { _tag: "Applied" as const, result };
+        const settled = yield* ports.settleAction(
+          input.actionId,
+          retained.correlation.providerRequestId,
+          {
+            _tag: "Applied",
+            digest,
+            result,
+          },
+        );
+        if (settled._tag === "NotApplied") {
+          return { _tag: "NotApplied" as const, providerLogId: settled.providerLogId };
+        }
+        if (settled._tag !== "Applied") return { _tag: "Ambiguous" as const };
+        return { _tag: "Applied" as const, result: settled.result };
       }),
     );
   });

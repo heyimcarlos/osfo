@@ -65,6 +65,7 @@ export interface IntegrationLedgerEntry {
   readonly input: JsonObject;
   readonly logId: string;
   readonly providerSessionId: string;
+  readonly providerRequestId: string;
   readonly providerTool: string;
   readonly recordedAt: string;
   readonly resourceId: string;
@@ -142,6 +143,15 @@ const LocalIntegrationRequestFromJson = Schema.fromJsonString(
     Schema.Struct({
       callbackUrl: Schema.optional(Schema.String),
       connectedAccountId: Schema.optional(Schema.String),
+      correlation: Schema.optional(
+        Schema.Struct({
+          connectedAccountId: Schema.String,
+          providerRequestId: Schema.NullOr(Schema.String),
+          providerSessionId: Schema.NullOr(Schema.String),
+          providerTool: Schema.String,
+          startedAt: Schema.Finite,
+        }),
+      ),
       input: Schema.optional(Schema.JsonObject),
       providerTool: Schema.optional(Schema.String),
       toolkit: Schema.optional(Schema.String),
@@ -598,7 +608,10 @@ const handleLocalIntegrations = (
       if (operation === "inspect") {
         const exact = ledger.filter(
           (entry) =>
-            entry.providerSessionId === sessionId && sameJsonObject(entry.input, input.input),
+            entry.providerSessionId === sessionId &&
+            input.correlation?.providerRequestId !== null &&
+            entry.providerRequestId === input.correlation?.providerRequestId &&
+            sameJsonObject(entry.input, input.input),
         );
         respondJson(
           response,
@@ -673,7 +686,9 @@ const executeLocalIntegration = (
     !connections.has(userId) ||
     input.providerTool !== "GMAIL_SEND_EMAIL" ||
     input.connectedAccountId !== integrationAccountId(userId) ||
-    message === undefined
+    message === undefined ||
+    input.correlation?.providerRequestId === null ||
+    input.correlation?.providerRequestId === undefined
   ) {
     respondJson(response, 409, { error: "Exact Gmail authority is unavailable" });
     return;
@@ -686,6 +701,7 @@ const executeLocalIntegration = (
     input: message,
     logId,
     providerSessionId: sessionId,
+    providerRequestId: input.correlation.providerRequestId,
     providerTool: input.providerTool,
     recordedAt: new Date().toISOString(),
     resourceId,

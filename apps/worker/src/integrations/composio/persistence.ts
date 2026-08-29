@@ -1,11 +1,12 @@
 import { Effect, Schema } from "effect";
 
 import { ManifestVersion, UserId } from "../../domain";
-import type { ActionId } from "../../domain/action-execution";
+import { ActionId } from "../../domain/action-execution";
 import {
   IntegrationPersistenceUnavailable,
   type IntegrationPersistence,
   type PersistedIntegrationAction,
+  type PersistedIntegrationActionSettlement,
 } from "../../services/integrations";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Durable Object transaction callbacks are Promise-based host boundaries; persisted outcomes use the canonical _tag discriminator. */
@@ -15,6 +16,7 @@ const boundedProviderIdentity = Schema.String.check(Schema.isMinLength(1), Schem
 const actionDigest = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const ProviderAttemptCorrelation = Schema.Struct({
   connectedAccountId: boundedProviderIdentity,
+  providerRequestId: Schema.optionalKey(Schema.NullOr(boundedProviderIdentity)),
   providerSessionId: Schema.optionalKey(Schema.NullOr(boundedProviderIdentity)),
   providerTool: boundedProviderIdentity,
   startedAt: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -41,6 +43,16 @@ const PersistedEffectResult = Schema.TaggedStruct("IntegrationEffectCompleted", 
   toolkit: Schema.Literals(["gmail", "googlecalendar", "googledrive"]),
 });
 
+const PersistedNotApplied = Schema.TaggedStruct("NotApplied", {
+  digest: actionDigest,
+  providerLogId: Schema.optionalKey(Schema.NullOr(boundedProviderIdentity)),
+});
+
+const PersistedApplied = Schema.TaggedStruct("Applied", {
+  digest: actionDigest,
+  result: PersistedEffectResult,
+});
+
 const PersistedAction = Schema.Union([
   Schema.TaggedStruct("Pending", {
     correlation: Schema.optionalKey(Schema.NullOr(ProviderAttemptCorrelation)),
@@ -50,12 +62,16 @@ const PersistedAction = Schema.Union([
     correlation: Schema.optionalKey(Schema.NullOr(ProviderAttemptCorrelation)),
     digest: actionDigest,
   }),
-  Schema.TaggedStruct("NotApplied", {
-    digest: actionDigest,
-    providerLogId: Schema.optionalKey(Schema.NullOr(boundedProviderIdentity)),
-  }),
-  Schema.TaggedStruct("Applied", { digest: actionDigest, result: PersistedEffectResult }),
+  PersistedNotApplied,
+  PersistedApplied,
 ]);
+
+const PersistedActionSettlement = Schema.Union([PersistedNotApplied, PersistedApplied]);
+
+const ProviderExecutionClaim = Schema.Struct({
+  actionId: ActionId,
+  version: Schema.Literal(persistenceVersion),
+});
 
 const SessionMapping = Schema.Struct({
   providerSessionId: boundedProviderIdentity,
@@ -135,6 +151,21 @@ export const make = (storage: DurableObjectStorage): IntegrationPersistence => (
       ),
       Effect.mapError(() => persistenceFailure("retainAction")),
     ),
+  settleAction: (actionId, providerRequestId, value) =>
+    Schema.decodeUnknownEffect(PersistedActionSettlement)(value, {
+      onExcessProperty: "error",
+    }).pipe(
+      Effect.map(normalizePersistedAction),
+      Effect.flatMap((validated) =>
+        validated._tag === "Applied" || validated._tag === "NotApplied"
+          ? Effect.tryPromise({
+              try: () => settleAction(storage, actionId, providerRequestId, validated),
+              catch: () => persistenceFailure("settleAction"),
+            })
+          : Effect.fail(persistenceFailure("settleAction")),
+      ),
+      Effect.mapError(() => persistenceFailure("settleAction")),
+    ),
   retainSession: (userId, providerSessionId) =>
     Effect.tryPromise({
       try: () =>
@@ -169,6 +200,7 @@ const normalizePersistedAction = (
           ? null
           : {
               ...value.correlation,
+              providerRequestId: value.correlation.providerRequestId ?? null,
               providerSessionId: value.correlation.providerSessionId ?? null,
             },
     };
@@ -192,6 +224,51 @@ const normalizePersistedAction = (
 
 const sessionKey = (userId: UserId): string => `integration:session:${userId}`;
 const actionKey = (actionId: ActionId): string => `integration:action:${actionId}`;
+const providerExecutionClaimKey = (providerLogId: string): string =>
+  `integration:provider-execution:${providerLogId}`;
+
+const settleAction = (
+  storage: DurableObjectStorage,
+  actionId: ActionId,
+  providerRequestId: string,
+  value: PersistedIntegrationActionSettlement,
+): Promise<PersistedIntegrationAction> =>
+  storage.transaction(async (transaction) => {
+    const retainedValue = await transaction.get(actionKey(actionId));
+    if (retainedValue === undefined) throw new Error("The Action attempt is not retained");
+    const retained = normalizePersistedAction(
+      Schema.decodeUnknownSync(PersistedAction)(retainedValue, { onExcessProperty: "error" }),
+    );
+    if (retained.digest !== value.digest) throw new Error("The Action digest changed");
+    if (retained._tag !== "Pending" && retained._tag !== "Ambiguous") return retained;
+    if (retained.correlation?.providerRequestId !== providerRequestId) return retained;
+    const providerLogId =
+      value._tag === "Applied" ? value.result.evidence.providerLogId : value.providerLogId;
+    if (providerLogId !== null) {
+      const claimKey = providerExecutionClaimKey(providerLogId);
+      const claimedValue = await transaction.get(claimKey);
+      if (claimedValue !== undefined) {
+        const claimed = Schema.decodeUnknownSync(ProviderExecutionClaim)(claimedValue, {
+          onExcessProperty: "error",
+        });
+        if (claimed.actionId !== actionId) {
+          const ambiguous =
+            retained._tag === "Pending" ? { ...retained, _tag: "Ambiguous" as const } : retained;
+          if (retained._tag === "Pending") {
+            await transaction.put(actionKey(actionId), ambiguous);
+          }
+          return ambiguous;
+        }
+      } else {
+        await transaction.put(
+          claimKey,
+          ProviderExecutionClaim.make({ actionId, version: persistenceVersion }),
+        );
+      }
+    }
+    await transaction.put(actionKey(actionId), value);
+    return value;
+  });
 
 const persistenceFailure = (operation: string) =>
   new IntegrationPersistenceUnavailable({

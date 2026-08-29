@@ -37,6 +37,7 @@ type LocalVerificationRequest =
   | { readonly connectedAccountId: string; readonly userId: UserId }
   | {
       readonly connectedAccountId: string;
+      readonly correlation?: ProviderAttemptCorrelation;
       readonly input: ProviderInput;
       readonly providerTool: string;
       readonly userId: UserId;
@@ -98,15 +99,17 @@ const session = (
       Schema.Struct({ disconnected: Schema.Literal(true) }),
       fetchRequest,
     ).pipe(Effect.asVoid),
-  execute: (providerTool, input, connectedAccountId) =>
-    request(
+  execute: (providerTool, input, connectedAccountId, _constraints, correlation) => {
+    const execution = { connectedAccountId, input, providerTool, userId };
+    return request(
       baseURL,
       `sessions/${encodeURIComponent(providerSessionId)}/execute`,
       "POST",
-      { connectedAccountId, input, providerTool, userId },
+      correlation === undefined ? execution : { ...execution, correlation },
       ExecutionResult,
       fetchRequest,
-    ),
+    );
+  },
   inspectExecution: (correlation, input) =>
     inspectExecution(baseURL, userId, providerSessionId, correlation, input, fetchRequest),
   inspectToolkits: (toolkits) =>
