@@ -94,7 +94,10 @@ export const FileResolutionRequest = Schema.Struct({
 });
 export type FileResolutionRequest = typeof FileResolutionRequest.Type;
 
-/** Minimal private RPC result. Storage keys and upload lifecycle facts never cross this seam. */
+/**
+ * Minimal private RPC result. JSRPC preserves Type-side bigint values; storage keys and upload
+ * lifecycle facts never cross this seam.
+ */
 export const FileResolutionResult = Schema.Union([
   Schema.TaggedStruct("Resolved", { files: Schema.Array(ResolvedFile) }),
   Schema.TaggedStruct("Unavailable", {

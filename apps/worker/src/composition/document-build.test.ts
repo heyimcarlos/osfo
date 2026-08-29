@@ -321,6 +321,22 @@ for (const files of [
   );
 }
 
+it.effect("accepts bigint source facts preserved by the Directory JSRPC boundary", () =>
+  Effect.gen(function* () {
+    const fileId = FileId.make("document-build-file");
+    const result = yield* DocumentBuildComposition.makeFileResolver(
+      directoryBinding({
+        files: {
+          _tag: "Resolved",
+          files: [resolvedRpcFile(fileId)],
+        },
+      }).OSFO_DIRECTORY,
+    ).resolve(AgentId.make("document-build-agent"), UserId.make("document-build-user"), [fileId]);
+
+    expect(result).toEqual([resolvedRpcFile(fileId)]);
+  }),
+);
+
 for (const returnedIds of [
   ["source-a"],
   ["source-b", "source-a"],
@@ -441,7 +457,7 @@ const directoryBinding = (results: {
 });
 
 const resolvedRpcFile = (identity: string) => ({
-  byteLength: "6",
+  byteLength: 6n,
   fileId: FileId.make(identity),
   fileName: `${identity}.txt`,
   mediaType: "text/plain",

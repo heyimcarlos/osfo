@@ -4595,7 +4595,9 @@ export class OsfoAgent extends Think<Env> {
     );
     return Effect.runPromise(
       resolution.pipe(
-        Effect.flatMap(Schema.decodeUnknownEffect(DocumentBuild.FileResolutionResult)),
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(Schema.toType(DocumentBuild.FileResolutionResult)),
+        ),
         Effect.orElseSucceed(
           () => ({ _tag: "Unavailable", reason: "resolverUnavailable" }) as const,
         ),

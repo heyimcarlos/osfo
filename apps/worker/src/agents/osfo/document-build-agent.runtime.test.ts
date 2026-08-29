@@ -103,6 +103,62 @@ it("publishes loadSkill for the verifier's natural Document Build request", asyn
   });
 });
 
+it("returns a ready stored source across the Agent RPC boundary", async () => {
+  // SAFETY: wrangler.runtime.jsonc owns this test-only direct binding to OsfoAgent.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The checked runtime config declares the binding that generated production Env types omit.
+  const runtimeEnv = env as typeof env & {
+    readonly OSFO_AGENT_TEST: DurableObjectNamespace<OsfoAgent>;
+  };
+  const agentId = AgentId.make("document-build-file-resolution-agent");
+  const userId = UserId.make("document-build-file-resolution-user");
+  const fileId = "web:00000000-0000-4000-8000-000000000290";
+  const stub = runtimeEnv.OSFO_AGENT_TEST.get(runtimeEnv.OSFO_AGENT_TEST.idFromName(agentId));
+
+  await runInDurableObject(stub, async (_boundAgent, state) => {
+    const agent = new OsfoAgent(state, runtimeEnv);
+    await agent.initialize({
+      agentId,
+      initializationId: "document-build-file-resolution-initialization",
+      initializedAt: "2026-08-29T12:00:00.000Z",
+      routeId: "document-build-file-resolution-route",
+      sessionId: "document-build-file-resolution-session",
+    });
+    await agent.onStart();
+    state.storage.sql.exec(
+      `INSERT INTO osfo_files (
+         accepted_at, allowance_period_id, byte_length, deleted_at, file_id,
+         file_name, media_type, normalization_claimed_at, normalization_error,
+         normalized_text, object_key, provenance_json, sha256, state, upload_id, user_id
+       ) VALUES (?, ?, 12, NULL, ?, ?, 'text/plain', NULL, NULL, ?, ?, '{}', ?, 'ready', ?, ?)`,
+      "2026-08-29T12:00:00.000Z",
+      "document-build-file-resolution-period",
+      fileId,
+      "Source.txt",
+      "source text",
+      "users/document-build-file-resolution/source",
+      `sha256:${"a".repeat(64)}`,
+      "document-build-file-resolution-upload",
+      userId,
+    );
+
+    await expect(
+      agent.resolveDocumentBuildFiles({ agentId, fileIds: [fileId], userId }),
+    ).resolves.toEqual({
+      _tag: "Resolved",
+      files: [
+        {
+          byteLength: 12n,
+          fileId,
+          fileName: "Source.txt",
+          mediaType: "text/plain",
+          normalizedText: "source text",
+          sha256: `sha256:${"a".repeat(64)}`,
+        },
+      ],
+    });
+  });
+});
+
 it("executes a launch-v1 Free Document Build Action without pausing for Approval", async () => {
   // SAFETY: wrangler.runtime.jsonc owns this test-only direct binding to OsfoAgent.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The checked runtime config declares the binding that generated production Env types omit.
