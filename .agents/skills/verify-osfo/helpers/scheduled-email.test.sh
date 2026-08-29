@@ -20,8 +20,9 @@ for required in \
   '.workflowStartUsage == 1' \
   'n.think_submission_id is not null' \
   '.scheduledEmailWorkflow.status == "complete"' \
+  "--data-urlencode 'cron=0 * * * *'" \
   'provider_boundary=local-loopback-gmail-not-live-oauth'; do
-  if ! grep -F -q "$required" "$control"; then
+  if ! grep -F -q -- "$required" "$control"; then
     printf 'Scheduled Email verifier is missing invariant: %s\n' "$required" >&2
     exit 1
   fi

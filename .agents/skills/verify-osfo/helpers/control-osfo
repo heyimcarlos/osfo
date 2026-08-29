@@ -1153,7 +1153,9 @@ reconcile_account_deletion() {
   worker_origin="$(state_value "$run_id" worker-origin)"
   user_id="$(state_value "$run_id" account-deletion-user-id)"
   require_owned_identifier 'User ID' "$user_id"
-  curl --fail --silent --show-error "$worker_origin/cdn-cgi/handler/scheduled" >/dev/null
+  curl --fail --silent --show-error --get \
+    --data-urlencode 'cron=0 * * * *' \
+    "$worker_origin/cdn-cgi/handler/scheduled" >/dev/null
   for attempt in {1..120}; do
     user_exists="$(docker exec --env PGPASSWORD=osfo "$container_id" \
       psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
