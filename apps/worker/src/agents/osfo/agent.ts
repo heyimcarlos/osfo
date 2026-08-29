@@ -294,6 +294,7 @@ import {
   type ForgetKnowledgeInput,
   makeOsfoActions,
   RetainedDocumentInput,
+  decodeScheduledEmailActionInput,
   sanitizePendingApproval,
   type SessionDeleteInput,
 } from "./action-registry";
@@ -5338,7 +5339,12 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
-  async #startScheduledEmail(input: ScheduledEmail.Request, actionId: ActionId) {
+  async #startScheduledEmail(untrustedInput: unknown, actionId: ActionId) {
+    const input = await Effect.runPromise(
+      decodeScheduledEmailActionInput(untrustedInput).pipe(
+        Effect.mapError((cause) => scheduledEmailUnavailable("start.input", cause)),
+      ),
+    );
     const metadata = await Effect.runPromise(
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
     );

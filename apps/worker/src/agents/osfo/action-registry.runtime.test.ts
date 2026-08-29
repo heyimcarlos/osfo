@@ -4,7 +4,7 @@ import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 import { presentOsfoAction, scheduledEmailStartActionName } from "./action-presentation";
-import { sanitizePendingApproval } from "./action-registry";
+import { decodeScheduledEmailActionInput, sanitizePendingApproval } from "./action-registry";
 import { ActionPresentationId } from "./think-action-approvals";
 
 it.effect("preserves encoded Scheduled Email input through the pending Approval boundary", () =>
@@ -44,5 +44,25 @@ it.effect("preserves encoded Scheduled Email input through the pending Approval 
       operation: "integration.effect",
       title: "Schedule Gmail message",
     });
+  }),
+);
+
+it.effect("decodes retained Scheduled Email input before approved Action execution", () =>
+  Effect.gen(function* () {
+    const retained = {
+      body: "Exact scheduled body",
+      gmailResource: "primary",
+      recipients: ["recipient@example.test"],
+      scheduledAt: "2026-09-01T16:00:00.000Z",
+      subject: "Exact scheduled subject",
+    } as const;
+    const resumed = yield* decodeScheduledEmailActionInput(retained);
+    const initial = yield* decodeScheduledEmailActionInput({
+      ...retained,
+      scheduledAt: resumed.scheduledAt,
+    });
+
+    expect(resumed).toEqual(initial);
+    expect(resumed.scheduledAt.toISOString()).toBe(retained.scheduledAt);
   }),
 );

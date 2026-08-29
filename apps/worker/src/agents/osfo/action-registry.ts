@@ -30,6 +30,7 @@ import {
 import { personalSkillDeleteActionName, SkillDeleteInput } from "./personal-skill-tools";
 import type { PersonalSkillId } from "../../domain/personal-skill";
 import type { ResearchReport } from "../../services/research-report";
+import { ScheduledEmail } from "../../services/scheduled-email";
 import {
   CalendarCreateEventInput,
   CalendarDeleteEventInput,
@@ -290,5 +291,14 @@ const withInput = (
   Object.assign({}, approval, {
     descriptor: Object.assign({}, approval.descriptor, { input }),
   });
+
+const ScheduledEmailActionInput = Schema.Union([
+  ScheduledEmail.Request,
+  ScheduledEmail.EncodedRequest,
+]);
+
+/** Normalize both the initial validated input and Think's JSON-retained durable-pause input. */
+export const decodeScheduledEmailActionInput =
+  Schema.decodeUnknownEffect(ScheduledEmailActionInput);
 
 const withoutInput = (approval: PendingApproval): PendingApproval => withInput(approval, {});
