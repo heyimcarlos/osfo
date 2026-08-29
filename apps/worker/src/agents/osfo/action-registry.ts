@@ -209,7 +209,10 @@ export const sanitizePendingApproval = (approval: PendingApproval): PendingAppro
     return withInput(
       approval,
       Schema.decodeUnknownOption(ScheduledEmailStartInput)(approval.descriptor.input).pipe(
-        Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
+        Option.match({
+          onNone: () => ({}),
+          onSome: Schema.encodeSync(ScheduledEmailStartInput),
+        }),
       ),
     );
   }
