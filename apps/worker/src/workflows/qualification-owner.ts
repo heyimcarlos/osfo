@@ -2,6 +2,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import { Schema } from "effect";
 
 import { qualificationAuthoritySources } from "../qualification/authority-sources";
+import { QualificationEvaluationLeafInputReceipt } from "../qualification/qualification-evaluation-reducer";
 import {
   QualificationProductAuthorityMissing,
   QualificationProductAuthorityPreflight,
@@ -88,6 +89,8 @@ const PartitionCompletion = Schema.Struct({
   chunkIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   executionId: Schema.String,
   failureCode: Schema.NullOr(Schema.String),
+  leafInputArtifactChecksum: Schema.NullOr(Schema.String),
+  leafInputArtifactId: Schema.NullOr(Schema.String),
   missingSources: Schema.Array(Schema.Literals(qualificationAuthoritySources)),
   outcome: Schema.Literals(["COMPLETE", "FAIL", "MISSING"]),
   partitionIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -118,7 +121,10 @@ const qualificationPartitionBatchSize = 50;
 const qualificationFanoutSafetyMs = 60_000;
 
 interface QualificationOwnerArtifactBucket {
-  readonly get: (key: string) => Promise<{ readonly text: () => Promise<string> } | null>;
+  readonly get: (key: string) => Promise<{
+    readonly customMetadata?: Readonly<Record<string, string>>;
+    readonly text: () => Promise<string>;
+  } | null>;
   readonly list: (options: {
     readonly cursor?: string;
     readonly include: ReadonlyArray<"customMetadata">;
@@ -146,6 +152,11 @@ const listedSha256 = (value: ArrayBuffer | ArrayBufferView): string => {
       ? new Uint8Array(value)
       : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
+const sha256Hex = async (encoded: string): Promise<string> => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 };
 
 const retainImmutableJson = async (
@@ -269,6 +280,54 @@ const verifyPartitionCompletionPages = async (input: {
           const hasExactSources =
             receipt.sourceChecksums.length === exactSources.size &&
             receipt.sourceChecksums.every(({ source }) => exactSources.delete(source));
+          let leafInputValid = receipt.outcome !== "COMPLETE";
+          if (
+            receipt.outcome === "COMPLETE" &&
+            receipt.leafInputArtifactId !== null &&
+            receipt.leafInputArtifactChecksum !== null
+          ) {
+            const leafObject = await input.bucket.get(receipt.leafInputArtifactId);
+            if (leafObject !== null) {
+              const leafEncoded = await leafObject.text();
+              try {
+                const leaf = Schema.decodeSync(
+                  Schema.fromJsonString(QualificationEvaluationLeafInputReceipt),
+                )(leafEncoded);
+                const { checksum: leafChecksum, ...leafContent } = leaf;
+                const expectedPartitionAuthorityChecksum = qualificationChecksum({
+                  arrivalChecksum: leaf.arrivalChecksum,
+                  executionId: input.executionId,
+                  partitionIndex: expected.partitionIndex,
+                  planChecksum: input.planChecksum,
+                  sourceChecksums: receipt.sourceChecksums,
+                  streamChunkIndex: expected.streamChunkIndex,
+                });
+                leafInputValid =
+                  leaf.artifactId === receipt.leafInputArtifactId &&
+                  leaf.checksum === receipt.leafInputArtifactChecksum &&
+                  leaf.checksum === qualificationChecksum(leafContent) &&
+                  leaf.executionId === input.executionId &&
+                  leaf.partitionAuthorityChecksum === expectedPartitionAuthorityChecksum &&
+                  leaf.partitionIndex === expected.partitionIndex &&
+                  leaf.planChecksum === input.planChecksum &&
+                  leaf.streamChunkIndex === expected.streamChunkIndex &&
+                  qualificationChecksum(leaf.authorityInputs) ===
+                    qualificationChecksum(receipt.sourceChecksums) &&
+                  leafObject.customMetadata?.["osfo-artifact-checksum"] === leafChecksum &&
+                  leafObject.customMetadata?.["osfo-body-sha256"] ===
+                    (await sha256Hex(leafEncoded)) &&
+                  leafObject.customMetadata?.["osfo-execution-id"] === input.executionId &&
+                  leafObject.customMetadata?.["osfo-index"] === String(expected.streamChunkIndex) &&
+                  leafObject.customMetadata?.["osfo-kind"] ===
+                    "qualification-evaluation-leaf-input-v1" &&
+                  leafObject.customMetadata?.["osfo-plan-checksum"] === input.planChecksum &&
+                  leafObject.customMetadata?.["osfo-record-count"] ===
+                    String(leaf.arrivalRecordCount);
+              } catch {
+                leafInputValid = false;
+              }
+            }
+          }
           if (
             object.key !==
               `${partitionCompletionPrefix(input.executionId)}/${expected.streamChunkIndex.toString().padStart(8, "0")}.json` ||
@@ -282,8 +341,11 @@ const verifyPartitionCompletionPages = async (input: {
             (receipt.outcome === "COMPLETE"
               ? !hasExactSources ||
                 receipt.missingSources.length !== 0 ||
-                receipt.failureCode !== null
+                receipt.failureCode !== null ||
+                receipt.leafInputArtifactChecksum === null ||
+                receipt.leafInputArtifactId === null
               : receipt.sourceChecksums.length !== 0) ||
+            !leafInputValid ||
             checksum !== qualificationChecksum(content) ||
             metadata["osfo-artifact-checksum"] !== checksum ||
             metadata["osfo-body-sha256"] !==
@@ -318,6 +380,9 @@ const verifyPartitionCompletionPages = async (input: {
           source,
         }));
         const pageContent = {
+          evaluationLeafInputDigest: qualificationChecksum(
+            receipts.map(({ leafInputArtifactChecksum }) => leafInputArtifactChecksum),
+          ),
           executionId: input.executionId,
           failureCodes: receipts.flatMap(({ failureCode }) =>
             failureCode === null ? [] : [failureCode],

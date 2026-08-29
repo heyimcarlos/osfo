@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 /* oxlint-disable effecttsgo/async-function -- R2 persistence fakes exercise Promise-native adapter replay. */
 
 import {
+  qualificationEvaluationForestBudget,
   qualificationEvaluationFindingShard,
   qualificationEvaluationFindingSummaryShard,
   qualificationEvaluationLeafInputReceipt,
@@ -21,6 +22,13 @@ import {
 } from "./qualification-evaluation-reducer";
 import { qualificationAuthoritySources } from "./authority-sources";
 import { canonicalQualificationJson } from "./qualification-checksum";
+import {
+  createBoundedBetaManifest,
+  createScaleQualifiedPublicManifest,
+} from "./qualification-manifest";
+import { createQualificationExecutionPlan } from "./execution";
+import { qualificationStageDimensionCount } from "./stage-evidence";
+import { manifestVersions } from "../../test/support/qualification-fixtures";
 
 const descriptor = (runId: string, count: number) => ({
   artifactPrefix: `${runId}/samples`,
@@ -126,7 +134,7 @@ it("binds a leaf to exactly one ordered copy of every producer authority", () =>
       source,
     })),
     executionId: "execution",
-    partitionCompletionChecksum: "completion",
+    partitionAuthorityChecksum: "partition-authority",
     partitionIndex: 7,
     planChecksum: "plan",
     streamChunkIndex: 7,
@@ -240,6 +248,47 @@ it("proves bounded Beta and Public reducer topology", () => {
   expect(qualificationEvaluationMaximumDimensionWorkflowSteps).toBeLessThan(
     qualificationEvaluationReducerStepBudget,
   );
+});
+
+it.each([
+  [
+    "BoundedBeta",
+    createBoundedBetaManifest(manifestVersions),
+    {
+      createBatchCount: 23,
+      maximumDimensionValues: 150_274,
+      maximumOwnerSteps: 49,
+      reducerWorkflowCount: 1_113,
+      sortedDimensionCount: 153,
+    },
+  ],
+  [
+    "ScaleQualifiedPublic",
+    createScaleQualifiedPublicManifest(manifestVersions),
+    {
+      createBatchCount: 216,
+      maximumDimensionValues: 1_750_422,
+      maximumOwnerSteps: 435,
+      reducerWorkflowCount: 10_783,
+      sortedDimensionCount: 431,
+    },
+  ],
+] as const)(
+  "budgets the complete %s reducer forest below owner limits",
+  (level, manifest, expected) => {
+    const plan = createQualificationExecutionPlan(manifest, 0, `evaluation-budget-${level}`);
+    const budget = qualificationEvaluationForestBudget(plan);
+    expect(budget).toEqual(expected);
+    expect(budget.createBatchCount).toBeLessThan(10_000);
+    expect(budget.maximumOwnerSteps).toBeLessThan(10_000);
+  },
+);
+
+it("derives reducer stage dimensions from the frozen assessment policy", () => {
+  expect(qualificationStageDimensionCount("target")).toBe(15);
+  expect(qualificationStageDimensionCount("stress")).toBe(15);
+  expect(qualificationStageDimensionCount("dependencyOutageRecovery")).toBe(15);
+  expect(qualificationStageDimensionCount("allCold")).toBe(4);
 });
 
 it("selects exact boundary, p50, p95, and p99 order statistics from a full output page", () => {
@@ -415,7 +464,7 @@ it("replays byte-identical leaf, sorted, finding-summary, and reducer persistenc
       source,
     })),
     executionId: "execution",
-    partitionCompletionChecksum: "completion",
+    partitionAuthorityChecksum: "partition-authority",
     partitionIndex: 0,
     planChecksum: "plan",
     streamChunkIndex: 0,

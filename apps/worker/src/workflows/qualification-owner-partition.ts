@@ -3,6 +3,10 @@ import { Data, Schema } from "effect";
 
 import { qualificationAuthoritySources } from "../qualification/authority-sources";
 import {
+  qualificationEvaluationLeafInputReceipt,
+  retainQualificationEvaluationArtifact,
+} from "../qualification/qualification-evaluation-reducer";
+import {
   QualificationProductAuthorityArrivalChunk,
   QualificationProductAuthorityMissing,
   QualificationProductAuthoritySourceBundleComplete,
@@ -87,6 +91,8 @@ export interface QualificationOwnerPartitionStep {
 
 const partitionCompletionArtifactId = (executionId: string, streamChunkIndex: number) =>
   `qualification/executions/${encodeURIComponent(executionId)}/owner-partitions/${streamChunkIndex.toString().padStart(8, "0")}.json`;
+const evaluationLeafInputArtifactId = (executionId: string, streamChunkIndex: number) =>
+  `qualification/executions/${encodeURIComponent(executionId)}/evaluation-leaf-inputs/${streamChunkIndex.toString().padStart(8, "0")}.json`;
 
 const sourceArtifactId = (executionId: string, source: string, streamChunkIndex: number) =>
   `qualification/executions/${encodeURIComponent(executionId)}/producer-authority/${source}/partitions/${streamChunkIndex.toString().padStart(8, "0")}/00000000.json`;
@@ -194,6 +200,7 @@ const verifyArrivalBody = async (
       message: "Arrival partition authority conflicts",
     });
   }
+  return { bodyChecksum, recordCount: shard.records.length };
 };
 
 const retainCompletion = async (
@@ -202,6 +209,8 @@ const retainCompletion = async (
   outcome: {
     readonly arrival: typeof QualificationProductAuthorityArrivalChunk.Type | null;
     readonly failureCode: string | null;
+    readonly leafInputArtifactChecksum: string | null;
+    readonly leafInputArtifactId: string | null;
     readonly missingSources: ReadonlyArray<(typeof qualificationAuthoritySources)[number]>;
     readonly sourceChecksums: ReadonlyArray<{
       readonly checksum: string;
@@ -220,6 +229,8 @@ const retainCompletion = async (
     chunkIndex: payload.chunks[0]?.chunkIndex ?? -1,
     executionId: payload.executionId,
     failureCode: outcome.failureCode,
+    leafInputArtifactChecksum: outcome.leafInputArtifactChecksum,
+    leafInputArtifactId: outcome.leafInputArtifactId,
     missingSources: outcome.missingSources,
     outcome: outcome.status,
     partitionIndex: payload.partitionIndex,
@@ -331,6 +342,8 @@ const runQualificationOwnerPartitionAttempt = async (input: {
       return retainCompletion(input.env, input.payload, {
         arrival,
         failureCode: null,
+        leafInputArtifactChecksum: null,
+        leafInputArtifactId: null,
         missingSources: result.outcome.missingSources.map(({ source }) => source),
         sourceChecksums: [],
         status: "MISSING",
@@ -353,6 +366,8 @@ const runQualificationOwnerPartitionAttempt = async (input: {
     return retainCompletion(input.env, input.payload, {
       arrival,
       failureCode: null,
+      leafInputArtifactChecksum: null,
+      leafInputArtifactId: null,
       missingSources: qualificationAuthoritySources,
       sourceChecksums: [],
       status: "MISSING",
@@ -366,13 +381,19 @@ const runQualificationOwnerPartitionAttempt = async (input: {
       message: "Authority bundle conflicts with its frozen chunk",
     });
   }
-  const sourceChecksums = await input.step.do(
+  const verifiedAuthority = await input.step.do(
     `verify authority bodies ${chunk.streamChunkIndex}`,
     async () => {
-      await verifyArrivalBody(input.env, input.payload, arrival);
-      return readSourceChecksums(input.env, input.payload, chunk.streamChunkIndex);
+      const arrivalBody = await verifyArrivalBody(input.env, input.payload, arrival);
+      const sourceChecksums = await readSourceChecksums(
+        input.env,
+        input.payload,
+        chunk.streamChunkIndex,
+      );
+      return { arrivalBody, sourceChecksums };
     },
   );
+  const sourceChecksums = verifiedAuthority.sourceChecksums;
   const bundledSources = new Set<string>(qualificationAuthoritySources);
   if (
     bundle.recordCounts.some(({ source }) => !bundledSources.delete(source)) ||
@@ -386,10 +407,59 @@ const runQualificationOwnerPartitionAttempt = async (input: {
       message: "Authority bundle record counts conflict",
     });
   }
+  const leafInput = qualificationEvaluationLeafInputReceipt({
+    artifactId: evaluationLeafInputArtifactId(input.payload.executionId, chunk.streamChunkIndex),
+    arrivalChecksum: verifiedAuthority.arrivalBody.bodyChecksum,
+    arrivalRecordCount: verifiedAuthority.arrivalBody.recordCount,
+    authorityInputs: sourceChecksums.map(({ checksum, recordCount, source }) => ({
+      checksum,
+      recordCount,
+      source: Schema.decodeUnknownSync(Schema.Literals(qualificationAuthoritySources))(source),
+    })),
+    executionId: input.payload.executionId,
+    partitionAuthorityChecksum: qualificationChecksum({
+      arrivalChecksum: verifiedAuthority.arrivalBody.bodyChecksum,
+      executionId: input.payload.executionId,
+      partitionIndex: input.payload.partitionIndex,
+      planChecksum: input.payload.planChecksum,
+      sourceChecksums,
+      streamChunkIndex: chunk.streamChunkIndex,
+    }),
+    partitionIndex: input.payload.partitionIndex,
+    planChecksum: input.payload.planChecksum,
+    streamChunkIndex: chunk.streamChunkIndex,
+  });
+  if (leafInput === null) {
+    throw new QualificationPartitionConflict({
+      message: "Evaluation leaf input conflicts with partition authority",
+    });
+  }
+  const leafRetention = await input.step.do(
+    `retain evaluation leaf input ${chunk.streamChunkIndex}`,
+    () =>
+      retainQualificationEvaluationArtifact({
+        artifactId: leafInput.artifactId,
+        bucket: input.env.ARTIFACTS,
+        checksum: leafInput.checksum,
+        encoded: canonicalQualificationJson(leafInput),
+        executionId: input.payload.executionId,
+        kind: "qualification-evaluation-leaf-input-v1",
+        metadata: {
+          "osfo-index": String(chunk.streamChunkIndex),
+          "osfo-record-count": String(leafInput.arrivalRecordCount),
+        },
+        planChecksum: input.payload.planChecksum,
+      }),
+  );
+  if (leafRetention === "CONFLICT") {
+    throw new QualificationPartitionConflict({ message: "Evaluation leaf input conflicts" });
+  }
   return input.step.do(`retain partition completion ${chunk.streamChunkIndex}`, () =>
     retainCompletion(input.env, input.payload, {
       arrival,
       failureCode: null,
+      leafInputArtifactChecksum: leafInput.checksum,
+      leafInputArtifactId: leafInput.artifactId,
       missingSources: [],
       sourceChecksums,
       status: "COMPLETE",
@@ -408,6 +478,8 @@ export const runQualificationOwnerPartition = async (
       retainCompletion(input.env, input.payload, {
         arrival: null,
         failureCode: "qualificationPartitionAuthorityConflict",
+        leafInputArtifactChecksum: null,
+        leafInputArtifactId: null,
         missingSources: [],
         sourceChecksums: [],
         status: "FAIL",

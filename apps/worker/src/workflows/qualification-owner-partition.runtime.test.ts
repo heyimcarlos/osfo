@@ -205,6 +205,16 @@ it("retains byte-identical COMPLETE once and replays no arrival or provider effe
   expect(result.second).toEqual(result.first);
   expect(result.arrivalEffects).toBe(1);
   expect(result.sourceCollections).toBe(2);
+  expect(result.first).toMatchObject({
+    leafInputArtifactChecksum: expect.any(String),
+    leafInputArtifactId:
+      "qualification/executions/partition-execution/evaluation-leaf-inputs/00000000.json",
+  });
+  expect(
+    result.retained.get(
+      "qualification/executions/partition-execution/evaluation-leaf-inputs/00000000.json",
+    ),
+  ).toBeDefined();
   expect(result.firstBytes).toBe(
     result.retained.get(
       "qualification/executions/partition-execution/owner-partitions/00000000.json",

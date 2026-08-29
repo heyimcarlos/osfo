@@ -205,6 +205,20 @@ const measuredLanes: ReadonlyArray<StageMeasurement["lane"]> = [
   "allCold",
   "dependencyOutageRecovery",
 ];
+const objectivesForLane = (lane: StageMeasurement["lane"]): ReadonlyArray<StageObjective> =>
+  lane === "allCold"
+    ? stageObjectives.filter(({ stage }) => stage === "coldDurableAcceptance")
+    : stageObjectives;
+const causesForObjective = (objective: StageObjective): ReadonlyArray<ColdCause | undefined> =>
+  objective.stage === "coldDurableAcceptance" ? coldCauses : [undefined];
+
+/** Exact number of independently reduced stage splits required for one lane run. */
+export const qualificationStageDimensionCount = (lane: StageMeasurement["lane"]): number =>
+  objectivesForLane(lane).reduce(
+    (total, objective) => total + causesForObjective(objective).length,
+    0,
+  );
+
 const percentile = (sorted: ReadonlyArray<number>, ratio: number): number =>
   sorted.at(Math.max(0, Math.ceil(sorted.length * ratio) - 1)) ?? 0;
 
@@ -234,13 +248,8 @@ export const assessStageEvidence = (
   for (const lane of measuredLanes) {
     for (const region of manifest.regions) {
       for (let repetition = 1; repetition <= repetitionsFor(manifest, lane); repetition += 1) {
-        const objectives =
-          lane === "allCold"
-            ? stageObjectives.filter(({ stage }) => stage === "coldDurableAcceptance")
-            : stageObjectives;
-        for (const objective of objectives) {
-          const causes = objective.stage === "coldDurableAcceptance" ? coldCauses : [undefined];
-          for (const coldCause of causes) {
+        for (const objective of objectivesForLane(lane)) {
+          for (const coldCause of causesForObjective(objective)) {
             const matches = parsedMeasurements.filter(
               (candidate) =>
                 candidate.lane === lane &&

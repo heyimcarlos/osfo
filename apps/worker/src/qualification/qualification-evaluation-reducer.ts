@@ -1,7 +1,9 @@
 import { Array, Order, Schema } from "effect";
 
 import { qualificationAuthoritySources } from "./authority-sources";
+import type { QualificationExecutionPlan } from "./execution";
 import { qualificationChecksum } from "./qualification-checksum";
+import { isMeasuredStageLane, qualificationStageDimensionCount } from "./stage-evidence";
 
 /* oxlint-disable effecttsgo/async-function -- Web Crypto and R2 are Promise-native adapter boundaries owned by this module. */
 
@@ -59,7 +61,7 @@ export const QualificationEvaluationLeafInputReceipt = Schema.Struct({
   ),
   checksum: Identity,
   executionId: Identity,
-  partitionCompletionChecksum: Identity,
+  partitionAuthorityChecksum: Identity,
   partitionIndex: NonNegativeInteger,
   planChecksum: Identity,
   streamChunkIndex: NonNegativeInteger,
@@ -169,7 +171,7 @@ export const qualificationEvaluationLeafInputReceipt = (input: {
     readonly source: (typeof qualificationAuthoritySources)[number];
   }>;
   readonly executionId: string;
-  readonly partitionCompletionChecksum: string;
+  readonly partitionAuthorityChecksum: string;
   readonly partitionIndex: number;
   readonly planChecksum: string;
   readonly streamChunkIndex: number;
@@ -197,7 +199,7 @@ export const qualificationEvaluationLeafInputReceipt = (input: {
     arrivalRecordCount: input.arrivalRecordCount,
     authorityInputs: [...input.authorityInputs],
     executionId: input.executionId,
-    partitionCompletionChecksum: input.partitionCompletionChecksum,
+    partitionAuthorityChecksum: input.partitionAuthorityChecksum,
     partitionIndex: input.partitionIndex,
     planChecksum: input.planChecksum,
     streamChunkIndex: input.streamChunkIndex,
@@ -550,6 +552,75 @@ export const qualificationEvaluationMaximumDimensionContinuations = Math.ceil(
 export const qualificationEvaluationMaximumDimensionWorkflowSteps =
   qualificationEvaluationMaximumDimensionContinuations + 2;
 export const qualificationEvaluationMaximumContinuationResultBytes = 32_768;
+
+export const qualificationEvaluationGlobalSortedDimensions = [
+  "acceptedRootIds",
+  "billUsageIds",
+  "operation:file",
+  "operation:memory",
+  "operation:modelStep",
+  "operation:search",
+  "operation:tool",
+  "operation:workflowStep",
+  "productFactIds",
+  "providerEffectIds",
+  "publicPromotionRootIds",
+  "thinkSubmissionIds",
+  "usageIds",
+  "workflowStartIds",
+] as const;
+export const qualificationEvaluationReducerCreateBatchLimit = 50;
+
+const mergeWorkflowCount = (leafWidth: number): number => {
+  let count = 0;
+  let width = leafWidth;
+  while (width > 1) {
+    width = Math.ceil(width / qualificationEvaluationReducerFanIn);
+    count += width;
+  }
+  return count;
+};
+
+export interface QualificationEvaluationForestBudget {
+  readonly createBatchCount: number;
+  readonly maximumDimensionValues: number;
+  readonly maximumOwnerSteps: number;
+  readonly reducerWorkflowCount: number;
+  readonly sortedDimensionCount: number;
+}
+
+/** Exact Workflow fan-out budget for every sorted gate dimension in one frozen plan. */
+export const qualificationEvaluationForestBudget = (
+  plan: QualificationExecutionPlan,
+): QualificationEvaluationForestBudget => {
+  const totalArrivalChunks = plan.runs.reduce(
+    (total, run) => total + Math.ceil(run.arrivalCount / qualificationEvaluationSampleShardLimit),
+    0,
+  );
+  const globalDimensions = qualificationEvaluationGlobalSortedDimensions.length;
+  const globalWorkflows = mergeWorkflowCount(totalArrivalChunks) * globalDimensions;
+  let stageDimensions = 0;
+  let stageWorkflows = 0;
+  for (const run of plan.runs) {
+    if (run.kind !== "lane" || !isMeasuredStageLane(run.lane)) continue;
+    const dimensions = qualificationStageDimensionCount(run.lane);
+    stageDimensions += dimensions;
+    stageWorkflows +=
+      mergeWorkflowCount(Math.ceil(run.arrivalCount / qualificationEvaluationSampleShardLimit)) *
+      dimensions;
+  }
+  const reducerWorkflowCount = globalWorkflows + stageWorkflows;
+  const createBatchCount = Math.ceil(
+    reducerWorkflowCount / qualificationEvaluationReducerCreateBatchLimit,
+  );
+  return {
+    createBatchCount,
+    maximumDimensionValues: plan.runs.reduce((total, run) => total + run.arrivalCount, 0),
+    maximumOwnerSteps: createBatchCount + Math.max(0, createBatchCount - 1) + 4,
+    reducerWorkflowCount,
+    sortedDimensionCount: globalDimensions + stageDimensions,
+  };
+};
 
 /** Prove a fan-in tree whose individual continuations remain bounded at Public scale. */
 export const qualificationEvaluationReducerBudget = (
