@@ -1,0 +1,110 @@
+import { describe, expect, it } from "@effect/vitest";
+
+import {
+  completeMemorySemanticEvidence,
+  withMemorySemanticObservations,
+} from "../../test/support/memory-semantic-fixture";
+import { qualificationChecksum } from "./qualification-checksum";
+import { assessMemorySemanticEvidence } from "./memory-semantic-evidence";
+
+describe("Memory semantic qualification", () => {
+  it("passes the retained correction, extraction, isolation, and search-readiness matrix", () => {
+    expect(assessMemorySemanticEvidence(completeMemorySemanticEvidence())).toEqual({
+      findings: [],
+      verdict: "PASS",
+    });
+  });
+
+  it("keeps absent phases and telemetry-only observations MISSING", () => {
+    const evidence = completeMemorySemanticEvidence();
+    const observations = evidence.observations
+      .filter(({ checkpoint }) => checkpoint !== "afterDreaming")
+      .map((observation, index) =>
+        index === 0 ? Object.assign({}, observation, { authorityFactIds: [] }) : observation,
+      );
+
+    expect(
+      assessMemorySemanticEvidence(withMemorySemanticObservations(evidence, observations)),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "memorySemanticObservationMissing", verdict: "MISSING" }),
+        expect.objectContaining({ code: "memorySemanticAuthorityMissing", verdict: "MISSING" }),
+      ]),
+      verdict: "MISSING",
+    });
+  });
+
+  it("fails a learned negative claim and refuses done as a search barrier", () => {
+    const evidence = completeMemorySemanticEvidence();
+    const observations = evidence.observations.map((observation) => {
+      if (observation.assertion === "quotedThirdPartyExcluded") {
+        return { ...observation, observed: "present" as const };
+      }
+      if (
+        observation.assertion === "correctionCurrent" &&
+        observation.checkpoint === "afterIndexingBeforeDreaming"
+      ) {
+        return {
+          ...observation,
+          searchAttempts: observation.searchAttempts.map((attempt) => ({
+            ...attempt,
+            observedAtUtc: "2026-08-24T11:59:59.000Z",
+          })),
+        };
+      }
+      return observation;
+    });
+
+    expect(
+      assessMemorySemanticEvidence(withMemorySemanticObservations(evidence, observations)),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "memorySemanticAssertionFailed", verdict: "FAIL" }),
+        expect.objectContaining({ code: "memorySearchReadinessMissing", verdict: "MISSING" }),
+      ]),
+      verdict: "FAIL",
+    });
+  });
+
+  it("requires the pre-ingest admin tag path and bounded exhausted recall", () => {
+    const evidence = completeMemorySemanticEvidence();
+    const {
+      boundedRecall: _boundedRecall,
+      containerConfiguration: _containerConfiguration,
+      ...withoutProviderLessons
+    } = evidence;
+    const { artifactChecksum: _checksum, ...content } = withoutProviderLessons;
+    expect(
+      assessMemorySemanticEvidence({
+        ...withoutProviderLessons,
+        artifactChecksum: qualificationChecksum(content),
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "memoryBoundedRecallMissing", verdict: "MISSING" }),
+        expect.objectContaining({
+          code: "memoryContainerConfigurationMissing",
+          verdict: "MISSING",
+        }),
+      ]),
+      verdict: "MISSING",
+    });
+
+    const boundedRecall = evidence.boundedRecall;
+    expect(boundedRecall).toBeDefined();
+    if (boundedRecall === undefined) return;
+    const slow = { ...evidence, boundedRecall: { ...boundedRecall, elapsedMs: 751 } };
+    const { artifactChecksum: _slowChecksum, ...slowContent } = slow;
+    expect(
+      assessMemorySemanticEvidence({
+        ...slow,
+        artifactChecksum: qualificationChecksum(slowContent),
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "memoryBoundedRecallFailed", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
+    });
+  });
+});

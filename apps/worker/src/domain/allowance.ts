@@ -157,6 +157,7 @@ export const BillingDatabaseOperation = Schema.Literals([
   "inspectAllowances",
   "recordUsage",
   "recordUsageEvent",
+  "readQualificationAcceptanceEvidence",
   "loadBillingSubscription",
   "applyStripeSnapshot",
 ]);

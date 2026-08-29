@@ -17,6 +17,7 @@ import type { UsageEvent } from "../../domain/usage-event";
 
 export * from "./errors";
 export type { BillingDatabase } from "./database";
+export { readQualificationAcceptanceEvidence } from "./qualification-evidence";
 
 /** Small public PostgreSQL interface for allowance transactions. */
 export interface Interface {
