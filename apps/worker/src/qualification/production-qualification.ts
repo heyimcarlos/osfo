@@ -135,6 +135,24 @@ export interface ProductionQualificationReport {
   readonly verdict: QualificationVerdict;
 }
 
+/** Fail-closed report when the durable harness cannot assemble evaluable evidence. */
+export const unavailableProductionQualificationReport = (
+  manifest: ProductionQualificationManifest,
+  code: string,
+  detail: string,
+  verdict: "FAIL" | "MISSING",
+): ProductionQualificationReport => ({
+  adventurerContributionMargin: null,
+  costSummaries: [],
+  findings: [{ code, detail, subject: manifest.acceptanceLevel, verdict }],
+  foreignExchangeUsdMicros: 0n,
+  freeCostPerActivePeriodUsdMicros: null,
+  recoveryReservePerSecond: null,
+  stageSummaries: [],
+  taxesUsdMicros: 0n,
+  verdict,
+});
+
 const finding = (
   code: string,
   detail: string,
@@ -757,10 +775,6 @@ export const qualifyProduction = (
         const recoveryAuthority = run.evidence.authorityArtifact;
         if (laneRun !== undefined && recoveryAuthority !== undefined) {
           const acceptedRoots = new Set(laneRun.acceptedRootIds);
-          const backlogRoots = new Set(
-            recoveryAuthority.stateObservations[0]?.backlogRootIds ?? [],
-          );
-          const recoverableRoots = new Set([...acceptedRoots, ...backlogRoots]);
           const acceptedAuthorityRoots = recoveryAuthority.throughputWindows.flatMap(
             ({ acceptedRootIds }) => acceptedRootIds,
           );
@@ -768,66 +782,85 @@ export const qualifyProduction = (
           const completedAuthorityRoots = recoveryAuthority.throughputWindows.flatMap(
             ({ completedRootIds }) => completedRootIds,
           );
-          const completedRoots = new Set(completedAuthorityRoots);
-          const finalObservation = recoveryAuthority.stateObservations.reduce<
-            (typeof recoveryAuthority.stateObservations)[number] | undefined
-          >(
-            (latest, observation) =>
-              latest === undefined ||
-              Date.parse(observation.observedAtUtc) > Date.parse(latest.observedAtUtc)
-                ? observation
-                : latest,
-            undefined,
+          const transitionByRoot = new Map(
+            recoveryAuthority.rootTransitions.map((transition) => [transition.rootId, transition]),
           );
-          const statePartitionInvalid = recoveryAuthority.stateObservations.some((observation) => {
-            const backlog = new Set(observation.backlogRootIds);
-            const lost = new Set(observation.lostAcceptedRootIds);
+          const recoverableRoots = new Set(transitionByRoot.keys());
+          const completedRoots = new Set(
+            recoveryAuthority.rootTransitions
+              .filter(({ terminalState }) => terminalState === "completed")
+              .map(({ rootId }) => rootId),
+          );
+          const faultWindow = laneRun.windows.find(({ kind }) => kind === "fault");
+          const throughputWindow = recoveryAuthority.throughputWindows[0];
+          const dispositionByRoot = new Map(
+            laneRun.dispositions.map((disposition) => [disposition.rootId, disposition]),
+          );
+          const acceptedTransitionConflict = laneRun.acceptedRootIds.some((rootId) => {
+            const transition = transitionByRoot.get(rootId);
+            const disposition = dispositionByRoot.get(rootId);
             return (
-              observation.durablyWaitingRootIds.some((rootId) => !backlog.has(rootId)) ||
-              [...lost].some((rootId) => backlog.has(rootId)) ||
-              [...backlog, ...lost].some((rootId) => !recoverableRoots.has(rootId))
+              transition === undefined ||
+              disposition === undefined ||
+              transition.admissionAuthorityFactId !== disposition.authorityFactId ||
+              transition.admittedAtUtc !== disposition.resolvedAtUtc
             );
           });
-          const terminalAuthorityRoots = [
-            ...recoveryAuthority.throughputWindows.flatMap(
-              ({ completedRootIds }) => completedRootIds,
-            ),
-            ...recoveryAuthority.stateObservations.flatMap(
-              ({ backlogRootIds, durablyWaitingRootIds, lostAcceptedRootIds }) => [
-                ...backlogRootIds,
-                ...durablyWaitingRootIds,
-                ...lostAcceptedRootIds,
-              ],
-            ),
-          ];
+          const timelineConflict = recoveryAuthority.stateObservations.some((observation) => {
+            const observedAt = Date.parse(observation.observedAtUtc);
+            const expectedBacklog = recoveryAuthority.rootTransitions
+              .filter(({ terminalAtUtc }) => Date.parse(terminalAtUtc) > observedAt)
+              .map(({ rootId }) => rootId);
+            const expectedLost = recoveryAuthority.rootTransitions
+              .filter(
+                ({ terminalAtUtc, terminalState }) =>
+                  terminalState === "lost" && Date.parse(terminalAtUtc) <= observedAt,
+              )
+              .map(({ rootId }) => rootId);
+            return (
+              qualificationChecksum(Array.sort(observation.backlogRootIds, Order.String)) !==
+                qualificationChecksum(Array.sort(expectedBacklog, Order.String)) ||
+              qualificationChecksum(Array.sort(observation.durablyWaitingRootIds, Order.String)) !==
+                qualificationChecksum(Array.sort(expectedBacklog, Order.String)) ||
+              qualificationChecksum(Array.sort(observation.lostAcceptedRootIds, Order.String)) !==
+                qualificationChecksum(Array.sort(expectedLost, Order.String))
+            );
+          });
           if (
             acceptedAuthorityRoots.some((rootId) => !acceptedRoots.has(rootId)) ||
             acceptedAuthorityRoots.length !== acceptedAuthoritySet.size ||
             acceptedAuthoritySet.size !== acceptedRoots.size ||
             [...acceptedRoots].some((rootId) => !acceptedAuthoritySet.has(rootId)) ||
-            (recoveryAuthority.stateObservations[0]?.backlogRootIds.length ?? 0) !==
-              backlogRoots.size ||
-            [...backlogRoots].some((rootId) => acceptedRoots.has(rootId)) ||
-            terminalAuthorityRoots.some((rootId) => !recoverableRoots.has(rootId))
+            acceptedTransitionConflict ||
+            faultWindow === undefined ||
+            throughputWindow === undefined ||
+            recoveryAuthority.throughputWindows.length !== 1 ||
+            throughputWindow.windowStartedAtUtc !== faultWindow.startedAtUtc ||
+            throughputWindow.windowEndedAtUtc !== faultWindow.endedAtUtc ||
+            recoveryAuthority.outageEndedAtUtc !== faultWindow.endedAtUtc ||
+            recoveryAuthority.stateObservations[0]?.observedAtUtc !== faultWindow.endedAtUtc ||
+            recoveryAuthority.rootTransitions.some(
+              ({ admittedAtUtc, rootId }) =>
+                !acceptedRoots.has(rootId) &&
+                Date.parse(admittedAtUtc) >= Date.parse(faultWindow.startedAtUtc),
+            )
           ) {
             findings.push(
               finding(
                 "recoveryAuthorityRunConflict",
-                `${subject} raw recovery facts name roots outside the accepted run`,
+                `${subject} raw recovery facts are not joined to the exact accepted arrivals and fault window`,
                 recoveryAuthority.artifactId,
                 "FAIL",
               ),
             );
           }
           if (
-            statePartitionInvalid ||
-            completedAuthorityRoots.length !== completedRoots.size ||
+            timelineConflict ||
+            completedAuthorityRoots.length !== new Set(completedAuthorityRoots).size ||
             completedRoots.size !== recoverableRoots.size ||
-            [...recoverableRoots].some((rootId) => !completedRoots.has(rootId)) ||
-            finalObservation === undefined ||
-            finalObservation.backlogRootIds.length > 0 ||
-            finalObservation.durablyWaitingRootIds.length > 0 ||
-            finalObservation.lostAcceptedRootIds.length > 0
+            completedRoots.size !== new Set(completedAuthorityRoots).size ||
+            [...completedRoots].some((rootId) => !completedAuthorityRoots.includes(rootId)) ||
+            [...acceptedRoots].some((rootId) => !recoverableRoots.has(rootId))
           ) {
             findings.push(
               finding(

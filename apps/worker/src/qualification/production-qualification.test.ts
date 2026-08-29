@@ -194,6 +194,89 @@ describe("Production qualification", () => {
     });
   });
 
+  it("rejects recovery demand stretched outside the executed fault window", () => {
+    const evidence = completeProductionEvidence();
+    const first = evidence.recoveryRuns[0];
+    const authority = first?.evidence.authorityArtifact;
+    expect(first).toBeDefined();
+    expect(authority).toBeDefined();
+    if (first === undefined || authority === undefined) return;
+    const window = authority.throughputWindows[0];
+    expect(window).toBeDefined();
+    if (window === undefined) return;
+    const { artifactChecksum: _artifactChecksum, ...authorityContent } = {
+      ...authority,
+      throughputWindows: [
+        {
+          ...window,
+          windowStartedAtUtc: DateTime.formatIso(
+            DateTime.makeUnsafe(Date.parse(window.windowStartedAtUtc) - 100_000),
+          ),
+        },
+      ],
+    };
+    const changed = {
+      ...authorityContent,
+      artifactChecksum: qualificationChecksum(authorityContent),
+    };
+
+    expect(
+      qualifyProduction({
+        ...evidence,
+        recoveryRuns: evidence.recoveryRuns.map((run) =>
+          run === first
+            ? Object.assign({}, run, {
+                evidence: Object.assign({}, run.evidence, { authorityArtifact: changed }),
+              })
+            : run,
+        ),
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "recoveryAuthorityRunConflict", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
+    });
+  });
+
+  it("rejects an early empty backlog that omits pending accepted roots", () => {
+    const evidence = completeProductionEvidence();
+    const first = evidence.recoveryRuns[0];
+    const authority = first?.evidence.authorityArtifact;
+    expect(first).toBeDefined();
+    expect(authority).toBeDefined();
+    if (first === undefined || authority === undefined) return;
+    const observations = authority.stateObservations.map((observation, index) =>
+      index === 1 ? { ...observation, backlogRootIds: [], durablyWaitingRootIds: [] } : observation,
+    );
+    const { artifactChecksum: _artifactChecksum, ...authorityContent } = {
+      ...authority,
+      stateObservations: observations,
+    };
+    const changed = {
+      ...authorityContent,
+      artifactChecksum: qualificationChecksum(authorityContent),
+    };
+
+    expect(
+      qualifyProduction({
+        ...evidence,
+        recoveryRuns: evidence.recoveryRuns.map((run) =>
+          run === first
+            ? Object.assign({}, run, {
+                evidence: Object.assign({}, run.evidence, { authorityArtifact: changed }),
+              })
+            : run,
+        ),
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "recoveryAuthorityCoverageConflict", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
+    });
+  });
+
   it("fails when raw recovery facts omit accepted work from every state transition", () => {
     const evidence = completeProductionEvidence();
     const first = evidence.recoveryRuns[0];
@@ -488,6 +571,20 @@ describe("Production qualification", () => {
         runs: {
           ...evidence.runs,
           challengeRuns: evidence.runs.challengeRuns.map((run) => {
+            const receipt = run.faultControllerReceipt;
+            if (receipt === null) return run;
+            const { artifactChecksum: _artifactChecksum, ...content } = {
+              ...receipt,
+              manifestChecksum: manifest.manifestChecksum,
+            };
+            return Object.assign({}, run, {
+              faultControllerReceipt: {
+                ...content,
+                artifactChecksum: qualificationChecksum(content),
+              },
+            });
+          }),
+          laneRuns: evidence.runs.laneRuns.map((run) => {
             const receipt = run.faultControllerReceipt;
             if (receipt === null) return run;
             const { artifactChecksum: _artifactChecksum, ...content } = {

@@ -18,6 +18,14 @@ export interface RecoveryAuthorityArtifact {
   readonly artifactId: string;
   readonly outageEndedAtUtc: string;
   readonly runArtifactChecksum: string;
+  readonly rootTransitions: ReadonlyArray<{
+    readonly admissionAuthorityFactId: string;
+    readonly admittedAtUtc: string;
+    readonly rootId: string;
+    readonly terminalAtUtc: string;
+    readonly terminalAuthorityFactId: string;
+    readonly terminalState: "completed" | "lost";
+  }>;
   readonly source: string;
   readonly sourceVersion: string;
   readonly stateObservations: ReadonlyArray<{
@@ -74,6 +82,16 @@ export const RecoveryEvidenceBoundary = Schema.Struct({
       artifactId: QualificationId,
       outageEndedAtUtc: QualificationUtcInstant,
       runArtifactChecksum: ArtifactChecksum,
+      rootTransitions: Schema.Array(
+        Schema.Struct({
+          admissionAuthorityFactId: QualificationId,
+          admittedAtUtc: QualificationUtcInstant,
+          rootId: QualificationId,
+          terminalAtUtc: QualificationUtcInstant,
+          terminalAuthorityFactId: QualificationId,
+          terminalState: Schema.Literals(["completed", "lost"]),
+        }),
+      ),
       source: QualificationId,
       sourceVersion: QualificationId,
       stateObservations: Schema.Array(StateObservationBoundary),
@@ -105,8 +123,12 @@ const derivedRecovery = (artifact: RecoveryAuthorityArtifact) => {
     (total, window) => total + window.acceptedRootIds.length,
     0,
   );
-  const completedRoots = artifact.throughputWindows.reduce(
-    (total, window) => total + window.completedRootIds.length,
+  const completed = artifact.rootTransitions.filter(
+    ({ terminalState }) => terminalState === "completed",
+  );
+  const completionSeconds = completed.reduce(
+    (maximum, transition) =>
+      Math.max(maximum, elapsedSeconds(artifact.outageEndedAtUtc, transition.terminalAtUtc)),
     0,
   );
   const observations = Array.sortWith(
@@ -144,7 +166,7 @@ const derivedRecovery = (artifact: RecoveryAuthorityArtifact) => {
       backlogSettled === undefined
         ? null
         : elapsedSeconds(artifact.outageEndedAtUtc, backlogSettled.observedAtUtc),
-    recoveryGoodputPerSecond: throughputSeconds > 0 ? completedRoots / throughputSeconds : null,
+    recoveryGoodputPerSecond: completionSeconds > 0 ? completed.length / completionSeconds : null,
   };
 };
 
@@ -190,10 +212,25 @@ export const assessRecovery = (evidence: RecoveryEvidence): RecoveryAssessment =
   const allCompletedRootIds = artifact.throughputWindows.flatMap(
     ({ completedRootIds }) => completedRootIds,
   );
+  const transitionRootIds = artifact.rootTransitions.map(({ rootId }) => rootId);
+  const transitionFactIds = artifact.rootTransitions.flatMap(
+    ({ admissionAuthorityFactId, terminalAuthorityFactId }) => [
+      admissionAuthorityFactId,
+      terminalAuthorityFactId,
+    ],
+  );
   const authorityInvalid =
     artifactChecksum !== qualificationChecksum(artifactContent) ||
     artifact.throughputWindows.length === 0 ||
     artifact.stateObservations.length < 2 ||
+    artifact.rootTransitions.length === 0 ||
+    !identitiesAreUnique(transitionRootIds) ||
+    !identitiesAreUnique(transitionFactIds) ||
+    artifact.rootTransitions.some(
+      ({ admittedAtUtc, terminalAtUtc }) =>
+        Date.parse(terminalAtUtc) < Date.parse(admittedAtUtc) ||
+        Date.parse(terminalAtUtc) < Date.parse(artifact.outageEndedAtUtc),
+    ) ||
     artifact.throughputWindows.some(
       (window) =>
         window.authorityFactIds.length === 0 ||

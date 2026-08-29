@@ -1,4 +1,4 @@
-import { Data, Effect, Schema } from "effect";
+import { Clock, Data, DateTime, Duration, Effect, Fiber, Schema, Stream } from "effect";
 
 import type {
   ChallengeLane,
@@ -18,8 +18,10 @@ import {
   qualificationExecutionEvidence,
   qualificationRunExecutionReceipt,
   qualifyProduction,
+  unavailableProductionQualificationReport,
 } from "./production-qualification";
-import { qualificationChecksum } from "./qualification-checksum";
+import { canonicalQualificationJson, qualificationChecksum } from "./qualification-checksum";
+import type { FaultControllerReceipt } from "./qualification-runs";
 import {
   openArrivalCount,
   openWorkloadArrivalAt,
@@ -119,9 +121,30 @@ export interface QualificationExecutionArtifactStore<E> {
 }
 
 export interface QualificationArrivalAuthorityRecord {
+  readonly attemptId: string;
   readonly authorityFactId: string;
   readonly executedAtUtc: string;
+  readonly executionId: string;
   readonly rootId: string;
+  readonly submittedAtUtc: string;
+}
+
+/** Stable authority idempotency identity for one offered root. */
+export interface QualificationArrivalAttempt {
+  readonly attemptId: string;
+  readonly executionId: string;
+  readonly planChecksum: string;
+  readonly runId: string;
+}
+
+/** Frozen idempotency and trigger contract for one controller operation. */
+export interface QualificationFaultAttempt {
+  readonly attemptId: string;
+  readonly executionId: string;
+  readonly planChecksum: string;
+  readonly requiresAuthorityFact: boolean;
+  readonly runId: string;
+  readonly scheduledTriggerAtUtc: string;
 }
 
 export type QualificationAuthorityReadPhase = "collect" | "reload";
@@ -149,12 +172,20 @@ export interface QualificationAuthorityCollectors<E> {
 
 /** Production ports: the harness owns arrival enumeration, retention, and verification. */
 export interface DurableQualificationExecutionPorts<E> {
+  readonly applyFault: (
+    manifest: ProductionQualificationManifest,
+    plan: QualificationExecutionPlan,
+    run: QualificationExecutionRun,
+    fault: FaultInjection,
+    attempt: QualificationFaultAttempt,
+  ) => Effect.Effect<FaultControllerReceipt, E>;
   readonly artifacts: QualificationExecutionArtifactStore<E>;
   readonly authorities: QualificationAuthorityCollectors<E>;
   readonly executeArrival: (
     manifest: ProductionQualificationManifest,
     run: QualificationExecutionRun,
     arrival: OpenWorkloadArrival | QualificationCharacterizationArrival,
+    attempt: QualificationArrivalAttempt,
   ) => Effect.Effect<QualificationArrivalAuthorityRecord, E>;
   readonly prepare: (
     manifest: ProductionQualificationManifest,
@@ -247,10 +278,10 @@ export function* qualificationRunArrivals(
       if (window.kind !== "offer" && window.kind !== "fault") continue;
       const count = openArrivalCount(window);
       const input = {
-        identityPrefix: `${run.runId}:window:${window.index}`,
+        identityPrefix: run.runId,
         journeyMix: manifest.journeyMix,
         planMixBasisPoints: manifest.planMixBasisPoints,
-        seed: run.seed + window.index,
+        seed: run.seed,
         startsAtEpochMs: window.startsAtEpochMs,
         window,
       };
@@ -276,7 +307,7 @@ export function* qualificationRunArrivals(
             : challenge.planPolicy === "referenceMix" && index % 10 === 9
               ? "adventurer"
               : "free",
-        rootId: `${run.runId}:${index}`,
+        rootId: `${run.runId}-${index}`,
       };
     }
     return;
@@ -339,10 +370,14 @@ const plannedRuns = function* (
       const window = windows[0];
       if (window === undefined) continue;
       const fault = manifest.faults.find(({ kind }) => kind === challenge.kind) ?? null;
+      const endsAtEpochMs = Math.max(
+        window.endsAtEpochMs,
+        cursor + (fault?.durationSeconds ?? 0) * 1_000,
+      );
       yield Object.freeze({
         arrivalCount: count,
         challenge: challenge.kind,
-        endsAtEpochMs: window.endsAtEpochMs,
+        endsAtEpochMs,
         fault,
         kind: "challenge",
         region,
@@ -352,7 +387,7 @@ const plannedRuns = function* (
         startsAtEpochMs: cursor,
         windows: Object.freeze(singletonWindow(window)),
       });
-      cursor = window.endsAtEpochMs;
+      cursor = endsAtEpochMs;
     }
 
     for (const characterization of manifest.characterizationLanes) {
@@ -446,10 +481,12 @@ const StoredArrival = Schema.Union([
 ]);
 const StoredArrivalRecord = Schema.Struct({
   arrival: StoredArrival,
+  attemptId: Schema.String,
   authorityFactId: Schema.String,
   executedAtUtc: Schema.String,
   executionId: Schema.String,
   rootId: Schema.String,
+  submittedAtUtc: Schema.String,
 });
 const StoredArrivalChunk = Schema.Struct({
   artifactChecksum: Schema.String,
@@ -471,6 +508,28 @@ const StoredRunManifest = Schema.Struct({
     }),
   ),
   executionId: Schema.String,
+  faultReceipt: Schema.NullOr(
+    Schema.Struct({
+      applicationStatus: Schema.Literals(["applied", "notApplied"]),
+      artifactChecksum: Schema.String,
+      artifactId: Schema.String,
+      controllerOperationId: Schema.String,
+      controllerSource: Schema.String,
+      durationSeconds: Schema.Int,
+      endedAtUtc: Schema.String,
+      executionId: Schema.String,
+      injectedAtUtc: Schema.String,
+      kind: Schema.String,
+      manifestChecksum: Schema.String,
+      planChecksum: Schema.String,
+      runId: Schema.String,
+      scheduledTriggerAtUtc: Schema.String,
+      target: Schema.String,
+      trigger: Schema.String,
+      triggerAuthorityFactId: Schema.NullOr(Schema.String),
+      triggerObservedAtUtc: Schema.String,
+    }),
+  ),
   planChecksum: Schema.String,
   runDescriptorChecksum: Schema.String,
   runId: Schema.String,
@@ -494,6 +553,8 @@ const StoredAuthorityBundle = Schema.Struct({
     semantic: Schema.String,
     stages: Schema.String,
   }),
+  evidenceArtifactChecksum: Schema.String,
+  evidenceArtifactId: Schema.String,
   evidenceChecksum: Schema.String,
   executionId: Schema.String,
   planChecksum: Schema.String,
@@ -559,62 +620,282 @@ const retainAndVerifyPlan = <E>(
     return undefined;
   });
 
-const retainDurableRun = <E>(
+const arrivalAttemptFor = (
+  plan: QualificationExecutionPlan,
+  run: QualificationExecutionRun,
+  arrival: OpenWorkloadArrival | QualificationCharacterizationArrival,
+): QualificationArrivalAttempt => {
+  const content = {
+    executionId: plan.executionId,
+    planChecksum: plan.planChecksum,
+    rootId: arrival.rootId,
+    runId: run.runId,
+  };
+  return { ...content, attemptId: qualificationChecksum(content) };
+};
+
+const validateArrivalAuthority = (
+  plan: QualificationExecutionPlan,
+  run: QualificationExecutionRun,
+  arrival: OpenWorkloadArrival | QualificationCharacterizationArrival,
+  authority: QualificationArrivalAuthorityRecord,
+) => {
+  const attempt = arrivalAttemptFor(plan, run, arrival);
+  const submittedAt = Date.parse(authority.submittedAtUtc);
+  const executedAt = Date.parse(authority.executedAtUtc);
+  return (
+    authority.attemptId === attempt.attemptId &&
+    authority.executionId === plan.executionId &&
+    authority.rootId === arrival.rootId &&
+    authority.authorityFactId.length > 0 &&
+    Number.isFinite(submittedAt) &&
+    Number.isFinite(executedAt) &&
+    submittedAt >= arrival.offeredAtEpochMs &&
+    executedAt >= submittedAt
+  );
+};
+
+const maximumOfferLagMs = 250;
+
+const authorityTriggeredFaults = new Set([
+  "afterAcceptanceBeforeUpdate",
+  "afterConfirmedProgress",
+  "afterExternalEffectBeforeStepCommit",
+  "afterFirstAcceptance",
+  "afterProviderAcceptanceBeforeResponse",
+  "beforeProviderContact",
+  "simultaneousAdmission",
+]);
+
+const faultAttemptFor = (
+  plan: QualificationExecutionPlan,
+  run: QualificationExecutionRun,
+  fault: FaultInjection,
+): QualificationFaultAttempt => {
+  const triggerWindowKind =
+    fault.trigger === "startOfFaultWindow"
+      ? "fault"
+      : fault.trigger === "startOfOfferWindow"
+        ? "offer"
+        : undefined;
+  const scheduledTriggerAtEpochMs =
+    run.windows.find(({ kind }) => kind === triggerWindowKind)?.startsAtEpochMs ??
+    run.startsAtEpochMs;
+  const content = {
+    executionId: plan.executionId,
+    planChecksum: plan.planChecksum,
+    requiresAuthorityFact: authorityTriggeredFaults.has(fault.trigger),
+    runId: run.runId,
+    scheduledTriggerAtUtc: DateTime.formatIso(DateTime.makeUnsafe(scheduledTriggerAtEpochMs)),
+  };
+  return { ...content, attemptId: qualificationChecksum(content) };
+};
+
+const validateFaultReceipt = (
+  manifest: ProductionQualificationManifest,
+  plan: QualificationExecutionPlan,
+  run: QualificationExecutionRun,
+  fault: FaultInjection,
+  attempt: QualificationFaultAttempt,
+  receipt: FaultControllerReceipt,
+): boolean => {
+  const { artifactChecksum, ...content } = receipt;
+  const scheduledAt = Date.parse(receipt.scheduledTriggerAtUtc);
+  const observedAt = Date.parse(receipt.triggerObservedAtUtc);
+  const injectedAt = Date.parse(receipt.injectedAtUtc);
+  return (
+    artifactChecksum === qualificationChecksum(content) &&
+    receipt.applicationStatus === "applied" &&
+    receipt.executionId === plan.executionId &&
+    receipt.manifestChecksum === manifest.manifestChecksum &&
+    receipt.planChecksum === plan.planChecksum &&
+    receipt.runId === run.runId &&
+    receipt.kind === fault.kind &&
+    receipt.target === fault.target &&
+    receipt.trigger === fault.trigger &&
+    receipt.durationSeconds === fault.durationSeconds &&
+    receipt.scheduledTriggerAtUtc === attempt.scheduledTriggerAtUtc &&
+    Number.isFinite(scheduledAt) &&
+    Number.isFinite(observedAt) &&
+    Number.isFinite(injectedAt) &&
+    observedAt >= scheduledAt &&
+    injectedAt >= observedAt &&
+    (attempt.requiresAuthorityFact
+      ? receipt.triggerAuthorityFactId !== null
+      : receipt.triggerAuthorityFactId === null && injectedAt - scheduledAt <= maximumOfferLagMs)
+  );
+};
+
+const executeOpenArrival = <E>(
+  ports: DurableQualificationExecutionPorts<E>,
+  manifest: ProductionQualificationManifest,
+  plan: QualificationExecutionPlan,
+  run: QualificationExecutionRun,
+  arrival: OpenWorkloadArrival | QualificationCharacterizationArrival,
+) =>
+  Effect.gen(function* () {
+    const delayMs = arrival.offeredAtEpochMs - (yield* Clock.currentTimeMillis);
+    if (delayMs > 0) yield* Effect.sleep(Duration.millis(delayMs));
+    const offeredAt = yield* Clock.currentTimeMillis;
+    if (offeredAt - arrival.offeredAtEpochMs > maximumOfferLagMs) {
+      return yield* invalidExecution(
+        `${run.runId} exceeded open-arrival offer lag for ${arrival.rootId}`,
+      );
+    }
+    const attempt = arrivalAttemptFor(plan, run, arrival);
+    const authority = yield* ports.executeArrival(manifest, run, arrival, attempt);
+    if (!validateArrivalAuthority(plan, run, arrival, authority)) {
+      return yield* invalidExecution(`${run.runId} returned invalid arrival authority`);
+    }
+    return {
+      arrival,
+      attemptId: authority.attemptId,
+      authorityFactId: authority.authorityFactId,
+      executedAtUtc: authority.executedAtUtc,
+      executionId: plan.executionId,
+      rootId: arrival.rootId,
+      submittedAtUtc: authority.submittedAtUtc,
+    } satisfies StoredArrivalChunk["records"][number];
+  });
+
+/** Drive one bounded chunk from offered timestamps without waiting for prior completions. */
+export const executeOpenArrivalChunk = <E>(
+  ports: DurableQualificationExecutionPorts<E>,
+  manifest: ProductionQualificationManifest,
+  plan: QualificationExecutionPlan,
+  run: QualificationExecutionRun,
+  arrivals: ReadonlyArray<OpenWorkloadArrival | QualificationCharacterizationArrival>,
+) =>
+  Effect.forEach(arrivals, (arrival) => executeOpenArrival(ports, manifest, plan, run, arrival), {
+    concurrency: 256,
+  });
+
+const validateStoredChunk = (
+  chunk: StoredArrivalChunk,
+  plan: QualificationExecutionPlan,
+  run: QualificationExecutionRun,
+  chunkIndex: number,
+  arrivals: ReadonlyArray<OpenWorkloadArrival | QualificationCharacterizationArrival>,
+): boolean => {
+  const { artifactChecksum, ...content } = chunk;
+  return (
+    artifactChecksum === qualificationChecksum(content) &&
+    chunk.chunkIndex === chunkIndex &&
+    chunk.executionId === plan.executionId &&
+    chunk.planChecksum === plan.planChecksum &&
+    chunk.runId === run.runId &&
+    chunk.records.length === arrivals.length &&
+    chunk.records.every((record, index) => {
+      const arrival = arrivals[index];
+      return (
+        arrival !== undefined &&
+        qualificationChecksum(record.arrival) === qualificationChecksum(arrival) &&
+        record.executionId === plan.executionId &&
+        validateArrivalAuthority(plan, run, arrival, record)
+      );
+    })
+  );
+};
+
+export const retainDurableQualificationRun = <E>(
   ports: DurableQualificationExecutionPorts<E>,
   manifest: ProductionQualificationManifest,
   plan: QualificationExecutionPlan,
   run: QualificationExecutionRun,
 ) =>
   Effect.gen(function* () {
+    const faultAttempt = run.fault === null ? null : faultAttemptFor(plan, run, run.fault);
+    const faultFiber =
+      run.fault === null || faultAttempt === null
+        ? null
+        : yield* ports
+            .applyFault(manifest, plan, run, run.fault, faultAttempt)
+            .pipe(Effect.forkChild);
     const chunks: Array<StoredRunManifest["chunks"][number]> = [];
-    let chunkRecords: Array<StoredArrivalChunk["records"][number]> = [];
+    const expected = qualificationRunArrivals(manifest, run);
     let chunkIndex = 0;
-    const flush = Effect.fn("QualificationExecution.flushChunk")(function* () {
-      if (chunkRecords.length === 0) return;
+    let firstMissing: Array<OpenWorkloadArrival | QualificationCharacterizationArrival> = [];
+    while (firstMissing.length === 0) {
+      const expectedChunk: Array<OpenWorkloadArrival | QualificationCharacterizationArrival> = [];
+      while (expectedChunk.length < 256) {
+        const next = expected.next();
+        if (next.done) break;
+        expectedChunk.push(next.value);
+      }
+      if (expectedChunk.length === 0) break;
       const artifactId = `${runArtifactPrefix(plan, run)}/arrivals-${chunkIndex}.json`;
-      const content = {
-        chunkIndex,
-        executionId: plan.executionId,
-        planChecksum: plan.planChecksum,
-        records: chunkRecords,
-        runId: run.runId,
-      };
-      const artifact = { ...content, artifactChecksum: qualificationChecksum(content) };
-      const encoded = yield* encodeArtifact(EncodedArrivalChunk, artifact);
-      yield* ports.artifacts.writeImmutable(artifactId, encoded);
+      const existing = yield* ports.artifacts.read(artifactId);
+      if (existing === null) {
+        firstMissing = expectedChunk;
+        break;
+      }
+      const artifact = yield* decodeArtifact(EncodedArrivalChunk, existing);
+      if (!validateStoredChunk(artifact, plan, run, chunkIndex, expectedChunk)) {
+        return yield* invalidExecution(`${run.runId} retained arrival chunk conflicts`);
+      }
       chunks.push({
         artifactChecksum: artifact.artifactChecksum,
         artifactId,
-        count: chunkRecords.length,
+        count: expectedChunk.length,
         index: chunkIndex,
       });
       chunkIndex += 1;
-      chunkRecords = [];
-    });
-    for (const arrival of qualificationRunArrivals(manifest, run)) {
-      const authority = yield* ports.executeArrival(manifest, run, arrival);
-      if (
-        authority.rootId !== arrival.rootId ||
-        authority.authorityFactId.length === 0 ||
-        !Number.isFinite(Date.parse(authority.executedAtUtc))
-      ) {
-        return yield* invalidExecution(`${run.runId} returned invalid arrival authority`);
-      }
-      chunkRecords.push({
-        arrival,
-        authorityFactId: authority.authorityFactId,
-        executedAtUtc: authority.executedAtUtc,
-        executionId: plan.executionId,
-        rootId: arrival.rootId,
-      });
-      if (chunkRecords.length === 256) yield* flush();
     }
-    yield* flush();
+    const remaining = {
+      *[Symbol.iterator]() {
+        yield* firstMissing;
+        for (let next = expected.next(); !next.done; next = expected.next()) yield next.value;
+      },
+    };
+    const retainedChunks = yield* Stream.fromIterable(remaining).pipe(
+      Stream.mapEffect((arrival) => executeOpenArrival(ports, manifest, plan, run, arrival), {
+        concurrency: 256,
+      }),
+      Stream.grouped(256),
+      Stream.mapEffect(
+        (records, relativeIndex) =>
+          Effect.gen(function* () {
+            const index = chunkIndex + relativeIndex;
+            const artifactId = `${runArtifactPrefix(plan, run)}/arrivals-${index}.json`;
+            const content = {
+              chunkIndex: index,
+              executionId: plan.executionId,
+              planChecksum: plan.planChecksum,
+              records,
+              runId: run.runId,
+            };
+            const retained = { ...content, artifactChecksum: qualificationChecksum(content) };
+            yield* ports.artifacts.writeImmutable(
+              artifactId,
+              yield* encodeArtifact(EncodedArrivalChunk, retained),
+            );
+            return {
+              artifactChecksum: retained.artifactChecksum,
+              artifactId,
+              count: records.length,
+              index,
+            } satisfies StoredRunManifest["chunks"][number];
+          }),
+        { concurrency: 4 },
+      ),
+      Stream.runCollect,
+    );
+    chunks.push(...retainedChunks);
+    const faultReceipt = faultFiber === null ? null : yield* Fiber.join(faultFiber);
+    if (
+      run.fault !== null &&
+      faultAttempt !== null &&
+      faultReceipt !== null &&
+      !validateFaultReceipt(manifest, plan, run, run.fault, faultAttempt, faultReceipt)
+    ) {
+      return yield* invalidExecution(`${run.runId} fault controller did not apply frozen trigger`);
+    }
     const artifactId = `${runArtifactPrefix(plan, run)}/manifest.json`;
     const content = {
       arrivalCount: run.arrivalCount,
       chunks,
       executionId: plan.executionId,
+      faultReceipt,
       planChecksum: plan.planChecksum,
       runDescriptorChecksum: qualificationChecksum(run),
       runId: run.runId,
@@ -640,6 +921,10 @@ const verifyDurableRun = <E>(
       return yield* invalidExecution(`${run.runId} retained manifest is missing`);
     const retained = yield* decodeArtifact(EncodedRunManifest, encodedManifest);
     const { artifactChecksum, ...manifestContent } = retained;
+    const retainedFaultContent =
+      retained.faultReceipt === null
+        ? null
+        : (({ artifactChecksum: _artifactChecksum, ...content }) => content)(retained.faultReceipt);
     if (
       artifactChecksum !== qualificationChecksum(manifestContent) ||
       artifactChecksum !== receipt.arrivalArtifactChecksum ||
@@ -648,7 +933,15 @@ const verifyDurableRun = <E>(
       retained.runId !== run.runId ||
       retained.runDescriptorChecksum !== qualificationChecksum(run) ||
       retained.arrivalCount !== run.arrivalCount ||
-      retained.chunks.reduce((count, chunk) => count + chunk.count, 0) !== run.arrivalCount
+      retained.chunks.reduce((count, chunk) => count + chunk.count, 0) !== run.arrivalCount ||
+      (run.fault === null) !== (retained.faultReceipt === null) ||
+      (retained.faultReceipt !== null &&
+        (retainedFaultContent === null ||
+          retained.faultReceipt.artifactChecksum !== qualificationChecksum(retainedFaultContent) ||
+          retained.faultReceipt.applicationStatus !== "applied" ||
+          retained.faultReceipt.executionId !== plan.executionId ||
+          retained.faultReceipt.runId !== run.runId ||
+          retained.faultReceipt.kind !== run.fault?.kind))
     ) {
       return yield* invalidExecution(`${run.runId} retained manifest conflicts with the plan`);
     }
@@ -675,10 +968,8 @@ const verifyDurableRun = <E>(
         if (
           canonical.done ||
           qualificationChecksum(record.arrival) !== qualificationChecksum(canonical.value) ||
-          record.rootId !== canonical.value.rootId ||
           record.executionId !== plan.executionId ||
-          record.authorityFactId.length === 0 ||
-          !Number.isFinite(Date.parse(record.executedAtUtc))
+          !validateArrivalAuthority(plan, run, canonical.value, record)
         ) {
           return yield* invalidExecution(`${run.runId} retained arrival authority conflicts`);
         }
@@ -736,6 +1027,127 @@ const authorityComponentChecksums = (evidence: ProductionQualificationEvidence) 
   stages: qualificationChecksum(evidence.stages),
 });
 
+const readExecutedRunArtifact = <E>(
+  artifacts: QualificationExecutionArtifactStore<E>,
+  receipt: QualificationRunExecutionReceipt,
+) =>
+  Effect.gen(function* () {
+    const encodedManifest = yield* artifacts.read(receipt.artifactId);
+    if (encodedManifest === null)
+      return yield* invalidExecution(`${receipt.runId} execution manifest is unavailable`);
+    const manifest = yield* decodeArtifact(EncodedRunManifest, encodedManifest);
+    const records = yield* Effect.forEach(manifest.chunks, (descriptor) =>
+      artifacts.read(descriptor.artifactId).pipe(
+        Effect.flatMap((encoded) =>
+          encoded === null
+            ? invalidExecution(`${receipt.runId} execution chunk is unavailable`)
+            : decodeArtifact(EncodedArrivalChunk, encoded),
+        ),
+        Effect.map((chunk) => chunk.records),
+      ),
+    );
+    return { faultReceipt: manifest.faultReceipt, records: records.flat() };
+  });
+
+const verifyEvidenceExecutionCorrelation = <E>(
+  artifacts: QualificationExecutionArtifactStore<E>,
+  plan: QualificationExecutionPlan,
+  receipts: ReadonlyArray<QualificationRunExecutionReceipt>,
+  evidence: ProductionQualificationEvidence,
+) =>
+  Effect.gen(function* () {
+    const workerFacts = new Map(
+      evidence.semantic.productAuthorityExports
+        .filter(({ authority }) => authority === "worker_admission_receipts")
+        .flatMap(({ records }) =>
+          records.map((record) => [record.productFactId, record.rootId] as const),
+        ),
+    );
+    const allAuthorityFactIds = new Set<string>();
+    for (const [index, run] of plan.runs.entries()) {
+      const receipt = receipts[index];
+      if (receipt === undefined)
+        return yield* invalidExecution(`${run.runId} has no retained execution receipt`);
+      const executed = yield* readExecutedRunArtifact(artifacts, receipt);
+      const correlated =
+        run.kind === "lane"
+          ? evidence.runs.laneRuns.find(
+              (candidate) =>
+                candidate.lane === run.lane &&
+                candidate.region === run.region &&
+                candidate.repetition === run.repetition,
+            )
+          : run.kind === "challenge"
+            ? evidence.runs.challengeRuns.find(
+                (candidate) =>
+                  candidate.challenge === run.challenge && candidate.region === run.region,
+              )
+            : evidence.runs.characterizationRuns.find(
+                (candidate) =>
+                  candidate.kind === run.characterization && candidate.region === run.region,
+              );
+      const actualArrivals =
+        correlated === undefined
+          ? undefined
+          : "actualArrivals" in correlated
+            ? correlated.actualArrivals.records
+            : correlated.arrivals.records;
+      if (
+        correlated === undefined ||
+        actualArrivals === undefined ||
+        qualificationChecksum(actualArrivals.map(({ rootId }) => rootId)) !==
+          qualificationChecksum(executed.records.map(({ rootId }) => rootId))
+      ) {
+        return yield* invalidExecution(`${run.runId} evidence names a different executed workload`);
+      }
+      if ("dispositions" in correlated) {
+        const dispositionByRoot = new Map(
+          correlated.dispositions.map((record) => [record.rootId, record] as const),
+        );
+        for (const record of executed.records) {
+          const disposition = dispositionByRoot.get(record.rootId);
+          if (
+            disposition === undefined ||
+            disposition.authorityFactId !== record.authorityFactId ||
+            allAuthorityFactIds.has(record.authorityFactId) ||
+            (disposition.disposition === "accepted" &&
+              workerFacts.get(record.authorityFactId) !== record.rootId)
+          ) {
+            return yield* invalidExecution(
+              `${run.runId} arrival authority does not join to committed product facts`,
+            );
+          }
+          allAuthorityFactIds.add(record.authorityFactId);
+        }
+        const evidenceFault = correlated.faultControllerReceipt;
+        const triggerDisposition =
+          executed.faultReceipt?.triggerAuthorityFactId === null || executed.faultReceipt === null
+            ? undefined
+            : correlated.dispositions.find(
+                ({ authorityFactId }) =>
+                  authorityFactId === executed.faultReceipt?.triggerAuthorityFactId,
+              );
+        if (
+          (evidenceFault === null) !== (executed.faultReceipt === null) ||
+          (evidenceFault !== null &&
+            executed.faultReceipt !== null &&
+            qualificationChecksum(evidenceFault) !==
+              qualificationChecksum(executed.faultReceipt)) ||
+          (executed.faultReceipt?.triggerAuthorityFactId !== null &&
+            executed.faultReceipt !== null &&
+            (triggerDisposition === undefined ||
+              Date.parse(triggerDisposition.resolvedAtUtc) >
+                Date.parse(executed.faultReceipt.triggerObservedAtUtc)))
+        ) {
+          return yield* invalidExecution(
+            `${run.runId} fault evidence does not join to the applied controller receipt`,
+          );
+        }
+      }
+    }
+    return undefined;
+  });
+
 const retainAndReloadAuthorityBundle = <E>(
   ports: DurableQualificationExecutionPorts<E>,
   manifest: ProductionQualificationManifest,
@@ -750,8 +1162,15 @@ const retainAndReloadAuthorityBundle = <E>(
       receipts,
       "collect",
     );
+    yield* verifyEvidenceExecutionCorrelation(ports.artifacts, plan, receipts, collected);
+    const evidenceArtifactId = `${executionArtifactPrefix(plan.executionId)}/authority-evidence.json`;
+    const encodedEvidence = canonicalQualificationJson(collected);
+    const evidenceArtifactChecksum = qualificationChecksum({ encodedEvidence });
+    yield* ports.artifacts.writeImmutable(evidenceArtifactId, encodedEvidence);
     const content = {
       componentChecksums: authorityComponentChecksums(collected),
+      evidenceArtifactChecksum,
+      evidenceArtifactId,
       evidenceChecksum: qualificationChecksum(collected),
       executionId: plan.executionId,
       planChecksum: plan.planChecksum,
@@ -775,6 +1194,15 @@ const retainAndReloadAuthorityBundle = <E>(
     ) {
       return yield* invalidExecution("Authority bundle conflicts after reload");
     }
+    const reloadedEvidenceArtifact = yield* ports.artifacts.read(reloadedBundle.evidenceArtifactId);
+    if (
+      reloadedEvidenceArtifact === null ||
+      qualificationChecksum({ encodedEvidence: reloadedEvidenceArtifact }) !==
+        reloadedBundle.evidenceArtifactChecksum ||
+      reloadedEvidenceArtifact !== encodedEvidence
+    ) {
+      return yield* invalidExecution("Retained authority evidence conflicts after reload");
+    }
     const reloaded = yield* collectAuthorityEvidence(
       ports.authorities,
       manifest,
@@ -782,6 +1210,7 @@ const retainAndReloadAuthorityBundle = <E>(
       receipts,
       "reload",
     );
+    yield* verifyEvidenceExecutionCorrelation(ports.artifacts, plan, receipts, reloaded);
     if (
       qualificationChecksum(reloaded) !== retained.evidenceChecksum ||
       qualificationChecksum(authorityComponentChecksums(reloaded)) !==
@@ -805,7 +1234,7 @@ export const executeDurableQualification = <E>({
   const driver: QualificationExecutionDriver<E | QualificationExecutionInvalid> = {
     collectEvidence: (_manifest, _plan, receipts) =>
       retainAndReloadAuthorityBundle(ports, manifest, plan, receipts),
-    executeRun: (_manifest, run) => retainDurableRun(ports, manifest, plan, run),
+    executeRun: (_manifest, run) => retainDurableQualificationRun(ports, manifest, plan, run),
     prepare: () =>
       retainAndVerifyPlan(ports.artifacts, plan).pipe(
         Effect.andThen(ports.prepare(manifest, plan)),
@@ -814,7 +1243,22 @@ export const executeDurableQualification = <E>({
     verifyRun: (_manifest, _plan, run, receipt) =>
       verifyDurableRun(ports.artifacts, manifest, plan, run, receipt),
   };
-  return executeQualification({ driver, manifest, plan });
+  return executeQualification({ driver, manifest, plan }).pipe(
+    Effect.catch((error) =>
+      Effect.succeed(
+        unavailableProductionQualificationReport(
+          manifest,
+          error instanceof QualificationExecutionInvalid
+            ? "qualificationExecutionConflict"
+            : "qualificationMaterialUnavailable",
+          error instanceof QualificationExecutionInvalid
+            ? error.message
+            : "A required execution artifact or authority component was unavailable",
+          error instanceof QualificationExecutionInvalid ? "FAIL" : "MISSING",
+        ),
+      ),
+    ),
+  );
 };
 
 const hasExpectedRuns = (

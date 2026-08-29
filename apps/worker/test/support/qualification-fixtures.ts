@@ -9,6 +9,7 @@ import {
   createScaleQualifiedPublicManifest,
   intendedArrivalCount,
   type ChallengeLane,
+  type FaultInjection,
   type ProductionQualificationManifest,
   type ReferenceJourney,
   type WorkloadLane,
@@ -24,6 +25,10 @@ import {
   type QualificationRunEvidence,
   type RootOutcomeRecord,
 } from "../../src/qualification/qualification-runs";
+import {
+  qualificationRunArrivals,
+  type QualificationExecutionPlan,
+} from "../../src/qualification/execution";
 import {
   qualificationExecutionEvidence,
   qualificationRunExecutionReceipt,
@@ -367,6 +372,7 @@ const dispositionsFor = (
   arrivals: ReadonlyArray<ActualArrivalRecord>,
 ): ReadonlyArray<ArrivalDisposition> =>
   arrivals.map((arrival) => ({
+    authorityFactId: `signal-Worker-${arrival.rootId}`,
     disposition: "accepted",
     resolvedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(arrival.observedAtEpochMs + 1)),
     rootId: arrival.rootId,
@@ -441,12 +447,48 @@ const outcomesFor = (
     };
   });
 
+const faultControllerReceipt = (
+  manifest: ProductionQualificationManifest,
+  executionPlanChecksum: string,
+  executionId: string,
+  runId: string,
+  injectedAtUtc: string,
+  fault: FaultInjection | null,
+  triggerAuthorityFactId: string | null = null,
+  triggerObservedAtUtc = injectedAtUtc,
+) => {
+  if (fault === null) return null;
+  const content = {
+    applicationStatus: "applied" as const,
+    artifactId: `fault-controller-${runId}`,
+    controllerOperationId: `fault-operation-${runId}`,
+    controllerSource: "qualification-fault-controller",
+    durationSeconds: fault.durationSeconds,
+    endedAtUtc: DateTime.formatIso(
+      DateTime.makeUnsafe(Date.parse(triggerObservedAtUtc) + fault.durationSeconds * 1_000),
+    ),
+    executionId,
+    injectedAtUtc: triggerObservedAtUtc,
+    kind: fault.kind,
+    manifestChecksum: manifest.manifestChecksum,
+    planChecksum: executionPlanChecksum,
+    runId,
+    scheduledTriggerAtUtc: injectedAtUtc,
+    target: fault.target,
+    trigger: fault.trigger,
+    triggerAuthorityFactId,
+    triggerObservedAtUtc,
+  };
+  return { ...content, artifactChecksum: qualificationChecksum(content) };
+};
+
 /** Build complete root-bound workload, challenge, and promotion evidence. */
 export const completeRunEvidence = (
   manifest: ProductionQualificationManifest,
   executionPlanChecksum = qualificationChecksum({
     fixturePlanForManifest: manifest.manifestChecksum,
   }),
+  executionPlan?: QualificationExecutionPlan,
 ): QualificationRunEvidence => {
   const laneRuns = manifest.lanes.flatMap((lane, laneIndex) =>
     manifest.regions.flatMap((region, regionIndex) =>
@@ -456,14 +498,34 @@ export const completeRunEvidence = (
         const subject = `${lane.kind}-${region}-${repetition}`;
         const journeyCounts = referenceJourneyCounts(count);
         const planCounts = referencePlanCounts(count);
-        const seed = manifest.workloadSeed + laneIndex * 100 + regionIndex * 10_000 + repetition;
-        const identityPrefix = `${subject}-root`;
+        const executionRun = executionPlan?.runs.find(
+          (run) =>
+            run.kind === "lane" &&
+            run.lane === lane.kind &&
+            run.region === region &&
+            run.repetition === repetition,
+        );
+        const seed =
+          executionRun?.seed ??
+          manifest.workloadSeed + laneIndex * 100 + regionIndex * 10_000 + repetition;
+        const identityPrefix = executionRun?.runId ?? `${subject}-root`;
         let nextWindowStart =
           Date.parse("2026-08-17T12:00:00.000Z") +
           laneIndex * 86_400_000 +
           regionIndex * 10_000_000 +
           repetition * 100_000;
         const windows = lane.windows.map((window, index) => {
+          const executionWindow = executionRun?.windows[index];
+          if (executionWindow !== undefined) {
+            return {
+              endedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(executionWindow.endsAtEpochMs)),
+              index,
+              kind: window.kind,
+              startedAtUtc: DateTime.formatIso(
+                DateTime.makeUnsafe(executionWindow.startsAtEpochMs),
+              ),
+            };
+          }
           const startedAtUtc = DateTime.formatIso(DateTime.makeUnsafe(nextWindowStart));
           nextWindowStart += window.durationSeconds * 1_000;
           return {
@@ -473,35 +535,55 @@ export const completeRunEvidence = (
             startedAtUtc,
           };
         });
-        const intendedArrivals = lane.windows.flatMap((window, index) =>
-          window.kind === "offer" || window.kind === "fault"
-            ? generateOpenArrivals({
-                identityPrefix,
-                journeyMix: manifest.journeyMix,
-                planMixBasisPoints: manifest.planMixBasisPoints,
-                seed,
-                startsAtEpochMs: Date.parse(windows[index]?.startedAtUtc ?? ""),
-                window,
-              })
-            : [],
-        );
+        const intendedArrivals =
+          executionRun === undefined
+            ? lane.windows.flatMap((window, index) =>
+                window.kind === "offer" || window.kind === "fault"
+                  ? generateOpenArrivals({
+                      identityPrefix,
+                      journeyMix: manifest.journeyMix,
+                      planMixBasisPoints: manifest.planMixBasisPoints,
+                      seed,
+                      startsAtEpochMs: Date.parse(windows[index]?.startedAtUtc ?? ""),
+                      window,
+                    })
+                  : [],
+              )
+            : Array.from(qualificationRunArrivals(manifest, executionRun)).flatMap((arrival) =>
+                "journey" in arrival ? [arrival] : [],
+              );
         const actualArrivals: ReadonlyArray<ActualArrivalRecord> = intendedArrivals.map(
           (arrival) => ({ ...arrival, observedAtEpochMs: arrival.offeredAtEpochMs }),
         );
         const startedAtUtc = windows[0]?.startedAtUtc ?? "";
         const endedAtUtc = windows.at(-1)?.endedAtUtc ?? "";
+        const intendedArrivalArtifact = artifact(
+          `${subject}-intended`,
+          intendedArrivals,
+          startedAtUtc,
+          endedAtUtc,
+        );
+        const laneFault =
+          lane.kind === "allCold"
+            ? (manifest.faults.find(({ kind }) => kind === "coldActivation") ?? null)
+            : lane.kind === "dependencyOutageRecovery"
+              ? (manifest.faults.find(({ kind }) => kind === "dependencyOutage") ?? null)
+              : null;
         return {
           acceptedRootIds: intendedArrivals.map((arrival) => arrival.rootId),
           actualArrivals: artifact(`${subject}-actual`, actualArrivals, startedAtUtc, endedAtUtc),
           clean: true,
           dispositions: dispositionsFor(actualArrivals),
-          identityPrefix,
-          intendedArrivals: artifact(
-            `${subject}-intended`,
-            intendedArrivals,
+          faultControllerReceipt: faultControllerReceipt(
+            manifest,
+            executionPlanChecksum,
+            "qualification-execution-fixture",
+            intendedArrivalArtifact.artifactId,
             startedAtUtc,
-            endedAtUtc,
+            laneFault,
           ),
+          identityPrefix,
+          intendedArrivals: intendedArrivalArtifact,
           journeyCounts,
           lane: lane.kind,
           planCounts,
@@ -517,8 +599,12 @@ export const completeRunEvidence = (
   );
   const challengeRuns = manifest.challengeLanes.flatMap((challenge, challengeIndex) =>
     manifest.regions.map((region) => {
-      const count = minimumChallengeRoots(manifest, challenge);
       const subject = `${challenge.kind}-${region}`;
+      const executionRun = executionPlan?.runs.find(
+        (run) =>
+          run.kind === "challenge" && run.challenge === challenge.kind && run.region === region,
+      );
+      const count = executionRun?.arrivalCount ?? minimumChallengeRoots(manifest, challenge);
       const isCombined = challenge.mode === "combined";
       const targetOffer = manifest.lanes
         .find((lane) => lane.kind === "target")
@@ -529,9 +615,9 @@ export const completeRunEvidence = (
           : challenge.offeredRatePerSecond;
       const seed =
         manifest.workloadSeed + challenge.seedOffset + Array.from(manifest.regions).indexOf(region);
-      const identityPrefix = `${subject}-root`;
+      const identityPrefix = executionRun?.runId ?? `${subject}-root`;
       const populations = challengePopulations(challenge, count);
-      const acceptedRootIds = Array.from(
+      const generatedRootIds = Array.from(
         { length: count },
         (_, index) => `${identityPrefix}-${index}`,
       );
@@ -542,22 +628,36 @@ export const completeRunEvidence = (
         ...Array.from({ length: populations.planCounts.free }, () => "free" as const),
         ...Array.from({ length: populations.planCounts.adventurer }, () => "adventurer" as const),
       ];
-      const intendedArrivals = acceptedRootIds.map((rootId, index) => ({
-        journey: journeys[index] ?? "ordinaryConversation",
-        offeredAtEpochMs:
-          Date.parse(isCombined ? "2026-08-17T14:00:00.000Z" : "2026-08-17T12:00:00.000Z") +
-          Math.floor((index * 1_000) / offeredRatePerSecond),
-        plan: plans[index] ?? "free",
-        rootId,
-      }));
+      const intendedArrivals =
+        executionRun === undefined
+          ? generatedRootIds.map((rootId, index) => ({
+              journey: journeys[index] ?? "ordinaryConversation",
+              offeredAtEpochMs:
+                Date.parse(isCombined ? "2026-08-17T14:00:00.000Z" : "2026-08-17T12:00:00.000Z") +
+                Math.floor((index * 1_000) / offeredRatePerSecond),
+              plan: plans[index] ?? "free",
+              rootId,
+            }))
+          : Array.from(qualificationRunArrivals(manifest, executionRun)).flatMap((arrival) =>
+              "journey" in arrival ? [arrival] : [],
+            );
+      const acceptedRootIds = intendedArrivals.map(({ rootId }) => rootId);
       const actualArrivals = intendedArrivals.map((arrival) => ({
         ...arrival,
         observedAtEpochMs: arrival.offeredAtEpochMs,
       }));
-      const windowStartedAtUtc = isCombined
-        ? "2026-08-17T14:00:00.000Z"
-        : "2026-08-17T12:00:00.000Z";
-      const windowEndedAtUtc = isCombined ? "2026-08-17T15:00:00.000Z" : "2026-08-17T13:00:00.000Z";
+      const windowStartedAtUtc =
+        executionRun === undefined
+          ? isCombined
+            ? "2026-08-17T14:00:00.000Z"
+            : "2026-08-17T12:00:00.000Z"
+          : DateTime.formatIso(DateTime.makeUnsafe(executionRun.startsAtEpochMs));
+      const windowEndedAtUtc =
+        executionRun === undefined
+          ? isCombined
+            ? "2026-08-17T15:00:00.000Z"
+            : "2026-08-17T13:00:00.000Z"
+          : DateTime.formatIso(DateTime.makeUnsafe(executionRun.endsAtEpochMs));
       const actualArrivalArtifact = artifact(
         `${subject}-actual`,
         actualArrivals,
@@ -572,27 +672,29 @@ export const completeRunEvidence = (
         windowEndedAtUtc,
       );
       const faultInjection = manifest.faults.find((fault) => fault.kind === challenge.kind) ?? null;
-      const faultControllerContent =
-        faultInjection === null
-          ? null
-          : {
-              artifactId: `fault-controller-${subject}`,
-              controllerOperationId: `fault-operation-${subject}`,
-              controllerSource: "qualification-fault-controller",
-              durationSeconds: faultInjection.durationSeconds,
-              endedAtUtc: DateTime.formatIso(
-                DateTime.makeUnsafe(
-                  Date.parse(windowStartedAtUtc) + faultInjection.durationSeconds * 1_000,
-                ),
-              ),
-              injectedAtUtc: windowStartedAtUtc,
-              kind: faultInjection.kind,
-              manifestChecksum: manifest.manifestChecksum,
-              planChecksum: executionPlanChecksum,
-              runId: identitySet.artifactId,
-              target: faultInjection.target,
-              trigger: faultInjection.trigger,
-            };
+      const triggerRootId = acceptedRootIds[0];
+      const retainedFaultReceipt = faultControllerReceipt(
+        manifest,
+        executionPlanChecksum,
+        "qualification-execution-fixture",
+        identitySet.artifactId,
+        windowStartedAtUtc,
+        faultInjection,
+        faultInjection !== null &&
+          !["beforeOffer", "sharedDueTime", "startOfFaultWindow", "startOfOfferWindow"].includes(
+            faultInjection.trigger,
+          )
+          ? triggerRootId === undefined
+            ? null
+            : `signal-Worker-${triggerRootId}`
+          : null,
+        faultInjection !== null &&
+          !["beforeOffer", "sharedDueTime", "startOfFaultWindow", "startOfOfferWindow"].includes(
+            faultInjection.trigger,
+          )
+          ? (dispositionsFor(actualArrivals)[0]?.resolvedAtUtc ?? windowStartedAtUtc)
+          : windowStartedAtUtc,
+      );
       const faultObservations =
         faultInjection === null
           ? []
@@ -601,7 +703,7 @@ export const completeRunEvidence = (
                 authorityFactIds: [`fault-target-state-${subject}`],
                 arrivalChecksum: actualArrivalArtifact.checksum,
                 identityChecksum: identitySet.checksum,
-                injectedAtUtc: windowStartedAtUtc,
+                injectedAtUtc: retainedFaultReceipt?.injectedAtUtc ?? windowStartedAtUtc,
                 invariant: faultInjection.expectedInvariant,
                 invariantHeld: true,
                 observationId: `fault-observation-${subject}`,
@@ -618,16 +720,10 @@ export const completeRunEvidence = (
         acceptedRootIds,
         actualArrivals: actualArrivalArtifact,
         challenge: challenge.kind,
-        completedAtUtc: isCombined ? "2026-08-17T15:00:00.000Z" : "2026-08-17T13:00:00.000Z",
+        completedAtUtc: windowEndedAtUtc,
         eligibleRoots: count,
         dispositions: dispositionsFor(actualArrivals),
-        faultControllerReceipt:
-          faultControllerContent === null
-            ? null
-            : {
-                ...faultControllerContent,
-                artifactChecksum: qualificationChecksum(faultControllerContent),
-              },
+        faultControllerReceipt: retainedFaultReceipt,
         faultInjection,
         faultObservations: artifact(`${subject}-fault`, faultObservations),
         goodRootOutcomes: count,
@@ -641,7 +737,7 @@ export const completeRunEvidence = (
         rootOutcomes: outcomesFor(manifest, actualArrivals),
         seed,
         sequence: challengeIndex + 1,
-        startedAtUtc: isCombined ? "2026-08-17T14:00:00.000Z" : "2026-08-17T12:00:00.000Z",
+        startedAtUtc: windowStartedAtUtc,
       };
     }),
   );
@@ -749,13 +845,25 @@ export const completeRunEvidence = (
   return {
     characterizationRuns: manifest.characterizationLanes.flatMap((lane) =>
       manifest.regions.map((region) => {
-        const count = lane.offeredRatePerSecond * lane.durationSeconds;
-        const records = Array.from({ length: count }, (_, index) => ({
-          offeredAtEpochMs:
-            Date.parse("2026-08-17T12:00:00.000Z") +
-            Math.floor((index * 1_000) / lane.offeredRatePerSecond),
-          rootId: `${lane.kind}-${region}-${index}`,
-        }));
+        const executionRun = executionPlan?.runs.find(
+          (run) =>
+            run.kind === "characterization" &&
+            run.characterization === lane.kind &&
+            run.region === region,
+        );
+        const count =
+          executionRun?.arrivalCount ?? lane.offeredRatePerSecond * lane.durationSeconds;
+        const records =
+          executionRun === undefined
+            ? Array.from({ length: count }, (_, index) => ({
+                offeredAtEpochMs:
+                  Date.parse("2026-08-17T12:00:00.000Z") +
+                  Math.floor((index * 1_000) / lane.offeredRatePerSecond),
+                rootId: `${lane.kind}-${region}-${index}`,
+              }))
+            : Array.from(qualificationRunArrivals(manifest, executionRun)).map(
+                ({ offeredAtEpochMs, rootId }) => ({ offeredAtEpochMs, rootId }),
+              );
         return {
           arrivals: artifact(`${lane.kind}-${region}`, records),
           kind: lane.kind,
@@ -1236,13 +1344,17 @@ export const completeStageMeasurements = (
   });
 
 /** Build a complete fail-closed production qualification evidence bundle. */
-export const completeProductionEvidence = (): ProductionQualificationEvidence => {
+export const completeProductionEvidence = (
+  executionPlan?: QualificationExecutionPlan,
+): ProductionQualificationEvidence => {
   const manifest = compactManifest();
-  const fixturePlanChecksum = qualificationChecksum({
-    fixture: true,
-    manifestChecksum: manifest.manifestChecksum,
-  });
-  const runs = completeRunEvidence(manifest, fixturePlanChecksum);
+  const fixturePlanChecksum =
+    executionPlan?.planChecksum ??
+    qualificationChecksum({
+      fixture: true,
+      manifestChecksum: manifest.manifestChecksum,
+    });
+  const runs = completeRunEvidence(manifest, fixturePlanChecksum, executionPlan);
   const semantic = completeSemanticEvidence(manifest, runs);
   const priceBookId = "price-book-v1";
   const rootCosts = semantic.traces.map((trace) => ({
@@ -1475,83 +1587,111 @@ export const completeProductionEvidence = (): ProductionQualificationEvidence =>
     memorySemantic: completeMemorySemanticEvidence(manifest.sourceVersion),
     recoveryRuns: manifest.regions.flatMap((region) =>
       Array.from({ length: 3 }, (_, repetition) => {
-        const acceptedRootIds =
-          runs.laneRuns.find(
-            (run) =>
-              run.lane === "dependencyOutageRecovery" &&
-              run.region === region &&
-              run.repetition === repetition + 1,
-          )?.acceptedRootIds ?? [];
+        const laneRun = runs.laneRuns.find(
+          (run) =>
+            run.lane === "dependencyOutageRecovery" &&
+            run.region === region &&
+            run.repetition === repetition + 1,
+        );
+        const acceptedRootIds = laneRun?.acceptedRootIds ?? [];
         const runArtifactChecksum = qualificationChecksum(acceptedRootIds);
+        const faultWindow = laneRun?.windows.find(({ kind }) => kind === "fault");
+        const outageStartedAtUtc = faultWindow?.startedAtUtc ?? "2026-08-17T11:59:59.000Z";
+        const outageEndedAtUtc = faultWindow?.endedAtUtc ?? "2026-08-17T12:00:00.000Z";
+        const outageSeconds = Math.max(
+          1,
+          (Date.parse(outageEndedAtUtc) - Date.parse(outageStartedAtUtc)) / 1_000,
+        );
+        const acceptedDemandPerSecond = acceptedRootIds.length / outageSeconds;
+        const recoverySeconds = 5;
+        const desiredCompletedRoots = Math.ceil((acceptedDemandPerSecond + 2) * recoverySeconds);
         const recoverableBacklogRootIds = Array.from(
-          { length: acceptedRootIds.length * 2 },
+          { length: Math.max(1, desiredCompletedRoots - acceptedRootIds.length) },
           (_entry, index) => `pre-outage-backlog-${region}-${repetition + 1}-${index}`,
         );
-        const outageEndedAtUtc = "2026-08-17T12:00:00.000Z";
+        const recoverableRootIds = [...acceptedRootIds, ...recoverableBacklogRootIds];
+        const settledAtUtc = DateTime.formatIso(
+          DateTime.makeUnsafe(Date.parse(outageEndedAtUtc) + recoverySeconds * 1_000),
+        );
+        const dispositionByRoot = new Map(
+          laneRun?.dispositions.map((disposition) => [disposition.rootId, disposition] as const) ??
+            [],
+        );
+        const rootTransitions = recoverableRootIds.map((rootId, index) => {
+          const disposition = dispositionByRoot.get(rootId);
+          return {
+            admissionAuthorityFactId:
+              disposition?.authorityFactId ?? `recovery-admission-${rootId}`,
+            admittedAtUtc:
+              disposition?.resolvedAtUtc ??
+              DateTime.formatIso(DateTime.makeUnsafe(Date.parse(outageStartedAtUtc) - 1_000)),
+            rootId,
+            terminalAtUtc:
+              index === recoverableRootIds.length - 1
+                ? DateTime.formatIso(DateTime.makeUnsafe(Date.parse(outageEndedAtUtc) + 1_000))
+                : settledAtUtc,
+            terminalAuthorityFactId: `recovery-terminal-${rootId}`,
+            terminalState: "completed" as const,
+          };
+        });
         const authorityContent = {
           artifactId: `recovery-authority-${region}-${repetition + 1}`,
           outageEndedAtUtc,
+          rootTransitions,
           runArtifactChecksum,
           source: "workflow-and-agent-recovery-authority",
           sourceVersion: manifest.sourceVersion,
           stateObservations: [
             {
-              authorityFactIds: ["recovery-state-0"],
-              backlogRootIds: recoverableBacklogRootIds,
-              durablyWaitingRootIds: recoverableBacklogRootIds,
+              authorityFactIds: [`recovery-state-${region}-${repetition + 1}-0`],
+              backlogRootIds: recoverableRootIds,
+              durablyWaitingRootIds: recoverableRootIds,
               interruptedAgentIds: ["recovery-interrupted-agent-1"],
               lostAcceptedRootIds: [],
               observedAtUtc: outageEndedAtUtc,
             },
             {
-              authorityFactIds: ["recovery-state-45"],
-              backlogRootIds: recoverableBacklogRootIds,
-              durablyWaitingRootIds: recoverableBacklogRootIds,
+              authorityFactIds: [`recovery-state-${region}-${repetition + 1}-1`],
+              backlogRootIds: recoverableRootIds.slice(0, -1),
+              durablyWaitingRootIds: recoverableRootIds.slice(0, -1),
               interruptedAgentIds: [],
               lostAcceptedRootIds: [],
-              observedAtUtc: "2026-08-17T12:00:45.000Z",
+              observedAtUtc: DateTime.formatIso(
+                DateTime.makeUnsafe(Date.parse(outageEndedAtUtc) + 1_000),
+              ),
             },
             {
-              authorityFactIds: ["recovery-state-240"],
-              backlogRootIds: recoverableBacklogRootIds.slice(0, -1),
-              durablyWaitingRootIds: recoverableBacklogRootIds.slice(0, -1),
-              interruptedAgentIds: [],
-              lostAcceptedRootIds: [],
-              observedAtUtc: "2026-08-17T12:04:00.000Z",
-            },
-            {
-              authorityFactIds: ["recovery-state-1100"],
+              authorityFactIds: [`recovery-state-${region}-${repetition + 1}-settled`],
               backlogRootIds: [],
               durablyWaitingRootIds: [],
               interruptedAgentIds: [],
               lostAcceptedRootIds: [],
-              observedAtUtc: "2026-08-17T12:18:20.000Z",
+              observedAtUtc: settledAtUtc,
             },
           ],
           throughputWindows: [
             {
               acceptedRootIds,
-              authorityFactIds: ["recovery-throughput-1"],
-              completedRootIds: [...acceptedRootIds, ...recoverableBacklogRootIds],
-              windowEndedAtUtc: DateTime.formatIso(
-                DateTime.makeUnsafe(Date.parse(outageEndedAtUtc) + acceptedRootIds.length * 1_000),
-              ),
-              windowStartedAtUtc: outageEndedAtUtc,
+              authorityFactIds: [`recovery-throughput-${region}-${repetition + 1}`],
+              completedRootIds: recoverableRootIds,
+              windowEndedAtUtc: outageEndedAtUtc,
+              windowStartedAtUtc: outageStartedAtUtc,
             },
           ],
         };
+        const recoveryGoodputPerSecond = recoverableRootIds.length / recoverySeconds;
         return {
           evidence: {
-            acceptedDemandPerSecond: 1,
+            acceptedDemandPerSecond,
             authorityArtifact: {
               ...authorityContent,
               artifactChecksum: qualificationChecksum(authorityContent),
             },
-            backlogSlopeBecameNegativeAfterSeconds: 240,
-            interruptedAgentSettledAfterSeconds: 45,
+            backlogSlopeBecameNegativeAfterSeconds: 1,
+            interruptedAgentSettledAfterSeconds: 1,
             lostAcceptedRoots: 0,
-            recoverableBacklogSettledAfterSeconds: 1_100,
-            recoveryGoodputPerSecond: 3,
+            recoverableBacklogSettledAfterSeconds: recoverySeconds,
+            recoveryGoodputPerSecond,
           },
           region,
           repetition: repetition + 1,

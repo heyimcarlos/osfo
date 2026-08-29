@@ -11,6 +11,7 @@ export type {
   QualificationCharacterizationExecutionRun,
   DurableQualificationExecutionPorts,
   QualificationArrivalAuthorityRecord,
+  QualificationArrivalAttempt,
   QualificationAuthorityCollectors,
   QualificationAuthorityReadPhase,
   QualificationExecutionArtifactStore,

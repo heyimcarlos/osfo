@@ -69,6 +69,7 @@ export interface ActualArrivalRecord extends OpenWorkloadArrival {
 
 /** Root-bound terminal disposition for one actual open arrival. */
 export interface ArrivalDisposition {
+  readonly authorityFactId: string;
   readonly disposition: "accepted" | "capacityRejected" | "typedStressRejected";
   readonly resolvedAtUtc: string;
   readonly rootId: string;
@@ -121,12 +122,35 @@ export interface PlanCounts {
 /** Exact accepted journey population for one run. */
 export type JourneyCounts = Readonly<Record<ReferenceJourney, number>>;
 
+/** Immutable receipt returned by the owning qualification fault controller. */
+export interface FaultControllerReceipt {
+  readonly applicationStatus: "applied" | "notApplied";
+  readonly artifactChecksum: string;
+  readonly artifactId: string;
+  readonly controllerOperationId: string;
+  readonly controllerSource: string;
+  readonly durationSeconds: number;
+  readonly endedAtUtc: string;
+  readonly executionId: string;
+  readonly injectedAtUtc: string;
+  readonly kind: FaultInjection["kind"];
+  readonly manifestChecksum: string;
+  readonly planChecksum: string;
+  readonly runId: string;
+  readonly scheduledTriggerAtUtc: string;
+  readonly target: FaultInjection["target"];
+  readonly trigger: FaultInjection["trigger"];
+  readonly triggerAuthorityFactId: string | null;
+  readonly triggerObservedAtUtc: string;
+}
+
 /** Evidence retained for one lane repetition and region. */
 export interface LaneRunEvidence {
   readonly acceptedRootIds: ReadonlyArray<string>;
   readonly actualArrivals: EvidenceArtifact<ActualArrivalRecord>;
   readonly clean: boolean;
   readonly dispositions: ReadonlyArray<ArrivalDisposition>;
+  readonly faultControllerReceipt: FaultControllerReceipt | null;
   readonly identityPrefix: string;
   readonly intendedArrivals: EvidenceArtifact<OpenWorkloadArrival>;
   readonly lane: WorkloadLane["kind"];
@@ -160,21 +184,7 @@ export interface ChallengeRunEvidence {
   readonly dispositions: ReadonlyArray<ArrivalDisposition>;
   readonly eligibleRoots: number;
   readonly faultInjection: FaultInjection | null;
-  readonly faultControllerReceipt: {
-    readonly artifactChecksum: string;
-    readonly artifactId: string;
-    readonly controllerOperationId: string;
-    readonly controllerSource: string;
-    readonly durationSeconds: number;
-    readonly endedAtUtc: string;
-    readonly injectedAtUtc: string;
-    readonly kind: FaultInjection["kind"];
-    readonly manifestChecksum: string;
-    readonly planChecksum: string;
-    readonly runId: string;
-    readonly target: FaultInjection["target"];
-    readonly trigger: FaultInjection["trigger"];
-  } | null;
+  readonly faultControllerReceipt: FaultControllerReceipt | null;
   readonly faultObservations: EvidenceArtifact<{
     readonly authorityFactIds: ReadonlyArray<string>;
     readonly arrivalChecksum: string;
@@ -388,6 +398,47 @@ const finding = (
 const validUtc = (value: string): boolean =>
   value.endsWith("Z") && value.length > 0 && Number.isFinite(Date.parse(value));
 
+const authorityTriggeredFaults = new Set([
+  "afterAcceptanceBeforeUpdate",
+  "afterConfirmedProgress",
+  "afterExternalEffectBeforeStepCommit",
+  "afterFirstAcceptance",
+  "afterProviderAcceptanceBeforeResponse",
+  "beforeProviderContact",
+  "simultaneousAdmission",
+]);
+
+const faultReceiptHonorsTrigger = (
+  receipt: FaultControllerReceipt,
+  dispositions: ReadonlyArray<ArrivalDisposition>,
+  runStartedAtUtc: string,
+  runEndedAtUtc: string,
+): boolean => {
+  const scheduledAt = Date.parse(receipt.scheduledTriggerAtUtc);
+  const observedAt = Date.parse(receipt.triggerObservedAtUtc);
+  const injectedAt = Date.parse(receipt.injectedAtUtc);
+  const requiresAuthorityFact = authorityTriggeredFaults.has(receipt.trigger);
+  const triggerDisposition =
+    receipt.triggerAuthorityFactId === null
+      ? undefined
+      : dispositions.find(
+          ({ authorityFactId }) => authorityFactId === receipt.triggerAuthorityFactId,
+        );
+  return (
+    validUtc(receipt.scheduledTriggerAtUtc) &&
+    validUtc(receipt.triggerObservedAtUtc) &&
+    validUtc(receipt.injectedAtUtc) &&
+    scheduledAt >= Date.parse(runStartedAtUtc) &&
+    observedAt >= scheduledAt &&
+    injectedAt >= observedAt &&
+    injectedAt <= Date.parse(runEndedAtUtc) &&
+    (requiresAuthorityFact
+      ? triggerDisposition !== undefined &&
+        Date.parse(triggerDisposition.resolvedAtUtc) <= observedAt
+      : receipt.triggerAuthorityFactId === null && injectedAt - scheduledAt <= 250)
+  );
+};
+
 const parseArtifact = parseEvidenceArtifact;
 
 const validPopulationCounts = (
@@ -480,6 +531,8 @@ const validateRootBoundRun = (
   const dispositionsByRoot = new Map(dispositions.map((record) => [record.rootId, record]));
   if (
     dispositionsByRoot.size !== dispositions.length ||
+    new Set(dispositions.map(({ authorityFactId }) => authorityFactId)).size !==
+      dispositions.length ||
     dispositions.length !== actual.length ||
     actual.some((arrival) => !dispositionsByRoot.has(arrival.rootId)) ||
     dispositions.some((record) => {
@@ -487,6 +540,7 @@ const validateRootBoundRun = (
       const resolvedAt = Date.parse(record.resolvedAtUtc);
       return (
         arrival === undefined ||
+        record.authorityFactId.length === 0 ||
         !validUtc(record.resolvedAtUtc) ||
         resolvedAt < arrival.observedAtEpochMs ||
         resolvedAt < Date.parse(runStartedAtUtc) ||
@@ -930,6 +984,61 @@ export const assessQualificationRuns = (
             finding("workloadSeedMismatch", `${subject} used seed ${run.seed}`, subject, "FAIL"),
           );
         }
+        const expectedLaneFault =
+          lane.kind === "allCold"
+            ? manifest.faults.find(({ kind }) => kind === "coldActivation")
+            : lane.kind === "dependencyOutageRecovery"
+              ? manifest.faults.find(({ kind }) => kind === "dependencyOutage")
+              : undefined;
+        const laneFaultReceipt = run.faultControllerReceipt;
+        if (expectedLaneFault === undefined && laneFaultReceipt !== null) {
+          findings.push(
+            finding(
+              "laneFaultControllerReceiptUnexpected",
+              `${subject} retained a fault receipt for a non-fault lane`,
+              subject,
+              "FAIL",
+            ),
+          );
+        } else if (expectedLaneFault !== undefined && laneFaultReceipt === null) {
+          findings.push(
+            finding(
+              "laneFaultControllerReceiptMissing",
+              `${subject} has no retained applied fault-controller receipt`,
+              subject,
+              "MISSING",
+            ),
+          );
+        } else if (expectedLaneFault !== undefined && laneFaultReceipt !== null) {
+          const { artifactChecksum, ...receiptContent } = laneFaultReceipt;
+          if (
+            artifactChecksum !== qualificationChecksum(receiptContent) ||
+            laneFaultReceipt.applicationStatus !== "applied" ||
+            laneFaultReceipt.executionId.length === 0 ||
+            laneFaultReceipt.manifestChecksum !== manifest.manifestChecksum ||
+            laneFaultReceipt.planChecksum.length === 0 ||
+            laneFaultReceipt.runId.length === 0 ||
+            laneFaultReceipt.kind !== expectedLaneFault.kind ||
+            laneFaultReceipt.target !== expectedLaneFault.target ||
+            laneFaultReceipt.trigger !== expectedLaneFault.trigger ||
+            laneFaultReceipt.durationSeconds !== expectedLaneFault.durationSeconds ||
+            !faultReceiptHonorsTrigger(
+              laneFaultReceipt,
+              run.dispositions,
+              run.windows[0]?.startedAtUtc ?? "",
+              run.windows.at(-1)?.endedAtUtc ?? "",
+            )
+          ) {
+            findings.push(
+              finding(
+                "laneFaultControllerReceiptConflict",
+                `${subject} fault controller did not apply the exact frozen lane fault`,
+                subject,
+                "FAIL",
+              ),
+            );
+          }
+        }
         if (intendedArrivals.count !== expectedArrivals) {
           findings.push(
             finding(
@@ -1119,14 +1228,21 @@ export const assessQualificationRuns = (
         const { artifactChecksum, ...receiptContent } = controllerReceipt;
         if (
           artifactChecksum !== qualificationChecksum(receiptContent) ||
+          controllerReceipt.applicationStatus !== "applied" ||
+          controllerReceipt.executionId.length === 0 ||
           controllerReceipt.manifestChecksum !== manifest.manifestChecksum ||
           controllerReceipt.planChecksum.length === 0 ||
-          controllerReceipt.runId !== identitySet.artifactId ||
+          controllerReceipt.runId.length === 0 ||
           controllerReceipt.kind !== expectedFault.kind ||
           controllerReceipt.target !== expectedFault.target ||
           controllerReceipt.trigger !== expectedFault.trigger ||
           controllerReceipt.durationSeconds !== expectedFault.durationSeconds ||
-          controllerReceipt.injectedAtUtc !== run.startedAtUtc ||
+          !faultReceiptHonorsTrigger(
+            controllerReceipt,
+            run.dispositions,
+            run.startedAtUtc,
+            run.completedAtUtc,
+          ) ||
           Date.parse(controllerReceipt.endedAtUtc) !==
             Date.parse(controllerReceipt.injectedAtUtc) +
               controllerReceipt.durationSeconds * 1_000 ||

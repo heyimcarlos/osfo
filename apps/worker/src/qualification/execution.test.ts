@@ -1,6 +1,7 @@
 /* oxlint-disable eslint/no-underscore-dangle, vitest/no-standalone-expect -- Assertions inspect tagged exits inside Effect Vitest generators. */
 import { expect, it } from "@effect/vitest";
-import { Cause, DateTime, Effect, Exit, Ref } from "effect";
+import { Cause, Clock, DateTime, Duration, Effect, Exit, Fiber, Ref } from "effect";
+import { TestClock } from "effect/testing";
 
 import {
   completeProductionEvidence,
@@ -10,10 +11,12 @@ import {
 import {
   createQualificationExecutionPlan,
   executeDurableQualification,
+  executeOpenArrivalChunk,
   executeQualification,
   qualificationExecutionReceiptForRun,
   qualificationRunArrivals,
   type QualificationExecutionDriver,
+  type DurableQualificationExecutionPorts,
   type QualificationAuthorityCollectors,
   type QualificationExecutionArtifactStore,
   type QualificationExecutionPlan,
@@ -24,6 +27,7 @@ import {
   createScaleQualifiedPublicManifest,
 } from "./qualification-manifest";
 import { qualificationChecksum } from "./qualification-checksum";
+import type { FaultControllerReceipt } from "./qualification-runs";
 import {
   qualificationExecutionEvidence,
   type QualificationRunExecutionReceipt,
@@ -36,26 +40,53 @@ const makePlan = (
   startsAtEpochMs: number,
   executionId = "execution-test",
 ) => createQualificationExecutionPlan(manifest, startsAtEpochMs, executionId);
+const advanceThroughPlan = (plan: QualificationExecutionPlan) =>
+  Effect.gen(function* () {
+    const durationMs =
+      (plan.runs.at(-1)?.endsAtEpochMs ?? plan.startsAtEpochMs) - plan.startsAtEpochMs + 1;
+    for (let elapsed = 0; elapsed < durationMs; elapsed += 100) {
+      yield* TestClock.adjust(Duration.millis(Math.min(100, durationMs - elapsed)));
+    }
+  });
 
 const completeExecutionEvidence = (
   manifest: ReturnType<typeof compactManifest>,
   plan: QualificationExecutionPlan,
   runReceipts: ReadonlyArray<QualificationRunExecutionReceipt>,
 ) => {
-  const evidence = completeProductionEvidence();
-  const challengeRuns = evidence.runs.challengeRuns.map((run) => {
+  const evidence = completeProductionEvidence(plan);
+  const bindFaultReceipt = <
+    A extends {
+      readonly faultControllerReceipt: FaultControllerReceipt | null;
+    },
+  >(
+    run: A,
+    plannedRun: QualificationExecutionRun | undefined,
+  ) => {
     const receipt = run.faultControllerReceipt;
-    if (receipt === null) return run;
-    const { artifactChecksum: _artifactChecksum, ...content } = {
-      ...receipt,
-      planChecksum: plan.planChecksum,
-    };
+    if (receipt === null || plannedRun === undefined) return run;
     return Object.assign({}, run, {
-      faultControllerReceipt: {
-        ...content,
-        artifactChecksum: qualificationChecksum(content),
-      },
+      faultControllerReceipt: appliedFaultReceipt(manifest, plan, plannedRun),
     });
+  };
+  const challengeRuns = evidence.runs.challengeRuns.map((run) => {
+    const plannedRun = plan.runs.find(
+      (candidate) =>
+        candidate.kind === "challenge" &&
+        candidate.challenge === run.challenge &&
+        candidate.region === run.region,
+    );
+    return bindFaultReceipt(run, plannedRun);
+  });
+  const laneRuns = evidence.runs.laneRuns.map((run) => {
+    const plannedRun = plan.runs.find(
+      (candidate) =>
+        candidate.kind === "lane" &&
+        candidate.lane === run.lane &&
+        candidate.region === run.region &&
+        candidate.repetition === run.repetition,
+    );
+    return bindFaultReceipt(run, plannedRun);
   });
   return {
     ...evidence,
@@ -66,7 +97,7 @@ const completeExecutionEvidence = (
       "execution-test",
       runReceipts,
     ),
-    runs: { ...evidence.runs, challengeRuns },
+    runs: { ...evidence.runs, challengeRuns, laneRuns },
   };
 };
 
@@ -131,6 +162,82 @@ const memoryArtifactStore = (omitOnRead: (artifactId: string) => boolean = () =>
   };
 };
 
+const appliedFault = (
+  manifest: ReturnType<typeof compactManifest>,
+  plan: QualificationExecutionPlan,
+  run: QualificationExecutionRun,
+) => {
+  const receipt = appliedFaultReceipt(manifest, plan, run);
+  return receipt === null ? Effect.die(new Error("run has no fault")) : Effect.succeed(receipt);
+};
+
+const appliedFaultReceipt = (
+  manifest: ReturnType<typeof compactManifest>,
+  plan: QualificationExecutionPlan,
+  run: QualificationExecutionRun,
+): FaultControllerReceipt | null => {
+  const fault = run.fault;
+  if (fault === null) return null;
+  const scheduledTriggerAtEpochMs =
+    run.windows.find(({ kind }) =>
+      fault.trigger === "startOfFaultWindow"
+        ? kind === "fault"
+        : fault.trigger === "startOfOfferWindow"
+          ? kind === "offer"
+          : false,
+    )?.startsAtEpochMs ?? run.startsAtEpochMs;
+  const firstArrival = qualificationRunArrivals(manifest, run).next();
+  const requiresAuthorityFact = ![
+    "beforeOffer",
+    "sharedDueTime",
+    "startOfFaultWindow",
+    "startOfOfferWindow",
+  ].includes(fault.trigger);
+  const scheduledTriggerAtUtc = DateTime.formatIso(DateTime.makeUnsafe(scheduledTriggerAtEpochMs));
+  const triggerObservedAtUtc =
+    requiresAuthorityFact && !firstArrival.done
+      ? DateTime.formatIso(DateTime.makeUnsafe(firstArrival.value.offeredAtEpochMs + 1))
+      : scheduledTriggerAtUtc;
+  const content = {
+    applicationStatus: "applied" as const,
+    artifactId: `fault-${run.runId}`,
+    controllerOperationId: `operation-${run.runId}`,
+    controllerSource: "test-fault-controller",
+    durationSeconds: fault.durationSeconds,
+    endedAtUtc: DateTime.formatIso(
+      DateTime.makeUnsafe(Date.parse(triggerObservedAtUtc) + fault.durationSeconds * 1_000),
+    ),
+    executionId: plan.executionId,
+    injectedAtUtc: triggerObservedAtUtc,
+    kind: fault.kind,
+    manifestChecksum: manifest.manifestChecksum,
+    planChecksum: plan.planChecksum,
+    runId: run.runId,
+    scheduledTriggerAtUtc,
+    target: fault.target,
+    trigger: fault.trigger,
+    triggerAuthorityFactId:
+      requiresAuthorityFact && !firstArrival.done
+        ? `signal-Worker-${firstArrival.value.rootId}`
+        : null,
+    triggerObservedAtUtc,
+  };
+  return { ...content, artifactChecksum: qualificationChecksum(content) };
+};
+
+const arrivalPorts = (
+  manifest: ReturnType<typeof compactManifest>,
+  plan: QualificationExecutionPlan,
+  executeArrival: DurableQualificationExecutionPorts<never>["executeArrival"],
+): DurableQualificationExecutionPorts<never> => ({
+  applyFault: () => Effect.die(new Error("Arrival pacing test has no fault")),
+  artifacts: memoryArtifactStore().store,
+  authorities: authorityCollectors(manifest, plan),
+  executeArrival,
+  prepare: () => Effect.void,
+  teardown: () => Effect.void,
+});
+
 it.effect("builds and executes the frozen open-arrival and fault plan before qualification", () =>
   Effect.gen(function* () {
     const manifest = compactManifest();
@@ -176,26 +283,35 @@ it.effect(
       const { retained, store } = memoryArtifactStore();
       const executedRoots = new Set<string>();
       let executedCount = 0;
-      const report = yield* executeDurableQualification({
+      yield* TestClock.setTime(plan.startsAtEpochMs);
+      const execution = yield* executeDurableQualification({
         manifest,
         plan,
         ports: {
+          applyFault: (_manifest, _plan, run) => appliedFault(manifest, plan, run),
           artifacts: store,
           authorities: authorityCollectors(manifest, plan),
-          executeArrival: (_manifest, _run, arrival) =>
+          executeArrival: (_manifest, _run, arrival, attempt) =>
             Effect.sync(() => {
               executedCount += 1;
               executedRoots.add(arrival.rootId);
               return {
-                authorityFactId: `accepted-${arrival.rootId}`,
+                attemptId: attempt.attemptId,
+                authorityFactId: `signal-Worker-${arrival.rootId}`,
                 executedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(arrival.offeredAtEpochMs)),
+                executionId: plan.executionId,
                 rootId: arrival.rootId,
+                submittedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(arrival.offeredAtEpochMs)),
               };
             }),
           prepare: () => Effect.void,
           teardown: () => Effect.void,
         },
-      });
+      }).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* advanceThroughPlan(plan);
+      const report = yield* Fiber.join(execution);
+      expect(report.findings).toEqual([]);
       expect(report.verdict).toBe("PASS");
       expect(executedCount).toBe(plan.runs.reduce((count, run) => count + run.arrivalCount, 0));
       expect(executedRoots.size).toBe(executedCount);
@@ -204,7 +320,102 @@ it.effect(
         retained.has("qualification/executions/durable-execution-test/authority-bundle.json"),
       ).toBe(true);
     }),
-  15_000,
+  60_000,
+);
+
+it.effect("offers 25/s, 50/s, and burst arrivals on the clock despite slow completions", () =>
+  Effect.gen(function* () {
+    const manifest = compactManifest();
+    const plan = makePlan(manifest, 0, "open-arrival-pacing");
+    const run = yield* requireDefined(plan.runs[0], "plan contains no runs");
+    for (const workload of [
+      { count: 300, intervalMs: 40, name: "25/s" },
+      { count: 300, intervalMs: 20, name: "50/s" },
+      { count: 200, intervalMs: 0, name: "burst" },
+    ]) {
+      yield* TestClock.setTime(0);
+      const submitted = new Map<string, number>();
+      const arrivals = Array.from({ length: workload.count }, (_, index) => ({
+        journey: "ordinaryConversation" as const,
+        offeredAtEpochMs: index * workload.intervalMs,
+        plan: "free" as const,
+        rootId: `${workload.name}-${index}`,
+      }));
+      const ports = arrivalPorts(manifest, plan, (_manifest, _run, arrival, attempt) =>
+        Effect.gen(function* () {
+          const submittedAt = yield* Clock.currentTimeMillis;
+          submitted.set(arrival.rootId, submittedAt);
+          yield* Effect.sleep(Duration.millis(200));
+          const executedAt = yield* Clock.currentTimeMillis;
+          return {
+            attemptId: attempt.attemptId,
+            authorityFactId: `fact-${arrival.rootId}`,
+            executedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(executedAt)),
+            executionId: plan.executionId,
+            rootId: arrival.rootId,
+            submittedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(submittedAt)),
+          };
+        }),
+      );
+      const fiber = yield* executeOpenArrivalChunk(ports, manifest, plan, run, arrivals).pipe(
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      const durationMs = (arrivals.at(-1)?.offeredAtEpochMs ?? 0) + 500;
+      for (let elapsed = 0; elapsed < durationMs; elapsed += 20) {
+        yield* TestClock.adjust(Duration.millis(Math.min(20, durationMs - elapsed)));
+      }
+      yield* Fiber.join(fiber);
+
+      expect(submitted.size).toBe(workload.count);
+      const maximumLag = arrivals.reduce(
+        (maximum, arrival) =>
+          Math.max(
+            maximum,
+            (submitted.get(arrival.rootId) ?? Number.POSITIVE_INFINITY) - arrival.offeredAtEpochMs,
+          ),
+        0,
+      );
+      expect(maximumLag).toBeLessThanOrEqual(20);
+    }
+  }),
+);
+
+it.effect("fails a burst whose bounded concurrency cannot preserve offered arrival time", () =>
+  Effect.gen(function* () {
+    const manifest = compactManifest();
+    const plan = makePlan(manifest, 0, "open-arrival-overload");
+    const run = yield* requireDefined(plan.runs[0], "plan contains no runs");
+    const arrivals = Array.from({ length: 600 }, (_, index) => ({
+      journey: "ordinaryConversation" as const,
+      offeredAtEpochMs: 0,
+      plan: "free" as const,
+      rootId: `overload-${index}`,
+    }));
+    const ports = arrivalPorts(manifest, plan, (_manifest, _run, arrival, attempt) =>
+      Effect.gen(function* () {
+        const submittedAt = yield* Clock.currentTimeMillis;
+        yield* Effect.sleep(Duration.millis(200));
+        const executedAt = yield* Clock.currentTimeMillis;
+        return {
+          attemptId: attempt.attemptId,
+          authorityFactId: `fact-${arrival.rootId}`,
+          executedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(executedAt)),
+          executionId: plan.executionId,
+          rootId: arrival.rootId,
+          submittedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(submittedAt)),
+        };
+      }),
+    );
+    yield* TestClock.setTime(0);
+    const fiber = yield* executeOpenArrivalChunk(ports, manifest, plan, run, arrivals).pipe(
+      Effect.forkChild,
+    );
+    yield* Effect.yieldNow;
+    yield* TestClock.adjust(Duration.millis(600));
+
+    expect((yield* Effect.flip(Fiber.join(fiber)))._tag).toBe("QualificationExecutionInvalid");
+  }),
 );
 
 it.effect("rejects missing retained arrivals instead of evaluating self-attested evidence", () =>
@@ -212,27 +423,152 @@ it.effect("rejects missing retained arrivals instead of evaluating self-attested
     const manifest = compactManifest();
     const plan = makePlan(manifest, Date.parse("2026-08-17T12:00:00.000Z"), "missing-arrival-test");
     const { store } = memoryArtifactStore((artifactId) => artifactId.includes("arrivals-0.json"));
-    const result = yield* Effect.flip(
-      executeDurableQualification({
+    yield* TestClock.setTime(plan.startsAtEpochMs);
+    const execution = yield* executeDurableQualification({
+      manifest,
+      plan,
+      ports: {
+        applyFault: (_manifest, _plan, run) => appliedFault(manifest, plan, run),
+        artifacts: store,
+        authorities: authorityCollectors(manifest, plan),
+        executeArrival: (_manifest, _run, arrival, attempt) =>
+          Effect.succeed({
+            attemptId: attempt.attemptId,
+            authorityFactId: `signal-Worker-${arrival.rootId}`,
+            executedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(arrival.offeredAtEpochMs)),
+            executionId: plan.executionId,
+            rootId: arrival.rootId,
+            submittedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(arrival.offeredAtEpochMs)),
+          }),
+        prepare: () => Effect.void,
+        teardown: () => Effect.void,
+      },
+    }).pipe(Effect.forkChild);
+    yield* Effect.yieldNow;
+    yield* advanceThroughPlan(plan);
+    const result = yield* Fiber.join(execution);
+
+    expect(result).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "qualificationExecutionConflict", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
+    });
+  }),
+);
+
+it.effect(
+  "rejects authority evidence collected for a different executed root corpus",
+  () =>
+    Effect.gen(function* () {
+      const manifest = compactManifest();
+      const plan = makePlan(manifest, 0, "mismatched-authority-corpus");
+      const { store } = memoryArtifactStore();
+      const exactCollectors = authorityCollectors(manifest, plan);
+      const stale = completeExecutionEvidence(manifest, plan, []);
+      const firstLane = yield* requireDefined(stale.runs.laneRuns[0], "evidence has no lane");
+      const firstArrival = yield* requireDefined(
+        firstLane.actualArrivals.records[0],
+        "lane has no actual arrival",
+      );
+      const mismatchedRuns = {
+        ...stale.runs,
+        laneRuns: [
+          {
+            ...firstLane,
+            actualArrivals: {
+              ...firstLane.actualArrivals,
+              records: [
+                { ...firstArrival, rootId: `${firstArrival.rootId}-other-execution` },
+                ...firstLane.actualArrivals.records.slice(1),
+              ],
+            },
+          },
+          ...stale.runs.laneRuns.slice(1),
+        ],
+      };
+      yield* TestClock.setTime(0);
+      const execution = yield* executeDurableQualification({
         manifest,
         plan,
         ports: {
+          applyFault: (_manifest, _plan, run) => appliedFault(manifest, plan, run),
           artifacts: store,
-          authorities: authorityCollectors(manifest, plan),
-          executeArrival: (_manifest, _run, arrival) =>
+          authorities: {
+            ...exactCollectors,
+            runs: () => Effect.succeed(mismatchedRuns),
+          },
+          executeArrival: (_manifest, _run, arrival, attempt) =>
             Effect.succeed({
-              authorityFactId: `accepted-${arrival.rootId}`,
+              attemptId: attempt.attemptId,
+              authorityFactId: `signal-Worker-${arrival.rootId}`,
               executedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(arrival.offeredAtEpochMs)),
+              executionId: plan.executionId,
               rootId: arrival.rootId,
+              submittedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(arrival.offeredAtEpochMs)),
             }),
           prepare: () => Effect.void,
           teardown: () => Effect.void,
         },
-      }),
-    );
+      }).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* advanceThroughPlan(plan);
+      const report = yield* Fiber.join(execution);
 
-    expect(result._tag).toBe("QualificationExecutionInvalid");
-  }),
+      expect(report).toMatchObject({
+        findings: expect.arrayContaining([
+          expect.objectContaining({ code: "qualificationExecutionConflict", verdict: "FAIL" }),
+        ]),
+        verdict: "FAIL",
+      });
+    }),
+  60_000,
+);
+
+it.effect(
+  "returns MISSING when an authority collector is unavailable",
+  () =>
+    Effect.gen(function* () {
+      const manifest = compactManifest();
+      const plan = makePlan(manifest, 0, "unavailable-authority-component");
+      const { store } = memoryArtifactStore();
+      const collectors = authorityCollectors(manifest, plan);
+      yield* TestClock.setTime(0);
+      const execution = yield* executeDurableQualification({
+        manifest,
+        plan,
+        ports: {
+          applyFault: (_manifest, _plan, run) => appliedFault(manifest, plan, run),
+          artifacts: store,
+          authorities: {
+            ...collectors,
+            cost: () => Effect.fail("authority-unavailable" as const),
+          },
+          executeArrival: (_manifest, _run, arrival, attempt) =>
+            Effect.succeed({
+              attemptId: attempt.attemptId,
+              authorityFactId: `signal-Worker-${arrival.rootId}`,
+              executedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(arrival.offeredAtEpochMs)),
+              executionId: plan.executionId,
+              rootId: arrival.rootId,
+              submittedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(arrival.offeredAtEpochMs)),
+            }),
+          prepare: () => Effect.void,
+          teardown: () => Effect.void,
+        },
+      }).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* advanceThroughPlan(plan);
+      const report = yield* Fiber.join(execution);
+
+      expect(report).toMatchObject({
+        findings: expect.arrayContaining([
+          expect.objectContaining({ code: "qualificationMaterialUnavailable", verdict: "MISSING" }),
+        ]),
+        verdict: "MISSING",
+      });
+    }),
+  60_000,
 );
 
 it("keeps real beta and public plans compact with exact deterministic cardinality", () => {
