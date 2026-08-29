@@ -114,8 +114,7 @@ it("returns a ready stored source across the Agent RPC boundary", async () => {
   const fileId = "web:00000000-0000-4000-8000-000000000290";
   const stub = runtimeEnv.OSFO_AGENT_TEST.get(runtimeEnv.OSFO_AGENT_TEST.idFromName(agentId));
 
-  await runInDurableObject(stub, async (_boundAgent, state) => {
-    const agent = new OsfoAgent(state, runtimeEnv);
+  await runInDurableObject(stub, async (agent, state) => {
     await agent.initialize({
       agentId,
       initializationId: "document-build-file-resolution-initialization",
@@ -140,22 +139,22 @@ it("returns a ready stored source across the Agent RPC boundary", async () => {
       "document-build-file-resolution-upload",
       userId,
     );
+  });
 
-    await expect(
-      agent.resolveDocumentBuildFiles({ agentId, fileIds: [fileId], userId }),
-    ).resolves.toEqual({
-      _tag: "Resolved",
-      files: [
-        {
-          byteLength: 12n,
-          fileId,
-          fileName: "Source.txt",
-          mediaType: "text/plain",
-          normalizedText: "source text",
-          sha256: `sha256:${"a".repeat(64)}`,
-        },
-      ],
-    });
+  await expect(
+    stub.resolveDocumentBuildFiles({ agentId, fileIds: [fileId], userId }),
+  ).resolves.toEqual({
+    _tag: "Resolved",
+    files: [
+      {
+        byteLength: 12n,
+        fileId,
+        fileName: "Source.txt",
+        mediaType: "text/plain",
+        normalizedText: "source text",
+        sha256: `sha256:${"a".repeat(64)}`,
+      },
+    ],
   });
 });
 
