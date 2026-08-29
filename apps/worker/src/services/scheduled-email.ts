@@ -740,9 +740,6 @@ export const make = Effect.gen(function* () {
   ) {
     const email = yield* inspectExecution(payload);
     const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-    if (!terminalStates.has(email.state) && email.cancelRequestedAt !== null) {
-      return yield* finishCanceled(email, "cancel-requested", now);
-    }
     if (
       email.state === "failure" &&
       email.sendOutcome === "ambiguous" &&
@@ -753,17 +750,20 @@ export const make = Effect.gen(function* () {
       return yield* refineTerminalAmbiguity(email);
     }
     if (terminalStates.has(email.state)) return yield* settleTerminal(email);
+    if (email.state === "sending" || email.state === "send_pending_reconciliation") {
+      return yield* reconcileClaimedSend(email);
+    }
+    if (email.cancelRequestedAt !== null) {
+      return yield* finishCanceled(email, "cancel-requested", now);
+    }
     if (email.state === "admitted" || email.state === "accepted") {
       return yield* beginWaiting(payload);
     }
     if (email.state === "waiting") return yield* drainWorkflowStartAccounting(email);
-    if (email.state !== "sending" && email.state !== "send_pending_reconciliation") {
-      return yield* new Conflict({
-        message: "Only an already-claimed Scheduled Email can use deletion-safe recovery",
-        workflowId: email.workflowId,
-      });
-    }
-    return yield* reconcileClaimedSend(email);
+    return yield* new Conflict({
+      message: "Only an already-claimed Scheduled Email can use deletion-safe recovery",
+      workflowId: email.workflowId,
+    });
   });
 
   const start = Effect.fn("ScheduledEmail.start")(function* (input: StartInput) {

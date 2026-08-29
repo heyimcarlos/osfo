@@ -3,7 +3,9 @@
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
+import { CapabilityCatalogVersion, UserId } from "../../domain";
 import { launchModelAccessPolicy } from "../../domain/model-access-policy";
+import { Capabilities } from "../../services/capabilities";
 import { ResearchCollector } from "../../services/research-collector";
 import { ResearchReport } from "../../services/research-report";
 import { ResearchSynthesis } from "../../services/research-synthesis";
@@ -250,6 +252,76 @@ it.effect("serializes the Workers AI request shape through the local Agent bound
             subject: expect.stringContaining(`Cancel Research Report ${workflowId}.`),
           },
         ]);
+      }),
+    (emulator) => Effect.promise(emulator.close),
+  ),
+);
+
+it.effect("projects the strict Scheduled Email request into the local model selector", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(startProviderEmulator),
+    (emulator) =>
+      Effect.gen(function* () {
+        const request =
+          "Schedule this exact Gmail message: recipient=verify@example.test; subject=Scheduled Email verification; body=Run-owned Scheduled Email verification; sendAt=2026-08-29T00:25:19.574Z";
+        const availableToolNames = [
+          "cancelScheduledEmail",
+          "gmailFetchThread",
+          "gmailSearchEmails",
+          "gmailSendEmail",
+          "inspectScheduledEmail",
+          "loadSkill",
+          "scheduleEmail",
+        ] as const;
+        const capabilities = Capabilities.make();
+        const index = yield* capabilities.eligibleIndex({
+          availableIntegrationToolkits: ["gmail"],
+          availableRequirements: ["composio", "personal-agent"],
+          availableToolNames,
+          catalogVersion: CapabilityCatalogVersion.make("governed-capabilities-v1"),
+          declaredRequirements: [],
+          origin: "channelLink",
+          personalSkills: [],
+          plan: "adventurer",
+          taskDescription: request,
+          taskKinds: Capabilities.taskKindsFor(request),
+          userId: UserId.make("scheduled-email-local-verifier"),
+        });
+        const toolNames = capabilities.assembleToolBundle({
+          availableToolNames,
+          index,
+          loadedSkills: [],
+        }).activeToolNames;
+        expect(toolNames).toContain("scheduleEmail");
+
+        const binding = ResearchVerificationProvider.makeAiBinding({
+          _tag: "LocalVerification",
+          baseURL: emulator.origin,
+        });
+        const response = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            messages: [{ content: request, role: "user" }],
+            tools: toolNames.map((name) => ({
+              function: { name, parameters: { properties: {}, type: "object" } },
+              type: "function" as const,
+            })),
+          }),
+        );
+        expect(response).toMatchObject({
+          finish_reason: "tool_calls",
+          tool_calls: [
+            {
+              arguments: {
+                body: "Run-owned Scheduled Email verification",
+                gmailResource: "primary",
+                recipients: ["verify@example.test"],
+                scheduledAt: "2026-08-29T00:25:19.574Z",
+                subject: "Scheduled Email verification",
+              },
+              name: "scheduleEmail",
+            },
+          ],
+        });
       }),
     (emulator) => Effect.promise(emulator.close),
   ),

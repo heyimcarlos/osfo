@@ -529,6 +529,29 @@ describe("ScheduledEmail", () => {
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 
+  it.effect("recovers Applied provider truth before honoring a later cancellation request", () => {
+    const fixture = makeFixture({ sendOutcome: "ambiguous" });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      yield* TestClock.setTime(scheduledAt.getTime());
+      yield* emails.sendDue(payload);
+      expect(yield* emails.cancel(started.email.workflowId, authorization())).toMatchObject({
+        _tag: "ReconciliationRequired",
+      });
+      fixture.reconciliation = { _tag: "Applied", result: applied };
+
+      const recovered = yield* emails.recoverClaimed(payload);
+      expect(recovered).toMatchObject({ sendOutcome: "applied", state: "success" });
+      expect(fixture.sendAttempts).toBe(1);
+      expect(fixture.gmailSendFacts).toBe(1);
+      expect(fixture.followUps).toBe(1);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
   it.effect("drains workflow-start accounting after acceptance committed before an outage", () => {
     const fixture = makeFixture();
     fixture.failWorkflowAccounting = true;

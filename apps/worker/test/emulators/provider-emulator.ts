@@ -691,8 +691,12 @@ const handleResearch = (
     .then((input) => {
       if (pathname.endsWith("/agent")) {
         const toolNames = availableToolNames(input);
-        const lastMessage = lastMessageText(input);
-        ledger.push({ kind: "agent", operationId: null, subject: lastMessage.slice(0, 500) });
+        const lastMessage = lastMessageContent(input);
+        ledger.push({
+          kind: "agent",
+          operationId: null,
+          subject: lastMessageText(input).slice(0, 500),
+        });
         if (toolNames.includes("present_link") && lastMessageRole(input) === "user") {
           respondJson(response, 200, toolResponse("present_link", {}));
           return;
