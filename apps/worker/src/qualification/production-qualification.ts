@@ -791,7 +791,7 @@ export const qualifyProduction = (
               .filter(({ terminalState }) => terminalState === "completed")
               .map(({ rootId }) => rootId),
           );
-          const faultWindow = laneRun.windows.find(({ kind }) => kind === "fault");
+          const faultReceipt = laneRun.faultControllerReceipt;
           const throughputWindow = recoveryAuthority.throughputWindows[0];
           const dispositionByRoot = new Map(
             laneRun.dispositions.map((disposition) => [disposition.rootId, disposition]),
@@ -832,17 +832,17 @@ export const qualifyProduction = (
             acceptedAuthoritySet.size !== acceptedRoots.size ||
             [...acceptedRoots].some((rootId) => !acceptedAuthoritySet.has(rootId)) ||
             acceptedTransitionConflict ||
-            faultWindow === undefined ||
+            faultReceipt === null ||
             throughputWindow === undefined ||
             recoveryAuthority.throughputWindows.length !== 1 ||
-            throughputWindow.windowStartedAtUtc !== faultWindow.startedAtUtc ||
-            throughputWindow.windowEndedAtUtc !== faultWindow.endedAtUtc ||
-            recoveryAuthority.outageEndedAtUtc !== faultWindow.endedAtUtc ||
-            recoveryAuthority.stateObservations[0]?.observedAtUtc !== faultWindow.endedAtUtc ||
+            throughputWindow.windowStartedAtUtc !== faultReceipt.injectedAtUtc ||
+            throughputWindow.windowEndedAtUtc !== faultReceipt.endedAtUtc ||
+            recoveryAuthority.outageEndedAtUtc !== faultReceipt.endedAtUtc ||
+            recoveryAuthority.stateObservations[0]?.observedAtUtc !== faultReceipt.endedAtUtc ||
             recoveryAuthority.rootTransitions.some(
               ({ admittedAtUtc, rootId }) =>
                 !acceptedRoots.has(rootId) &&
-                Date.parse(admittedAtUtc) >= Date.parse(faultWindow.startedAtUtc),
+                Date.parse(admittedAtUtc) >= Date.parse(faultReceipt.injectedAtUtc),
             )
           ) {
             findings.push(

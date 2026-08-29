@@ -510,6 +510,7 @@ const StoredRunManifest = Schema.Struct({
   executionId: Schema.String,
   faultReceipt: Schema.NullOr(
     Schema.Struct({
+      applicationAuthorityFactId: Schema.String,
       applicationStatus: Schema.Literals(["applied", "notApplied"]),
       artifactChecksum: Schema.String,
       artifactId: Schema.String,
@@ -523,6 +524,7 @@ const StoredRunManifest = Schema.Struct({
       manifestChecksum: Schema.String,
       planChecksum: Schema.String,
       runId: Schema.String,
+      restorationAuthorityFactId: Schema.String,
       scheduledTriggerAtUtc: Schema.String,
       target: Schema.String,
       trigger: Schema.String,
@@ -706,6 +708,9 @@ const validateFaultReceipt = (
   return (
     artifactChecksum === qualificationChecksum(content) &&
     receipt.applicationStatus === "applied" &&
+    receipt.applicationAuthorityFactId.length > 0 &&
+    receipt.restorationAuthorityFactId.length > 0 &&
+    receipt.applicationAuthorityFactId !== receipt.restorationAuthorityFactId &&
     receipt.executionId === plan.executionId &&
     receipt.manifestChecksum === manifest.manifestChecksum &&
     receipt.planChecksum === plan.planChecksum &&
@@ -720,6 +725,7 @@ const validateFaultReceipt = (
     Number.isFinite(injectedAt) &&
     observedAt >= scheduledAt &&
     injectedAt >= observedAt &&
+    Date.parse(receipt.endedAtUtc) === injectedAt + receipt.durationSeconds * 1_000 &&
     (attempt.requiresAuthorityFact
       ? receipt.triggerAuthorityFactId !== null
       : receipt.triggerAuthorityFactId === null && injectedAt - scheduledAt <= maximumOfferLagMs)
@@ -805,8 +811,13 @@ export const retainDurableQualificationRun = <E>(
 ) =>
   Effect.gen(function* () {
     const faultAttempt = run.fault === null ? null : faultAttemptFor(plan, run, run.fault);
+    const faultIsBarrier = run.fault !== null && !authorityTriggeredFaults.has(run.fault.trigger);
+    const barrierFaultReceipt =
+      run.fault === null || faultAttempt === null || !faultIsBarrier
+        ? null
+        : yield* ports.applyFault(manifest, plan, run, run.fault, faultAttempt);
     const faultFiber =
-      run.fault === null || faultAttempt === null
+      run.fault === null || faultAttempt === null || faultIsBarrier
         ? null
         : yield* ports
             .applyFault(manifest, plan, run, run.fault, faultAttempt)
@@ -881,7 +892,8 @@ export const retainDurableQualificationRun = <E>(
       Stream.runCollect,
     );
     chunks.push(...retainedChunks);
-    const faultReceipt = faultFiber === null ? null : yield* Fiber.join(faultFiber);
+    const faultReceipt =
+      barrierFaultReceipt ?? (faultFiber === null ? null : yield* Fiber.join(faultFiber));
     if (
       run.fault !== null &&
       faultAttempt !== null &&
@@ -1060,7 +1072,16 @@ const verifyEvidenceExecutionCorrelation = <E>(
       evidence.semantic.productAuthorityExports
         .filter(({ authority }) => authority === "worker_admission_receipts")
         .flatMap(({ records }) =>
-          records.map((record) => [record.productFactId, record.rootId] as const),
+          records.flatMap((record) =>
+            "admissionDecision" in record
+              ? [
+                  [
+                    record.productFactId,
+                    { decision: record.admissionDecision, rootId: record.rootId },
+                  ] as const,
+                ]
+              : [],
+          ),
         ),
     );
     const allAuthorityFactIds = new Set<string>();
@@ -1110,8 +1131,8 @@ const verifyEvidenceExecutionCorrelation = <E>(
             disposition === undefined ||
             disposition.authorityFactId !== record.authorityFactId ||
             allAuthorityFactIds.has(record.authorityFactId) ||
-            (disposition.disposition === "accepted" &&
-              workerFacts.get(record.authorityFactId) !== record.rootId)
+            workerFacts.get(record.authorityFactId)?.rootId !== record.rootId ||
+            workerFacts.get(record.authorityFactId)?.decision !== disposition.disposition
           ) {
             return yield* invalidExecution(
               `${run.runId} arrival authority does not join to committed product facts`,
@@ -1127,6 +1148,16 @@ const verifyEvidenceExecutionCorrelation = <E>(
                 ({ authorityFactId }) =>
                   authorityFactId === executed.faultReceipt?.triggerAuthorityFactId,
               );
+        const firstSubmittedAt = executed.records.reduce(
+          (earliest, record) => Math.min(earliest, Date.parse(record.submittedAtUtc)),
+          Number.POSITIVE_INFINITY,
+        );
+        const faultAuthorityConflict =
+          executed.faultReceipt !== null &&
+          (allAuthorityFactIds.has(executed.faultReceipt.applicationAuthorityFactId) ||
+            allAuthorityFactIds.has(executed.faultReceipt.restorationAuthorityFactId) ||
+            (!authorityTriggeredFaults.has(executed.faultReceipt.trigger) &&
+              Date.parse(executed.faultReceipt.injectedAtUtc) > firstSubmittedAt));
         if (
           (evidenceFault === null) !== (executed.faultReceipt === null) ||
           (evidenceFault !== null &&
@@ -1137,11 +1168,16 @@ const verifyEvidenceExecutionCorrelation = <E>(
             executed.faultReceipt !== null &&
             (triggerDisposition === undefined ||
               Date.parse(triggerDisposition.resolvedAtUtc) >
-                Date.parse(executed.faultReceipt.triggerObservedAtUtc)))
+                Date.parse(executed.faultReceipt.triggerObservedAtUtc))) ||
+          faultAuthorityConflict
         ) {
           return yield* invalidExecution(
             `${run.runId} fault evidence does not join to the applied controller receipt`,
           );
+        }
+        if (executed.faultReceipt !== null) {
+          allAuthorityFactIds.add(executed.faultReceipt.applicationAuthorityFactId);
+          allAuthorityFactIds.add(executed.faultReceipt.restorationAuthorityFactId);
         }
       }
     }

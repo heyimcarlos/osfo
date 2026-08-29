@@ -84,6 +84,7 @@ const ArrivalRecord = Schema.Struct({
   submittedAtUtc: Schema.String,
 });
 const FaultReceipt = Schema.Struct({
+  applicationAuthorityFactId: Schema.String,
   applicationStatus: Schema.Literals(["applied", "notApplied"]),
   artifactChecksum: Schema.String,
   artifactId: Schema.String,
@@ -112,6 +113,7 @@ const FaultReceipt = Schema.Struct({
   manifestChecksum: Schema.String,
   planChecksum: Schema.String,
   runId: Schema.String,
+  restorationAuthorityFactId: Schema.String,
   scheduledTriggerAtUtc: Schema.String,
   target: Schema.String,
   trigger: Schema.String,

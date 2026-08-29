@@ -58,6 +58,8 @@ type GeneratedCloudflareBindings = Omit<Env, RawConfigBinding>;
 
 /** Generated Cloudflare bindings and raw Worker configuration values. */
 export interface CloudflareEnv extends GeneratedCloudflareBindings {
+  /** Optional private service binding for the bounded production qualification owner. */
+  readonly QUALIFICATION_OWNER?: Fetcher;
   readonly BETTER_AUTH_API_KEY?: string;
   readonly BETTER_AUTH_API_URL?: string;
   readonly BETTER_AUTH_BASE_URL?: string;

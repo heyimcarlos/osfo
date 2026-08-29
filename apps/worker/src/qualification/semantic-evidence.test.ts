@@ -316,7 +316,7 @@ describe("Semantic evidence", () => {
     });
   });
 
-  it("accepts a failed provider receipt as a committed terminal fact", () => {
+  it("rejects a failed provider receipt as proof of a successful root outcome", () => {
     const input = semanticEvidenceInput();
     const productAuthorityExports = input.productAuthorityExports.map((artifact) => {
       if (artifact.authority !== "provider_delivery_receipts") return artifact;
@@ -325,9 +325,13 @@ describe("Semantic evidence", () => {
       );
       return authorityExport(artifact.authority, records);
     });
-    expect(assessSemanticEvidence({ ...input, productAuthorityExports }, requirements)).toEqual({
-      findings: [],
-      verdict: "PASS",
+    expect(
+      assessSemanticEvidence({ ...input, productAuthorityExports }, requirements),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "componentProductAuthorityInvalid", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
     });
   });
 

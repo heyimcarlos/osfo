@@ -24,6 +24,7 @@ export { DocumentBuildTimerWorkflow } from "./workflows/document-build-timer";
 export { ResearchReportWorkflow } from "./workflows/research-report";
 export { ResearchReportTimerWorkflow } from "./workflows/research-report-timer";
 export { ScheduledEmailWorkflow } from "./workflows/scheduled-email";
+export { runProductionQualification } from "./integrations/cloudflare/production-qualification";
 /** Disposable artifact compute has no direct public-network path or injected credentials. */
 class ArtifactSandbox extends Sandbox {
   override enableInternet = false;

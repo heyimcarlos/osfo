@@ -124,6 +124,7 @@ export type JourneyCounts = Readonly<Record<ReferenceJourney, number>>;
 
 /** Immutable receipt returned by the owning qualification fault controller. */
 export interface FaultControllerReceipt {
+  readonly applicationAuthorityFactId: string;
   readonly applicationStatus: "applied" | "notApplied";
   readonly artifactChecksum: string;
   readonly artifactId: string;
@@ -137,6 +138,7 @@ export interface FaultControllerReceipt {
   readonly manifestChecksum: string;
   readonly planChecksum: string;
   readonly runId: string;
+  readonly restorationAuthorityFactId: string;
   readonly scheduledTriggerAtUtc: string;
   readonly target: FaultInjection["target"];
   readonly trigger: FaultInjection["trigger"];
@@ -428,10 +430,14 @@ const faultReceiptHonorsTrigger = (
     validUtc(receipt.scheduledTriggerAtUtc) &&
     validUtc(receipt.triggerObservedAtUtc) &&
     validUtc(receipt.injectedAtUtc) &&
+    receipt.applicationAuthorityFactId.length > 0 &&
+    receipt.restorationAuthorityFactId.length > 0 &&
+    receipt.applicationAuthorityFactId !== receipt.restorationAuthorityFactId &&
     scheduledAt >= Date.parse(runStartedAtUtc) &&
     observedAt >= scheduledAt &&
     injectedAt >= observedAt &&
     injectedAt <= Date.parse(runEndedAtUtc) &&
+    Date.parse(receipt.endedAtUtc) === injectedAt + receipt.durationSeconds * 1_000 &&
     (requiresAuthorityFact
       ? triggerDisposition !== undefined &&
         Date.parse(triggerDisposition.resolvedAtUtc) <= observedAt

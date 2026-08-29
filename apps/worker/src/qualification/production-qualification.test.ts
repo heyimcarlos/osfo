@@ -239,6 +239,40 @@ describe("Production qualification", () => {
     });
   });
 
+  it("rejects a shortened outage receipt that claims the frozen recovery duration", () => {
+    const evidence = completeProductionEvidence();
+    const laneRun = evidence.runs.laneRuns.find((run) => run.lane === "dependencyOutageRecovery");
+    const receipt = laneRun?.faultControllerReceipt;
+    expect(receipt).toBeDefined();
+    if (laneRun === undefined || receipt === null || receipt === undefined) return;
+    const { artifactChecksum: _artifactChecksum, ...content } = {
+      ...receipt,
+      endedAtUtc: DateTime.formatIso(
+        DateTime.makeUnsafe(Date.parse(receipt.injectedAtUtc) + 1_000),
+      ),
+    };
+    const shortenedReceipt = { ...content, artifactChecksum: qualificationChecksum(content) };
+
+    expect(
+      qualifyProduction({
+        ...evidence,
+        runs: {
+          ...evidence.runs,
+          laneRuns: evidence.runs.laneRuns.map((run) =>
+            run === laneRun
+              ? Object.assign({}, run, { faultControllerReceipt: shortenedReceipt })
+              : run,
+          ),
+        },
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "laneFaultControllerReceiptConflict", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
+    });
+  });
+
   it("rejects an early empty backlog that omits pending accepted roots", () => {
     const evidence = completeProductionEvidence();
     const first = evidence.recoveryRuns[0];

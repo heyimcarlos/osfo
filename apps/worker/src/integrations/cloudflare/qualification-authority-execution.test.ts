@@ -256,6 +256,7 @@ const faultReceiptFor = (
   triggerAuthorityFactId: string,
 ) => {
   const content = {
+    applicationAuthorityFactId: `fault-applied-${attempt.attemptId}`,
     applicationStatus: "applied" as const,
     artifactId: `fault-${attempt.attemptId}`,
     controllerOperationId: `operation-${attempt.attemptId}`,
@@ -272,6 +273,7 @@ const faultReceiptFor = (
     manifestChecksum: compactManifest().manifestChecksum,
     planChecksum: attempt.planChecksum,
     runId: attempt.runId,
+    restorationAuthorityFactId: `fault-restored-${attempt.attemptId}`,
     scheduledTriggerAtUtc: attempt.scheduledTriggerAtUtc,
     target: fault.target,
     trigger: fault.trigger,

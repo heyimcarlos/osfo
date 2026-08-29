@@ -15,6 +15,7 @@ import {
   executeQualification,
   qualificationExecutionReceiptForRun,
   qualificationRunArrivals,
+  retainDurableQualificationRun,
   type QualificationExecutionDriver,
   type DurableQualificationExecutionPorts,
   type QualificationAuthorityCollectors,
@@ -199,6 +200,7 @@ const appliedFaultReceipt = (
       ? DateTime.formatIso(DateTime.makeUnsafe(firstArrival.value.offeredAtEpochMs + 1))
       : scheduledTriggerAtUtc;
   const content = {
+    applicationAuthorityFactId: `fault-applied-${run.runId}`,
     applicationStatus: "applied" as const,
     artifactId: `fault-${run.runId}`,
     controllerOperationId: `operation-${run.runId}`,
@@ -213,6 +215,7 @@ const appliedFaultReceipt = (
     manifestChecksum: manifest.manifestChecksum,
     planChecksum: plan.planChecksum,
     runId: run.runId,
+    restorationAuthorityFactId: `fault-restored-${run.runId}`,
     scheduledTriggerAtUtc,
     target: fault.target,
     trigger: fault.trigger,
@@ -418,6 +421,54 @@ it.effect("fails a burst whose bounded concurrency cannot preserve offered arriv
   }),
 );
 
+it.effect("does not offer a beforeOffer root until the fault controller is durably ready", () =>
+  Effect.gen(function* () {
+    const manifest = compactManifest();
+    const plan = makePlan(manifest, 0, "before-offer-barrier");
+    const run = yield* requireDefined(
+      plan.runs.find(
+        (candidate) => candidate.kind === "challenge" && candidate.fault?.trigger === "beforeOffer",
+      ),
+      "plan has no beforeOffer challenge",
+    );
+    const { store } = memoryArtifactStore();
+    const submittedAt = yield* Ref.make<number | null>(null);
+    const ports: DurableQualificationExecutionPorts<never> = {
+      applyFault: (_manifest, _plan, appliedRun) =>
+        Effect.sleep(Duration.millis(100)).pipe(
+          Effect.andThen(appliedFault(manifest, plan, appliedRun)),
+        ),
+      artifacts: store,
+      authorities: authorityCollectors(manifest, plan),
+      executeArrival: (_manifest, _run, arrival, attempt) =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          yield* Ref.set(submittedAt, now);
+          return {
+            attemptId: attempt.attemptId,
+            authorityFactId: `signal-Worker-${arrival.rootId}`,
+            executedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(now)),
+            executionId: plan.executionId,
+            rootId: arrival.rootId,
+            submittedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(now)),
+          };
+        }),
+      prepare: () => Effect.void,
+      teardown: () => Effect.void,
+    };
+    yield* TestClock.setTime(run.startsAtEpochMs);
+    const fiber = yield* retainDurableQualificationRun(ports, manifest, plan, run).pipe(
+      Effect.forkChild,
+    );
+    yield* Effect.yieldNow;
+    expect(yield* Ref.get(submittedAt)).toBeNull();
+    yield* TestClock.adjust(Duration.millis(100));
+    yield* Fiber.join(fiber);
+
+    expect(yield* Ref.get(submittedAt)).toBe(run.startsAtEpochMs + 100);
+  }),
+);
+
 it.effect("rejects missing retained arrivals instead of evaluating self-attested evidence", () =>
   Effect.gen(function* () {
     const manifest = compactManifest();
@@ -498,6 +549,68 @@ it.effect(
             ...exactCollectors,
             runs: () => Effect.succeed(mismatchedRuns),
           },
+          executeArrival: (_manifest, _run, arrival, attempt) =>
+            Effect.succeed({
+              attemptId: attempt.attemptId,
+              authorityFactId: `signal-Worker-${arrival.rootId}`,
+              executedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(arrival.offeredAtEpochMs)),
+              executionId: plan.executionId,
+              rootId: arrival.rootId,
+              submittedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(arrival.offeredAtEpochMs)),
+            }),
+          prepare: () => Effect.void,
+          teardown: () => Effect.void,
+        },
+      }).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* advanceThroughPlan(plan);
+      const report = yield* Fiber.join(execution);
+
+      expect(report).toMatchObject({
+        findings: expect.arrayContaining([
+          expect.objectContaining({ code: "qualificationExecutionConflict", verdict: "FAIL" }),
+        ]),
+        verdict: "FAIL",
+      });
+    }),
+  60_000,
+);
+
+it.effect(
+  "rejects a typed rejection that disagrees with the committed admission decision",
+  () =>
+    Effect.gen(function* () {
+      const manifest = compactManifest();
+      const plan = makePlan(manifest, 0, "rejected-admission-authority-conflict");
+      const { store } = memoryArtifactStore();
+      const exactCollectors = authorityCollectors(manifest, plan);
+      const evidence = completeExecutionEvidence(manifest, plan, []);
+      const firstLane = yield* requireDefined(evidence.runs.laneRuns[0], "evidence has no lane");
+      const firstDisposition = yield* requireDefined(
+        firstLane.dispositions[0],
+        "lane has no disposition",
+      );
+      const conflictingRuns = {
+        ...evidence.runs,
+        laneRuns: [
+          {
+            ...firstLane,
+            dispositions: [
+              { ...firstDisposition, disposition: "typedStressRejected" as const },
+              ...firstLane.dispositions.slice(1),
+            ],
+          },
+          ...evidence.runs.laneRuns.slice(1),
+        ],
+      };
+      yield* TestClock.setTime(0);
+      const execution = yield* executeDurableQualification({
+        manifest,
+        plan,
+        ports: {
+          applyFault: (_manifest, _plan, run) => appliedFault(manifest, plan, run),
+          artifacts: store,
+          authorities: { ...exactCollectors, runs: () => Effect.succeed(conflictingRuns) },
           executeArrival: (_manifest, _run, arrival, attempt) =>
             Effect.succeed({
               attemptId: attempt.attemptId,

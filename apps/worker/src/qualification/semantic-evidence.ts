@@ -268,7 +268,7 @@ type ProductAuthorityExportRecord =
     })
   | (ProductExportRecordBase & {
       readonly acceptanceReceiptId: string;
-      readonly admissionDecision: "accepted" | "typedRejected";
+      readonly admissionDecision: "accepted" | "capacityRejected" | "typedStressRejected";
       readonly userMessageId: string;
       readonly userUpdateId: string;
     })
@@ -406,7 +406,7 @@ export const ProductAuthorityExportBoundary = Schema.Union([
     Schema.Struct({
       ...ProductExportRecordBaseBoundary,
       acceptanceReceiptId: QualificationId,
-      admissionDecision: Schema.Literals(["accepted", "typedRejected"]),
+      admissionDecision: Schema.Literals(["accepted", "capacityRejected", "typedStressRejected"]),
       userMessageId: QualificationId,
       userUpdateId: QualificationId,
     }),
@@ -1055,7 +1055,10 @@ export const assessSemanticEvidence = (
     }
   }
   for (const record of parsedProductEvidence) {
-    if (!acceptedRoots.has(record.rootId)) {
+    if (
+      !acceptedRoots.has(record.rootId) &&
+      !(record.authority === "worker_admission_receipts" && !record.terminalFact)
+    ) {
       findings.push(
         finding(
           "productEvidenceOutsideCorpus",
@@ -1354,6 +1357,7 @@ export const assessSemanticEvidence = (
             record.productFactId.length === 0 ||
             !validTimestamp(record.occurredAt) ||
             !record.terminalObserved ||
+            !record.terminalFact ||
             (component === "AgentActivation" &&
               (record.activation?.activationId !== trace.activation.activationId ||
                 record.activation?.cause !== trace.activation.cause ||

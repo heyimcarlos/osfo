@@ -459,6 +459,7 @@ const faultControllerReceipt = (
 ) => {
   if (fault === null) return null;
   const content = {
+    applicationAuthorityFactId: `fault-applied-${runId}`,
     applicationStatus: "applied" as const,
     artifactId: `fault-controller-${runId}`,
     controllerOperationId: `fault-operation-${runId}`,
@@ -473,6 +474,7 @@ const faultControllerReceipt = (
     manifestChecksum: manifest.manifestChecksum,
     planChecksum: executionPlanChecksum,
     runId,
+    restorationAuthorityFactId: `fault-restored-${runId}`,
     scheduledTriggerAtUtc: injectedAtUtc,
     target: fault.target,
     trigger: fault.trigger,
@@ -1595,15 +1597,16 @@ export const completeProductionEvidence = (
         );
         const acceptedRootIds = laneRun?.acceptedRootIds ?? [];
         const runArtifactChecksum = qualificationChecksum(acceptedRootIds);
-        const faultWindow = laneRun?.windows.find(({ kind }) => kind === "fault");
-        const outageStartedAtUtc = faultWindow?.startedAtUtc ?? "2026-08-17T11:59:59.000Z";
-        const outageEndedAtUtc = faultWindow?.endedAtUtc ?? "2026-08-17T12:00:00.000Z";
+        const recoveryFaultReceipt = laneRun?.faultControllerReceipt;
+        const outageStartedAtUtc =
+          recoveryFaultReceipt?.injectedAtUtc ?? "2026-08-17T11:59:59.000Z";
+        const outageEndedAtUtc = recoveryFaultReceipt?.endedAtUtc ?? "2026-08-17T12:00:00.000Z";
         const outageSeconds = Math.max(
           1,
           (Date.parse(outageEndedAtUtc) - Date.parse(outageStartedAtUtc)) / 1_000,
         );
         const acceptedDemandPerSecond = acceptedRootIds.length / outageSeconds;
-        const recoverySeconds = 5;
+        const recoverySeconds = Math.min(1_100, Math.max(5, outageSeconds));
         const desiredCompletedRoots = Math.ceil((acceptedDemandPerSecond + 2) * recoverySeconds);
         const recoverableBacklogRootIds = Array.from(
           { length: Math.max(1, desiredCompletedRoots - acceptedRootIds.length) },
