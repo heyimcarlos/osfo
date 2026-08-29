@@ -1,4 +1,4 @@
-import { Array, Order, Schema } from "effect";
+import { Array, Option, Order, Schema } from "effect";
 
 import { qualificationAuthoritySources } from "./authority-sources";
 import type { QualificationExecutionPlan } from "./execution";
@@ -45,6 +45,98 @@ export const QualificationEvaluationFindingShard = Schema.Struct({
   version: Schema.Literal("qualification-evaluation-findings-v1"),
 });
 
+export const QualificationEvaluationRootRecord = Schema.Struct({
+  activation: Schema.NullOr(
+    Schema.Struct({
+      activationId: Identity,
+      cause: Schema.Literals(["deployment", "faultRecovery", "firstUse", "idleEviction", "warm"]),
+      classification: Schema.Literals(["cold", "warm"]),
+      region: Schema.Literals(["americas", "asiaPacific", "europe"]),
+    }),
+  ),
+  correlations: Schema.Array(Schema.Struct({ kind: Identity, value: Identity })),
+  decision: Schema.Literals(["accepted", "capacityRejected", "typedStressRejected"]),
+  journey: Schema.Literals([
+    "accountBillingSafetyDataRights",
+    "documentBuild",
+    "fileAnalysis",
+    "gmail",
+    "ordinaryConversation",
+    "registration",
+    "reminder",
+    "researchReport",
+    "scheduledEmail",
+  ]),
+  plan: Schema.Literals(["adventurer", "free"]),
+  productFactChecksum: Identity,
+  productFactCount: NonNegativeInteger,
+  rootId: Identity,
+  terminalState: Schema.Literals(["failed", "missing", "succeeded", "typedRejected"]),
+});
+
+export const QualificationEvaluationRootAccumulatorShard = Schema.Struct({
+  artifactId: Identity,
+  checksum: Identity,
+  executionId: Identity,
+  firstPartitionIndex: NonNegativeInteger,
+  index: NonNegativeInteger,
+  lastPartitionIndex: NonNegativeInteger,
+  planChecksum: Identity,
+  previousShardChecksum: Schema.String,
+  roots: Schema.Array(QualificationEvaluationRootRecord).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(qualificationEvaluationSampleShardLimit),
+  ),
+  version: Schema.Literal("qualification-evaluation-root-accumulator-v2"),
+});
+
+export const QualificationEvaluationRootAccumulatorReceipt = Schema.Struct({
+  acceptedCount: NonNegativeInteger,
+  artifactId: Identity,
+  artifactPrefix: Identity,
+  checksum: Identity,
+  executionId: Identity,
+  firstPartitionIndex: NonNegativeInteger,
+  firstRootId: Schema.NullOr(Identity),
+  firstShardChecksum: Identity,
+  index: NonNegativeInteger,
+  inputReceiptChainDigest: Identity,
+  inputReceiptChecksums: Schema.Array(Identity).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(qualificationEvaluationReducerFanIn),
+  ),
+  lastPartitionIndex: NonNegativeInteger,
+  lastRootId: Schema.NullOr(Identity),
+  level: NonNegativeInteger,
+  planChecksum: Identity,
+  rootCount: NonNegativeInteger,
+  shardCount: NonNegativeInteger,
+  terminalShardChecksum: Identity,
+  version: Schema.Literal("qualification-evaluation-root-accumulator-receipt-v2"),
+});
+
+export const QualificationEvaluationCorrectnessReceipt = Schema.Struct({
+  artifactId: Identity,
+  checksum: Identity,
+  executionId: Identity,
+  findingSummary: QualificationEvaluationFindingSummary,
+  findingSummaryArtifactChecksum: Identity,
+  findingSummaryArtifactId: Identity,
+  firstPartitionIndex: NonNegativeInteger,
+  index: NonNegativeInteger,
+  inputReceiptChainDigest: Identity,
+  inputReceiptChecksums: Schema.Array(Identity).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(qualificationEvaluationReducerFanIn),
+  ),
+  lastPartitionIndex: NonNegativeInteger,
+  level: NonNegativeInteger,
+  planChecksum: Identity,
+  rootAccumulator: QualificationEvaluationRootAccumulatorReceipt,
+  verdict: Schema.Literals(["FAIL", "MISSING", "PASS"]),
+  version: Schema.Literal("qualification-evaluation-correctness-receipt-v1"),
+});
+
 const QualificationEvaluationLeafAuthorityInput = Schema.Struct({
   checksum: Identity,
   recordCount: NonNegativeInteger,
@@ -68,20 +160,40 @@ export const QualificationEvaluationLeafInputReceipt = Schema.Struct({
   version: Schema.Literal("qualification-evaluation-leaf-input-v1"),
 });
 
-export const QualificationEvaluationSortedRunDescriptor = Schema.Struct({
+const QualificationEvaluationSortedRunDescriptorBase = {
   artifactPrefix: Identity,
+  denominatorChainDigest: Identity,
+  denominatorCount: NonNegativeInteger,
   dimension: Identity,
   firstShardChecksum: Identity,
-  maximum: Schema.Finite,
-  minimum: Schema.Finite,
+  firstPartitionIndex: NonNegativeInteger,
+  inputReceiptChainDigest: Identity,
+  lastPartitionIndex: NonNegativeInteger,
+  missingRootCount: NonNegativeInteger,
   runId: Identity,
+  sampleStatus: Schema.Literals(["COMPLETE", "MISSING"]),
   shardCount: NonNegativeInteger,
   terminalShardChecksum: Identity,
   valueCount: NonNegativeInteger,
-});
+} as const;
 
-export const QualificationEvaluationSortedRunReceipt = Schema.Struct({
-  ...QualificationEvaluationSortedRunDescriptor.fields,
+export const QualificationEvaluationSortedRunDescriptor = Schema.Union([
+  Schema.Struct({
+    ...QualificationEvaluationSortedRunDescriptorBase,
+    maximum: Schema.NullOr(Identity),
+    minimum: Schema.NullOr(Identity),
+    valueType: Schema.Literal("identity"),
+  }),
+  Schema.Struct({
+    ...QualificationEvaluationSortedRunDescriptorBase,
+    maximum: Schema.NullOr(Schema.Finite),
+    minimum: Schema.NullOr(Schema.Finite),
+    valueType: Schema.Literal("latencyMs"),
+  }),
+]);
+
+const QualificationEvaluationSortedRunReceiptBase = {
+  ...QualificationEvaluationSortedRunDescriptorBase,
   artifactId: Identity,
   checksum: Identity,
   executionId: Identity,
@@ -92,8 +204,23 @@ export const QualificationEvaluationSortedRunReceipt = Schema.Struct({
   ),
   level: NonNegativeInteger,
   planChecksum: Identity,
-  version: Schema.Literal("qualification-evaluation-sorted-run-receipt-v1"),
-});
+  version: Schema.Literal("qualification-evaluation-sorted-run-receipt-v2"),
+} as const;
+
+export const QualificationEvaluationSortedRunReceipt = Schema.Union([
+  Schema.Struct({
+    ...QualificationEvaluationSortedRunReceiptBase,
+    maximum: Schema.NullOr(Identity),
+    minimum: Schema.NullOr(Identity),
+    valueType: Schema.Literal("identity"),
+  }),
+  Schema.Struct({
+    ...QualificationEvaluationSortedRunReceiptBase,
+    maximum: Schema.NullOr(Schema.Finite),
+    minimum: Schema.NullOr(Schema.Finite),
+    valueType: Schema.Literal("latencyMs"),
+  }),
+]);
 
 const QualificationEvaluationReductionInput = Schema.Struct({
   artifactId: Identity,
@@ -136,23 +263,47 @@ export const QualificationEvaluationReductionReceipt = Schema.Struct({
   version: Schema.Literal("qualification-evaluation-reduction-v1"),
 });
 
-export const QualificationEvaluationSortedRunShard = Schema.Struct({
+const QualificationEvaluationSortedRunShardBase = {
   artifactId: Identity,
   checksum: Identity,
+  denominatorChainDigest: Identity,
+  denominatorCount: NonNegativeInteger,
   dimension: Identity,
   executionId: Identity,
+  firstPartitionIndex: NonNegativeInteger,
   index: NonNegativeInteger,
-  maximum: Schema.Finite,
-  minimum: Schema.Finite,
+  inputReceiptChainDigest: Identity,
+  lastPartitionIndex: NonNegativeInteger,
+  missingRootCount: NonNegativeInteger,
   planChecksum: Identity,
   previousShardChecksum: Schema.String,
   runId: Identity,
-  values: Schema.Array(Schema.Finite).check(
-    Schema.isMinLength(1),
-    Schema.isMaxLength(qualificationEvaluationSampleShardLimit),
-  ),
-  version: Schema.Literal("qualification-evaluation-sorted-run-v1"),
-});
+  sampleStatus: Schema.Literals(["COMPLETE", "MISSING"]),
+  version: Schema.Literal("qualification-evaluation-sorted-run-v2"),
+} as const;
+
+export const QualificationEvaluationSortedRunShard = Schema.Union([
+  Schema.Struct({
+    ...QualificationEvaluationSortedRunShardBase,
+    maximum: Identity,
+    minimum: Identity,
+    values: Schema.Array(Identity).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(qualificationEvaluationSampleShardLimit),
+    ),
+    valueType: Schema.Literal("identity"),
+  }),
+  Schema.Struct({
+    ...QualificationEvaluationSortedRunShardBase,
+    maximum: Schema.Finite,
+    minimum: Schema.Finite,
+    values: Schema.Array(Schema.Finite).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(qualificationEvaluationSampleShardLimit),
+    ),
+    valueType: Schema.Literal("latencyMs"),
+  }),
+]);
 
 export interface QualificationEvaluationMergeInput {
   readonly descriptor: typeof QualificationEvaluationSortedRunDescriptor.Type;
@@ -266,6 +417,172 @@ export const qualificationEvaluationFindingSummaryShard = (input: {
   return { ...content, checksum: qualificationChecksum(content) };
 };
 
+export const qualificationEvaluationRootAccumulatorShard = (input: {
+  readonly artifactId: string;
+  readonly executionId: string;
+  readonly firstPartitionIndex: number;
+  readonly index: number;
+  readonly lastPartitionIndex: number;
+  readonly planChecksum: string;
+  readonly previousShardChecksum: string;
+  readonly roots: ReadonlyArray<typeof QualificationEvaluationRootRecord.Type>;
+}): typeof QualificationEvaluationRootAccumulatorShard.Type | null => {
+  if (
+    input.firstPartitionIndex > input.lastPartitionIndex ||
+    input.roots.length === 0 ||
+    input.roots.length > qualificationEvaluationSampleShardLimit ||
+    input.roots.some((root, index, roots) => {
+      const previous = roots[index - 1];
+      return (
+        (previous !== undefined && root.rootId.localeCompare(previous.rootId) <= 0) ||
+        root.correlations.some((correlation, correlationIndex, correlations) => {
+          const previousCorrelation = correlations[correlationIndex - 1];
+          return (
+            previousCorrelation !== undefined &&
+            correlation.kind.localeCompare(previousCorrelation.kind) <= 0
+          );
+        })
+      );
+    })
+  ) {
+    return null;
+  }
+  const content = {
+    artifactId: input.artifactId,
+    executionId: input.executionId,
+    firstPartitionIndex: input.firstPartitionIndex,
+    index: input.index,
+    lastPartitionIndex: input.lastPartitionIndex,
+    planChecksum: input.planChecksum,
+    previousShardChecksum: input.previousShardChecksum,
+    roots: [...input.roots],
+    version: "qualification-evaluation-root-accumulator-v2" as const,
+  };
+  return { ...content, checksum: qualificationChecksum(content) };
+};
+
+export const qualificationEvaluationRootAccumulatorReceipt = (input: {
+  readonly artifactId: string;
+  readonly artifactPrefix: string;
+  readonly executionId: string;
+  readonly firstPartitionIndex: number;
+  readonly firstRootId: string | null;
+  readonly firstShardChecksum: string;
+  readonly index: number;
+  readonly inputReceiptChecksums: ReadonlyArray<string>;
+  readonly lastPartitionIndex: number;
+  readonly lastRootId: string | null;
+  readonly level: number;
+  readonly planChecksum: string;
+  readonly rootCount: number;
+  readonly acceptedCount: number;
+  readonly shardCount: number;
+  readonly terminalShardChecksum: string;
+}): typeof QualificationEvaluationRootAccumulatorReceipt.Type | null => {
+  const empty = input.rootCount === 0;
+  if (
+    input.firstPartitionIndex > input.lastPartitionIndex ||
+    !Number.isSafeInteger(input.acceptedCount) ||
+    input.acceptedCount < 0 ||
+    !Number.isSafeInteger(input.rootCount) ||
+    input.rootCount < 0 ||
+    !Number.isSafeInteger(input.shardCount) ||
+    input.shardCount < 0 ||
+    input.acceptedCount > input.rootCount ||
+    input.inputReceiptChecksums.length === 0 ||
+    input.inputReceiptChecksums.length > qualificationEvaluationReducerFanIn ||
+    new Set(input.inputReceiptChecksums).size !== input.inputReceiptChecksums.length ||
+    (empty
+      ? input.shardCount !== 0 ||
+        input.firstRootId !== null ||
+        input.lastRootId !== null ||
+        input.firstShardChecksum !== "ZERO" ||
+        input.terminalShardChecksum !== "ZERO"
+      : input.shardCount === 0 ||
+        input.firstRootId === null ||
+        input.lastRootId === null ||
+        input.firstRootId.localeCompare(input.lastRootId) > 0)
+  ) {
+    return null;
+  }
+  const content = {
+    acceptedCount: input.acceptedCount,
+    artifactId: input.artifactId,
+    artifactPrefix: input.artifactPrefix,
+    executionId: input.executionId,
+    firstPartitionIndex: input.firstPartitionIndex,
+    firstRootId: input.firstRootId,
+    firstShardChecksum: input.firstShardChecksum,
+    index: input.index,
+    inputReceiptChainDigest: qualificationChecksum(input.inputReceiptChecksums),
+    inputReceiptChecksums: [...input.inputReceiptChecksums],
+    lastPartitionIndex: input.lastPartitionIndex,
+    lastRootId: input.lastRootId,
+    level: input.level,
+    planChecksum: input.planChecksum,
+    rootCount: input.rootCount,
+    shardCount: input.shardCount,
+    terminalShardChecksum: input.terminalShardChecksum,
+    version: "qualification-evaluation-root-accumulator-receipt-v2" as const,
+  };
+  return { ...content, checksum: qualificationChecksum(content) };
+};
+
+/** Root-only correctness reduction; dimension Workflows carry no duplicated finding summaries. */
+export const qualificationEvaluationCorrectnessReceipt = (input: {
+  readonly artifactId: string;
+  readonly executionId: string;
+  readonly findingSummary: typeof QualificationEvaluationFindingSummary.Type;
+  readonly findingSummaryArtifactChecksum: string;
+  readonly findingSummaryArtifactId: string;
+  readonly index: number;
+  readonly inputReceiptChecksums: ReadonlyArray<string>;
+  readonly level: number;
+  readonly planChecksum: string;
+  readonly rootAccumulator: typeof QualificationEvaluationRootAccumulatorReceipt.Type;
+}): typeof QualificationEvaluationCorrectnessReceipt.Type | null => {
+  const checksums = input.inputReceiptChecksums;
+  const verdict =
+    input.findingSummary.failCount > 0
+      ? ("FAIL" as const)
+      : input.findingSummary.missingCount > 0
+        ? ("MISSING" as const)
+        : ("PASS" as const);
+  if (
+    checksums.length === 0 ||
+    checksums.length > qualificationEvaluationReducerFanIn ||
+    new Set(checksums).size !== checksums.length ||
+    input.rootAccumulator.executionId !== input.executionId ||
+    input.rootAccumulator.planChecksum !== input.planChecksum ||
+    input.rootAccumulator.level !== input.level ||
+    input.rootAccumulator.index !== input.index ||
+    input.rootAccumulator.inputReceiptChecksums.length !== checksums.length ||
+    input.rootAccumulator.inputReceiptChecksums.some(
+      (checksum, index) => checksum !== checksums[index],
+    )
+  ) {
+    return null;
+  }
+  const content = {
+    artifactId: input.artifactId,
+    executionId: input.executionId,
+    findingSummary: input.findingSummary,
+    findingSummaryArtifactChecksum: input.findingSummaryArtifactChecksum,
+    findingSummaryArtifactId: input.findingSummaryArtifactId,
+    firstPartitionIndex: input.rootAccumulator.firstPartitionIndex,
+    index: input.index,
+    inputReceiptChainDigest: qualificationChecksum(checksums),
+    inputReceiptChecksums: [...checksums],
+    lastPartitionIndex: input.rootAccumulator.lastPartitionIndex,
+    level: input.level,
+    planChecksum: input.planChecksum,
+    rootAccumulator: input.rootAccumulator,
+    verdict,
+    version: "qualification-evaluation-correctness-receipt-v1" as const,
+  };
+  return { ...content, checksum: qualificationChecksum(content) };
+};
+
 /** Freeze a reducer receipt only for one exact ordered, gap-free child range. */
 export const qualificationEvaluationReductionReceipt = (input: {
   readonly artifactId: string;
@@ -319,10 +636,32 @@ export const qualificationEvaluationSortedRunReceipt = (input: {
   readonly level: number;
   readonly planChecksum: string;
 }): typeof QualificationEvaluationSortedRunReceipt.Type | null => {
+  const descriptor = input.descriptor;
+  const empty = descriptor.valueCount === 0;
+  const stageDimension = descriptor.dimension.startsWith("stage:");
+  const expectedSampleStatus = descriptor.missingRootCount > 0 ? "MISSING" : "COMPLETE";
   if (
     input.inputReceiptChecksums.length === 0 ||
     input.inputReceiptChecksums.length > qualificationEvaluationReducerFanIn ||
-    new Set(input.inputReceiptChecksums).size !== input.inputReceiptChecksums.length
+    new Set(input.inputReceiptChecksums).size !== input.inputReceiptChecksums.length ||
+    descriptor.firstPartitionIndex > descriptor.lastPartitionIndex ||
+    descriptor.inputReceiptChainDigest !== qualificationChecksum(input.inputReceiptChecksums) ||
+    descriptor.missingRootCount > descriptor.denominatorCount ||
+    (stageDimension &&
+      (descriptor.valueCount > descriptor.denominatorCount ||
+        descriptor.missingRootCount !== descriptor.denominatorCount - descriptor.valueCount)) ||
+    descriptor.sampleStatus !== expectedSampleStatus ||
+    (empty
+      ? descriptor.shardCount !== 0 ||
+        descriptor.firstShardChecksum !== "ZERO" ||
+        descriptor.terminalShardChecksum !== "ZERO" ||
+        descriptor.minimum !== null ||
+        descriptor.maximum !== null
+      : descriptor.shardCount === 0 ||
+        descriptor.firstShardChecksum === "ZERO" ||
+        descriptor.terminalShardChecksum === "ZERO" ||
+        descriptor.minimum === null ||
+        descriptor.maximum === null)
   ) {
     return null;
   }
@@ -334,7 +673,7 @@ export const qualificationEvaluationSortedRunReceipt = (input: {
     inputReceiptChecksums: [...input.inputReceiptChecksums],
     level: input.level,
     planChecksum: input.planChecksum,
-    version: "qualification-evaluation-sorted-run-receipt-v1" as const,
+    version: "qualification-evaluation-sorted-run-receipt-v2" as const,
   };
   return { ...content, checksum: qualificationChecksum(content) };
 };
@@ -400,8 +739,23 @@ export interface QualificationEvaluationMergePage {
     readonly shardIndex: number;
     readonly valueOffset: number;
   }>;
-  readonly values: ReadonlyArray<number>;
+  readonly valueType: "identity" | "latencyMs";
+  readonly values: ReadonlyArray<number | string>;
 }
+
+/** Identity runs are globally unique; numeric samples preserve legitimate equal observations. */
+export const qualificationSortedValueFollows = (
+  valueType: "identity" | "latencyMs",
+  current: number | string,
+  previous: number | string,
+): boolean =>
+  valueType === "identity"
+    ? Schema.is(Identity)(current) &&
+      Schema.is(Identity)(previous) &&
+      current.localeCompare(previous) > 0
+    : Schema.is(Schema.Finite)(current) &&
+      Schema.is(Schema.Finite)(previous) &&
+      current >= previous;
 
 const compareFinding = (
   left: typeof QualificationEvaluationFinding.Type,
@@ -432,11 +786,27 @@ const validInput = (input: QualificationEvaluationMergeInput): boolean => {
   return (
     input.descriptor.runId === shard.runId &&
     input.descriptor.dimension === shard.dimension &&
+    input.descriptor.denominatorChainDigest === shard.denominatorChainDigest &&
+    input.descriptor.denominatorCount === shard.denominatorCount &&
+    input.descriptor.firstPartitionIndex === shard.firstPartitionIndex &&
+    input.descriptor.inputReceiptChainDigest === shard.inputReceiptChainDigest &&
+    input.descriptor.lastPartitionIndex === shard.lastPartitionIndex &&
+    input.descriptor.missingRootCount === shard.missingRootCount &&
+    input.descriptor.sampleStatus === shard.sampleStatus &&
+    input.descriptor.valueType === shard.valueType &&
+    (shard.index === 0 ? shard.checksum === input.descriptor.firstShardChecksum : true) &&
+    (shard.index === input.descriptor.shardCount - 1
+      ? shard.checksum === input.descriptor.terminalShardChecksum
+      : true) &&
     input.valueOffset >= 0 &&
     input.valueOffset < shard.values.length &&
-    shard.values.every(
-      (value, index, values) => index === 0 || value >= (values[index - 1] ?? value),
-    ) &&
+    shard.values.every((value, index, values) => {
+      const previous = values[index - 1];
+      if (previous === undefined) return true;
+      return shard.valueType === "identity"
+        ? String(value).localeCompare(String(previous)) > 0
+        : Number(value) >= Number(previous);
+    }) &&
     shard.minimum === shard.values[0] &&
     shard.maximum === shard.values.at(-1) &&
     checksum === qualificationChecksum(content)
@@ -451,27 +821,42 @@ const validInput = (input: QualificationEvaluationMergeInput): boolean => {
 export const mergeQualificationSortedPage = (
   inputs: ReadonlyArray<QualificationEvaluationMergeInput>,
 ): QualificationEvaluationMergePage | null => {
+  const firstInput = inputs[0];
   if (
+    firstInput === undefined ||
     inputs.length === 0 ||
     inputs.length > qualificationEvaluationReducerFanIn ||
+    inputs.some(
+      ({ descriptor }) =>
+        descriptor.dimension !== firstInput.descriptor.dimension ||
+        descriptor.valueType !== firstInput.descriptor.valueType,
+    ) ||
     inputs.some((input) => !validInput(input))
   ) {
     return null;
   }
   const offsets = inputs.map(({ valueOffset }) => valueOffset);
-  const values = new globalThis.Array<number>();
+  const values = new globalThis.Array<number | string>();
   while (values.length < qualificationEvaluationSampleShardLimit) {
     let selected = -1;
-    let selectedValue = Number.POSITIVE_INFINITY;
+    let selectedValue: number | string | undefined;
     for (const [index, input] of inputs.entries()) {
       const value = input.shard?.values[offsets[index] ?? 0];
       if (value === undefined) continue;
-      if (value < selectedValue || (value === selectedValue && selected === -1)) {
+      const comparison =
+        selectedValue === undefined
+          ? -1
+          : firstInput.descriptor.valueType === "identity"
+            ? String(value).localeCompare(String(selectedValue))
+            : Number(value) - Number(selectedValue);
+      if (comparison < 0 || (comparison === 0 && selected === -1)) {
         selected = index;
         selectedValue = value;
       }
     }
-    if (selected === -1) break;
+    if (selected === -1 || selectedValue === undefined) break;
+    if (firstInput.descriptor.valueType === "identity" && values.at(-1) === selectedValue)
+      return null;
     values.push(selectedValue);
     offsets[selected] = (offsets[selected] ?? 0) + 1;
   }
@@ -484,45 +869,157 @@ export const mergeQualificationSortedPage = (
       shardIndex: input.shard?.index ?? input.descriptor.shardCount,
       valueOffset: offsets[index] ?? 0,
     })),
+    valueType: firstInput.descriptor.valueType,
     values,
   };
 };
 
-/** Freeze one body-authenticated output shard from a reducer continuation. */
-export const qualificationEvaluationSortedRunShard = (input: {
+export interface QualificationEvaluationRootMergeInput {
+  readonly receipt: typeof QualificationEvaluationRootAccumulatorReceipt.Type;
+  readonly rootOffset: number;
+  readonly shard: typeof QualificationEvaluationRootAccumulatorShard.Type | null;
+}
+
+const validRootMergeInput = ({
+  receipt,
+  rootOffset,
+  shard,
+}: QualificationEvaluationRootMergeInput): boolean => {
+  if (shard === null) return receipt.rootCount === 0 && rootOffset === 0;
+  const { checksum, ...content } = shard;
+  return (
+    shard.executionId === receipt.executionId &&
+    shard.firstPartitionIndex === receipt.firstPartitionIndex &&
+    shard.lastPartitionIndex === receipt.lastPartitionIndex &&
+    shard.planChecksum === receipt.planChecksum &&
+    rootOffset >= 0 &&
+    rootOffset < shard.roots.length &&
+    qualificationChecksum(content) === checksum
+  );
+};
+
+/** Exact bounded root merge. Equal IDs across any leaves are a structural conflict. */
+export const mergeQualificationRootAccumulatorPage = (
+  inputs: ReadonlyArray<QualificationEvaluationRootMergeInput>,
+): ReadonlyArray<typeof QualificationEvaluationRootRecord.Type> | null => {
+  const first = inputs[0];
+  if (
+    first === undefined ||
+    inputs.length > qualificationEvaluationReducerFanIn ||
+    inputs.some(({ receipt }, index, receipts) =>
+      index === 0
+        ? false
+        : receipt.firstPartitionIndex !==
+          (receipts[index - 1]?.receipt.lastPartitionIndex ?? Number.NaN) + 1,
+    ) ||
+    inputs.some((input) => !validRootMergeInput(input))
+  ) {
+    return null;
+  }
+  const offsets = inputs.map(({ rootOffset }) => rootOffset);
+  const roots = new globalThis.Array<typeof QualificationEvaluationRootRecord.Type>();
+  while (roots.length < qualificationEvaluationSampleShardLimit) {
+    let selected = -1;
+    let selectedRoot: typeof QualificationEvaluationRootRecord.Type | undefined;
+    for (const [index, input] of inputs.entries()) {
+      const candidate = input.shard?.roots[offsets[index] ?? 0];
+      if (
+        candidate !== undefined &&
+        (selectedRoot === undefined || candidate.rootId.localeCompare(selectedRoot.rootId) < 0)
+      ) {
+        selected = index;
+        selectedRoot = candidate;
+      }
+    }
+    if (selected === -1 || selectedRoot === undefined) break;
+    if (roots.at(-1)?.rootId === selectedRoot.rootId) return null;
+    roots.push(selectedRoot);
+    offsets[selected] = (offsets[selected] ?? 0) + 1;
+  }
+  return roots;
+};
+
+interface QualificationEvaluationSortedRunShardBaseInput {
   readonly artifactId: string;
+  readonly denominatorChainDigest: string;
+  readonly denominatorCount: number;
   readonly dimension: string;
   readonly executionId: string;
+  readonly firstPartitionIndex: number;
   readonly index: number;
+  readonly inputReceiptChainDigest: string;
+  readonly lastPartitionIndex: number;
+  readonly missingRootCount: number;
   readonly planChecksum: string;
   readonly previousShardChecksum: string;
   readonly runId: string;
-  readonly values: ReadonlyArray<number>;
-}): typeof QualificationEvaluationSortedRunShard.Type | null => {
+  readonly sampleStatus: "COMPLETE" | "MISSING";
+}
+
+type QualificationEvaluationSortedRunShardInput = QualificationEvaluationSortedRunShardBaseInput &
+  (
+    | { readonly values: ReadonlyArray<string>; readonly valueType: "identity" }
+    | { readonly values: ReadonlyArray<number>; readonly valueType: "latencyMs" }
+  );
+
+/** Freeze one homogeneous body-authenticated output shard from a reducer continuation. */
+export const qualificationEvaluationSortedRunShard = (
+  input: QualificationEvaluationSortedRunShardInput,
+): typeof QualificationEvaluationSortedRunShard.Type | null => {
+  const identities =
+    input.valueType === "identity"
+      ? Schema.decodeOption(Schema.Array(Identity))(input.values)
+      : Option.none<ReadonlyArray<string>>();
+  const latencies =
+    input.valueType === "latencyMs"
+      ? Schema.decodeOption(Schema.Array(Schema.Finite))(input.values)
+      : Option.none<ReadonlyArray<number>>();
+  const values = Option.isSome(identities)
+    ? identities.value
+    : Option.isSome(latencies)
+      ? latencies.value
+      : [];
   if (
-    input.values.length === 0 ||
-    input.values.length > qualificationEvaluationSampleShardLimit ||
-    input.values.some(
-      (value, index, values) =>
-        !Number.isFinite(value) || (index > 0 && value < (values[index - 1] ?? value)),
-    )
+    values.length === 0 ||
+    values.length > qualificationEvaluationSampleShardLimit ||
+    input.firstPartitionIndex > input.lastPartitionIndex ||
+    values.some((value, index, sorted) => {
+      const previous = sorted[index - 1];
+      if (previous === undefined) return false;
+      return input.valueType === "identity"
+        ? String(value).localeCompare(String(previous)) <= 0
+        : Number(value) < Number(previous);
+    })
   ) {
     return null;
   }
   const content = {
     artifactId: input.artifactId,
+    denominatorChainDigest: input.denominatorChainDigest,
+    denominatorCount: input.denominatorCount,
     dimension: input.dimension,
     executionId: input.executionId,
+    firstPartitionIndex: input.firstPartitionIndex,
     index: input.index,
-    maximum: input.values.at(-1) ?? 0,
-    minimum: input.values[0] ?? 0,
+    inputReceiptChainDigest: input.inputReceiptChainDigest,
+    lastPartitionIndex: input.lastPartitionIndex,
+    missingRootCount: input.missingRootCount,
+    maximum: values.at(-1),
+    minimum: values[0],
     planChecksum: input.planChecksum,
     previousShardChecksum: input.previousShardChecksum,
     runId: input.runId,
-    values: [...input.values],
-    version: "qualification-evaluation-sorted-run-v1" as const,
+    sampleStatus: input.sampleStatus,
+    values: [...values],
+    valueType: input.valueType,
+    version: "qualification-evaluation-sorted-run-v2" as const,
   };
-  return { ...content, checksum: qualificationChecksum(content) };
+  return Option.getOrNull(
+    Schema.decodeUnknownOption(QualificationEvaluationSortedRunShard)({
+      ...content,
+      checksum: qualificationChecksum(content),
+    }),
+  );
 };
 
 /** Exact interpolation-free order statistic used by qualification percentiles. */

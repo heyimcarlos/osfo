@@ -36,17 +36,24 @@ export interface QualificationOwnerPartitionWorkflowPayload extends Qualificatio
 
 /** One resumable bounded exact-order merge for a qualification sample dimension. */
 export interface QualificationEvaluationReducerWorkflowPayload {
+  readonly denominatorChainDigest: string;
+  readonly denominatorCount: number;
   readonly dimension: string;
   readonly executionId: string;
+  readonly firstPartitionIndex: number;
   readonly index: number;
+  readonly inputReceiptChainDigest: string;
   readonly inputs: ReadonlyArray<{
     readonly artifactId: string;
     readonly checksum: string;
   }>;
   readonly level: number;
+  readonly lastPartitionIndex: number;
+  readonly missingRootCount: number;
   readonly outputArtifactPrefix: string;
   readonly outputRunId: string;
   readonly planChecksum: string;
+  readonly valueType: "identity" | "latencyMs";
 }
 
 /** One bounded, independently replayable authority-leaf evaluation. */

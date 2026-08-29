@@ -230,7 +230,7 @@ it("matches the semantic oracle for an authoritative typed rejection and emits e
         ({ receipt }) =>
           receipt.dimension === "acceptedRootIds" || receipt.dimension.startsWith("stage:"),
       )
-      .every(({ receipt, shards }) => receipt.valueCount === "0" && shards.length === 0),
+      .every(({ receipt, shards }) => receipt.valueCount === 0 && shards.length === 0),
   ).toBe(true);
 });
 
@@ -464,7 +464,7 @@ it("shards a maximum-amplification identity dimension without truncation", () =>
   const effects = evaluated.dimensions.find(
     ({ receipt }) => receipt.dimension === "providerEffectIds",
   );
-  expect(effects?.receipt).toMatchObject({ shardCount: "3", valueCount: "600" });
+  expect(effects?.receipt).toMatchObject({ shardCount: 3, valueCount: 600 });
   expect(effects?.shards.map(({ values }) => values.length)).toEqual([256, 256, 88]);
   expect(effects?.shards.at(-1)?.checksum).toBe(effects?.receipt.terminalShardChecksum);
 });
@@ -476,6 +476,8 @@ it("rejects mixed or mismatched leaf value types", () => {
       denominatorRootIds: ["root-1"],
       dimension: "stage:test",
       executionId: plan.executionId,
+      leafInputChecksum: "leaf-input",
+      missingRootCount: 0,
       partitionIndex: 0,
       planChecksum: plan.planChecksum,
       valueType: "latencyMs",
@@ -488,6 +490,8 @@ it("rejects mixed or mismatched leaf value types", () => {
       denominatorRootIds: ["root-1"],
       dimension: "acceptedRootIds",
       executionId: plan.executionId,
+      leafInputChecksum: "leaf-input",
+      missingRootCount: 0,
       partitionIndex: 0,
       planChecksum: plan.planChecksum,
       valueType: "identity",
@@ -528,12 +532,12 @@ it("emits the exact 15/4 stage names and binds cold denominators to activation c
     stageDimensions.find(({ receipt }) =>
       receipt.dimension.endsWith("coldDurableAcceptance:firstUse"),
     )?.receipt,
-  ).toMatchObject({ denominatorCount: "1", valueCount: "1" });
+  ).toMatchObject({ denominatorCount: 1, valueCount: 1 });
   expect(
     stageDimensions.find(({ receipt }) =>
       receipt.dimension.endsWith("coldDurableAcceptance:deployment"),
     )?.receipt,
-  ).toMatchObject({ denominatorCount: "0", valueCount: "0" });
+  ).toMatchObject({ denominatorCount: 0, valueCount: 0 });
 
   const allCold = plan.runs.find(
     (candidate) => candidate.kind === "lane" && candidate.lane === "allCold",
@@ -673,6 +677,33 @@ it("re-authenticates retained leaf/source metadata and replays create-or-identic
     "FAIL",
   );
 
+  if (first.status !== "COMPLETE") throw new Error("Expected retained leaf receipt");
+  for (const dimension of first.receipt.dimensions) {
+    const retainedReceipt = runtime.retained.get(dimension.artifactId);
+    expect(retainedReceipt?.customMetadata).toMatchObject({
+      "osfo-denominator-chain-digest": dimension.denominatorChainDigest,
+      "osfo-denominator-count": String(dimension.denominatorCount),
+      "osfo-first-partition-index": String(dimension.firstPartitionIndex),
+      "osfo-input-receipt-chain-digest": dimension.inputReceiptChainDigest,
+      "osfo-kind": "qualification-evaluation-sorted-run-receipt-v2",
+      "osfo-last-partition-index": String(dimension.lastPartitionIndex),
+      "osfo-missing-root-count": String(dimension.missingRootCount),
+      "osfo-sample-status": dimension.sampleStatus,
+      "osfo-value-type": dimension.valueType,
+    });
+    if (dimension.shardCount === 0) continue;
+    const firstShard = runtime.retained.get(`${dimension.artifactPrefix}/00000000.json`);
+    expect(firstShard?.customMetadata).toMatchObject({
+      "osfo-denominator-chain-digest": dimension.denominatorChainDigest,
+      "osfo-denominator-count": String(dimension.denominatorCount),
+      "osfo-input-receipt-chain-digest": dimension.inputReceiptChainDigest,
+      "osfo-kind": "qualification-evaluation-sorted-run-v2",
+      "osfo-missing-root-count": String(dimension.missingRootCount),
+      "osfo-sample-status": dimension.sampleStatus,
+      "osfo-value-type": dimension.valueType,
+    });
+  }
+
   const substitutedBody = await retainedLeafRuntime(input);
   const workerArtifactId = input.authorityShards.find(
     ({ authority }) => authority === "worker_admission_receipts",
@@ -686,7 +717,6 @@ it("re-authenticates retained leaf/source metadata and replays create-or-identic
   });
   expect((await substitutedBody.runLeaf()).status).toBe("FAIL");
 
-  if (first.status !== "COMPLETE") throw new Error("Expected retained leaf receipt");
   const root = runtime.retained.get(first.receipt.rootAccumulatorId);
   if (root === undefined) throw new Error("Expected root accumulator");
   runtime.retained.set(first.receipt.rootAccumulatorId, { ...root, value: `${root.value} ` });

@@ -8,7 +8,11 @@ import {
 } from "./authority-sources";
 import {
   QualificationEvaluationLeafInputReceipt,
+  QualificationEvaluationSortedRunReceipt,
+  QualificationEvaluationSortedRunShard,
   type QualificationEvaluationArtifactBucket,
+  qualificationEvaluationSortedRunReceipt,
+  qualificationEvaluationSortedRunShard,
   qualificationEvaluationFindingExemplarLimit,
   qualificationEvaluationGlobalSortedDimensions,
   retainQualificationEvaluationArtifact,
@@ -139,21 +143,7 @@ const LeafFinding = Schema.Struct({
   verdict: Schema.Literals(["FAIL", "MISSING"]),
 });
 
-export const QualificationEvaluationLeafValueShard = Schema.Struct({
-  artifactId: Identity,
-  checksum: Identity,
-  denominatorChecksum: Identity,
-  denominatorCount: DecimalCount,
-  dimension: Identity,
-  executionId: Identity,
-  index: NonNegativeInteger,
-  partitionIndex: NonNegativeInteger,
-  planChecksum: Identity,
-  previousShardChecksum: Schema.String,
-  valueType: Schema.Literals(["identity", "latencyMs"]),
-  values: Schema.Array(Schema.Union([Identity, Schema.Finite])).check(Schema.isMaxLength(256)),
-  version: Schema.Literal("qualification-evaluation-leaf-values-v1"),
-});
+export const QualificationEvaluationLeafValueShard = QualificationEvaluationSortedRunShard;
 
 export const QualificationEvaluationLeafFindingShard = Schema.Struct({
   artifactId: Identity,
@@ -204,17 +194,7 @@ export const QualificationEvaluationLeafRootAccumulator = Schema.Struct({
   version: Schema.Literal("qualification-evaluation-leaf-roots-v1"),
 });
 
-const LeafDimensionReceipt = Schema.Struct({
-  artifactPrefix: Identity,
-  denominatorChecksum: Identity,
-  denominatorCount: DecimalCount,
-  dimension: Identity,
-  firstShardChecksum: Schema.String,
-  shardCount: DecimalCount,
-  terminalShardChecksum: Schema.String,
-  valueCount: DecimalCount,
-  valueType: Schema.Literals(["identity", "latencyMs"]),
-});
+const LeafDimensionReceipt = QualificationEvaluationSortedRunReceipt;
 
 export const QualificationEvaluationLeafReceipt = Schema.Struct({
   artifactId: Identity,
@@ -533,6 +513,8 @@ interface QualificationEvaluationLeafDimensionBase {
   readonly denominatorRootIds: ReadonlyArray<string>;
   readonly dimension: string;
   readonly executionId: string;
+  readonly leafInputChecksum: string;
+  readonly missingRootCount: number;
   readonly partitionIndex: number;
   readonly planChecksum: string;
 }
@@ -547,7 +529,12 @@ export const qualificationEvaluationLeafDimension = (
 ): QualificationEvaluationLeafDimensionOutput | null => {
   // oxlint-disable-next-line unicorn/no-array-sort -- ES2023 toSorted is outside the Worker target. This is a fresh copy.
   const denominatorRootIds = [...input.denominatorRootIds].sort();
-  if (new Set(denominatorRootIds).size !== denominatorRootIds.length) return null;
+  if (
+    new Set(denominatorRootIds).size !== denominatorRootIds.length ||
+    input.missingRootCount < 0 ||
+    input.missingRootCount > denominatorRootIds.length
+  )
+    return null;
   const identityValues = Schema.decodeUnknownOption(Schema.Array(Schema.String))(input.values);
   const latencyValues = Schema.decodeUnknownOption(Schema.Array(Schema.Finite))(input.values);
   if (input.valueType === "identity" && Option.isNone(identityValues)) return null;
@@ -566,43 +553,94 @@ export const qualificationEvaluationLeafDimension = (
       : values.some((value) => !Number.isFinite(Number(value)) || Number(value) < 0)
   )
     return null;
-  const denominatorChecksum = qualificationChecksum(denominatorRootIds);
+  const denominatorChainDigest = qualificationChecksum([
+    {
+      contentDigest: qualificationChecksum(denominatorRootIds),
+      count: denominatorRootIds.length,
+      partitionIndex: input.partitionIndex,
+    },
+  ]);
+  const inputReceiptChecksums = [input.leafInputChecksum];
+  const inputReceiptChainDigest = qualificationChecksum(inputReceiptChecksums);
+  const runId = `leaf:${input.partitionIndex.toString().padStart(8, "0")}`;
+  const sampleStatus = input.missingRootCount > 0 ? ("MISSING" as const) : ("COMPLETE" as const);
   const shards = new globalThis.Array<typeof QualificationEvaluationLeafValueShard.Type>();
   let previousShardChecksum = "NONE";
   for (let index = 0; index * 256 < values.length; index += 1) {
     const chunk = values.slice(index * 256, (index + 1) * 256);
-    const content = {
+    const shardInput = {
       artifactId: `${input.artifactId}/${index.toString().padStart(8, "0")}.json`,
-      denominatorChecksum,
-      denominatorCount: String(denominatorRootIds.length),
+      denominatorChainDigest,
+      denominatorCount: denominatorRootIds.length,
       dimension: input.dimension,
       executionId: input.executionId,
+      firstPartitionIndex: input.partitionIndex,
       index,
-      partitionIndex: input.partitionIndex,
+      inputReceiptChainDigest,
+      lastPartitionIndex: input.partitionIndex,
+      missingRootCount: input.missingRootCount,
       planChecksum: input.planChecksum,
       previousShardChecksum,
-      valueType: input.valueType,
-      values: [...chunk],
-      version: "qualification-evaluation-leaf-values-v1" as const,
+      runId,
+      sampleStatus,
     };
-    const shard = { ...content, checksum: qualificationChecksum(content) };
+    const shard =
+      input.valueType === "identity"
+        ? qualificationEvaluationSortedRunShard({
+            ...shardInput,
+            valueType: "identity",
+            values: chunk.map(String),
+          })
+        : qualificationEvaluationSortedRunShard({
+            ...shardInput,
+            valueType: "latencyMs",
+            values: chunk.map(Number),
+          });
+    if (shard === null) return null;
     shards.push(shard);
     previousShardChecksum = shard.checksum;
   }
-  return {
-    receipt: {
-      artifactPrefix: input.artifactId,
-      denominatorChecksum,
-      denominatorCount: String(denominatorRootIds.length),
-      dimension: input.dimension,
-      firstShardChecksum: shards[0]?.checksum ?? "ZERO",
-      shardCount: String(shards.length),
-      terminalShardChecksum: shards.at(-1)?.checksum ?? "ZERO",
-      valueCount: String(values.length),
-      valueType: input.valueType,
-    },
-    shards,
+  const descriptorBase = {
+    artifactPrefix: input.artifactId,
+    denominatorChainDigest,
+    denominatorCount: denominatorRootIds.length,
+    dimension: input.dimension,
+    firstPartitionIndex: input.partitionIndex,
+    firstShardChecksum: shards[0]?.checksum ?? "ZERO",
+    inputReceiptChainDigest,
+    lastPartitionIndex: input.partitionIndex,
+    maximum: shards.at(-1)?.maximum ?? null,
+    minimum: shards[0]?.minimum ?? null,
+    missingRootCount: input.missingRootCount,
+    runId,
+    sampleStatus,
+    shardCount: shards.length,
+    terminalShardChecksum: shards.at(-1)?.checksum ?? "ZERO",
+    valueCount: values.length,
   };
+  const receipt = qualificationEvaluationSortedRunReceipt({
+    artifactId: `${input.artifactId}/receipt.json`,
+    descriptor:
+      input.valueType === "identity"
+        ? {
+            ...descriptorBase,
+            maximum: String(descriptorBase.maximum ?? "") || null,
+            minimum: String(descriptorBase.minimum ?? "") || null,
+            valueType: "identity",
+          }
+        : {
+            ...descriptorBase,
+            maximum: descriptorBase.maximum === null ? null : Number(descriptorBase.maximum),
+            minimum: descriptorBase.minimum === null ? null : Number(descriptorBase.minimum),
+            valueType: "latencyMs",
+          },
+    executionId: input.executionId,
+    index: input.partitionIndex,
+    inputReceiptChecksums,
+    level: 0,
+    planChecksum: input.planChecksum,
+  });
+  return receipt === null ? null : { receipt, shards };
 };
 
 /** Evaluate one authenticated <=256-root authority leaf without retaining corpus-sized state. */
@@ -875,6 +913,13 @@ export const evaluateQualificationLeaf = (input: {
       denominatorRootIds: acceptedRoots,
       dimension,
       executionId: input.arrivalShard.executionId,
+      leafInputChecksum: input.leafInput.checksum,
+      missingRootCount:
+        dimension.startsWith("operation:") ||
+        (dimension === "publicPromotionRootIds" &&
+          input.manifest.acceptanceLevel === "ScaleQualifiedPublic")
+          ? acceptedRoots.length
+          : 0,
       partitionIndex: input.partitionIndex,
       planChecksum: input.arrivalShard.planChecksum,
     };
@@ -901,7 +946,7 @@ export const evaluateQualificationLeaf = (input: {
       (dimension.startsWith("operation:") ||
         (dimension === "publicPromotionRootIds" &&
           input.manifest.acceptanceLevel === "ScaleQualifiedPublic")) &&
-      output.receipt.valueCount === "0"
+      output.receipt.valueCount === 0
     ) {
       findings.push(
         finding(
@@ -976,6 +1021,8 @@ export const evaluateQualificationLeaf = (input: {
         denominatorRootIds: denominator,
         dimension: name,
         executionId: input.arrivalShard.executionId,
+        leafInputChecksum: input.leafInput.checksum,
+        missingRootCount: denominator.length - values.length,
         partitionIndex: input.partitionIndex,
         planChecksum: input.arrivalShard.planChecksum,
         valueType: "latencyMs",
@@ -1247,18 +1294,55 @@ export const runQualificationEvaluationLeaf = async (input: {
           checksum: shard.checksum,
           encoded: canonicalQualificationJson(shard),
           executionId: leaf.executionId,
-          kind: "qualification-evaluation-leaf-values-v1",
+          kind: "qualification-evaluation-sorted-run-v2",
           metadata: {
+            "osfo-denominator-chain-digest": shard.denominatorChainDigest,
+            "osfo-denominator-count": String(shard.denominatorCount),
             "osfo-dimension": shard.dimension,
+            "osfo-first-partition-index": String(shard.firstPartitionIndex),
             "osfo-index": String(shard.index),
+            "osfo-input-receipt-chain-digest": shard.inputReceiptChainDigest,
+            "osfo-last-partition-index": String(shard.lastPartitionIndex),
+            "osfo-missing-root-count": String(shard.missingRootCount),
             "osfo-previous-checksum": shard.previousShardChecksum,
             "osfo-record-count": String(shard.values.length),
+            "osfo-run-id": shard.runId,
+            "osfo-sample-status": shard.sampleStatus,
+            "osfo-value-type": shard.valueType,
           },
           planChecksum: input.planChecksum,
         })) === "CONFLICT"
       )
         return failedLeafOutcome("qualificationEvaluationOutputConflict", shard.artifactId);
     }
+    const receipt = dimension.receipt;
+    if (
+      (await retainQualificationEvaluationArtifact({
+        artifactId: receipt.artifactId,
+        bucket: input.bucket,
+        checksum: receipt.checksum,
+        encoded: canonicalQualificationJson(receipt),
+        executionId: leaf.executionId,
+        kind: "qualification-evaluation-sorted-run-receipt-v2",
+        metadata: {
+          "osfo-denominator-chain-digest": receipt.denominatorChainDigest,
+          "osfo-denominator-count": String(receipt.denominatorCount),
+          "osfo-dimension": receipt.dimension,
+          "osfo-first-partition-index": String(receipt.firstPartitionIndex),
+          "osfo-input-checksum": qualificationChecksum(receipt.inputReceiptChecksums),
+          "osfo-input-receipt-chain-digest": receipt.inputReceiptChainDigest,
+          "osfo-last-partition-index": String(receipt.lastPartitionIndex),
+          "osfo-missing-root-count": String(receipt.missingRootCount),
+          "osfo-record-count": String(receipt.valueCount),
+          "osfo-run-id": receipt.runId,
+          "osfo-sample-status": receipt.sampleStatus,
+          "osfo-terminal-checksum": receipt.terminalShardChecksum,
+          "osfo-value-type": receipt.valueType,
+        },
+        planChecksum: input.planChecksum,
+      })) === "CONFLICT"
+    )
+      return failedLeafOutcome("qualificationEvaluationOutputConflict", receipt.artifactId);
   }
   if (
     (await retainQualificationEvaluationArtifact({

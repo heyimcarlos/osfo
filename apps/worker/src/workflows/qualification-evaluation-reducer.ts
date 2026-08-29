@@ -9,6 +9,7 @@ import {
   QualificationEvaluationSortedRunShard,
   qualificationEvaluationSortedRunReceipt,
   qualificationEvaluationSortedRunShard,
+  qualificationSortedValueFollows,
   retainQualificationEvaluationArtifact,
   type QualificationEvaluationArtifactBucket,
   type QualificationEvaluationMergeInput,
@@ -22,13 +23,14 @@ import type { QualificationEvaluationReducerWorkflowPayload } from "../workflow-
 /* oxlint-disable effecttsgo/async-function, eslint/no-await-in-loop -- Cloudflare Workflow and R2 are Promise-only durable host boundaries; one output page is intentionally one serializable durable step. */
 
 const NonNegativeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const SortedValue = Schema.Union([Schema.String, Schema.Finite]);
 const CursorCheckpoint = Schema.Struct({
   artifactId: Schema.String,
   checksum: Schema.String,
   cursors: Schema.Array(
     Schema.Struct({
       consumedCount: NonNegativeInteger,
-      previousMaximum: Schema.NullOr(Schema.Finite),
+      previousMaximum: Schema.NullOr(SortedValue),
       previousShardChecksum: Schema.String,
       runId: Schema.String,
       shardIndex: NonNegativeInteger,
@@ -37,13 +39,14 @@ const CursorCheckpoint = Schema.Struct({
   ),
   executionId: Schema.String,
   firstOutputShardChecksum: Schema.NullOr(Schema.String),
-  lastEmittedValue: Schema.NullOr(Schema.Finite),
+  lastEmittedValue: Schema.NullOr(SortedValue),
   outputCount: NonNegativeInteger,
   outputIndex: NonNegativeInteger,
   outputPreviousShardChecksum: Schema.String,
   outputRunId: Schema.String,
   planChecksum: Schema.String,
-  version: Schema.Literal("qualification-evaluation-reducer-cursor-v1"),
+  valueType: Schema.Literals(["identity", "latencyMs"]),
+  version: Schema.Literal("qualification-evaluation-reducer-cursor-v2"),
 });
 type CursorCheckpoint = typeof CursorCheckpoint.Type;
 
@@ -61,6 +64,48 @@ const cursorArtifactId = (payload: QualificationEvaluationReducerWorkflowPayload
   `qualification/executions/${encodeURIComponent(payload.executionId)}/evaluation-reducer-cursors/${encodeURIComponent(payload.outputRunId)}/${padded(index)}.json`;
 const receiptArtifactId = (payload: QualificationEvaluationReducerWorkflowPayload) =>
   `${payload.outputArtifactPrefix}/receipt.json`;
+
+const aggregateDescriptorFields = (
+  receipts: ReadonlyArray<typeof QualificationEvaluationSortedRunReceipt.Type>,
+) => {
+  const first = receipts[0];
+  const last = receipts.at(-1);
+  if (
+    first === undefined ||
+    last === undefined ||
+    receipts.some(
+      (receipt, index) =>
+        receipt.dimension !== first.dimension ||
+        receipt.valueType !== first.valueType ||
+        receipt.firstPartitionIndex > receipt.lastPartitionIndex ||
+        (index > 0 &&
+          receipt.firstPartitionIndex !==
+            (receipts[index - 1]?.lastPartitionIndex ?? Number.NaN) + 1),
+    )
+  ) {
+    return null;
+  }
+  const denominatorCount = receipts.reduce((total, receipt) => total + receipt.denominatorCount, 0);
+  const missingRootCount = receipts.reduce((total, receipt) => total + receipt.missingRootCount, 0);
+  return {
+    denominatorChainDigest: qualificationChecksum(
+      receipts.map((receipt) => ({
+        checksum: receipt.checksum,
+        denominatorChainDigest: receipt.denominatorChainDigest,
+        denominatorCount: receipt.denominatorCount,
+        firstPartitionIndex: receipt.firstPartitionIndex,
+        lastPartitionIndex: receipt.lastPartitionIndex,
+      })),
+    ),
+    denominatorCount,
+    firstPartitionIndex: first.firstPartitionIndex,
+    inputReceiptChainDigest: qualificationChecksum(receipts.map(({ checksum }) => checksum)),
+    lastPartitionIndex: last.lastPartitionIndex,
+    missingRootCount,
+    sampleStatus: missingRootCount > 0 ? ("MISSING" as const) : ("COMPLETE" as const),
+    valueType: first.valueType,
+  };
+};
 
 const sha256Hex = async (encoded: string): Promise<string> => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
@@ -96,10 +141,20 @@ const readInputReceipt = async (
     retained.customMetadata?.["osfo-execution-id"] === payload.executionId &&
     retained.customMetadata?.["osfo-input-checksum"] ===
       qualificationChecksum(receipt.inputReceiptChecksums) &&
-    retained.customMetadata?.["osfo-kind"] === "qualification-evaluation-sorted-run-receipt-v1" &&
+    retained.customMetadata?.["osfo-denominator-chain-digest"] === receipt.denominatorChainDigest &&
+    retained.customMetadata?.["osfo-denominator-count"] === String(receipt.denominatorCount) &&
+    retained.customMetadata?.["osfo-first-partition-index"] ===
+      String(receipt.firstPartitionIndex) &&
+    retained.customMetadata?.["osfo-input-receipt-chain-digest"] ===
+      receipt.inputReceiptChainDigest &&
+    retained.customMetadata?.["osfo-kind"] === "qualification-evaluation-sorted-run-receipt-v2" &&
+    retained.customMetadata?.["osfo-last-partition-index"] === String(receipt.lastPartitionIndex) &&
+    retained.customMetadata?.["osfo-missing-root-count"] === String(receipt.missingRootCount) &&
     retained.customMetadata?.["osfo-plan-checksum"] === payload.planChecksum &&
     retained.customMetadata?.["osfo-record-count"] === String(receipt.valueCount) &&
     retained.customMetadata?.["osfo-run-id"] === receipt.runId &&
+    retained.customMetadata?.["osfo-sample-status"] === receipt.sampleStatus &&
+    retained.customMetadata?.["osfo-value-type"] === receipt.valueType &&
     retained.customMetadata?.["osfo-terminal-checksum"] === receipt.terminalShardChecksum
     ? receipt
     : null;
@@ -146,17 +201,30 @@ const readInputShard = async (input: {
     (isLast ? shard.checksum === input.descriptor.terminalShardChecksum : true) &&
     (input.cursor.previousMaximum === null
       ? isFirst
-      : shard.minimum >= input.cursor.previousMaximum) &&
+      : qualificationSortedValueFollows(
+          shard.valueType,
+          shard.minimum,
+          input.cursor.previousMaximum,
+        )) &&
     retained.customMetadata?.["osfo-artifact-checksum"] === checksum &&
     retained.customMetadata?.["osfo-body-sha256"] === (await sha256Hex(encoded)) &&
     retained.customMetadata?.["osfo-dimension"] === shard.dimension &&
     retained.customMetadata?.["osfo-execution-id"] === input.executionId &&
     retained.customMetadata?.["osfo-index"] === String(shard.index) &&
-    retained.customMetadata?.["osfo-kind"] === "qualification-evaluation-sorted-run-v1" &&
+    retained.customMetadata?.["osfo-denominator-chain-digest"] === shard.denominatorChainDigest &&
+    retained.customMetadata?.["osfo-denominator-count"] === String(shard.denominatorCount) &&
+    retained.customMetadata?.["osfo-first-partition-index"] === String(shard.firstPartitionIndex) &&
+    retained.customMetadata?.["osfo-input-receipt-chain-digest"] ===
+      shard.inputReceiptChainDigest &&
+    retained.customMetadata?.["osfo-kind"] === "qualification-evaluation-sorted-run-v2" &&
+    retained.customMetadata?.["osfo-last-partition-index"] === String(shard.lastPartitionIndex) &&
+    retained.customMetadata?.["osfo-missing-root-count"] === String(shard.missingRootCount) &&
     retained.customMetadata?.["osfo-previous-checksum"] === shard.previousShardChecksum &&
     retained.customMetadata?.["osfo-plan-checksum"] === input.planChecksum &&
     retained.customMetadata?.["osfo-record-count"] === String(shard.values.length) &&
-    retained.customMetadata?.["osfo-run-id"] === shard.runId
+    retained.customMetadata?.["osfo-run-id"] === shard.runId &&
+    retained.customMetadata?.["osfo-sample-status"] === shard.sampleStatus &&
+    retained.customMetadata?.["osfo-value-type"] === shard.valueType
     ? shard
     : undefined;
 };
@@ -167,10 +235,10 @@ const initialCheckpoint = (
 ): CursorCheckpoint => {
   const content = {
     artifactId: cursorArtifactId(payload, 0),
-    cursors: descriptors.map(({ runId }) => ({
+    cursors: descriptors.map(({ runId, terminalShardChecksum, valueCount }) => ({
       consumedCount: 0,
       previousMaximum: null,
-      previousShardChecksum: "NONE",
+      previousShardChecksum: valueCount === 0 ? terminalShardChecksum : "NONE",
       runId,
       shardIndex: 0,
       valueOffset: 0,
@@ -183,7 +251,8 @@ const initialCheckpoint = (
     outputPreviousShardChecksum: "NONE",
     outputRunId: payload.outputRunId,
     planChecksum: payload.planChecksum,
-    version: "qualification-evaluation-reducer-cursor-v1" as const,
+    valueType: descriptors[0]?.valueType ?? "latencyMs",
+    version: "qualification-evaluation-reducer-cursor-v2" as const,
   };
   return { ...content, checksum: qualificationChecksum(content) };
 };
@@ -198,7 +267,7 @@ const retainCursor = async (
     checksum: checkpoint.checksum,
     encoded: canonicalQualificationJson(checkpoint),
     executionId: checkpoint.executionId,
-    kind: "qualification-evaluation-reducer-cursor-v1",
+    kind: "qualification-evaluation-reducer-cursor-v2",
     metadata: {
       "osfo-index": String(checkpoint.outputIndex),
       "osfo-output-count": String(checkpoint.outputCount),
@@ -216,7 +285,7 @@ const nextCheckpoint = (input: {
   readonly inputShards: ReadonlyArray<typeof QualificationEvaluationSortedRunShard.Type | null>;
   readonly merged: NonNullable<ReturnType<typeof mergeQualificationSortedPage>>;
   readonly outputChecksum: string;
-  readonly outputLastValue: number;
+  readonly outputLastValue: number | string;
   readonly payload: QualificationEvaluationReducerWorkflowPayload;
 }): CursorCheckpoint => {
   const cursors = input.checkpoint.cursors.map((cursor, index) => {
@@ -254,7 +323,8 @@ const nextCheckpoint = (input: {
     outputPreviousShardChecksum: input.outputChecksum,
     outputRunId: input.payload.outputRunId,
     planChecksum: input.payload.planChecksum,
-    version: "qualification-evaluation-reducer-cursor-v1" as const,
+    valueType: input.checkpoint.valueType,
+    version: "qualification-evaluation-reducer-cursor-v2" as const,
   };
   return { ...content, checksum: qualificationChecksum(content) };
 };
@@ -287,7 +357,83 @@ export const runQualificationEvaluationReducer = async (input: {
       return receipt;
     });
   });
+  const aggregate = aggregateDescriptorFields(verifiedInputs);
+  if (
+    aggregate === null ||
+    aggregate.denominatorChainDigest !== input.payload.denominatorChainDigest ||
+    aggregate.denominatorCount !== input.payload.denominatorCount ||
+    aggregate.firstPartitionIndex !== input.payload.firstPartitionIndex ||
+    aggregate.inputReceiptChainDigest !== input.payload.inputReceiptChainDigest ||
+    aggregate.lastPartitionIndex !== input.payload.lastPartitionIndex ||
+    aggregate.missingRootCount !== input.payload.missingRootCount ||
+    aggregate.valueType !== input.payload.valueType
+  ) {
+    throw new Error("Qualification reducer input ranges conflict");
+  }
   let checkpoint = initialCheckpoint(input.payload, verifiedInputs);
+  if (verifiedInputs.every(({ valueCount }) => valueCount === 0)) {
+    return input.step.do("retain zero evaluation run receipt", async () => {
+      const descriptorBase = {
+        artifactPrefix: input.payload.outputArtifactPrefix,
+        denominatorChainDigest: aggregate.denominatorChainDigest,
+        denominatorCount: aggregate.denominatorCount,
+        dimension: input.payload.dimension,
+        firstPartitionIndex: aggregate.firstPartitionIndex,
+        firstShardChecksum: "ZERO",
+        inputReceiptChainDigest: aggregate.inputReceiptChainDigest,
+        lastPartitionIndex: aggregate.lastPartitionIndex,
+        maximum: null,
+        minimum: null,
+        missingRootCount: aggregate.missingRootCount,
+        runId: input.payload.outputRunId,
+        sampleStatus: aggregate.sampleStatus,
+        shardCount: 0,
+        terminalShardChecksum: "ZERO",
+        valueCount: 0,
+      };
+      const descriptor = QualificationEvaluationSortedRunDescriptor.make(
+        aggregate.valueType === "identity"
+          ? { ...descriptorBase, valueType: "identity" }
+          : { ...descriptorBase, valueType: "latencyMs" },
+      );
+      const receipt = qualificationEvaluationSortedRunReceipt({
+        artifactId: receiptArtifactId(input.payload),
+        descriptor,
+        executionId: input.payload.executionId,
+        index: input.payload.index,
+        inputReceiptChecksums: input.payload.inputs.map(({ checksum }) => checksum),
+        level: input.payload.level,
+        planChecksum: input.payload.planChecksum,
+      });
+      if (receipt === null) throw new Error("Qualification zero reducer receipt is invalid");
+      const retained = await retainQualificationEvaluationArtifact({
+        artifactId: receipt.artifactId,
+        bucket: input.env.ARTIFACTS,
+        checksum: receipt.checksum,
+        encoded: canonicalQualificationJson(receipt),
+        executionId: input.payload.executionId,
+        kind: "qualification-evaluation-sorted-run-receipt-v2",
+        metadata: {
+          "osfo-denominator-chain-digest": receipt.denominatorChainDigest,
+          "osfo-denominator-count": String(receipt.denominatorCount),
+          "osfo-dimension": receipt.dimension,
+          "osfo-first-partition-index": String(receipt.firstPartitionIndex),
+          "osfo-input-checksum": qualificationChecksum(receipt.inputReceiptChecksums),
+          "osfo-input-receipt-chain-digest": receipt.inputReceiptChainDigest,
+          "osfo-last-partition-index": String(receipt.lastPartitionIndex),
+          "osfo-missing-root-count": String(receipt.missingRootCount),
+          "osfo-record-count": "0",
+          "osfo-run-id": receipt.runId,
+          "osfo-sample-status": receipt.sampleStatus,
+          "osfo-terminal-checksum": "ZERO",
+          "osfo-value-type": receipt.valueType,
+        },
+        planChecksum: input.payload.planChecksum,
+      });
+      if (retained === "CONFLICT") throw new Error("Qualification zero reducer conflicts");
+      return receipt;
+    });
+  }
   for (
     let continuation = 0;
     continuation < qualificationEvaluationMaximumDimensionContinuations;
@@ -330,7 +476,8 @@ export const runQualificationEvaluationReducer = async (input: {
       if (
         first === undefined ||
         last === undefined ||
-        (checkpoint.lastEmittedValue !== null && first < checkpoint.lastEmittedValue)
+        (checkpoint.lastEmittedValue !== null &&
+          !qualificationSortedValueFollows(aggregate.valueType, first, checkpoint.lastEmittedValue))
       ) {
         throw new Error("Qualification reducer output order conflicts");
       }
@@ -340,13 +487,22 @@ export const runQualificationEvaluationReducer = async (input: {
       );
       const output = qualificationEvaluationSortedRunShard({
         artifactId,
+        denominatorChainDigest: aggregate.denominatorChainDigest,
+        denominatorCount: aggregate.denominatorCount,
         dimension: input.payload.dimension,
         executionId: input.payload.executionId,
+        firstPartitionIndex: aggregate.firstPartitionIndex,
         index: checkpoint.outputIndex,
+        inputReceiptChainDigest: aggregate.inputReceiptChainDigest,
+        lastPartitionIndex: aggregate.lastPartitionIndex,
+        missingRootCount: aggregate.missingRootCount,
         planChecksum: input.payload.planChecksum,
         previousShardChecksum: checkpoint.outputPreviousShardChecksum,
         runId: input.payload.outputRunId,
-        values: merged.values,
+        sampleStatus: aggregate.sampleStatus,
+        ...(merged.valueType === "identity"
+          ? { valueType: "identity" as const, values: merged.values.map(String) }
+          : { valueType: "latencyMs" as const, values: merged.values.map(Number) }),
       });
       if (output === null) throw new Error("Qualification reducer output is invalid");
       const retained = await retainQualificationEvaluationArtifact({
@@ -355,13 +511,21 @@ export const runQualificationEvaluationReducer = async (input: {
         checksum: output.checksum,
         encoded: canonicalQualificationJson(output),
         executionId: input.payload.executionId,
-        kind: "qualification-evaluation-sorted-run-v1",
+        kind: "qualification-evaluation-sorted-run-v2",
         metadata: {
+          "osfo-denominator-chain-digest": output.denominatorChainDigest,
+          "osfo-denominator-count": String(output.denominatorCount),
           "osfo-dimension": output.dimension,
+          "osfo-first-partition-index": String(output.firstPartitionIndex),
           "osfo-index": String(output.index),
+          "osfo-input-receipt-chain-digest": output.inputReceiptChainDigest,
+          "osfo-last-partition-index": String(output.lastPartitionIndex),
+          "osfo-missing-root-count": String(output.missingRootCount),
           "osfo-previous-checksum": output.previousShardChecksum,
           "osfo-record-count": String(output.values.length),
           "osfo-run-id": output.runId,
+          "osfo-sample-status": output.sampleStatus,
+          "osfo-value-type": output.valueType,
         },
         planChecksum: input.payload.planChecksum,
       });
@@ -390,6 +554,40 @@ export const runQualificationEvaluationReducer = async (input: {
     });
     if (!exhausted) continue;
     return input.step.do("verify output and retain evaluation run receipt", async () => {
+      const provisionalDescriptorBase = {
+        artifactPrefix: input.payload.outputArtifactPrefix,
+        denominatorChainDigest: aggregate.denominatorChainDigest,
+        denominatorCount: aggregate.denominatorCount,
+        dimension: input.payload.dimension,
+        firstPartitionIndex: aggregate.firstPartitionIndex,
+        firstShardChecksum: checkpoint.firstOutputShardChecksum ?? "missing-first-checksum",
+        inputReceiptChainDigest: aggregate.inputReceiptChainDigest,
+        lastPartitionIndex: aggregate.lastPartitionIndex,
+        missingRootCount: aggregate.missingRootCount,
+        runId: input.payload.outputRunId,
+        sampleStatus: aggregate.sampleStatus,
+        shardCount: checkpoint.outputIndex,
+        terminalShardChecksum: checkpoint.outputPreviousShardChecksum,
+        valueCount: checkpoint.outputCount,
+      };
+      const provisionalDescriptor =
+        aggregate.valueType === "identity"
+          ? QualificationEvaluationSortedRunDescriptor.make({
+              ...provisionalDescriptorBase,
+              maximum: Schema.is(Schema.String)(checkpoint.lastEmittedValue)
+                ? checkpoint.lastEmittedValue
+                : "missing-last-value",
+              minimum: "pending-first-value",
+              valueType: "identity",
+            })
+          : QualificationEvaluationSortedRunDescriptor.make({
+              ...provisionalDescriptorBase,
+              maximum: Schema.is(Schema.Finite)(checkpoint.lastEmittedValue)
+                ? checkpoint.lastEmittedValue
+                : 0,
+              minimum: 0,
+              valueType: "latencyMs",
+            });
       const firstShard = await readInputShard({
         bucket: input.env.ARTIFACTS,
         cursor: {
@@ -400,34 +598,50 @@ export const runQualificationEvaluationReducer = async (input: {
           shardIndex: 0,
           valueOffset: 0,
         },
-        descriptor: QualificationEvaluationSortedRunDescriptor.make({
-          artifactPrefix: input.payload.outputArtifactPrefix,
-          dimension: input.payload.dimension,
-          firstShardChecksum: checkpoint.firstOutputShardChecksum ?? "missing-first-checksum",
-          maximum: checkpoint.lastEmittedValue ?? 0,
-          minimum: 0,
-          runId: input.payload.outputRunId,
-          shardCount: checkpoint.outputIndex,
-          terminalShardChecksum: checkpoint.outputPreviousShardChecksum,
-          valueCount: checkpoint.outputCount,
-        }),
+        descriptor: provisionalDescriptor,
         executionId: input.payload.executionId,
         planChecksum: input.payload.planChecksum,
       });
       if (firstShard === null || firstShard === undefined) {
         throw new Error("Qualification reducer first output conflicts");
       }
-      const descriptor = QualificationEvaluationSortedRunDescriptor.make({
+      const finalDescriptorBase = {
         artifactPrefix: input.payload.outputArtifactPrefix,
+        denominatorChainDigest: aggregate.denominatorChainDigest,
+        denominatorCount: aggregate.denominatorCount,
         dimension: input.payload.dimension,
         firstShardChecksum: firstShard.checksum,
-        maximum: checkpoint.lastEmittedValue ?? firstShard.maximum,
-        minimum: firstShard.minimum,
+        firstPartitionIndex: aggregate.firstPartitionIndex,
+        inputReceiptChainDigest: aggregate.inputReceiptChainDigest,
+        lastPartitionIndex: aggregate.lastPartitionIndex,
+        missingRootCount: aggregate.missingRootCount,
         runId: input.payload.outputRunId,
+        sampleStatus: aggregate.sampleStatus,
         shardCount: checkpoint.outputIndex,
         terminalShardChecksum: checkpoint.outputPreviousShardChecksum,
         valueCount: checkpoint.outputCount,
-      });
+      };
+      const descriptor =
+        aggregate.valueType === "identity" && firstShard.valueType === "identity"
+          ? QualificationEvaluationSortedRunDescriptor.make({
+              ...finalDescriptorBase,
+              maximum: Schema.is(Schema.String)(checkpoint.lastEmittedValue)
+                ? checkpoint.lastEmittedValue
+                : firstShard.maximum,
+              minimum: firstShard.minimum,
+              valueType: "identity",
+            })
+          : aggregate.valueType === "latencyMs" && firstShard.valueType === "latencyMs"
+            ? QualificationEvaluationSortedRunDescriptor.make({
+                ...finalDescriptorBase,
+                maximum: Schema.is(Schema.Finite)(checkpoint.lastEmittedValue)
+                  ? checkpoint.lastEmittedValue
+                  : firstShard.maximum,
+                minimum: firstShard.minimum,
+                valueType: "latencyMs",
+              })
+            : null;
+      if (descriptor === null) throw new Error("Qualification reducer value type conflicts");
       const receipt = qualificationEvaluationSortedRunReceipt({
         artifactId: receiptArtifactId(input.payload),
         descriptor,
@@ -444,13 +658,21 @@ export const runQualificationEvaluationReducer = async (input: {
         checksum: receipt.checksum,
         encoded: canonicalQualificationJson(receipt),
         executionId: input.payload.executionId,
-        kind: "qualification-evaluation-sorted-run-receipt-v1",
+        kind: "qualification-evaluation-sorted-run-receipt-v2",
         metadata: {
+          "osfo-denominator-chain-digest": receipt.denominatorChainDigest,
+          "osfo-denominator-count": String(receipt.denominatorCount),
           "osfo-dimension": receipt.dimension,
+          "osfo-first-partition-index": String(receipt.firstPartitionIndex),
           "osfo-input-checksum": qualificationChecksum(receipt.inputReceiptChecksums),
+          "osfo-input-receipt-chain-digest": receipt.inputReceiptChainDigest,
+          "osfo-last-partition-index": String(receipt.lastPartitionIndex),
+          "osfo-missing-root-count": String(receipt.missingRootCount),
           "osfo-record-count": String(receipt.valueCount),
           "osfo-run-id": receipt.runId,
+          "osfo-sample-status": receipt.sampleStatus,
           "osfo-terminal-checksum": receipt.terminalShardChecksum,
+          "osfo-value-type": receipt.valueType,
         },
         planChecksum: input.payload.planChecksum,
       });

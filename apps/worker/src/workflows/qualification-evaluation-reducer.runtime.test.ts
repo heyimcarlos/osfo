@@ -21,6 +21,7 @@ const padded = (value: number) => value.toString().padStart(8, "0");
 const runtime = async (options?: {
   readonly failAfterStep?: string;
   readonly failFirstCursorPut?: boolean;
+  readonly runs?: readonly [ReadonlyArray<number>, ReadonlyArray<number>];
 }) => {
   const retained = new Map<
     string,
@@ -59,6 +60,12 @@ const runtime = async (options?: {
   const planChecksum = "reducer-plan";
   const dimension = "stage:target:americas:warmDurableAcceptance";
   const makeRun = async (runId: string, values: ReadonlyArray<number>) => {
+    const partitionIndex = runId === "even" ? 0 : 1;
+    const leafReceiptChecksum = `${runId}-leaf-receipt`;
+    const denominatorChainDigest = `${runId}-denominator-chain`;
+    const denominatorCount = Math.max(values.length, 1);
+    const missingRootCount = values.length === 0 ? 1 : 0;
+    const inputReceiptChainDigest = qualificationChecksum([leafReceiptChecksum]);
     const artifactPrefix = `qualification/executions/${executionId}/evaluation-input/${runId}`;
     let previousShardChecksum = "NONE";
     const shards = new Array<typeof QualificationEvaluationSortedRunShard.Type>();
@@ -66,13 +73,21 @@ const runtime = async (options?: {
       const index = Math.floor(offset / 256);
       const shard = qualificationEvaluationSortedRunShard({
         artifactId: `${artifactPrefix}/${padded(index)}.json`,
+        denominatorChainDigest,
+        denominatorCount,
         dimension,
         executionId,
+        firstPartitionIndex: partitionIndex,
         index,
+        inputReceiptChainDigest,
+        lastPartitionIndex: partitionIndex,
+        missingRootCount,
         planChecksum,
         previousShardChecksum,
         runId,
+        sampleStatus: missingRootCount > 0 ? "MISSING" : "COMPLETE",
         values: values.slice(offset, offset + 256),
+        valueType: "latencyMs",
       });
       if (shard === null) throw new Error("Expected input shard");
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each immutable shard checksum commits to its predecessor.
@@ -82,13 +97,21 @@ const runtime = async (options?: {
         checksum: shard.checksum,
         encoded: canonicalQualificationJson(shard),
         executionId,
-        kind: "qualification-evaluation-sorted-run-v1",
+        kind: "qualification-evaluation-sorted-run-v2",
         metadata: {
+          "osfo-denominator-chain-digest": denominatorChainDigest,
+          "osfo-denominator-count": String(denominatorCount),
           "osfo-dimension": dimension,
+          "osfo-first-partition-index": String(partitionIndex),
           "osfo-index": String(index),
+          "osfo-input-receipt-chain-digest": inputReceiptChainDigest,
+          "osfo-last-partition-index": String(partitionIndex),
+          "osfo-missing-root-count": String(missingRootCount),
           "osfo-previous-checksum": previousShardChecksum,
           "osfo-record-count": String(shard.values.length),
           "osfo-run-id": runId,
+          "osfo-sample-status": missingRootCount > 0 ? "MISSING" : "COMPLETE",
+          "osfo-value-type": "latencyMs",
         },
         planChecksum,
       });
@@ -98,24 +121,37 @@ const runtime = async (options?: {
     }
     const first = shards[0];
     const last = shards.at(-1);
-    if (first === undefined || last === undefined) throw new Error("Expected input run");
+    if (
+      (first !== undefined && first.valueType !== "latencyMs") ||
+      (last !== undefined && last.valueType !== "latencyMs")
+    ) {
+      throw new Error("Expected numeric input run");
+    }
     const descriptor = {
       artifactPrefix,
+      denominatorChainDigest,
+      denominatorCount,
       dimension,
-      firstShardChecksum: first.checksum,
-      maximum: last.maximum,
-      minimum: first.minimum,
+      firstShardChecksum: first?.checksum ?? "ZERO",
+      firstPartitionIndex: partitionIndex,
+      inputReceiptChainDigest,
+      lastPartitionIndex: partitionIndex,
+      maximum: last?.maximum ?? null,
+      minimum: first?.minimum ?? null,
+      missingRootCount,
       runId,
+      sampleStatus: missingRootCount > 0 ? ("MISSING" as const) : ("COMPLETE" as const),
       shardCount: shards.length,
-      terminalShardChecksum: last.checksum,
+      terminalShardChecksum: last?.checksum ?? "ZERO",
       valueCount: values.length,
+      valueType: "latencyMs" as const,
     };
     const receipt = qualificationEvaluationSortedRunReceipt({
       artifactId: `${artifactPrefix}/receipt.json`,
       descriptor,
       executionId,
       index: runId === "even" ? 0 : 1,
-      inputReceiptChecksums: [`${runId}-leaf-receipt`],
+      inputReceiptChecksums: [leafReceiptChecksum],
       level: 0,
       planChecksum,
     });
@@ -126,38 +162,70 @@ const runtime = async (options?: {
       checksum: receipt.checksum,
       encoded: canonicalQualificationJson(receipt),
       executionId,
-      kind: "qualification-evaluation-sorted-run-receipt-v1",
+      kind: "qualification-evaluation-sorted-run-receipt-v2",
       metadata: {
+        "osfo-denominator-chain-digest": receipt.denominatorChainDigest,
+        "osfo-denominator-count": String(receipt.denominatorCount),
         "osfo-dimension": receipt.dimension,
+        "osfo-first-partition-index": String(receipt.firstPartitionIndex),
         "osfo-input-checksum": qualificationChecksum(receipt.inputReceiptChecksums),
+        "osfo-input-receipt-chain-digest": receipt.inputReceiptChainDigest,
+        "osfo-last-partition-index": String(receipt.lastPartitionIndex),
+        "osfo-missing-root-count": String(receipt.missingRootCount),
         "osfo-record-count": String(receipt.valueCount),
         "osfo-run-id": receipt.runId,
+        "osfo-sample-status": receipt.sampleStatus,
         "osfo-terminal-checksum": receipt.terminalShardChecksum,
+        "osfo-value-type": receipt.valueType,
       },
       planChecksum,
     });
     if (retainedReceipt === "CONFLICT") throw new Error("Input receipt conflict");
-    return { artifactId: receipt.artifactId, checksum: receipt.checksum };
+    return {
+      receipt,
+      reference: { artifactId: receipt.artifactId, checksum: receipt.checksum },
+    };
   };
-  const [even, odd] = await Promise.all([
-    makeRun(
-      "even",
+  const runs =
+    options?.runs ??
+    ([
       Array.from({ length: 300 }, (_, index) => index * 2),
-    ),
-    makeRun(
-      "odd",
       Array.from({ length: 300 }, (_, index) => index * 2 + 1),
-    ),
-  ]);
+    ] as const);
+  const [even, odd] = await Promise.all([makeRun("even", runs[0]), makeRun("odd", runs[1])]);
+  const inputReceipts = [even.receipt, odd.receipt] as const;
+  const denominatorCount = inputReceipts.reduce(
+    (total, receipt) => total + receipt.denominatorCount,
+    0,
+  );
+  const missingRootCount = inputReceipts.reduce(
+    (total, receipt) => total + receipt.missingRootCount,
+    0,
+  );
   const payload: QualificationEvaluationReducerWorkflowPayload = {
+    denominatorChainDigest: qualificationChecksum(
+      inputReceipts.map((receipt) => ({
+        checksum: receipt.checksum,
+        denominatorChainDigest: receipt.denominatorChainDigest,
+        denominatorCount: receipt.denominatorCount,
+        firstPartitionIndex: receipt.firstPartitionIndex,
+        lastPartitionIndex: receipt.lastPartitionIndex,
+      })),
+    ),
+    denominatorCount,
     dimension,
     executionId,
+    firstPartitionIndex: 0,
     index: 0,
-    inputs: [even, odd],
+    inputReceiptChainDigest: qualificationChecksum(inputReceipts.map(({ checksum }) => checksum)),
+    inputs: [even.reference, odd.reference],
+    lastPartitionIndex: 1,
     level: 1,
+    missingRootCount,
     outputArtifactPrefix: `qualification/executions/${executionId}/evaluation-runs/output`,
     outputRunId: "output",
     planChecksum,
+    valueType: "latencyMs",
   };
   let failAfterStep = options?.failAfterStep;
   const step = {
@@ -205,6 +273,7 @@ it("resumes after output persistence without duplicate, drop, or reorder", async
     const shard = Schema.decodeSync(Schema.fromJsonString(QualificationEvaluationSortedRunShard))(
       object.value,
     );
+    if (shard.valueType !== "latencyMs") throw new Error("Expected numeric output shard");
     values.push(...shard.values);
   }
   expect(values).toEqual(Array.from({ length: 600 }, (_, index) => index));
@@ -219,6 +288,45 @@ it("resumes after output persistence without duplicate, drop, or reorder", async
   });
   expect(replay).toEqual(receipt);
   expect(test.outputWrites()).toBe(3);
+});
+
+it("reduces all-zero runs without entering the page merge", async () => {
+  const test = await runtime({ runs: [[], []] });
+  const receipt = await runQualificationEvaluationReducer({
+    env: { ARTIFACTS: test.bucket },
+    payload: test.payload,
+    step: test.step,
+  });
+  expect(receipt).toMatchObject({
+    denominatorCount: 2,
+    firstShardChecksum: "ZERO",
+    maximum: null,
+    minimum: null,
+    missingRootCount: 2,
+    sampleStatus: "MISSING",
+    shardCount: 0,
+    terminalShardChecksum: "ZERO",
+    valueCount: 0,
+    valueType: "latencyMs",
+  });
+  expect(test.outputWrites()).toBe(0);
+});
+
+it("merges a zero run with a nonzero run without inventing samples", async () => {
+  const test = await runtime({ runs: [[], [1, 2]] });
+  const receipt = await runQualificationEvaluationReducer({
+    env: { ARTIFACTS: test.bucket },
+    payload: test.payload,
+    step: test.step,
+  });
+  expect(receipt).toMatchObject({
+    denominatorCount: 3,
+    maximum: 2,
+    minimum: 1,
+    missingRootCount: 1,
+    sampleStatus: "MISSING",
+    valueCount: 2,
+  });
 });
 
 it.each([
@@ -288,6 +396,27 @@ it("rejects a valid descriptor substituted under another receipt checksum", asyn
       step: test.step,
     }),
   ).rejects.toThrow("input receipt conflicts");
+});
+
+it("rejects dropped or reordered child receipts against the frozen aggregate", async () => {
+  const dropped = await runtime();
+  await expect(
+    runQualificationEvaluationReducer({
+      env: { ARTIFACTS: dropped.bucket },
+      payload: { ...dropped.payload, inputs: dropped.payload.inputs.slice(0, 1) },
+      step: dropped.step,
+    }),
+  ).rejects.toThrow("input ranges conflict");
+  const reordered = await runtime();
+  const [first, second] = reordered.payload.inputs;
+  if (first === undefined || second === undefined) throw new Error("Expected reducer inputs");
+  await expect(
+    runQualificationEvaluationReducer({
+      env: { ARTIFACTS: reordered.bucket },
+      payload: { ...reordered.payload, inputs: [second, first] },
+      step: reordered.step,
+    }),
+  ).rejects.toThrow("input ranges conflict");
 });
 
 it("rejects corrupt first-shard metadata before producing output", async () => {
