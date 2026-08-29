@@ -72,6 +72,25 @@ if jq 'map(select(.selectedTool != "startDocumentBuild"))' "$fixture_dir/provide
   printf 'An unconsumed Free Document Build action falsely qualified as a denial\n' >&2
   exit 1
 fi
+if jq 'reverse' "$fixture_dir/provider.json" >"$fixture_dir/reversed.json" && \
+  "$free_denial_assertion" "$fixture_dir/denial.txt" "$fixture_dir/reversed.json" \
+    'verification-startDocumentBuild-free-verify-289' \
+    'web:00000000-0000-4000-8000-000000000289' 2>/dev/null; then
+  printf 'A reversed Document Build tool sequence falsely qualified as a denial\n' >&2
+  exit 1
+fi
+if jq '.[0:1] + [{
+    kind: "tool-selection",
+    operationId: null,
+    selectedTool: "inspectDocumentBuild",
+    subject: "document-build:unexpected"
+  }] + .[1:]' "$fixture_dir/provider.json" >"$fixture_dir/intervening.json" && \
+  "$free_denial_assertion" "$fixture_dir/denial.txt" "$fixture_dir/intervening.json" \
+    'verification-startDocumentBuild-free-verify-289' \
+    'web:00000000-0000-4000-8000-000000000289' 2>/dev/null; then
+  printf 'An intervening Document Build tool selection falsely qualified as a denial\n' >&2
+  exit 1
+fi
 
 for required in \
   'loads Document Build before selecting and safely presenting its denied action' \

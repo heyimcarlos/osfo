@@ -20,16 +20,17 @@ fi
 jq --exit-status \
   --arg actionId "$action_id" \
   --arg fileId "$file_id" \
-  '([.[] | select(
-      .kind == "tool-selection" and
-      .operationId == "verification-loadSkill" and
-      .selectedTool == "loadSkill" and
-      .subject == "document-build@system-document-build-v1"
-    )] | length) == 1 and
-   ([.[] | select(
-      .kind == "tool-selection" and
-      .operationId == $actionId and
-      .selectedTool == "startDocumentBuild" and
-      .subject == $fileId
-    )] | length) == 1' \
+  '[.[] | select(.kind == "tool-selection") |
+      { operationId, selectedTool, subject }] == [
+    {
+      operationId: "verification-loadSkill",
+      selectedTool: "loadSkill",
+      subject: "document-build@system-document-build-v1"
+    },
+    {
+      operationId: $actionId,
+      selectedTool: "startDocumentBuild",
+      subject: $fileId
+    }
+  ]' \
   "$model_ledger_file" >/dev/null
