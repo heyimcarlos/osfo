@@ -508,7 +508,6 @@ it.effect("lets an in-horizon reconciliation claim beat exact-horizon finalizati
         email.workflowId,
         email.inputDigest,
         claimedAt,
-        new Date(sendAt.getTime() + 359_000),
       );
       expect(claim).toMatchObject({ _tag: "Acquired", claimedAt });
 
@@ -566,12 +565,11 @@ it.effect("recovers a crashed in-horizon reconciliation before conservative fina
         new Date(sendAt.getTime() + 120_000),
       );
       const claimedAt = new Date(sendAt.getTime() + 299_000);
-      const leaseExpiresAt = new Date(sendAt.getTime() + 301_000);
+      const leaseExpiresAt = new Date(claimedAt.getTime() + 60_000);
       yield* persistence.claimTerminalReconciliation(
         email.workflowId,
         email.inputDigest,
         claimedAt,
-        leaseExpiresAt,
       );
 
       expect(
@@ -586,7 +584,6 @@ it.effect("recovers a crashed in-horizon reconciliation before conservative fina
         email.workflowId,
         email.inputDigest,
         recoveredAt,
-        new Date(recoveredAt.getTime() + 60_000),
       );
       expect(recovered).toMatchObject({
         _tag: "Acquired",
@@ -636,7 +633,6 @@ it.effect("finalizes ambiguity after the bounded reconciliation recovery lease e
         email.workflowId,
         email.inputDigest,
         claimedAt,
-        leaseExpiresAt,
       );
       const recoveredAt = new Date(leaseExpiresAt.getTime() + 1);
       const recoveryDeadline = new Date(leaseExpiresAt.getTime() + 60_000);
@@ -644,7 +640,6 @@ it.effect("finalizes ambiguity after the bounded reconciliation recovery lease e
         email.workflowId,
         email.inputDigest,
         recoveredAt,
-        new Date(recoveredAt.getTime() + 60_000),
       );
 
       expect(
@@ -738,6 +733,37 @@ it.effect("rejects NULL-hole pending and success lifecycle rows", () =>
               send_outcome_at: sendAt,
               state: "failure",
               terminal_at: sendAt,
+            })
+            .where(eq(scheduledEmails.workflow_id, email.workflowId)),
+        ).pipe(Effect.result),
+      ).toMatchObject({ failure: expect.anything() });
+      yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        sendAt,
+      );
+      expect(
+        yield* Effect.tryPromise(() =>
+          database
+            .update(scheduledEmails)
+            .set({
+              send_reconciliation_claimed_at: new Date(sendAt.getTime() + 180_000),
+              send_reconciliation_lease_expires_at: new Date(sendAt.getTime() + 240_001),
+            })
+            .where(eq(scheduledEmails.workflow_id, email.workflowId)),
+        ).pipe(Effect.result),
+      ).toMatchObject({ failure: expect.anything() });
+      expect(
+        yield* Effect.tryPromise(() =>
+          database
+            .update(scheduledEmails)
+            .set({
+              send_reconciliation_claimed_at: new Date(sendAt.getTime() + 420_000),
+              send_reconciliation_lease_expires_at: new Date(sendAt.getTime() + 420_001),
             })
             .where(eq(scheduledEmails.workflow_id, email.workflowId)),
         ).pipe(Effect.result),

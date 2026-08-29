@@ -1289,7 +1289,7 @@ const makeFixture = (
                 return stored;
               }),
             ),
-      claimTerminalReconciliation: (workflowId, digest, claimedAt, leaseExpiresAt) =>
+      claimTerminalReconciliation: (workflowId, digest, claimedAt) =>
         requireStored(workflowId, digest).pipe(
           Effect.map((email): ScheduledEmail.TerminalReconciliationClaim => {
             if (
@@ -1305,7 +1305,6 @@ const makeFixture = (
               email.sendReconciliationClaimedAt,
               email.sendReconciliationLeaseExpiresAt,
               claimedAt,
-              leaseExpiresAt,
             );
             if (lease === null) return { _tag: "Existing", email };
             stored = {

@@ -115,7 +115,6 @@ export const nextTerminalReconciliationLease = (
   existingClaimedAt: Date | null,
   existingLeaseExpiresAt: Date | null,
   claimedAt: Date,
-  requestedLeaseExpiresAt: Date,
 ) => {
   const claimedAtMilliseconds = claimedAt.getTime();
   const evidenceDeadline = sendStartedAt.getTime() + providerEvidenceHorizonMilliseconds;
@@ -126,7 +125,14 @@ export const nextTerminalReconciliationLease = (
     return null;
   }
   if (claimedAtMilliseconds <= evidenceDeadline) {
-    return { claimedAt, leaseExpiresAt: requestedLeaseExpiresAt };
+    return {
+      claimedAt,
+      leaseExpiresAt: DateTime.toDateUtc(
+        DateTime.add(DateTime.makeUnsafe(claimedAt), {
+          milliseconds: providerReconciliationLeaseMilliseconds,
+        }),
+      ),
+    };
   }
   if (
     existingClaimedAt === null ||
@@ -368,7 +374,6 @@ export interface PortInterface {
       workflowId: WorkflowId,
       inputDigest: InputDigest,
       claimedAt: Date,
-      leaseExpiresAt: Date,
     ) => Effect.Effect<TerminalReconciliationClaim, Conflict | NotFound | Unavailable>;
     readonly completeTerminalReconciliation: (
       workflowId: WorkflowId,
@@ -837,17 +842,11 @@ export const make = Effect.gen(function* () {
   const refineTerminalAmbiguity = Effect.fn("ScheduledEmail.refineTerminalAmbiguity")(function* (
     email: Record,
   ) {
-    const claimedAtDateTime = yield* DateTime.now;
-    const claimedAt = DateTime.toDateUtc(claimedAtDateTime);
+    const claimedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     const claim = yield* ports.persistence.claimTerminalReconciliation(
       email.workflowId,
       email.inputDigest,
       claimedAt,
-      DateTime.toDateUtc(
-        DateTime.add(claimedAtDateTime, {
-          milliseconds: providerReconciliationLeaseMilliseconds,
-        }),
-      ),
     );
     if (claim._tag === "Existing") return yield* settleTerminal(claim.email);
     const reconciliation = yield* ports.reconcileSend(claim.email);

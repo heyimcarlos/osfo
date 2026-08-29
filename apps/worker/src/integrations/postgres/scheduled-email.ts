@@ -407,7 +407,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
         .returning();
       return updated === undefined ? changed() : found(updated);
     }),
-  claimTerminalReconciliation: (workflowId, inputDigest, claimedAt, leaseExpiresAt) =>
+  claimTerminalReconciliation: (workflowId, inputDigest, claimedAt) =>
     attempt("claimTerminalReconciliation", () =>
       database.transaction(async (transaction): Promise<TerminalReconciliationClaimOutcome> => {
         const [identity] = await transaction
@@ -440,7 +440,6 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
           row.send_reconciliation_claimed_at,
           row.send_reconciliation_lease_expires_at,
           claimedAt,
-          leaseExpiresAt,
         );
         if (lease === null) return { _tag: "Existing", row };
         const [updated] = await transaction

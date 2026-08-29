@@ -235,6 +235,19 @@ describe("Postgres migrations", () => {
             catch: (cause) => new MigrationConstraintRejected({ cause }),
           }).pipe(Effect.exit);
           expect(Exit.isFailure(partialLease)).toBe(true);
+          const oversizedLease = yield* Effect.tryPromise({
+            try: () =>
+              client.exec(`
+                UPDATE scheduled_emails
+                SET send_accounting_basis = null,
+                    send_accounted_at = null,
+                    send_reconciliation_claimed_at = '2026-08-03T00:04:59Z',
+                    send_reconciliation_lease_expires_at = '2026-08-03T00:07:01Z'
+                WHERE workflow_id = 'ambiguous-workflow'
+              `),
+            catch: (cause) => new MigrationConstraintRejected({ cause }),
+          }).pipe(Effect.exit);
+          expect(Exit.isFailure(oversizedLease)).toBe(true);
           return undefined;
         }),
       closeTestDatabase,
