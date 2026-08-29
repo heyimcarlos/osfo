@@ -4,9 +4,57 @@ import { Effect } from "effect";
 import { expect } from "vitest";
 
 import { UserId } from "../../domain";
-import { startProviderEmulator } from "../../../test/emulators/provider-emulator";
+import {
+  startProviderEmulator,
+  startRunProviderEmulator,
+} from "../../../test/emulators/provider-emulator";
 import { directIntegrationProviderConfig } from "../../services/integrations";
 import { LocalVerificationIntegrationProvider } from "./provider";
+
+it.effect("renders delivered Telegram replies in the run-owned provider inbox", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const emulator = yield* Effect.acquireRelease(
+        Effect.promise(() => startRunProviderEmulator("verify-provider-inbox")),
+        (provider) => Effect.promise(() => provider.close()),
+      );
+      const deliveredReply = "Document Build is not available on your current plan.";
+
+      yield* Effect.promise(() =>
+        fetch(new URL("/botverification/sendMessage", emulator.origin), {
+          body: '{"chat_id":700001,"text":"Earlier Telegram delivery."}',
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+      );
+      yield* Effect.promise(() =>
+        fetch(new URL("/botverification/editMessageText", emulator.origin), {
+          body: '{"chat_id":700001,"message_id":900001,"text":"Document Build is not available on your current plan."}',
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+      );
+      const inbox = yield* Effect.promise(() =>
+        fetch(new URL("/inbox", emulator.origin)).then((response) =>
+          response.text().then((body) => ({
+            body,
+            contentType: response.headers.get("content-type"),
+            status: response.status,
+          })),
+        ),
+      );
+
+      expect(inbox).toMatchObject({
+        contentType: "text/html; charset=utf-8",
+        status: 200,
+      });
+      expect(inbox.body).toContain("verify-provider-inbox");
+      expect(inbox.body).toContain(deliveredReply);
+      expect(inbox.body).toContain("editMessageText");
+      expect(inbox.body).not.toContain("Earlier Telegram delivery.");
+    }),
+  ),
+);
 
 it.effect("connects and sends through one deterministic local Gmail provider boundary", () =>
   Effect.scoped(

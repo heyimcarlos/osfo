@@ -591,6 +591,11 @@ evidence_start() {
     printf 'provider_boundary=local-loopback-gmail-not-live-oauth\n' \
       >>"$feature_dir/metadata.txt"
   fi
+  if [[ "$feature" == document-build-free-denial ]]; then
+    provider_origin="$(state_value "$run_id" provider-origin)"
+    printf 'provider_browser_boundary=telegram-delivery-ledger\nprovider_inbox_url=%s/inbox\n' \
+      "$provider_origin" >>"$feature_dir/metadata.txt"
+  fi
   printf 'evidence_ready feature=%s action_screenshot=%s result_screenshot=%s\n' \
     "$feature" "$feature_dir/action.png" "$feature_dir/result.png"
 }
@@ -811,7 +816,7 @@ document_build_identities() {
 }
 
 document_build_free_denial() {
-  local run_id file_id state_dir feature_dir container_id provider_origin phone identity
+  local run_id file_id state_dir feature_dir container_id provider_origin inbox_url phone identity
   local user_id agent_id billing_plan billing_policy allowance_plan allowance_policy
   local action_id success_action_id identities workflow_id main_instance_id timer_instance_id
   local request before_model_count reply_output reply
@@ -831,6 +836,7 @@ document_build_free_denial() {
   "$script_dir/claim-single-attempt" "$state_dir/document-build-free-denial-attempted"
   container_id="$(state_value "$run_id" container-id)"
   provider_origin="$(state_value "$run_id" provider-origin)"
+  inbox_url="$provider_origin/inbox"
   phone="$(state_value "$run_id" phone-e164)"
   identity="$(docker exec --env PGPASSWORD=osfo "$container_id" \
     psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
@@ -904,8 +910,9 @@ document_build_free_denial() {
   printf '%s\n' "$main_instance_id" >"$state_dir/document-build-free-main-instance-id"
   printf '%s\n' "$timer_instance_id" >"$state_dir/document-build-free-timer-instance-id"
   printf '%s\n' "$before_model_count" >"$state_dir/document-build-free-model-ledger-before-count"
-  printf 'document_build_free_denial_ready action=%s workflow=%s reply=%s\n' \
-    "$action_id" "$workflow_id" "$feature_dir/agent-reply.txt"
+  printf '%s\n' "$inbox_url" >"$state_dir/document-build-free-inbox-url"
+  printf 'document_build_free_denial_ready action=%s workflow=%s inbox=%s reply=%s\n' \
+    "$action_id" "$workflow_id" "$inbox_url" "$feature_dir/agent-reply.txt"
 }
 
 scheduled_email_request() {
@@ -1553,23 +1560,8 @@ observe_document_build_free_denial() {
     --argjson telegram "$(curl --fail --silent --show-error "$provider_origin/_test/telegram/ledger")" \
     '{ actionId: $actionId, agentReply: $agentReply, agentRequest: $agentRequest,
       model: $model, telegram: $telegram }' >"$feature_dir/provider.json"
-  jq --exit-status \
-    --arg userId "$user_id" --arg fileId "$file_id" \
-    '.userId == $userId and .billingPlan == "free" and .allowancePlan == "free" and
-      .billingPolicy == "launch-v1" and .allowancePolicy == "launch-v1" and
-      .documentBuildCount == 0 and .actionDocumentBuildCount == 0 and
-      .workflowStartUsage == 0 and .generatedDocumentUsage == 0 and
-      .providerCostUsage == 0 and .documentUsageEvents == 0 and
-      .documentNotificationCount == 0 and .sourceExists == true and
-      .artifactExists == false and .attemptExists == false and .ownerExists == false and
-      .agentRuntime.inspectable == true and .agentRuntime.registered == true and
-      .agentRuntime.documentBuildSource._tag == "Found" and
-      .agentRuntime.documentBuildSource.fileId == $fileId and
-      .agentRuntime.documentBuildSource.userId == $userId and
-      .agentRuntime.documentBuildMain.status == "unknown" and
-      .agentRuntime.documentBuildTimer.status == "unknown" and
-      .agentRuntime.documentContent == null and .agentRuntime.documentAttempt == null and
-      .agentRuntime.documentOwner == null' "$feature_dir/state.json" >/dev/null
+  "$script_dir/assert-document-build-free-state" \
+    "$feature_dir/state.json" "$user_id" "$file_id"
   jq --exit-status \
     --arg actionId "$action_id" --arg fileId "$file_id" \
     '. as $provider |

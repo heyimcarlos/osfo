@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$#" -ne 3 ]]; then
+  printf 'Usage: assert-document-build-free-state <state-file> <user-id> <file-id>\n' >&2
+  exit 2
+fi
+
+state_file="$1"
+user_id="$2"
+file_id="$3"
+
+jq --exit-status \
+  --arg userId "$user_id" --arg fileId "$file_id" \
+  '.userId == $userId and .billingPlan == "free" and .allowancePlan == "free" and
+    .billingPolicy == "launch-v1" and .allowancePolicy == "launch-v1" and
+    .documentBuildCount == 0 and .actionDocumentBuildCount == 0 and
+    .workflowStartUsage == 0 and .generatedDocumentUsage == 0 and
+    .providerCostUsage == 0 and .documentUsageEvents == 0 and
+    .documentNotificationCount == 0 and .sourceExists == true and
+    .artifactExists == false and .attemptExists == false and .ownerExists == false and
+    .agentRuntime.inspectable == true and .agentRuntime.registered == true and
+    .agentRuntime.documentBuildSource._tag == "Found" and
+    .agentRuntime.documentBuildSource.fileId == $fileId and
+    .agentRuntime.documentBuildSource.userId == $userId and
+    .agentRuntime.documentBuildMain == null and .agentRuntime.documentBuildTimer == null and
+    .agentRuntime.documentContent == null and .agentRuntime.documentAttempt == null and
+    .agentRuntime.documentOwner == null' "$state_file" >/dev/null

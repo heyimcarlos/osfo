@@ -162,7 +162,14 @@ export interface ProviderEmulator {
   readonly origin: string;
 }
 
-export const startProviderEmulator = (): Promise<ProviderEmulator> =>
+export const startProviderEmulator = (): Promise<ProviderEmulator> => startProvider({});
+
+export const startRunProviderEmulator = (verificationRunId: string): Promise<ProviderEmulator> =>
+  startProvider({ verificationRunId });
+
+const startProvider = (options: {
+  readonly verificationRunId?: string;
+}): Promise<ProviderEmulator> =>
   new Promise((resolve, reject) => {
     const stripeLedger: Array<StripeLedgerEntry> = [];
     const stripeCheckouts = new Map<string, StripeCheckoutState>();
@@ -183,6 +190,10 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
       const rawUrl = request.url ?? "/";
       const url = new URL(rawUrl.startsWith("//") ? rawUrl.slice(1) : rawUrl, "http://localhost");
       const pathname = url.pathname;
+      if (request.method === "GET" && pathname === "/inbox") {
+        renderTelegramInbox(response, options.verificationRunId ?? "standalone", telegramLedger);
+        return;
+      }
       if (request.method === "POST" && pathname === "/_test/reset") {
         stripeLedger.length = 0;
         stripeCheckouts.clear();
@@ -1218,6 +1229,45 @@ const handleTelegram = (
     })
     .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
 };
+
+const renderTelegramInbox = (
+  response: ServerResponse,
+  verificationRunId: string,
+  ledger: ReadonlyArray<TelegramLedgerEntry>,
+): void => {
+  const deliveries = ledger.flatMap((entry, index) => {
+    const decoded = Option.getOrUndefined(Schema.decodeOption(TelegramRequestFromJson)(entry.body));
+    const text = decoded?.text ?? decoded?.rich_message?.markdown;
+    return text === undefined ? [] : [{ index: index + 1, method: entry.method, text }];
+  });
+  const delivery = deliveries[deliveries.length - 1];
+  const message =
+    delivery === undefined
+      ? "<p>No delivered Telegram messages.</p>"
+      : `<article>
+<h2>Latest delivery ${delivery.index}</h2>
+<p>Telegram method: <code>${escapeHtml(delivery.method)}</code></p>
+<pre>${escapeHtml(delivery.text)}</pre>
+</article>`;
+  response.statusCode = 200;
+  response.setHeader("cache-control", "no-store");
+  response.setHeader("content-type", "text/html; charset=utf-8");
+  response.setHeader("x-content-type-options", "nosniff");
+  response.end(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Local Telegram inbox</title></head>
+<body><main><h1>Local Telegram inbox</h1>
+<p>Verification run: <code>${escapeHtml(verificationRunId)}</code></p>
+${message}
+</main></body></html>`);
+};
+
+const escapeHtml = (value: string): string =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 
 const telegramPayload = (body: string): TelegramPayload => {
   const payload = Option.getOrUndefined(Schema.decodeOption(TelegramRequestFromJson)(body));
