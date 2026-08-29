@@ -878,7 +878,10 @@ document_build_free_denial() {
   timer_instance_id="$(jq --exit-status --raw-output '.timer' <<<"$identities")"
   before_model_count="$(curl --fail --silent --show-error \
     "$provider_origin/_test/research/ledger" | jq 'length')"
-  request="Build a PDF from supplied File ID $file_id. Free denial checkpoint run=$run_id"
+  curl --fail --silent --show-error --request POST --get \
+    --data-urlencode "actionId=$action_id" \
+    "$provider_origin/_test/research/next-document-build-action" >/dev/null
+  request="Build a PDF from supplied File ID $file_id."
   reply_output="$(telegram_reply "$run_id" "$request")"
   if [[ "$reply_output" != telegram_reply=* ]]; then
     printf 'The Free Document Build attempt returned no captured Telegram reply\n' >&2
@@ -1494,8 +1497,8 @@ observe_document_build_free_denial() {
       'allowancePolicy', ap.plan_policy_version,
       'documentBuildCount', (select count(*) from document_builds db where db.user_id = u.id),
       'actionDocumentBuildCount', (select count(*) from document_builds db where db.user_id = u.id and db.action_id = '$action_id'),
-      'workflowStartUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_id = '$workflow_id' and a.allowance_kind = 'workflowStarts'),
-      'generatedDocumentUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_id = '$workflow_id' and a.allowance_kind = 'generatedDocuments'),
+      'workflowStartUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_type = 'documentBuild' and a.allowance_kind = 'workflowStarts'),
+      'generatedDocumentUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_type = 'documentBuild' and a.allowance_kind = 'generatedDocuments'),
       'providerCostUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_type = 'documentProviderOperation' and a.allowance_kind = 'vendorUsdMicros'),
       'documentUsageEvents', (select count(*) from usage_events e where e.user_id = u.id and (e.root_operation_id = '$action_id' or e.root_operation_id = '$workflow_id' or e.source_type in ('documentBuild', 'documentProviderOperation'))),
       'documentNotificationCount', (select count(*) from document_build_notifications n join document_builds db on db.workflow_id = n.workflow_id where db.user_id = u.id)

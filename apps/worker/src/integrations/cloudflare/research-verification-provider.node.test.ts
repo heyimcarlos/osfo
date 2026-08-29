@@ -337,6 +337,7 @@ it.effect("keeps the Free denial and Adventurer Document Build actions distinct"
           baseURL: emulator.origin,
         });
         const fileId = "web:00000000-0000-4000-8000-000000000289";
+        const request = `Build a PDF from supplied File ID ${fileId}.`;
         const tool = {
           function: {
             name: "startDocumentBuild",
@@ -344,20 +345,22 @@ it.effect("keeps the Free denial and Adventurer Document Build actions distinct"
           },
           type: "function" as const,
         };
+        const configured = yield* Effect.promise(() =>
+          fetch(
+            `${emulator.origin}/_test/research/next-document-build-action?actionId=verification-startDocumentBuild-free-verify-289`,
+            { method: "POST" },
+          ),
+        );
+        expect(configured.status).toBe(204);
         const freeResponse = yield* Effect.promise(() =>
           binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
-            messages: [
-              {
-                content: `Build a PDF from supplied File ID ${fileId}. Free denial checkpoint run=verify-289`,
-                role: "user",
-              },
-            ],
+            messages: [{ content: request, role: "user" }],
             tools: [tool],
           }),
         );
         const adventurerResponse = yield* Effect.promise(() =>
           binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
-            messages: [{ content: `Build a PDF from supplied File ID ${fileId}.`, role: "user" }],
+            messages: [{ content: request, role: "user" }],
             tools: [tool],
           }),
         );

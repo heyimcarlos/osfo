@@ -27,6 +27,10 @@ interface StripeCheckoutState {
   state: "complete" | "open";
 }
 
+interface ResearchControl {
+  nextDocumentBuildActionId: string | null;
+}
+
 /** One observed Supermemory request. */
 export interface SupermemoryLedgerEntry {
   readonly method: string;
@@ -172,6 +176,7 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
     const integrationLedger: Array<IntegrationLedgerEntry> = [];
     const integrationSessions = new Map<string, string>();
     const integrationConnections = new Set<string>();
+    const researchControl: ResearchControl = { nextDocumentBuildActionId: null };
     let whatsAppNextResponseStatus: number | null = null;
     let whatsAppTemplateOnly = false;
     const server = createServer((request, response) => {
@@ -188,6 +193,7 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         twilioLedger.length = 0;
         whatsAppLedger.length = 0;
         researchLedger.length = 0;
+        researchControl.nextDocumentBuildActionId = null;
         integrationLedger.length = 0;
         integrationSessions.clear();
         integrationConnections.clear();
@@ -272,6 +278,24 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         respondJson(response, 200, researchLedger);
         return;
       }
+      if (request.method === "POST" && pathname === "/_test/research/next-document-build-action") {
+        const actionId = url.searchParams.get("actionId");
+        if (
+          actionId === null ||
+          !/^verification-startDocumentBuild-free-[a-z0-9][a-z0-9-]{0,47}$/u.test(actionId)
+        ) {
+          respondJson(response, 400, { error: "Invalid Free Document Build action ID" });
+          return;
+        }
+        if (researchControl.nextDocumentBuildActionId !== null) {
+          respondJson(response, 409, { error: "A Document Build action is already configured" });
+          return;
+        }
+        researchControl.nextDocumentBuildActionId = actionId;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
       if (request.method === "GET" && pathname === "/_test/integrations/ledger") {
         respondJson(response, 200, integrationLedger);
         return;
@@ -294,7 +318,7 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         return;
       }
       if (request.method === "POST" && pathname.startsWith("/_local/research/")) {
-        handleResearch(request, response, pathname, researchLedger);
+        handleResearch(request, response, pathname, researchLedger, researchControl);
         return;
       }
       if (request.method === "GET" && pathname === "/_test/whatsapp/ledger") {
@@ -685,6 +709,7 @@ const handleResearch = (
   response: ServerResponse,
   pathname: string,
   ledger: Array<ResearchLedgerEntry>,
+  control: ResearchControl,
 ): void => {
   readTextBody(request)
     .then(Schema.decodeUnknownPromise(ResearchRequestFromJson))
@@ -785,7 +810,8 @@ const handleResearch = (
           lastMessageRole(input) === "user" &&
           /(?:build|document|pdf)/iu.test(lastMessage)
         ) {
-          const actionId = freeDenialActionIdFor(lastMessage) ?? "verification-startDocumentBuild";
+          const actionId = control.nextDocumentBuildActionId ?? "verification-startDocumentBuild";
+          control.nextDocumentBuildActionId = null;
           ledger.push({
             kind: "tool-selection",
             operationId: actionId,
@@ -897,11 +923,6 @@ const handleResearch = (
       respondJson(response, 400, { error: "Invalid Research Report provider request" });
     })
     .catch((cause: unknown) => respondJson(response, 400, { error: String(cause) }));
-};
-
-const freeDenialActionIdFor = (message: string) => {
-  const runId = /Free denial checkpoint run=([a-z0-9][a-z0-9-]{0,47})/u.exec(message)?.[1];
-  return runId === undefined ? null : `verification-startDocumentBuild-free-${runId}`;
 };
 
 const toolResponse = (

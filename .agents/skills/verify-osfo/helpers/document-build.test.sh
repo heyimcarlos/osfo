@@ -14,6 +14,8 @@ for required in \
   'observe_document_build_free_denial()' \
   'document-build-free-denial-attempted' \
   '.documentBuildCount == 0' \
+  "a.source_type = 'documentBuild' and a.allowance_kind = 'workflowStarts'" \
+  "a.source_type = 'documentBuild' and a.allowance_kind = 'generatedDocuments'" \
   '.workflowStartUsage == 0' \
   '.generatedDocumentUsage == 0' \
   '.providerCostUsage == 0' \
@@ -34,6 +36,7 @@ done
 
 for required in \
   'keeps the Free denial and Adventurer Document Build actions distinct' \
+  'const request = `Build a PDF from supplied File ID ${fileId}.`' \
   'verification-startDocumentBuild-free-verify-289' \
   'verification-startDocumentBuild"'; do
   if ! grep -F -q "$required" "$emulator_test"; then
@@ -45,7 +48,7 @@ done
 for required in \
   'startDocumentBuild' \
   'inspectDocumentBuild' \
-  'freeDenialActionIdFor' \
+  '/_test/research/next-document-build-action' \
   'kind: "tool-selection"'; do
   if ! grep -F -q "$required" "$emulator"; then
     printf 'Provider emulator is missing explicit Document Build evidence: %s\n' "$required" >&2
