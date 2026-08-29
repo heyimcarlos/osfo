@@ -10,6 +10,8 @@ import { DocumentBuildHostReconciliation } from "./document-build-host-reconcili
 import { ScheduledEmailReconciliation } from "./scheduled-email-reconciliation";
 import { makeWhatsAppAdapter } from "./integrations/whatsapp";
 import { WhatsAppWakeUpComposition } from "./composition/whatsapp-wakeups";
+import { runQualificationTrigger } from "./integrations/cloudflare/qualification-trigger";
+import { qualificationExecutionListingBucket } from "./integrations/cloudflare/qualification-execution-artifacts";
 import { scheduledRunKind, settleScheduledBranches } from "./scheduled-lifecycle";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Cloudflare RPC tags and adapter boundaries require these forms. */
@@ -63,6 +65,13 @@ const worker = {
         }
         throw error;
       }
+    }
+    if (path === "/internal/qualification-executions" && request.method === "POST") {
+      return runQualificationTrigger(request, {
+        ARTIFACTS: qualificationExecutionListingBucket(env.ARTIFACTS),
+        QUALIFICATION_OWNER: env.QUALIFICATION_OWNER,
+        QUALIFICATION_TRIGGER_TOKEN: env.QUALIFICATION_TRIGGER_TOKEN,
+      });
     }
     let app: Awaited<ReturnType<typeof App.makeCloudflareApp>>;
     try {

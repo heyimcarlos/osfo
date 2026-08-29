@@ -11,6 +11,7 @@ import { ResearchReportTimerWorkflow } from "./ResearchReportTimerWorkflow";
 import { ScheduledEmailWorkflow } from "./ScheduledEmailWorkflow";
 import { Files } from "./Files";
 import { Artifacts } from "./Artifacts";
+import { QualificationOwner } from "./QualificationOwner";
 
 /** Cloudflare Worker and execution-unit bindings for one Osfo runtime stage. */
 const worker = Worker(
@@ -58,6 +59,10 @@ const worker = Worker(
           className: "OsfoDirectory",
         }),
         OSFO_STAGE: stage === "development" || stage === "production" ? stage : "preview",
+        QUALIFICATION_OWNER: QualificationOwner,
+        QUALIFICATION_TRIGGER_TOKEN: Config.redacted("QUALIFICATION_TRIGGER_TOKEN").pipe(
+          Config.withDefault(Redacted.make("")),
+        ),
         SANDBOX_TRANSPORT: "rpc",
         STRIPE_ADVENTURER_PRICE_ID: Config.string("STRIPE_ADVENTURER_PRICE_ID"),
         STRIPE_ADVENTURER_PRODUCT_ID: Config.string("STRIPE_ADVENTURER_PRODUCT_ID"),

@@ -1,4 +1,5 @@
 import { Data, Effect, Schema } from "effect";
+import { bytesToHex } from "@noble/hashes/utils.js";
 
 import type { CostSummaryEvidence } from "../../qualification/cost-evidence";
 import type { QualificationExecutionPlan } from "../../qualification/execution";
@@ -13,8 +14,8 @@ import {
 } from "../../qualification/production-qualification";
 import {
   makeQualificationExecutionArtifactStore,
-  type QualificationExecutionBucket,
   type QualificationExecutionArtifactUnavailable,
+  type QualificationExecutionListingBucket,
 } from "./qualification-execution-artifacts";
 
 const authorityStreamComponents = [
@@ -156,6 +157,18 @@ const OwnerReport = Schema.Struct({
   taxesUsdMicros: Schema.String,
   verdict: Schema.Literals(["FAIL", "MISSING", "PASS"]),
 });
+const AuthorityShardMetadata = Schema.Struct({
+  "osfo-artifact-checksum": Schema.String,
+  "osfo-body-sha256": Schema.String,
+  "osfo-component": Schema.Literals(authorityStreamComponents),
+  "osfo-execution-id": Schema.String,
+  "osfo-index": Schema.String,
+  "osfo-kind": Schema.Literal("qualification-authority-stream-v1"),
+  "osfo-plan-checksum": Schema.String,
+  "osfo-previous-checksum": Schema.String,
+  "osfo-record-count": Schema.String,
+  "osfo-source-version": Schema.String,
+});
 const EncodedOwnerBundleDescriptor = Schema.fromJsonString(OwnerBundleDescriptor);
 const EncodedOwnerResponse = Schema.fromJsonString(OwnerResponse);
 const EncodedOwnerReport = Schema.fromJsonString(OwnerReport);
@@ -241,6 +254,105 @@ const verifyAuthorityStreamDescriptors = (
   });
 };
 
+const listedSha256 = (value: ArrayBuffer | ArrayBufferView): string =>
+  value instanceof ArrayBuffer
+    ? bytesToHex(new Uint8Array(value))
+    : bytesToHex(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+
+const verifyAuthorityStreamObjects = (
+  bucket: QualificationExecutionListingBucket,
+  bundle: OwnerBundleDescriptor,
+  manifest: ProductionQualificationManifest,
+  plan: QualificationExecutionPlan,
+) =>
+  Effect.gen(function* () {
+    if (!verifyAuthorityStreamDescriptors(bundle, manifest, plan)) {
+      return yield* ownerConflict("Qualification owner stream descriptors conflict with the plan");
+    }
+    for (const stream of bundle.streams) {
+      let cursor: string | undefined;
+      let expectedIndex = 0;
+      let previousArtifactChecksum = "NONE";
+      let recordCount = 0;
+      do {
+        const listOptions =
+          cursor === undefined
+            ? {
+                include: ["customMetadata"] as const,
+                limit: 100,
+                prefix: `${stream.artifactPrefix}/`,
+              }
+            : {
+                cursor,
+                include: ["customMetadata"] as const,
+                limit: 100,
+                prefix: `${stream.artifactPrefix}/`,
+              };
+        const page = yield* Effect.tryPromise({
+          catch: (cause) =>
+            ownerUnavailable("Qualification authority stream listing failed", cause),
+          try: () => bucket.list(listOptions),
+        });
+        if (page.truncated && page.objects.length === 0) {
+          return yield* ownerConflict("Qualification authority listing did not advance");
+        }
+        for (const object of page.objects) {
+          const metadata = yield* Schema.decodeUnknownEffect(AuthorityShardMetadata)(
+            object.customMetadata,
+          ).pipe(
+            Effect.mapError((cause) =>
+              ownerConflict("Qualification authority shard metadata is invalid", cause),
+            ),
+          );
+          const chunkRecordCount = Number(metadata["osfo-record-count"]);
+          const bodySha256 = object.checksums.sha256;
+          const expectedKey = `${stream.artifactPrefix}/${expectedIndex.toString().padStart(8, "0")}.json`;
+          const content = {
+            bodySha256: metadata["osfo-body-sha256"],
+            component: stream.component,
+            executionId: plan.executionId,
+            index: expectedIndex,
+            planChecksum: plan.planChecksum,
+            previousArtifactChecksum,
+            recordCount: chunkRecordCount,
+            sourceVersion: manifest.sourceVersion,
+          };
+          if (
+            object.key !== expectedKey ||
+            metadata["osfo-component"] !== stream.component ||
+            metadata["osfo-execution-id"] !== plan.executionId ||
+            metadata["osfo-index"] !== String(expectedIndex) ||
+            metadata["osfo-plan-checksum"] !== plan.planChecksum ||
+            metadata["osfo-previous-checksum"] !== previousArtifactChecksum ||
+            metadata["osfo-source-version"] !== manifest.sourceVersion ||
+            !Number.isInteger(chunkRecordCount) ||
+            chunkRecordCount < 1 ||
+            chunkRecordCount > 256 ||
+            bodySha256 === undefined ||
+            listedSha256(bodySha256) !== metadata["osfo-body-sha256"] ||
+            metadata["osfo-artifact-checksum"] !== qualificationChecksum(content)
+          ) {
+            return yield* ownerConflict(
+              `${stream.component} authority shard metadata conflicts at ${expectedIndex}`,
+            );
+          }
+          previousArtifactChecksum = metadata["osfo-artifact-checksum"];
+          recordCount += chunkRecordCount;
+          expectedIndex += 1;
+        }
+        cursor = page.truncated ? page.cursor : undefined;
+      } while (cursor !== undefined);
+      if (
+        expectedIndex !== stream.chunkCount ||
+        recordCount !== stream.recordCount ||
+        previousArtifactChecksum !== stream.terminalChecksum
+      ) {
+        return yield* ownerConflict(`${stream.component} retained authority stream is incomplete`);
+      }
+    }
+    return undefined;
+  });
+
 const bigintText = /^-?[0-9]+$/;
 const decodeBigInt = (value: string): bigint | null =>
   bigintText.test(value) ? BigInt(value) : null;
@@ -286,7 +398,7 @@ export interface QualificationOwnerBinding {
 
 /** Minimal deployed bindings consumed by the production qualification facade. */
 export interface ProductionQualificationBindings {
-  readonly ARTIFACTS: QualificationExecutionBucket;
+  readonly ARTIFACTS: QualificationExecutionListingBucket;
   readonly QUALIFICATION_OWNER?: QualificationOwnerBinding;
 }
 
@@ -357,6 +469,9 @@ export const runProductionQualification = (
           method: "POST",
         }),
     });
+    if (response.status === 202) {
+      return yield* ownerUnavailable("Qualification owner execution remains in progress");
+    }
     if (!response.ok)
       return yield* ownerUnavailable(`Qualification owner returned ${response.status}`);
     const ownerResponse = yield* Effect.tryPromise({
@@ -383,9 +498,7 @@ export const runProductionQualification = (
     ) {
       return yield* ownerConflict("Qualification owner bundle conflicts with the frozen plan");
     }
-    if (!verifyAuthorityStreamDescriptors(bundle, manifest, plan)) {
-      return yield* ownerConflict("Qualification owner stream descriptors conflict with the plan");
-    }
+    yield* verifyAuthorityStreamObjects(env.ARTIFACTS, bundle, manifest, plan);
     const encodedReport = yield* readRequired(composition.artifacts, bundle.reportArtifactId);
     if (qualificationChecksum({ encodedReport }) !== bundle.reportArtifactChecksum) {
       return yield* ownerConflict("Qualification owner report checksum conflicts");

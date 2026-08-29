@@ -28,6 +28,53 @@ export interface QualificationExecutionBucket {
   ) => Promise<{ readonly etag: string } | null>;
 }
 
+/** R2 metadata surfaced by paginated qualification authority-stream listings. */
+export interface QualificationExecutionListedObject {
+  readonly checksums: { readonly sha256?: ArrayBuffer | ArrayBufferView | undefined };
+  readonly customMetadata?: Readonly<Record<string, string>> | undefined;
+  readonly key: string;
+}
+
+/** R2 listing boundary used to prove a retained authority stream without loading its bodies. */
+export interface QualificationExecutionListingBucket extends QualificationExecutionBucket {
+  readonly list: (options: {
+    readonly cursor?: string | undefined;
+    readonly include: readonly ["customMetadata"];
+    readonly limit: number;
+    readonly prefix: string;
+  }) => Promise<
+    | {
+        readonly objects: ReadonlyArray<QualificationExecutionListedObject>;
+        readonly truncated: false;
+      }
+    | {
+        readonly cursor: string;
+        readonly objects: ReadonlyArray<QualificationExecutionListedObject>;
+        readonly truncated: true;
+      }
+  >;
+}
+
+/** Adapt the generated R2 binding to the exact metadata-only qualification surface. */
+export const qualificationExecutionListingBucket = (
+  bucket: Pick<R2Bucket, "get" | "list" | "put">,
+): QualificationExecutionListingBucket => ({
+  get: (key) => bucket.get(key),
+  list: (options) => {
+    const r2Options: R2ListOptions =
+      options.cursor === undefined
+        ? { include: ["customMetadata"], limit: options.limit, prefix: options.prefix }
+        : {
+            cursor: options.cursor,
+            include: ["customMetadata"],
+            limit: options.limit,
+            prefix: options.prefix,
+          };
+    return bucket.list(r2Options);
+  },
+  put: (key, value, options) => bucket.put(key, value, options),
+});
+
 /** Immutable R2 store for content-addressed qualification execution artifacts. */
 export const makeQualificationExecutionArtifactStore = (
   bucket: QualificationExecutionBucket,
