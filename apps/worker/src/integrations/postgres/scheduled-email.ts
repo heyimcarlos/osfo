@@ -431,19 +431,23 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
           row.state !== "failure" ||
           row.send_outcome !== "ambiguous" ||
           row.send_accounting_basis !== null ||
-          row.send_started_at === null ||
-          claimedAt.getTime() - row.send_started_at.getTime() >=
-            ScheduledEmail.providerEvidenceHorizonMilliseconds ||
-          (row.send_reconciliation_lease_expires_at !== null &&
-            row.send_reconciliation_lease_expires_at.getTime() > claimedAt.getTime())
+          row.send_started_at === null
         ) {
           return { _tag: "Existing", row };
         }
+        const lease = ScheduledEmail.nextTerminalReconciliationLease(
+          row.send_started_at,
+          row.send_reconciliation_claimed_at,
+          row.send_reconciliation_lease_expires_at,
+          claimedAt,
+          leaseExpiresAt,
+        );
+        if (lease === null) return { _tag: "Existing", row };
         const [updated] = await transaction
           .update(scheduledEmails)
           .set({
-            send_reconciliation_claimed_at: claimedAt,
-            send_reconciliation_lease_expires_at: leaseExpiresAt,
+            send_reconciliation_claimed_at: lease.claimedAt,
+            send_reconciliation_lease_expires_at: lease.leaseExpiresAt,
             updated_at: sql`clock_timestamp()`,
           })
           .where(eq(scheduledEmails.workflow_id, workflowId))
@@ -469,10 +473,13 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
         ) {
           return found(row);
         }
-        const withinEvidenceHorizon =
-          outcomeAt.getTime() - row.send_started_at.getTime() <=
-          ScheduledEmail.providerEvidenceHorizonMilliseconds;
-        if (withinEvidenceHorizon && reconciliation._tag === "Applied") {
+        const claimCanComplete = ScheduledEmail.terminalReconciliationCanComplete(
+          row.send_started_at,
+          claimedAt,
+          row.send_reconciliation_lease_expires_at,
+          outcomeAt,
+        );
+        if (claimCanComplete && reconciliation._tag === "Applied") {
           const [updated] = await transaction
             .update(scheduledEmails)
             .set({
@@ -492,7 +499,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
             .returning();
           return updated === undefined ? changed() : found(updated);
         }
-        if (withinEvidenceHorizon && reconciliation._tag === "NotApplied") {
+        if (claimCanComplete && reconciliation._tag === "NotApplied") {
           const [updated] = await transaction
             .update(scheduledEmails)
             .set({
@@ -536,10 +543,12 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
           row.send_outcome !== "ambiguous" ||
           row.send_accounting_basis !== null ||
           row.send_started_at === null ||
-          (row.send_reconciliation_lease_expires_at !== null &&
-            row.send_reconciliation_lease_expires_at.getTime() > finalizedAt.getTime()) ||
-          finalizedAt.getTime() - row.send_started_at.getTime() <
-            ScheduledEmail.providerEvidenceHorizonMilliseconds
+          ScheduledEmail.terminalReconciliationBlocksFinalization(
+            row.send_started_at,
+            row.send_reconciliation_claimed_at,
+            row.send_reconciliation_lease_expires_at,
+            finalizedAt,
+          )
         ) {
           return found(row);
         }
@@ -854,7 +863,15 @@ export const reconciliationBatch = (database: Database, now: Date, limit: number
               eq(scheduledEmails.state, "failure"),
               eq(scheduledEmails.send_outcome, "ambiguous"),
               isNotNull(scheduledEmails.send_started_at),
-              sql`${scheduledEmails.send_started_at} + interval '5 minutes' >= ${now.toISOString()}::timestamptz`,
+              or(
+                sql`${scheduledEmails.send_started_at} + interval '5 minutes' >= ${now.toISOString()}::timestamptz`,
+                and(
+                  isNotNull(scheduledEmails.send_reconciliation_claimed_at),
+                  isNotNull(scheduledEmails.send_reconciliation_lease_expires_at),
+                  sql`${scheduledEmails.send_reconciliation_claimed_at} <= ${scheduledEmails.send_started_at} + interval '5 minutes'`,
+                  sql`${scheduledEmails.send_reconciliation_lease_expires_at} + interval '1 minute' > ${now.toISOString()}::timestamptz`,
+                ),
+              ),
               accessIsAvailable,
             ),
             and(

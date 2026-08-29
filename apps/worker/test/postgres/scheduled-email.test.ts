@@ -386,7 +386,7 @@ it.effect("expires terminal ambiguity inspection after the provider evidence hor
           20,
         )).some(({ workflowId }) => workflowId === email.workflowId),
       ).toBe(true);
-      const finalizedAt = new Date(sendAt.getTime() + 300_000);
+      const finalizedAt = new Date(sendAt.getTime() + 300_001);
       yield* persistence.finalizeAmbiguousAccounting(
         email.workflowId,
         email.inputDigest,
@@ -547,7 +547,7 @@ it.effect("lets an in-horizon reconciliation claim beat exact-horizon finalizati
   ),
 );
 
-it.effect("expires a crashed reconciliation claim before conservative finalization", () =>
+it.effect("recovers a crashed in-horizon reconciliation before conservative finalization", () =>
   withDatabase((database) =>
     Effect.gen(function* () {
       const seeded = yield* seedUser(database, "expired-reconciliation-claim");
@@ -581,11 +581,84 @@ it.effect("expires a crashed reconciliation claim before conservative finalizati
           new Date(sendAt.getTime() + 300_000),
         ),
       ).toMatchObject({ sendAccountingBasis: null });
+      const recoveredAt = new Date(leaseExpiresAt.getTime() + 1);
+      const recovered = yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        recoveredAt,
+        new Date(recoveredAt.getTime() + 60_000),
+      );
+      expect(recovered).toMatchObject({
+        _tag: "Acquired",
+        claimedAt: recoveredAt,
+        email: {
+          sendReconciliationLeaseExpiresAt: new Date(leaseExpiresAt.getTime() + 60_000),
+        },
+      });
+      expect(
+        yield* persistence.completeTerminalReconciliation(
+          email.workflowId,
+          email.inputDigest,
+          recoveredAt,
+          { _tag: "NotApplied", providerLogId: "recovered-not-applied" },
+          new Date(recoveredAt.getTime() + 1_000),
+        ),
+      ).toMatchObject({
+        providerLogId: "recovered-not-applied",
+        sendAccountingBasis: null,
+        sendOutcome: "notApplied",
+      });
+    }),
+  ),
+);
+
+it.effect("finalizes ambiguity after the bounded reconciliation recovery lease expires", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "expired-reconciliation-recovery");
+      const email = record(seeded, "expired-reconciliation-recovery");
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        new Date(sendAt.getTime() + 120_000),
+      );
+      const claimedAt = new Date(sendAt.getTime() + 241_000);
+      const leaseExpiresAt = new Date(sendAt.getTime() + 301_000);
+      yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        claimedAt,
+        leaseExpiresAt,
+      );
+      const recoveredAt = new Date(leaseExpiresAt.getTime() + 1);
+      const recoveryDeadline = new Date(leaseExpiresAt.getTime() + 60_000);
+      yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        recoveredAt,
+        new Date(recoveredAt.getTime() + 60_000),
+      );
+
       expect(
         yield* persistence.finalizeAmbiguousAccounting(
           email.workflowId,
           email.inputDigest,
-          leaseExpiresAt,
+          recoveryDeadline,
+        ),
+      ).toMatchObject({ sendAccountingBasis: null });
+      expect(
+        yield* persistence.finalizeAmbiguousAccounting(
+          email.workflowId,
+          email.inputDigest,
+          new Date(recoveryDeadline.getTime() + 1),
         ),
       ).toMatchObject({
         sendAccountingBasis: "conservative",
@@ -606,6 +679,14 @@ it.effect("rejects NULL-hole pending and success lifecycle rows", () =>
       yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
       yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
 
+      expect(
+        yield* Effect.tryPromise(() =>
+          database
+            .update(scheduledEmails)
+            .set({ send_accounted_at: sendAt, state: "waiting" })
+            .where(eq(scheduledEmails.workflow_id, email.workflowId)),
+        ).pipe(Effect.result),
+      ).toMatchObject({ failure: expect.anything() });
       expect(
         yield* Effect.tryPromise(() =>
           database

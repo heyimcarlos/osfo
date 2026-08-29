@@ -7,6 +7,7 @@ WHERE "scheduled_emails"."send_outcome" = 'notApplied'
   AND "scheduled_emails"."send_accounting_basis" = 'conservative'
   AND "allowance_usage"."allowance_period_id" = "scheduled_emails"."allowance_period_id"
   AND "allowance_usage"."allowance_kind" = 'gmailSends'
+  AND "allowance_usage"."basis" = 'conservative'
   AND "allowance_usage"."source_type" = 'integrationAction'
   AND "allowance_usage"."source_id" = "scheduled_emails"."action_id";--> statement-breakpoint
 UPDATE "scheduled_emails"

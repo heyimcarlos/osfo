@@ -308,6 +308,11 @@ describe("ScheduledEmail", () => {
       expect(fixture.followUps).toBe(1);
 
       yield* TestClock.setTime(scheduledAt.getTime() + 300_000);
+      const atHorizon = yield* emails.recoverClaimed(payload);
+      expect(atHorizon.sendAccountedAt).toBeNull();
+      expect(fixture.gmailSendBases).toEqual([]);
+
+      yield* TestClock.setTime(scheduledAt.getTime() + 300_001);
       const finalized = yield* emails.recoverClaimed(payload);
       expect(finalized.sendAccountedAt).not.toBeNull();
       expect(fixture.gmailSendBases).toEqual(["conservative"]);
@@ -388,6 +393,81 @@ describe("ScheduledEmail", () => {
         expect(fixture.gmailSendBases).toEqual([]);
         expect(fixture.followUps).toBe(1);
         expect(fixture.sendAttempts).toBe(1);
+      }).pipe(Effect.provide(layer(fixture.port)));
+    },
+  );
+
+  it.effect("uses the exact evidence-horizon instant for authoritative reconciliation", () => {
+    const fixture = makeFixture({ sendOutcome: "ambiguous" });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      yield* TestClock.setTime(scheduledAt.getTime());
+      yield* emails.sendDue(payload);
+      fixture.reconciliation = { _tag: "Ambiguous" };
+      yield* TestClock.setTime(scheduledAt.getTime() + 120_000);
+      yield* emails.recoverClaimed(payload);
+      fixture.reconciliation = {
+        _tag: "NotApplied",
+        providerLogId: "horizon-not-applied",
+      };
+
+      yield* TestClock.setTime(scheduledAt.getTime() + 300_000);
+      expect(yield* emails.recoverClaimed(payload)).toMatchObject({
+        providerLogId: "horizon-not-applied",
+        sendAccountingBasis: null,
+        sendAccountedAt: expect.any(Date),
+        sendOutcome: "notApplied",
+      });
+      expect(fixture.reconciliationAttempts).toBe(2);
+      expect(fixture.gmailSendFacts).toBe(0);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect(
+    "recovers an in-horizon NotApplied result after its completion persistence fails",
+    () => {
+      const fixture = makeFixture({ sendOutcome: "ambiguous" });
+      return Effect.gen(function* () {
+        yield* TestClock.setTime(now.getTime());
+        const emails = yield* ScheduledEmail.Service;
+        const started = yield* emails.start(startInput());
+        const payload = payloadFor(started.email);
+        yield* emails.beginWaiting(payload);
+        yield* TestClock.setTime(scheduledAt.getTime());
+        yield* emails.sendDue(payload);
+        fixture.reconciliation = { _tag: "Ambiguous" };
+        yield* TestClock.setTime(scheduledAt.getTime() + 120_000);
+        yield* emails.recoverClaimed(payload);
+        fixture.reconciliation = {
+          _tag: "NotApplied",
+          providerLogId: "persisted-after-recovery",
+        };
+        fixture.failTerminalReconciliationCompletion = true;
+        yield* TestClock.setTime(scheduledAt.getTime() + 241_000);
+        expect(yield* emails.recoverClaimed(payload).pipe(Effect.result)).toMatchObject({
+          failure: { operation: "terminal-reconciliation-completion" },
+        });
+        expect(fixture.stored).toMatchObject({
+          sendAccountingBasis: null,
+          sendOutcome: "ambiguous",
+          sendReconciliationClaimedAt: new Date(scheduledAt.getTime() + 241_000),
+          sendReconciliationLeaseExpiresAt: new Date(scheduledAt.getTime() + 301_000),
+        });
+
+        fixture.failTerminalReconciliationCompletion = false;
+        yield* TestClock.setTime(scheduledAt.getTime() + 301_001);
+        expect(yield* emails.recoverClaimed(payload)).toMatchObject({
+          providerLogId: "persisted-after-recovery",
+          sendAccountingBasis: null,
+          sendAccountedAt: expect.any(Date),
+          sendOutcome: "notApplied",
+        });
+        expect(fixture.reconciliationAttempts).toBe(3);
+        expect(fixture.gmailSendFacts).toBe(0);
       }).pipe(Effect.provide(layer(fixture.port)));
     },
   );
@@ -970,6 +1050,7 @@ const makeFixture = (
   let failWorkflowCreate = false;
   let failSendAccounting = false;
   let failSendAccountingMarker = false;
+  let failTerminalReconciliationCompletion = false;
   let failFollowUp = false;
   let configuredSendOutcome = options.sendOutcome;
   const calls = new Array<string>();
@@ -1215,20 +1296,24 @@ const makeFixture = (
               email.state !== "failure" ||
               email.sendOutcome !== "ambiguous" ||
               email.sendAccountingBasis !== null ||
-              email.sendStartedAt === null ||
-              claimedAt.getTime() - email.sendStartedAt.getTime() >=
-                ScheduledEmail.providerEvidenceHorizonMilliseconds ||
-              (email.sendReconciliationLeaseExpiresAt !== null &&
-                email.sendReconciliationLeaseExpiresAt.getTime() > claimedAt.getTime())
+              email.sendStartedAt === null
             ) {
               return { _tag: "Existing", email };
             }
+            const lease = ScheduledEmail.nextTerminalReconciliationLease(
+              email.sendStartedAt,
+              email.sendReconciliationClaimedAt,
+              email.sendReconciliationLeaseExpiresAt,
+              claimedAt,
+              leaseExpiresAt,
+            );
+            if (lease === null) return { _tag: "Existing", email };
             stored = {
               ...email,
-              sendReconciliationClaimedAt: claimedAt,
-              sendReconciliationLeaseExpiresAt: leaseExpiresAt,
+              sendReconciliationClaimedAt: lease.claimedAt,
+              sendReconciliationLeaseExpiresAt: lease.leaseExpiresAt,
             };
-            return { _tag: "Acquired", claimedAt, email: stored };
+            return { _tag: "Acquired", claimedAt: lease.claimedAt, email: stored };
           }),
         ),
       completeTerminalReconciliation: (
@@ -1238,57 +1323,63 @@ const makeFixture = (
         completedReconciliation,
         outcomeAt,
       ) =>
-        requireStored(workflowId, digest).pipe(
-          Effect.map((email) => {
-            if (
-              email.state !== "failure" ||
-              email.sendOutcome !== "ambiguous" ||
-              email.sendAccountingBasis !== null ||
-              email.sendStartedAt === null ||
-              email.sendReconciliationClaimedAt?.getTime() !== claimedAt.getTime()
-            ) {
-              return email;
-            }
-            const released = {
-              ...email,
-              sendReconciliationClaimedAt: null,
-              sendReconciliationLeaseExpiresAt: null,
-            };
-            if (
-              outcomeAt.getTime() - email.sendStartedAt.getTime() >
-              ScheduledEmail.providerEvidenceHorizonMilliseconds
-            ) {
-              stored = released;
-              return stored;
-            }
-            if (Predicate.isTagged(completedReconciliation, "NotApplied")) {
-              stored = {
-                ...released,
-                providerLogId: completedReconciliation.providerLogId,
-                safeFailureCode: "send-not-applied",
-                sendOutcome: "notApplied",
-                sendOutcomeAt: outcomeAt,
-              };
-              return stored;
-            }
-            if (Predicate.isTagged(completedReconciliation, "Applied")) {
-              stored = {
-                ...released,
-                providerLogId: completedReconciliation.result.evidence.providerLogId,
-                providerResourceId: completedReconciliation.result.evidence.providerResourceId,
-                safeFailureCode: null,
-                sendAccountingBasis: "observed",
-                sendOutcome: "applied",
-                sendOutcomeAt: outcomeAt,
-                state: "success",
-                terminalAt: outcomeAt,
-              };
-              return stored;
-            }
-            stored = released;
-            return stored;
-          }),
-        ),
+        failTerminalReconciliationCompletion
+          ? Effect.fail(unavailable("terminal-reconciliation-completion"))
+          : requireStored(workflowId, digest).pipe(
+              Effect.map((email) => {
+                if (
+                  email.state !== "failure" ||
+                  email.sendOutcome !== "ambiguous" ||
+                  email.sendAccountingBasis !== null ||
+                  email.sendStartedAt === null ||
+                  email.sendReconciliationClaimedAt?.getTime() !== claimedAt.getTime()
+                ) {
+                  return email;
+                }
+                const released = {
+                  ...email,
+                  sendReconciliationClaimedAt: null,
+                  sendReconciliationLeaseExpiresAt: null,
+                };
+                if (
+                  !ScheduledEmail.terminalReconciliationCanComplete(
+                    email.sendStartedAt,
+                    claimedAt,
+                    email.sendReconciliationLeaseExpiresAt,
+                    outcomeAt,
+                  )
+                ) {
+                  stored = released;
+                  return stored;
+                }
+                if (Predicate.isTagged(completedReconciliation, "NotApplied")) {
+                  stored = {
+                    ...released,
+                    providerLogId: completedReconciliation.providerLogId,
+                    safeFailureCode: "send-not-applied",
+                    sendOutcome: "notApplied",
+                    sendOutcomeAt: outcomeAt,
+                  };
+                  return stored;
+                }
+                if (Predicate.isTagged(completedReconciliation, "Applied")) {
+                  stored = {
+                    ...released,
+                    providerLogId: completedReconciliation.result.evidence.providerLogId,
+                    providerResourceId: completedReconciliation.result.evidence.providerResourceId,
+                    safeFailureCode: null,
+                    sendAccountingBasis: "observed",
+                    sendOutcome: "applied",
+                    sendOutcomeAt: outcomeAt,
+                    state: "success",
+                    terminalAt: outcomeAt,
+                  };
+                  return stored;
+                }
+                stored = released;
+                return stored;
+              }),
+            ),
       finalizeAmbiguousAccounting: (workflowId, digest, finalizedAt) =>
         requireStored(workflowId, digest).pipe(
           Effect.map((email) => {
@@ -1296,10 +1387,12 @@ const makeFixture = (
               email.state !== "failure" ||
               email.sendOutcome !== "ambiguous" ||
               email.sendStartedAt === null ||
-              (email.sendReconciliationLeaseExpiresAt !== null &&
-                email.sendReconciliationLeaseExpiresAt.getTime() > finalizedAt.getTime()) ||
-              finalizedAt.getTime() - email.sendStartedAt.getTime() <
-                ScheduledEmail.providerEvidenceHorizonMilliseconds
+              ScheduledEmail.terminalReconciliationBlocksFinalization(
+                email.sendStartedAt,
+                email.sendReconciliationClaimedAt,
+                email.sendReconciliationLeaseExpiresAt,
+                finalizedAt,
+              )
             ) {
               return email;
             }
@@ -1409,6 +1502,9 @@ const makeFixture = (
     },
     set failSendAccountingMarker(value: boolean) {
       failSendAccountingMarker = value;
+    },
+    set failTerminalReconciliationCompletion(value: boolean) {
+      failTerminalReconciliationCompletion = value;
     },
     set failWorkflowAccounting(value: boolean) {
       failWorkflowAccounting = value;

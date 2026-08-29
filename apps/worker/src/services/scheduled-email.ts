@@ -108,6 +108,83 @@ export type State = typeof State.Type;
 export const terminalStates = new Set<State>(["success", "failure", "canceled"]);
 export const providerEvidenceHorizonMilliseconds = 300_000;
 export const providerReconciliationLeaseMilliseconds = 60_000;
+export const providerReconciliationRecoveryMilliseconds = 60_000;
+
+export const nextTerminalReconciliationLease = (
+  sendStartedAt: Date,
+  existingClaimedAt: Date | null,
+  existingLeaseExpiresAt: Date | null,
+  claimedAt: Date,
+  requestedLeaseExpiresAt: Date,
+) => {
+  const claimedAtMilliseconds = claimedAt.getTime();
+  const evidenceDeadline = sendStartedAt.getTime() + providerEvidenceHorizonMilliseconds;
+  if (
+    existingLeaseExpiresAt !== null &&
+    existingLeaseExpiresAt.getTime() >= claimedAtMilliseconds
+  ) {
+    return null;
+  }
+  if (claimedAtMilliseconds <= evidenceDeadline) {
+    return { claimedAt, leaseExpiresAt: requestedLeaseExpiresAt };
+  }
+  if (
+    existingClaimedAt === null ||
+    existingClaimedAt.getTime() > evidenceDeadline ||
+    existingLeaseExpiresAt === null
+  ) {
+    return null;
+  }
+  const recoveryDeadline =
+    existingLeaseExpiresAt.getTime() + providerReconciliationRecoveryMilliseconds;
+  return claimedAtMilliseconds < recoveryDeadline
+    ? { claimedAt, leaseExpiresAt: new Date(recoveryDeadline) }
+    : null;
+};
+
+export const terminalReconciliationCanComplete = (
+  sendStartedAt: Date,
+  claimedAt: Date,
+  leaseExpiresAt: Date | null,
+  outcomeAt: Date,
+) => {
+  if (leaseExpiresAt === null) return false;
+  const evidenceDeadline = sendStartedAt.getTime() + providerEvidenceHorizonMilliseconds;
+  const recoveryAllowance =
+    claimedAt.getTime() <= evidenceDeadline ? providerReconciliationRecoveryMilliseconds : 0;
+  return outcomeAt.getTime() <= leaseExpiresAt.getTime() + recoveryAllowance;
+};
+
+export const terminalReconciliationBlocksFinalization = (
+  sendStartedAt: Date,
+  claimedAt: Date | null,
+  leaseExpiresAt: Date | null,
+  finalizedAt: Date,
+) => {
+  const finalizedAtMilliseconds = finalizedAt.getTime();
+  const evidenceDeadline = sendStartedAt.getTime() + providerEvidenceHorizonMilliseconds;
+  if (finalizedAtMilliseconds <= evidenceDeadline) return true;
+  if (leaseExpiresAt !== null && leaseExpiresAt.getTime() >= finalizedAtMilliseconds) return true;
+  return (
+    claimedAt !== null &&
+    claimedAt.getTime() <= evidenceDeadline &&
+    leaseExpiresAt !== null &&
+    finalizedAtMilliseconds <= leaseExpiresAt.getTime() + providerReconciliationRecoveryMilliseconds
+  );
+};
+
+export const terminalReconciliationCanRun = (email: Record, now: Date) => {
+  if (email.sendStartedAt === null) return false;
+  const evidenceDeadline = email.sendStartedAt.getTime() + providerEvidenceHorizonMilliseconds;
+  if (now.getTime() <= evidenceDeadline) return true;
+  return (
+    email.sendReconciliationClaimedAt !== null &&
+    email.sendReconciliationClaimedAt.getTime() <= evidenceDeadline &&
+    email.sendReconciliationLeaseExpiresAt !== null &&
+    now.getTime() <
+      email.sendReconciliationLeaseExpiresAt.getTime() + providerReconciliationRecoveryMilliseconds
+  );
+};
 
 export interface Record {
   readonly workflowId: WorkflowId;
@@ -410,7 +487,12 @@ export const make = Effect.gen(function* () {
         email.sendOutcome !== "ambiguous" ||
         email.sendAccountingBasis !== null ||
         email.sendStartedAt === null ||
-        finalizedAt.getTime() - email.sendStartedAt.getTime() < providerEvidenceHorizonMilliseconds
+        terminalReconciliationBlocksFinalization(
+          email.sendStartedAt,
+          email.sendReconciliationClaimedAt,
+          email.sendReconciliationLeaseExpiresAt,
+          finalizedAt,
+        )
       ) {
         return email;
       }
@@ -809,8 +891,7 @@ export const make = Effect.gen(function* () {
       email.state === "failure" &&
       email.sendOutcome === "ambiguous" &&
       email.sendAccountingBasis === null &&
-      email.sendStartedAt !== null &&
-      now.getTime() - email.sendStartedAt.getTime() < providerEvidenceHorizonMilliseconds
+      terminalReconciliationCanRun(email, now)
     ) {
       return yield* refineTerminalAmbiguity(email);
     }

@@ -144,6 +144,18 @@ describe("Postgres migrations", () => {
                   '2026-08-03T00:00:02Z', '2026-08-03T00:01:00Z',
                   '2026-08-03T00:03:00Z', '2026-08-03T00:06:01Z',
                   '2026-08-03T00:03:00Z', '2026-08-03T00:00:03Z'
+                ),
+                (
+                  'observed-not-applied-workflow', 'observed-not-applied-action',
+                  'accounting-user', 'agent', 'route', 'session', '{}', 'free', '{}',
+                  repeat('c', 64), '{}', '2026-08-04T00:01:00Z', 'failure',
+                  'accounting-period', 'launch-v1', 'launch-v1', 'launch-v1', 'test',
+                  'launch-v1', 'scheduled-email-v1', 'observed-not-applied-instance',
+                  'observed-not-applied-log', 'notApplied', 'conservative',
+                  'send-not-applied', '2026-08-04T00:00:00Z', '2026-08-04T00:00:01Z',
+                  '2026-08-04T00:00:02Z', '2026-08-04T00:01:00Z',
+                  '2026-08-04T00:03:00Z', '2026-08-04T00:03:01Z',
+                  '2026-08-04T00:03:00Z', '2026-08-04T00:00:03Z'
                 );
               INSERT INTO allowance_usage (
                 allowance_period_id, allowance_kind, source_type, source_id,
@@ -156,6 +168,10 @@ describe("Postgres migrations", () => {
                 (
                   'accounting-period', 'gmailSends', 'integrationAction',
                   'ambiguous-action', 'accounting-user', 1, 'conservative'
+                ),
+                (
+                  'accounting-period', 'gmailSends', 'integrationAction',
+                  'observed-not-applied-action', 'accounting-user', 1, 'observed'
                 );
             `),
           );
@@ -196,8 +212,17 @@ describe("Postgres migrations", () => {
               send_reconciliation_claimed_at: null,
               send_reconciliation_lease_expires_at: null,
             },
+            {
+              action_id: "observed-not-applied-action",
+              send_accounting_basis: "conservative",
+              send_reconciliation_claimed_at: null,
+              send_reconciliation_lease_expires_at: null,
+            },
           ]);
-          expect(usage.rows).toEqual([{ source_id: "ambiguous-action" }]);
+          expect(usage.rows).toEqual([
+            { source_id: "ambiguous-action" },
+            { source_id: "observed-not-applied-action" },
+          ]);
           const partialLease = yield* Effect.tryPromise({
             try: () =>
               client.exec(`
