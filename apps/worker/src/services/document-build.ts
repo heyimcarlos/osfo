@@ -23,7 +23,6 @@ import {
   sharedUsageModelAccessPolicy,
 } from "../domain/model-access-policy";
 import {
-  currentLaunchPolicy,
   isLaunchPolicy,
   policyFor,
   policyForVersion,
@@ -828,24 +827,7 @@ export const make = Effect.gen(function* () {
         ? { _tag: "AcceptancePending" as const, build: existing }
         : { _tag: "Replayed" as const, build: accepted };
     }
-    const files = yield* ports.files.resolve(
-      input.agentId,
-      input.authorization.user.userId,
-      input.request.fileIds,
-    );
-    const request = yield* storedRequestFor(input.request.format, files);
-    const inputDigest = yield* digestRequest(input.authorization.user.userId, request);
-    const initialAdmission = authorization.admit(
-      input.authorization,
-      workflowOperation(input.actionId),
-    );
-    const freeParityAdmission =
-      input.authorization.subscription.plan === "free" &&
-      Predicate.isTagged(initialAdmission, "Denied") &&
-      initialAdmission.reason === "missingEntitlement";
-    const admission = freeParityAdmission
-      ? supersedingFreeDocumentBuildAdmission(authorization, input.authorization, input.actionId)
-      : initialAdmission;
+    const admission = authorization.admit(input.authorization, workflowOperation(input.actionId));
     if (!Predicate.isTagged(admission, "Admitted")) {
       return yield* Effect.fail(
         Predicate.isTagged(admission, "Denied")
@@ -860,6 +842,13 @@ export const make = Effect.gen(function* () {
         resetAt: null,
       } satisfies Denied);
     }
+    const files = yield* ports.files.resolve(
+      input.agentId,
+      input.authorization.user.userId,
+      input.request.fileIds,
+    );
+    const request = yield* storedRequestFor(input.request.format, files);
+    const inputDigest = yield* digestRequest(input.authorization.user.userId, request);
     const admittedPolicy = yield* policyForVersion(
       retainedCatalog,
       input.authorization.subscription.planPolicyVersion,
@@ -927,17 +916,10 @@ export const make = Effect.gen(function* () {
     };
     const currentResourceLimits =
       currentCapabilityCatalog.planResourceLimits[input.authorization.subscription.plan];
-    const activeWorkflowLimit = freeParityAdmission
-      ? BigInt(
-          Math.min(
-            currentResourceLimits.activeWorkflows,
-            currentResourceLimits.concurrentCostlyJobs,
-          ),
-        )
-      : isLaunchPolicy(admittedPolicy)
-        ? policyFor(admittedPolicy, input.authorization.subscription.plan).liveLimits
-            .concurrentWorkflows
-        : BigInt(currentResourceLimits.activeWorkflows);
+    const activeWorkflowLimit = isLaunchPolicy(admittedPolicy)
+      ? policyFor(admittedPolicy, input.authorization.subscription.plan).liveLimits
+          .concurrentWorkflows
+      : BigInt(currentResourceLimits.activeWorkflows);
     const persisted = yield* ports.persistence.admit(build, activeWorkflowLimit);
     if (
       persisted.build.inputDigest !== build.inputDigest ||
@@ -1133,46 +1115,6 @@ export const workflowOperation = (actionId: ActionId) => ({
   consequences: [],
   kind: "workflow.manage" as const,
 });
-
-/**
- * #252 supersedes launch-v1's Free capability gate for new Document Builds without
- * activating shared-usage-v1. Keep the real period and Usage facts intact, recheck
- * all current authority/ownership/deletion gates, and use catalog hard capacity.
- */
-const supersedingFreeDocumentBuildAdmission = (
-  authorization: Authorization.Interface,
-  context: AuthorizationContext,
-  actionId: ActionId,
-) => {
-  const control = authorization.recheck(context, { actionId, kind: "workflow.inspect" });
-  if (Predicate.isTagged(control, "Denied")) return control;
-  const allowance = context.allowance;
-  if (!Predicate.isTagged(allowance, "Metered")) {
-    return { _tag: "Denied", reason: "allowancePeriodUnavailable", resetAt: null } as const;
-  }
-  const vendorCostRecorded =
-    allowance.usage.find((usage) => usage.allowanceKind === "vendorUsdMicros")?.quantity ?? 0n;
-  if (
-    vendorCostRecorded >= policyFor(currentLaunchPolicy, "free").allowanceLimits.vendorUsdMicros
-  ) {
-    return {
-      _tag: "Denied",
-      reason: "allowanceExhausted",
-      resetAt: allowance.endsAt,
-    } as const;
-  }
-  return {
-    _tag: "Admitted",
-    allowancePeriod: {
-      _tag: "Metered",
-      allowancePeriodId: allowance.allowancePeriodId,
-      grantSource: null,
-    },
-    capabilityCatalogVersion: currentCapabilityCatalog.version,
-    executionMode: "normalPlanUsage",
-    manifestVersion: null,
-  } as const;
-};
 
 type StartFailure = Conflict | Denied | NotFound | SourceRejected | Unavailable;
 

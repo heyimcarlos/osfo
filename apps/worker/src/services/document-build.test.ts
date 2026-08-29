@@ -47,22 +47,25 @@ it.effect("rejects source content that requires more than twenty pages", () =>
   }),
 );
 
-it.effect("admits Free Document Build despite the superseded zero Workflow counter", () =>
+it.effect("denies launch-v1 Free Document Build before costly work", () =>
   Effect.gen(function* () {
-    let retained: DocumentBuild.Record | null = null;
-    let hostsCreated = 0;
-    let retainedActiveWorkflowLimit: bigint | null = null;
+    const effects: Array<string> = [];
     const port = DocumentBuild.Port.of({
       commitPreviewReadyFollowUp: () => Effect.void,
       commitTerminalFollowUp: () => Effect.void,
       currentAuthorization: () => Effect.succeed(exhaustedAuthorization("free", false)),
-      discardPendingArtifact: () => Effect.void,
-      files: { resolve: () => Effect.succeed([resolvedFile("source text")]) },
-      persistence: {
-        admit: (build, activeWorkflowLimit) =>
+      discardPendingArtifact: () => Effect.sync(() => void effects.push("artifact")),
+      files: {
+        resolve: () =>
           Effect.sync(() => {
-            retained = build;
-            retainedActiveWorkflowLimit = activeWorkflowLimit;
+            effects.push("source");
+            return [resolvedFile("source text")];
+          }),
+      },
+      persistence: {
+        admit: (build) =>
+          Effect.sync(() => {
+            effects.push("persistence");
             return { _tag: "Created" as const, build };
           }),
         beginExecution: () => Effect.die(new Error("Unexpected execution")),
@@ -70,21 +73,20 @@ it.effect("admits Free Document Build despite the superseded zero Workflow count
         enforceDeadline: () => Effect.die(new Error("Unexpected deadline")),
         finishSuccess: () => Effect.die(new Error("Unexpected success")),
         finishTerminal: () => Effect.die(new Error("Unexpected terminal transition")),
-        inspect: () => Effect.succeed(retained),
-        markAccepted: (_workflowId, _inputDigest, acceptedAt) =>
-          Effect.gen(function* () {
-            if (retained === null) return yield* Effect.die(new Error("Missing admitted build"));
-            retained = { ...retained, acceptedAt, state: "accepted" };
-            return retained;
-          }),
+        inspect: () => Effect.succeed(null),
+        markAccepted: () => Effect.die(new Error("Unexpected acceptance")),
         markAccountingCommitted: () => Effect.die(new Error("Unexpected accounting")),
         markPreviewStored: () => Effect.die(new Error("Unexpected preview")),
-        recordProviderCost: () => Effect.die(new Error("Unexpected provider cost")),
+        recordProviderCost: () =>
+          Effect.sync(() => {
+            effects.push("provider");
+            throw new Error("Unexpected provider cost");
+          }),
         requestCancel: () => Effect.die(new Error("Unexpected cancel")),
       },
-      recordWorkflowStart: () => Effect.void,
+      recordWorkflowStart: () => Effect.sync(() => void effects.push("accounting")),
       workflow: {
-        create: () => Effect.sync(() => void (hostsCreated += 1)),
+        create: () => Effect.sync(() => void effects.push("workflow")),
         terminate: () => Effect.void,
       },
     });
@@ -103,11 +105,11 @@ it.effect("admits Free Document Build despite the superseded zero Workflow count
         }),
       ),
       Effect.provide(layer),
+      Effect.result,
     );
 
-    expect(result).toMatchObject({ _tag: "Started", build: { state: "accepted" } });
-    expect(hostsCreated).toBe(1);
-    expect(retainedActiveWorkflowLimit).toBe(1n);
+    expect(result).toMatchObject({ failure: { _tag: "Denied", reason: "missingEntitlement" } });
+    expect(effects).toEqual([]);
   }),
 );
 
@@ -122,7 +124,7 @@ it.effect("continues admitted work after allowance exhaustion while denying a ne
     const port = DocumentBuild.Port.of({
       commitPreviewReadyFollowUp: () => Effect.void,
       commitTerminalFollowUp: () => Effect.void,
-      currentAuthorization: () => Effect.succeed(exhaustedAuthorization("free")),
+      currentAuthorization: () => Effect.succeed(exhaustedAuthorization()),
       discardPendingArtifact: () => Effect.void,
       files: { resolve: () => Effect.succeed([resolvedFile("source text")]) },
       persistence: {
@@ -164,7 +166,7 @@ it.effect("continues admitted work after allowance exhaustion while denying a ne
         .start({
           actionId: ActionId.make("new-document-build-action"),
           agentId: build.agentId,
-          authorization: exhaustedAuthorization("free"),
+          authorization: exhaustedAuthorization(),
           request: { fileIds: [FileId.make("document-build-source")], format: "pdf" },
           routeId: build.routeId,
           sessionId: build.sessionId,
