@@ -248,7 +248,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
       const canRefineUnaccountedAmbiguity =
         row.state === "failure" &&
         row.send_outcome === "ambiguous" &&
-        row.send_accounting_basis === "conservative";
+        row.send_accounting_basis === null;
       if (
         row.state !== "sending" &&
         row.state !== "send_pending_reconciliation" &&
@@ -262,7 +262,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
           provider_log_id: result.evidence.providerLogId,
           provider_resource_id: result.evidence.providerResourceId,
           safe_failure_code: null,
-          send_accounting_basis: row.send_accounting_basis ?? "observed",
+          send_accounting_basis: "observed",
           send_outcome: "applied",
           send_outcome_at: outcomeAt,
           state: "success",
@@ -293,8 +293,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
         .update(scheduledEmails)
         .set({
           safe_failure_code: safeFailureCode,
-          send_accounting_basis:
-            row.send_accounting_basis ?? (sendOutcome === "ambiguous" ? "conservative" : null),
+          send_accounting_basis: row.send_accounting_basis,
           send_outcome: sendOutcome,
           send_outcome_at: sendOutcome === null ? row.send_outcome_at : terminalAt,
           provider_log_id: providerLogId ?? row.provider_log_id,
@@ -311,7 +310,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
       if (
         row.state === "failure" &&
         row.send_outcome === "notApplied" &&
-        row.send_accounting_basis === "conservative" &&
+        row.send_accounting_basis === null &&
         row.safe_failure_code === "send-not-applied"
       ) {
         return found(row);
@@ -319,7 +318,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
       if (
         row.state !== "failure" ||
         row.send_outcome !== "ambiguous" ||
-        row.send_accounting_basis !== "conservative"
+        row.send_accounting_basis !== null
       ) {
         return changed();
       }
@@ -328,6 +327,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
         .set({
           provider_log_id: providerLogId,
           safe_failure_code: "send-not-applied",
+          send_accounting_basis: null,
           send_outcome: "notApplied",
           send_outcome_at: outcomeAt,
           updated_at: sql`clock_timestamp()`,
@@ -363,7 +363,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
         .update(scheduledEmails)
         .set({
           send_outcome: "ambiguous",
-          send_accounting_basis: "conservative",
+          send_accounting_basis: null,
           send_outcome_at: outcomeAt,
           state: "send_pending_reconciliation",
           updated_at: sql`clock_timestamp()`,
@@ -386,7 +386,12 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
   markSendAccounted: (workflowId, inputDigest, accountedAt) =>
     transition(database, workflowId, inputDigest, "markSendAccounted", async (transaction, row) => {
       if (row.send_accounted_at !== null) return found(row);
-      if (row.send_outcome === null) return changed();
+      if (
+        row.send_outcome === null ||
+        (row.send_outcome === "ambiguous" && row.send_accounting_basis !== "conservative")
+      ) {
+        return changed();
+      }
       const [updated] = await transaction
         .update(scheduledEmails)
         .set({ send_accounted_at: accountedAt, updated_at: sql`clock_timestamp()` })
@@ -394,6 +399,37 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
         .returning();
       return updated === undefined ? changed() : found(updated);
     }),
+  finalizeAmbiguousAccounting: (workflowId, inputDigest, finalizedAt) =>
+    transition(
+      database,
+      workflowId,
+      inputDigest,
+      "finalizeAmbiguousAccounting",
+      async (transaction, row) => {
+        if (row.send_outcome === "ambiguous" && row.send_accounting_basis === "conservative") {
+          return found(row);
+        }
+        if (
+          row.state !== "failure" ||
+          row.send_outcome !== "ambiguous" ||
+          row.send_accounting_basis !== null ||
+          row.send_started_at === null ||
+          finalizedAt.getTime() - row.send_started_at.getTime() <=
+            ScheduledEmail.providerEvidenceHorizonMilliseconds
+        ) {
+          return changed();
+        }
+        const [updated] = await transaction
+          .update(scheduledEmails)
+          .set({
+            send_accounting_basis: "conservative",
+            updated_at: sql`clock_timestamp()`,
+          })
+          .where(eq(scheduledEmails.workflow_id, workflowId))
+          .returning();
+        return updated === undefined ? changed() : found(updated);
+      },
+    ),
   markWorkflowStartAccounted: (workflowId, inputDigest, accountedAt) =>
     transition(
       database,

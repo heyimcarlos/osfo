@@ -350,11 +350,6 @@ it.effect("expires terminal ambiguity inspection after the provider evidence hor
         "send-outcome-unknown",
         new Date(sendAt.getTime() + 120_000),
       );
-      yield* persistence.markSendAccounted(
-        email.workflowId,
-        email.inputDigest,
-        new Date(sendAt.getTime() + 121_000),
-      );
       yield* persistence.markWorkflowStartAccounted(
         email.workflowId,
         email.inputDigest,
@@ -390,11 +385,102 @@ it.effect("expires terminal ambiguity inspection after the provider evidence hor
           new Date(sendAt.getTime() + 300_001),
           20,
         )).some(({ workflowId }) => workflowId === email.workflowId),
+      ).toBe(true);
+      const finalizedAt = new Date(sendAt.getTime() + 300_001);
+      yield* persistence.finalizeAmbiguousAccounting(
+        email.workflowId,
+        email.inputDigest,
+        finalizedAt,
+      );
+      yield* Effect.promise(() =>
+        database.insert(allowanceUsage).values({
+          allowance_kind: "gmailSends",
+          allowance_period_id: email.allowancePeriodId,
+          basis: "conservative",
+          quantity: 1n,
+          source_id: email.actionId,
+          source_type: "integrationAction",
+          user_id: email.userId,
+        }),
+      );
+      yield* persistence.markSendAccounted(email.workflowId, email.inputDigest, finalizedAt);
+      expect(
+        (yield* ScheduledEmailPostgres.reconciliationBatch(
+          database,
+          new Date(sendAt.getTime() + 300_002),
+          20,
+        )).some(({ workflowId }) => workflowId === email.workflowId),
       ).toBe(false);
       yield* insertDeletionFence(database, seeded, "evidence-horizon");
       expect(
         yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, email.userId, sendAt),
       ).toMatchObject({ _tag: "Ready" });
+    }),
+  ),
+);
+
+it.effect("marks direct NotApplied accounting resolved without a Gmail fact or repeat repair", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "direct-not-applied-accounting");
+      const email = record(seeded, "direct-not-applied-accounting");
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      const failed = yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "notApplied",
+        "direct-not-applied-log",
+        "send-not-applied",
+        sendAt,
+      );
+      yield* persistence.markWorkflowStartAccounted(email.workflowId, email.inputDigest, sendAt);
+      const followUps = ScheduledEmailFollowUpPostgres.make(database);
+      const notificationId = ScheduledEmailFollowUp.NotificationId.make(
+        `${email.workflowId}-terminal`,
+      );
+      yield* followUps.claimTerminal(failed, notificationId, sendAt);
+      yield* followUps.selectDeliverySession(notificationId, email.sessionId);
+      yield* followUps.markAccepted(
+        notificationId,
+        ThinkSubmissionId.make("direct-not-applied-accounting-submission"),
+        sendAt,
+      );
+      yield* followUps.markWakeRequested(notificationId, sendAt);
+
+      expect(
+        (yield* ScheduledEmailPostgres.reconciliationBatch(database, sendAt, 20)).some(
+          ({ workflowId }) => workflowId === email.workflowId,
+        ),
+      ).toBe(true);
+      const resolved = yield* persistence.markSendAccounted(
+        email.workflowId,
+        email.inputDigest,
+        sendAt,
+      );
+      expect(resolved).toMatchObject({
+        sendAccountedAt: sendAt,
+        sendAccountingBasis: null,
+        sendOutcome: "notApplied",
+      });
+      expect(
+        (yield* ScheduledEmailPostgres.reconciliationBatch(
+          database,
+          new Date(sendAt.getTime() + 1),
+          20,
+        )).some(({ workflowId }) => workflowId === email.workflowId),
+      ).toBe(false);
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select({ basis: allowanceUsage.basis })
+            .from(allowanceUsage)
+            .where(eq(allowanceUsage.source_id, email.actionId)),
+        ),
+      ).toEqual([]);
     }),
   ),
 );
@@ -469,7 +555,7 @@ it.effect("rejects NULL-hole pending and success lifecycle rows", () =>
 );
 
 it.effect(
-  "preserves the original-period conservative fact when Applied evidence refines settled truth",
+  "records one observed fact when Applied evidence refines provisional terminal ambiguity",
   () =>
     withDatabase((database) =>
       Effect.gen(function* () {
@@ -490,26 +576,10 @@ it.effect(
         );
         expect(unknown).toMatchObject({
           sendAccountedAt: null,
-          sendAccountingBasis: "conservative",
+          sendAccountingBasis: null,
           sendOutcome: "ambiguous",
           state: "failure",
         });
-        yield* Effect.promise(() =>
-          database.insert(allowanceUsage).values({
-            allowance_kind: "gmailSends",
-            allowance_period_id: email.allowancePeriodId,
-            basis: "conservative",
-            quantity: 1n,
-            source_id: email.actionId,
-            source_type: "integrationAction",
-            user_id: email.userId,
-          }),
-        );
-        yield* persistence.markSendAccounted(
-          email.workflowId,
-          email.inputDigest,
-          new Date("2026-08-28T12:00:01.000Z"),
-        );
         const followUps = ScheduledEmailFollowUpPostgres.make(database);
         const notificationId = ScheduledEmailFollowUp.NotificationId.make(
           `${email.workflowId}-terminal`,
@@ -529,10 +599,26 @@ it.effect(
           new Date("2026-08-28T12:00:02.000Z"),
         );
         expect(refined).toMatchObject({
-          sendAccountingBasis: "conservative",
+          sendAccountingBasis: "observed",
           sendOutcome: "applied",
           state: "success",
         });
+        yield* Effect.promise(() =>
+          database.insert(allowanceUsage).values({
+            allowance_kind: "gmailSends",
+            allowance_period_id: email.allowancePeriodId,
+            basis: "observed",
+            quantity: 1n,
+            source_id: email.actionId,
+            source_type: "integrationAction",
+            user_id: email.userId,
+          }),
+        );
+        yield* persistence.markSendAccounted(
+          email.workflowId,
+          email.inputDigest,
+          new Date("2026-08-28T12:00:03.000Z"),
+        );
         expect(yield* followUps.inspect(notificationId)).toMatchObject({
           sendOutcome: "ambiguous",
           state: "failure",
@@ -554,7 +640,7 @@ it.effect(
           ),
         ).toEqual([
           {
-            basis: "conservative",
+            basis: "observed",
             periodId: email.allowancePeriodId,
             sourceId: email.actionId,
           },
@@ -563,114 +649,83 @@ it.effect(
     ),
 );
 
-it.effect("retains the immutable conservative obligation when NotApplied truth arrives late", () =>
+it.effect("resolves late NotApplied accounting without an immutable Gmail fact", () =>
   withDatabase((database) =>
     Effect.gen(function* () {
       const seeded = yield* seedUser(database, "not-applied-refinement");
       const persistence = ScheduledEmailPostgres.make(database);
       const followUps = ScheduledEmailFollowUpPostgres.make(database);
-      yield* Effect.forEach(
-        ["accounting-first", "refinement-first"] as const,
-        (order) =>
-          Effect.gen(function* () {
-            const email = record(seeded, `not-applied-${order}`);
-            yield* persistence.admit(email, 5n);
-            yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
-            yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
-            const unknown = yield* persistence.finishTerminal(
-              email.workflowId,
-              email.inputDigest,
-              "failure",
-              "ambiguous",
-              null,
-              "send-outcome-unknown",
-              sendAt,
-            );
-            const notificationId = ScheduledEmailFollowUp.NotificationId.make(
-              `${email.workflowId}-terminal`,
-            );
-            yield* followUps.claimTerminal(unknown, notificationId, sendAt);
-            yield* followUps.selectDeliverySession(notificationId, email.sessionId);
-            yield* followUps.markAccepted(
-              notificationId,
-              ThinkSubmissionId.make(`not-applied-${order}-submission`),
-              sendAt,
-            );
-
-            const firstFinished = yield* Deferred.make<void>();
-            const retainAccounting = Effect.gen(function* () {
-              if (order === "refinement-first") yield* Deferred.await(firstFinished);
-              const fact = {
-                allowance_kind: "gmailSends" as const,
-                allowance_period_id: email.allowancePeriodId,
-                basis: "conservative" as const,
-                quantity: 1n,
-                source_id: email.actionId,
-                source_type: "integrationAction",
-                user_id: email.userId,
-              };
-              yield* Effect.promise(() =>
-                database.insert(allowanceUsage).values(fact).onConflictDoNothing(),
-              );
-              yield* Effect.promise(() =>
-                database.insert(allowanceUsage).values(fact).onConflictDoNothing(),
-              );
-              yield* persistence.markSendAccounted(
-                email.workflowId,
-                email.inputDigest,
-                new Date("2026-08-28T12:00:02.000Z"),
-              );
-              if (order === "accounting-first") yield* Deferred.succeed(firstFinished, undefined);
-            });
-            const refineTruth = Effect.gen(function* () {
-              if (order === "accounting-first") yield* Deferred.await(firstFinished);
-              yield* persistence.refineNotApplied(
-                email.workflowId,
-                email.inputDigest,
-                `proved-not-applied-${order}`,
-                new Date("2026-08-28T12:00:03.000Z"),
-              );
-              if (order === "refinement-first") yield* Deferred.succeed(firstFinished, undefined);
-            });
-            yield* Effect.all([retainAccounting, refineTruth], {
-              concurrency: "unbounded",
-              discard: true,
-            });
-
-            expect(yield* persistence.inspect(email.workflowId)).toMatchObject({
-              providerLogId: `proved-not-applied-${order}`,
-              safeFailureCode: "send-not-applied",
-              sendAccountedAt: expect.any(Date),
-              sendAccountingBasis: "conservative",
-              sendOutcome: "notApplied",
-              state: "failure",
-            });
-            expect(yield* followUps.inspect(notificationId)).toMatchObject({
-              sendOutcome: "ambiguous",
-              state: "failure",
-            });
-            expect(
-              (yield* followUps.deliveredForUser(email.userId)).filter(
-                ({ workflowId }) => workflowId === email.workflowId,
-              ),
-            ).toMatchObject([
-              {
-                sendOutcome: "notApplied",
-                state: "failure",
-                workflowId: email.workflowId,
-              },
-            ]);
-            expect(
-              yield* Effect.promise(() =>
-                database
-                  .select({ basis: allowanceUsage.basis })
-                  .from(allowanceUsage)
-                  .where(eq(allowanceUsage.source_id, email.actionId)),
-              ),
-            ).toEqual([{ basis: "conservative" }]);
-          }),
-        { discard: true },
+      const email = record(seeded, "not-applied-late");
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      const unknown = yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        new Date(sendAt.getTime() + 120_000),
       );
+      const notificationId = ScheduledEmailFollowUp.NotificationId.make(
+        `${email.workflowId}-terminal`,
+      );
+      yield* followUps.claimTerminal(unknown, notificationId, sendAt);
+      yield* followUps.selectDeliverySession(notificationId, email.sessionId);
+      yield* followUps.markAccepted(
+        notificationId,
+        ThinkSubmissionId.make("not-applied-late-submission"),
+        sendAt,
+      );
+
+      const refined = yield* persistence.refineNotApplied(
+        email.workflowId,
+        email.inputDigest,
+        "proved-not-applied-late",
+        new Date(sendAt.getTime() + 240_000),
+      );
+      expect(refined).toMatchObject({
+        providerLogId: "proved-not-applied-late",
+        safeFailureCode: "send-not-applied",
+        sendAccountedAt: null,
+        sendAccountingBasis: null,
+        sendOutcome: "notApplied",
+        state: "failure",
+      });
+      expect(
+        (yield* ScheduledEmailPostgres.reconciliationBatch(
+          database,
+          new Date(sendAt.getTime() + 241_000),
+          20,
+        )).some(({ workflowId }) => workflowId === email.workflowId),
+      ).toBe(true);
+
+      yield* persistence.markSendAccounted(
+        email.workflowId,
+        email.inputDigest,
+        new Date(sendAt.getTime() + 242_000),
+      );
+      expect(yield* persistence.inspect(email.workflowId)).toMatchObject({
+        sendAccountedAt: expect.any(Date),
+        sendAccountingBasis: null,
+        sendOutcome: "notApplied",
+      });
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select({ basis: allowanceUsage.basis })
+            .from(allowanceUsage)
+            .where(eq(allowanceUsage.source_id, email.actionId)),
+        ),
+      ).toEqual([]);
+      expect(yield* followUps.inspect(notificationId)).toMatchObject({
+        sendOutcome: "ambiguous",
+        state: "failure",
+      });
+      expect(yield* followUps.deliveredForUser(email.userId)).toMatchObject([
+        { sendOutcome: "notApplied", state: "failure", workflowId: email.workflowId },
+      ]);
     }),
   ),
 );

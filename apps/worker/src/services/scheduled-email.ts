@@ -141,6 +141,7 @@ export interface Record {
   readonly sendStartedAt: Date | null;
   readonly sendClaimGeneration: number;
   readonly sendOutcomeAt: Date | null;
+  /** Accounting is resolved. Proven NotApplied truth sets this without an Allowance fact. */
   readonly sendAccountedAt: Date | null;
   readonly cancelRequestedAt: Date | null;
   readonly terminalAt: Date | null;
@@ -267,6 +268,11 @@ export interface PortInterface {
       inputDigest: InputDigest,
       accountedAt: Date,
     ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+    readonly finalizeAmbiguousAccounting: (
+      workflowId: WorkflowId,
+      inputDigest: InputDigest,
+      finalizedAt: Date,
+    ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
     readonly markWorkflowStartAccounted: (
       workflowId: WorkflowId,
       inputDigest: InputDigest,
@@ -378,15 +384,37 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const finalizeAmbiguousAccounting = Effect.fn("ScheduledEmail.finalizeAmbiguousAccounting")(
+    function* (email: Record, finalizedAt: Date) {
+      if (
+        email.sendOutcome !== "ambiguous" ||
+        email.sendAccountingBasis !== null ||
+        email.sendStartedAt === null ||
+        finalizedAt.getTime() - email.sendStartedAt.getTime() <= providerEvidenceHorizonMilliseconds
+      ) {
+        return email;
+      }
+      return yield* ports.persistence.finalizeAmbiguousAccounting(
+        email.workflowId,
+        email.inputDigest,
+        finalizedAt,
+      );
+    },
+  );
+
   const drainSendAccounting = Effect.fn("ScheduledEmail.drainSendAccounting")(function* (
     email: Record,
   ) {
-    if (email.sendAccountingBasis === null || email.sendAccountedAt !== null) return email;
-    yield* ports.recordSendOutcome(email);
+    if (email.sendOutcome === null || email.sendAccountedAt !== null) return email;
     const accountedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    const finalized = yield* finalizeAmbiguousAccounting(email, accountedAt);
+    if (finalized.sendOutcome === "ambiguous" && finalized.sendAccountingBasis === null) {
+      return finalized;
+    }
+    if (finalized.sendAccountingBasis !== null) yield* ports.recordSendOutcome(finalized);
     return yield* ports.persistence.markSendAccounted(
-      email.workflowId,
-      email.inputDigest,
+      finalized.workflowId,
+      finalized.inputDigest,
       accountedAt,
     );
   });
@@ -702,6 +730,12 @@ export const make = Effect.gen(function* () {
   ) {
     const reconciliation = yield* ports.reconcileSend(email);
     const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    if (
+      email.sendStartedAt === null ||
+      outcomeAt.getTime() - email.sendStartedAt.getTime() > providerEvidenceHorizonMilliseconds
+    ) {
+      return yield* settleTerminal(email);
+    }
     if (reconciliation._tag === "NotApplied") {
       const completed = yield* ports.persistence.refineNotApplied(
         email.workflowId,
@@ -756,7 +790,7 @@ export const make = Effect.gen(function* () {
     if (
       email.state === "failure" &&
       email.sendOutcome === "ambiguous" &&
-      email.sendAccountingBasis === "conservative" &&
+      email.sendAccountingBasis === null &&
       email.sendStartedAt !== null &&
       now.getTime() - email.sendStartedAt.getTime() <= providerEvidenceHorizonMilliseconds
     ) {
