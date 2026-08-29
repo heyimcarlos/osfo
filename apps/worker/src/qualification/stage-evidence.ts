@@ -193,7 +193,7 @@ export interface StageAssessment {
   readonly verdict: QualificationVerdict;
 }
 
-const coldCauses: ReadonlyArray<ColdCause> = [
+export const qualificationColdCauses: ReadonlyArray<ColdCause> = [
   "firstUse",
   "idleEviction",
   "deployment",
@@ -210,14 +210,21 @@ const objectivesForLane = (lane: StageMeasurement["lane"]): ReadonlyArray<StageO
     ? stageObjectives.filter(({ stage }) => stage === "coldDurableAcceptance")
     : stageObjectives;
 const causesForObjective = (objective: StageObjective): ReadonlyArray<ColdCause | undefined> =>
-  objective.stage === "coldDurableAcceptance" ? coldCauses : [undefined];
+  objective.stage === "coldDurableAcceptance" ? qualificationColdCauses : [undefined];
+
+/** Exact manifest-owned stage/cause dimensions assessed for one lane run. */
+export const qualificationStageDimensions = (
+  lane: StageMeasurement["lane"],
+): ReadonlyArray<{ readonly coldCause?: ColdCause; readonly stage: QualificationStage }> =>
+  objectivesForLane(lane).flatMap((objective) =>
+    causesForObjective(objective).map((coldCause) =>
+      coldCause === undefined ? { stage: objective.stage } : { coldCause, stage: objective.stage },
+    ),
+  );
 
 /** Exact number of independently reduced stage splits required for one lane run. */
 export const qualificationStageDimensionCount = (lane: StageMeasurement["lane"]): number =>
-  objectivesForLane(lane).reduce(
-    (total, objective) => total + causesForObjective(objective).length,
-    0,
-  );
+  qualificationStageDimensions(lane).length;
 
 const percentile = (sorted: ReadonlyArray<number>, ratio: number): number =>
   sorted.at(Math.max(0, Math.ceil(sorted.length * ratio) - 1)) ?? 0;

@@ -10,7 +10,12 @@ import {
   type WorkloadLane,
 } from "./qualification-manifest";
 import { qualificationChecksum } from "./qualification-checksum";
-import { ArtifactChecksum, QualificationId, QualificationUtcInstant } from "./evidence-primitives";
+import {
+  ArtifactChecksum,
+  NonNegativeMeasurement,
+  QualificationId,
+  QualificationUtcInstant,
+} from "./evidence-primitives";
 import { parseEvidenceArtifact, type EvidenceArtifact } from "./evidence-artifact";
 export type { EvidenceArtifact } from "./evidence-artifact";
 import { generateOpenArrivals, type OpenWorkloadArrival } from "./workload-generation";
@@ -145,6 +150,30 @@ export interface FaultControllerReceipt {
   readonly triggerAuthorityFactId: string | null;
   readonly triggerObservedAtUtc: string;
 }
+
+/** Parser for one producer-owned applied/restored fault-controller receipt. */
+export const FaultControllerReceiptBoundary = Schema.Struct({
+  applicationAuthorityFactId: QualificationId,
+  applicationStatus: Schema.Literals(["applied", "notApplied"]),
+  artifactChecksum: ArtifactChecksum,
+  artifactId: QualificationId,
+  controllerOperationId: QualificationId,
+  controllerSource: QualificationId,
+  durationSeconds: NonNegativeMeasurement,
+  endedAtUtc: QualificationUtcInstant,
+  executionId: QualificationId,
+  injectedAtUtc: QualificationUtcInstant,
+  kind: QualificationId,
+  manifestChecksum: ArtifactChecksum,
+  planChecksum: ArtifactChecksum,
+  restorationAuthorityFactId: QualificationId,
+  runId: QualificationId,
+  scheduledTriggerAtUtc: QualificationUtcInstant,
+  target: QualificationId,
+  trigger: QualificationId,
+  triggerAuthorityFactId: Schema.NullOr(QualificationId),
+  triggerObservedAtUtc: QualificationUtcInstant,
+});
 
 /** Evidence retained for one lane repetition and region. */
 export interface LaneRunEvidence {

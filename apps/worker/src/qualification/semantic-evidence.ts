@@ -174,7 +174,7 @@ export interface RootSemanticSignal {
   readonly signalId: string;
 }
 
-interface ProductAuthorityEvidence {
+export interface ProductAuthorityEvidence {
   readonly activation: RootSemanticTrace["activation"] | null;
   readonly authority: ProductAuthorityName;
   readonly component: SemanticComponent;
@@ -697,7 +697,8 @@ const requiredOperationKinds: ReadonlyArray<RootOperationKind> = [
 const operationPercentile = (sorted: ReadonlyArray<number>, ratio: number): number =>
   sorted.at(Math.max(0, Math.ceil(sorted.length * ratio) - 1)) ?? 0;
 
-const evidenceFromAuthorityExport = (
+/** Normalize one already-decoded producer export without weakening source-specific semantics. */
+export const productEvidenceFromAuthorityExport = (
   artifact: ProductAuthorityExport,
 ): ReadonlyArray<ProductAuthorityEvidence> => {
   const base = (
@@ -1010,7 +1011,7 @@ export const assessSemanticEvidence = (
         );
         return [];
       }
-      return evidenceFromAuthorityExport(artifact);
+      return productEvidenceFromAuthorityExport(artifact);
     });
   const agentRootByReceipt = new Map(
     parsedLocalEvidence.flatMap((record) =>
