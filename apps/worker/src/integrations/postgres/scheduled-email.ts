@@ -398,10 +398,12 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
           return { _tag: "Existing", row };
         }
         const lease = ScheduledEmail.nextTerminalReconciliationLease(
-          row.send_started_at,
-          row.send_reconciliation_claimed_at,
-          row.send_reconciliation_lease_expires_at,
-          row.send_reconciliation_recovery_used,
+          {
+            claimedAt: row.send_reconciliation_claimed_at,
+            leaseExpiresAt: row.send_reconciliation_lease_expires_at,
+            recoveryUsed: row.send_reconciliation_recovery_used,
+            sendStartedAt: row.send_started_at,
+          },
           claimedAt,
         );
         if (lease === null) return { _tag: "Existing", row };
@@ -720,6 +722,9 @@ export const quiesceForAccountDeletion = (database: Database, userId: UserId, te
       const preEffect = rows.filter((row) =>
         ["admitted", "accepted", "waiting"].includes(row.state),
       );
+      const claimed = rows.filter((row) =>
+        ["sending", "send_pending_reconciliation"].includes(row.state),
+      );
       if (preEffect.length > 0) {
         await transaction
           .update(scheduledEmails)
@@ -734,6 +739,20 @@ export const quiesceForAccountDeletion = (database: Database, userId: UserId, te
             and(
               eq(scheduledEmails.user_id, userId),
               inArray(scheduledEmails.state, ["admitted", "accepted", "waiting"]),
+            ),
+          );
+      }
+      if (claimed.length > 0) {
+        await transaction
+          .update(scheduledEmails)
+          .set({
+            cancel_requested_at: sql`coalesce(${scheduledEmails.cancel_requested_at}, ${terminalAt.toISOString()}::timestamptz)`,
+            updated_at: terminalAt,
+          })
+          .where(
+            and(
+              eq(scheduledEmails.user_id, userId),
+              inArray(scheduledEmails.state, ["sending", "send_pending_reconciliation"]),
             ),
           );
       }
@@ -848,6 +867,7 @@ export const reconciliationBatch = (database: Database, now: Date, limit: number
                   sql`${scheduledEmails.send_reconciliation_lease_expires_at} <= ${now.toISOString()}::timestamptz`,
                   sql`${scheduledEmails.send_reconciliation_lease_expires_at} + interval '1 minute' > ${now.toISOString()}::timestamptz`,
                 ),
+                sql`${scheduledEmails.send_started_at} + interval '7 minutes' <= ${now.toISOString()}::timestamptz`,
               ),
             ),
             and(

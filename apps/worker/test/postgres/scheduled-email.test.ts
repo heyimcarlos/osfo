@@ -13,7 +13,7 @@ import { deletionCases } from "@osfo/db/schema/user-lifecycle";
 import { env } from "cloudflare:workers";
 import { expect, it } from "@effect/vitest";
 import { eq } from "drizzle-orm";
-import { Deferred, Effect, Layer, Result, Schema } from "effect";
+import { Deferred, Effect, Fiber, Layer, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import postgres from "postgres";
 
@@ -560,6 +560,84 @@ it.effect("marks direct NotApplied accounting resolved without a Gmail fact or r
             .where(eq(allowanceUsage.source_id, email.actionId)),
         ),
       ).toEqual([]);
+    }),
+  ),
+);
+
+it.effect("finalizes old deletion-fenced ambiguity after the recovery envelope", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "fenced-old-terminal-ambiguity");
+      const candidate = record(seeded, "fenced-old-terminal-ambiguity");
+      const email = {
+        ...candidate,
+        cloudflareInstanceId: yield* ScheduledEmail.cloudflareInstanceIdFor(candidate.workflowId),
+      };
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        new Date(sendAt.getTime() + 120_000),
+      );
+      yield* insertDeletionFence(database, seeded, "fenced-old-terminal-ambiguity");
+      const recoveryAt = new Date(sendAt.getTime() + 420_001);
+
+      expect(
+        yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, email.userId, recoveryAt),
+      ).toMatchObject({ _tag: "RecoveryPending", workflowIds: [email.workflowId] });
+      expect(
+        yield* ScheduledEmailPostgres.reconciliationBatch(database, recoveryAt, 20),
+      ).toContainEqual(
+        expect.objectContaining({ kind: "settlement", workflowId: email.workflowId }),
+      );
+
+      let providerInspections = 0;
+      let recordedSends = 0;
+      const port = ScheduledEmail.Port.of({
+        commitTerminalFollowUp: () => Effect.void,
+        currentAuthorization: () =>
+          Effect.die(new Error("Final ambiguity accounting needs no live authority")),
+        persistence,
+        reconcileSend: () =>
+          Effect.sync(() => {
+            providerInspections += 1;
+            return { _tag: "Pending" as const };
+          }),
+        recordSendOutcome: () =>
+          Effect.sync(() => {
+            recordedSends += 1;
+          }),
+        recordWorkflowStart: () => Effect.void,
+        send: () => Effect.die(new Error("Final ambiguity accounting must never send Gmail")),
+        workflow: { create: () => Effect.void, terminate: () => Effect.void },
+      });
+      yield* TestClock.setTime(recoveryAt.getTime());
+      expect(
+        yield* ScheduledEmail.Service.pipe(
+          Effect.flatMap((service) => service.recoverClaimed(payloadFor(email))),
+          Effect.provide(
+            ScheduledEmail.layerWithoutDependencies.pipe(
+              Layer.provide(Layer.succeed(ScheduledEmail.Port, port)),
+            ),
+          ),
+        ),
+      ).toMatchObject({
+        sendAccountedAt: expect.any(Date),
+        sendAccountingBasis: "conservative",
+        sendOutcome: "ambiguous",
+      });
+      expect(providerInspections).toBe(0);
+      expect(recordedSends).toBe(1);
+      expect(
+        yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, email.userId, recoveryAt),
+      ).toMatchObject({ _tag: "Ready" });
     }),
   ),
 );
@@ -1512,11 +1590,109 @@ it.effect("continues claimed reconciliation after deletion fencing and unblocks 
           ),
         ),
       );
-      expect(recovered).toMatchObject({ safeFailureCode: "authority-ended", state: "canceled" });
+      expect(recovered).toMatchObject({ safeFailureCode: "cancel-requested", state: "canceled" });
       expect(providerCalls).toBe(0);
       expect(
         yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, seeded.userId, sendAt),
       ).toMatchObject({ _tag: "Ready" });
+    }),
+  ),
+);
+
+it.effect("cancels a NotStarted recovery that account deletion fences during inspection", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "fenced-not-started-race");
+      const candidate = record(seeded, "fenced-not-started-race");
+      const email = {
+        ...candidate,
+        cloudflareInstanceId: yield* ScheduledEmail.cloudflareInstanceIdFor(candidate.workflowId),
+      };
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      const authorizationSnapshot = yield* ScheduledEmailPostgres.makeCurrentAuthorization(
+        database,
+      )(email, "durableTrigger").pipe(
+        Effect.map((current) => ({
+          ...current,
+          allowance:
+            current.allowance._tag === "Metered"
+              ? { ...current.allowance, plan: "adventurer" as const }
+              : current.allowance,
+          authority: {
+            _tag: "DurableTrigger" as const,
+            triggerId: email.workflowId,
+            triggerType: "workflow" as const,
+            userId: email.userId,
+          },
+          originatingAuthority: {
+            _tag: "DurableTrigger" as const,
+            triggerId: email.workflowId,
+            triggerType: "workflow" as const,
+          },
+          gmailConnection: {
+            _tag: "Connected" as const,
+            toolkit: "gmail" as const,
+            userId: email.userId,
+          },
+          integrationConnections: [
+            {
+              _tag: "Connected" as const,
+              toolkit: "gmail" as const,
+              userId: email.userId,
+            },
+          ],
+          subscription: { ...current.subscription, plan: "adventurer" as const },
+        })),
+      );
+      const inspectionStarted = yield* Deferred.make<void>();
+      const releaseInspection = yield* Deferred.make<void>();
+      let providerSends = 0;
+      const port = ScheduledEmail.Port.of({
+        commitTerminalFollowUp: () => Effect.void,
+        currentAuthorization: () => Effect.succeed(authorizationSnapshot),
+        persistence,
+        reconcileSend: () =>
+          Deferred.succeed(inspectionStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseInspection)),
+            Effect.as({ _tag: "NotStarted" as const }),
+          ),
+        recordSendOutcome: () => Effect.void,
+        recordWorkflowStart: () => Effect.void,
+        send: (_retained, authorize) =>
+          authorize.pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                providerSends += 1;
+                return applied;
+              }),
+            ),
+          ),
+        workflow: { create: () => Effect.void, terminate: () => Effect.void },
+      });
+      const recovery = yield* ScheduledEmail.Service.pipe(
+        Effect.flatMap((service) => service.recoverClaimed(payloadFor(email))),
+        Effect.provide(
+          ScheduledEmail.layerWithoutDependencies.pipe(
+            Layer.provide(Layer.succeed(ScheduledEmail.Port, port)),
+          ),
+        ),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(inspectionStarted);
+      yield* insertDeletionFence(database, seeded, "fenced-not-started-race");
+      expect(
+        yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, email.userId, sendAt),
+      ).toMatchObject({ _tag: "RecoveryPending", workflowIds: [email.workflowId] });
+      yield* Deferred.succeed(releaseInspection, undefined);
+      expect(yield* Fiber.join(recovery)).toMatchObject({
+        cancelRequestedAt: expect.any(Date),
+        safeFailureCode: "cancel-requested",
+        state: "canceled",
+      });
+      expect(providerSends).toBe(0);
     }),
   ),
 );

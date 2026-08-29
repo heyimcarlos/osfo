@@ -56,18 +56,12 @@ describe("ScheduledEmail", () => {
     const horizon = new Date(sendStartedAt.getTime() + 300_000);
     expect(
       ScheduledEmail.nextTerminalReconciliationLease(
-        sendStartedAt,
-        null,
-        null,
-        false,
+        { claimedAt: null, leaseExpiresAt: null, recoveryUsed: false, sendStartedAt },
         new Date(sendStartedAt.getTime() - 1),
       ),
     ).toBeNull();
     const initial = ScheduledEmail.nextTerminalReconciliationLease(
-      sendStartedAt,
-      null,
-      null,
-      false,
+      { claimedAt: null, leaseExpiresAt: null, recoveryUsed: false, sendStartedAt },
       horizon,
     );
     expect(initial).toEqual({
@@ -100,10 +94,12 @@ describe("ScheduledEmail", () => {
     ).toBe(true);
 
     const recovery = ScheduledEmail.nextTerminalReconciliationLease(
-      sendStartedAt,
-      initial.claimedAt,
-      initial.leaseExpiresAt,
-      initial.recoveryUsed,
+      {
+        claimedAt: initial.claimedAt,
+        leaseExpiresAt: initial.leaseExpiresAt,
+        recoveryUsed: initial.recoveryUsed,
+        sendStartedAt,
+      },
       initial.leaseExpiresAt,
     );
     expect(recovery).toEqual({
@@ -115,19 +111,23 @@ describe("ScheduledEmail", () => {
 
     expect(
       ScheduledEmail.nextTerminalReconciliationLease(
-        sendStartedAt,
-        recovery.claimedAt,
-        recovery.leaseExpiresAt,
-        recovery.recoveryUsed,
+        {
+          claimedAt: recovery.claimedAt,
+          leaseExpiresAt: recovery.leaseExpiresAt,
+          recoveryUsed: recovery.recoveryUsed,
+          sendStartedAt,
+        },
         new Date(sendStartedAt.getTime() + 240_000),
       ),
     ).toBeNull();
     expect(
       ScheduledEmail.nextTerminalReconciliationLease(
-        sendStartedAt,
-        recovery.claimedAt,
-        recovery.leaseExpiresAt,
-        recovery.recoveryUsed,
+        {
+          claimedAt: recovery.claimedAt,
+          leaseExpiresAt: recovery.leaseExpiresAt,
+          recoveryUsed: recovery.recoveryUsed,
+          sendStartedAt,
+        },
         recovery.leaseExpiresAt,
       ),
     ).toBeNull();
@@ -522,6 +522,54 @@ describe("ScheduledEmail", () => {
       expect(fixture.reconciliationAttempts).toBe(2);
       expect(fixture.gmailSendFacts).toBe(0);
     }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect("preserves an already-finalized conservative basis across persistence replay", () => {
+    const first = makeFixture({ sendOutcome: "ambiguous" });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      yield* TestClock.setTime(scheduledAt.getTime());
+      yield* emails.sendDue(payload);
+      first.reconciliation = { _tag: "Ambiguous" };
+      yield* TestClock.setTime(scheduledAt.getTime() + 120_000);
+      yield* emails.recoverClaimed(payload);
+      yield* TestClock.setTime(scheduledAt.getTime() + 300_001);
+      yield* emails.recoverClaimed(payload);
+      const finalized = yield* Effect.suspend(() =>
+        first.stored === null
+          ? Effect.die(new Error("Scheduled Email was not stored"))
+          : Effect.succeed(first.stored),
+      );
+      const expiredClaimedAt = new Date(scheduledAt.getTime() + 300_000);
+      const expiredLeaseAt = new Date(scheduledAt.getTime() + 360_000);
+      const replay = makeFixture();
+      yield* replay.port.persistence.admit(
+        {
+          ...finalized,
+          sendReconciliationClaimedAt: expiredClaimedAt,
+          sendReconciliationLeaseExpiresAt: expiredLeaseAt,
+          sendReconciliationRecoveryUsed: true,
+        },
+        5n,
+      );
+
+      expect(
+        yield* replay.port.persistence.finalizeAmbiguousAccounting(
+          finalized.workflowId,
+          finalized.inputDigest,
+          new Date(scheduledAt.getTime() + 420_000),
+        ),
+      ).toMatchObject({
+        sendAccountingBasis: "conservative",
+        sendReconciliationClaimedAt: expiredClaimedAt,
+        sendReconciliationLeaseExpiresAt: expiredLeaseAt,
+        sendReconciliationRecoveryUsed: true,
+      });
+    }).pipe(Effect.provide(layer(first.port)));
   });
 
   it.effect(
@@ -1392,10 +1440,12 @@ const makeFixture = (
               return { _tag: "Existing", email };
             }
             const lease = ScheduledEmail.nextTerminalReconciliationLease(
-              email.sendStartedAt,
-              email.sendReconciliationClaimedAt,
-              email.sendReconciliationLeaseExpiresAt,
-              email.sendReconciliationRecoveryUsed,
+              {
+                claimedAt: email.sendReconciliationClaimedAt,
+                leaseExpiresAt: email.sendReconciliationLeaseExpiresAt,
+                recoveryUsed: email.sendReconciliationRecoveryUsed,
+                sendStartedAt: email.sendStartedAt,
+              },
               claimedAt,
             );
             if (lease === null) return { _tag: "Existing", email };
@@ -1474,9 +1524,13 @@ const makeFixture = (
       finalizeAmbiguousAccounting: (workflowId, digest, finalizedAt) =>
         requireStored(workflowId, digest).pipe(
           Effect.map((email) => {
+            if (email.sendOutcome === "ambiguous" && email.sendAccountingBasis === "conservative") {
+              return email;
+            }
             if (
               email.state !== "failure" ||
               email.sendOutcome !== "ambiguous" ||
+              email.sendAccountingBasis !== null ||
               email.sendStartedAt === null ||
               ScheduledEmail.terminalReconciliationBlocksFinalization(
                 email.sendStartedAt,

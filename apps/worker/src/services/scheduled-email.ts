@@ -110,18 +110,22 @@ export const providerEvidenceHorizonMilliseconds = 300_000;
 export const providerReconciliationLeaseMilliseconds = 60_000;
 export const providerReconciliationRecoveryMilliseconds = 60_000;
 
+export interface TerminalReconciliationLeaseState {
+  readonly claimedAt: Date | null;
+  readonly leaseExpiresAt: Date | null;
+  readonly recoveryUsed: boolean;
+  readonly sendStartedAt: Date;
+}
+
 export const nextTerminalReconciliationLease = (
-  sendStartedAt: Date,
-  existingClaimedAt: Date | null,
-  existingLeaseExpiresAt: Date | null,
-  recoveryUsed: boolean,
+  current: TerminalReconciliationLeaseState,
   claimedAt: Date,
 ) => {
   const claimedAtMilliseconds = claimedAt.getTime();
-  if (claimedAtMilliseconds < sendStartedAt.getTime()) return null;
-  if (recoveryUsed) return null;
-  const evidenceDeadline = sendStartedAt.getTime() + providerEvidenceHorizonMilliseconds;
-  if (existingLeaseExpiresAt !== null && existingLeaseExpiresAt.getTime() > claimedAtMilliseconds) {
+  if (claimedAtMilliseconds < current.sendStartedAt.getTime()) return null;
+  if (current.recoveryUsed) return null;
+  const evidenceDeadline = current.sendStartedAt.getTime() + providerEvidenceHorizonMilliseconds;
+  if (current.leaseExpiresAt !== null && current.leaseExpiresAt.getTime() > claimedAtMilliseconds) {
     return null;
   }
   if (claimedAtMilliseconds <= evidenceDeadline) {
@@ -136,19 +140,19 @@ export const nextTerminalReconciliationLease = (
     };
   }
   if (
-    existingClaimedAt === null ||
-    existingClaimedAt.getTime() > evidenceDeadline ||
-    existingLeaseExpiresAt === null
+    current.claimedAt === null ||
+    current.claimedAt.getTime() > evidenceDeadline ||
+    current.leaseExpiresAt === null
   ) {
     return null;
   }
   const recoveryDeadline =
-    existingLeaseExpiresAt.getTime() + providerReconciliationRecoveryMilliseconds;
+    current.leaseExpiresAt.getTime() + providerReconciliationRecoveryMilliseconds;
   return claimedAtMilliseconds < recoveryDeadline
     ? {
         claimedAt,
         leaseExpiresAt: DateTime.toDateUtc(
-          DateTime.add(DateTime.makeUnsafe(existingLeaseExpiresAt), {
+          DateTime.add(DateTime.makeUnsafe(current.leaseExpiresAt), {
             milliseconds: providerReconciliationRecoveryMilliseconds,
           }),
         ),
