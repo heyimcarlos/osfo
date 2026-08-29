@@ -888,10 +888,13 @@ document_build_free_denial() {
     exit 1
   fi
   reply="${reply_output#telegram_reply=}"
-  if [[ -z "$reply" ]] || grep -E -i -q 'missing.?entitlement|launch-v1|document-build:' <<<"$reply"; then
-    printf 'The Free Document Build reply is missing or exposes internal policy facts\n' >&2
-    exit 1
-  fi
+  printf '%s\n' "$request" >"$feature_dir/agent-request.txt"
+  printf '%s\n' "$reply" >"$feature_dir/agent-reply.txt"
+  curl --fail --silent --show-error "$provider_origin/_test/research/ledger" \
+    | jq --argjson before "$before_model_count" '.[ $before: ]' \
+      >"$feature_dir/model-selection.json"
+  "$script_dir/assert-document-build-free-denial" \
+    "$feature_dir/agent-reply.txt" "$feature_dir/model-selection.json" "$action_id" "$file_id"
   printf '%s\n' "$file_id" >"$state_dir/document-build-free-file-id"
   printf '%s\n' "$user_id" >"$state_dir/document-build-free-user-id"
   printf '%s\n' "$agent_id" >"$state_dir/document-build-free-agent-id"
@@ -901,8 +904,6 @@ document_build_free_denial() {
   printf '%s\n' "$main_instance_id" >"$state_dir/document-build-free-main-instance-id"
   printf '%s\n' "$timer_instance_id" >"$state_dir/document-build-free-timer-instance-id"
   printf '%s\n' "$before_model_count" >"$state_dir/document-build-free-model-ledger-before-count"
-  printf '%s\n' "$request" >"$feature_dir/agent-request.txt"
-  printf '%s\n' "$reply" >"$feature_dir/agent-reply.txt"
   printf 'document_build_free_denial_ready action=%s workflow=%s reply=%s\n' \
     "$action_id" "$workflow_id" "$feature_dir/agent-reply.txt"
 }
@@ -1572,8 +1573,12 @@ observe_document_build_free_denial() {
   jq --exit-status \
     --arg actionId "$action_id" --arg fileId "$file_id" \
     '. as $provider |
-      .actionId == $actionId and (.agentReply | length) > 0 and
-      (.agentReply | test("missing.?entitlement|launch-v1|document-build:"; "i") | not) and
+      .actionId == $actionId and
+      .agentReply == "Document Build is not available on your current plan." and
+      ([.model[] | select(.kind == "tool-selection" and
+        .selectedTool == "loadSkill" and
+        .subject == "document-build@system-document-build-v1" and
+        .operationId == "verification-loadSkill")] | length) == 1 and
       ([.model[] | select(.kind == "tool-selection" and
         .selectedTool == "startDocumentBuild" and .subject == $fileId and
         .operationId == $actionId)] | length) == 1 and

@@ -327,7 +327,7 @@ it.effect("projects the strict Scheduled Email request into the local model sele
   ),
 );
 
-it.effect("keeps the Free denial and Adventurer Document Build actions distinct", () =>
+it.effect("loads Document Build before selecting and safely presenting its denied action", () =>
   Effect.acquireUseRelease(
     Effect.promise(startProviderEmulator),
     (emulator) =>
@@ -338,7 +338,18 @@ it.effect("keeps the Free denial and Adventurer Document Build actions distinct"
         });
         const fileId = "web:00000000-0000-4000-8000-000000000289";
         const request = `Build a PDF from supplied File ID ${fileId}.`;
-        const tool = {
+        const loadedSkillResult =
+          '{"skillId":"document-build","skillVersion":"system-document-build-v1"}';
+        const deniedDocumentBuildResult =
+          '{"_tag":"Denied","reason":"missingEntitlement","resetAt":null}';
+        const loadSkillTool = {
+          function: {
+            name: "loadSkill",
+            parameters: { properties: {}, type: "object" },
+          },
+          type: "function" as const,
+        };
+        const startDocumentBuildTool = {
           function: {
             name: "startDocumentBuild",
             parameters: { properties: {}, type: "object" },
@@ -352,19 +363,39 @@ it.effect("keeps the Free denial and Adventurer Document Build actions distinct"
           ),
         );
         expect(configured.status).toBe(204);
-        const freeResponse = yield* Effect.promise(() =>
+        const loadResponse = yield* Effect.promise(() =>
           binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
             messages: [{ content: request, role: "user" }],
-            tools: [tool],
+            tools: [loadSkillTool],
           }),
         );
-        const adventurerResponse = yield* Effect.promise(() =>
+        expect(loadResponse).toMatchObject({
+          finish_reason: "tool_calls",
+          tool_calls: [
+            {
+              arguments: {
+                skillId: "document-build",
+                skillVersion: "system-document-build-v1",
+              },
+              name: "loadSkill",
+            },
+          ],
+        });
+        const startResponse = yield* Effect.promise(() =>
           binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
-            messages: [{ content: request, role: "user" }],
-            tools: [tool],
+            messages: [
+              { content: request, role: "user" },
+              {
+                content: loadedSkillResult,
+                name: "loadSkill",
+                role: "tool",
+                tool_call_id: "verification-loadSkill",
+              },
+            ],
+            tools: [loadSkillTool, startDocumentBuildTool],
           }),
         );
-        expect(freeResponse).toMatchObject({
+        expect(startResponse).toMatchObject({
           tool_calls: [
             {
               id: "verification-startDocumentBuild-free-verify-289",
@@ -372,7 +403,54 @@ it.effect("keeps the Free denial and Adventurer Document Build actions distinct"
             },
           ],
         });
-        expect(adventurerResponse).toMatchObject({
+        const denialResponse = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            messages: [
+              { content: request, role: "user" },
+              {
+                content: loadedSkillResult,
+                name: "loadSkill",
+                role: "tool",
+                tool_call_id: "verification-loadSkill",
+              },
+              {
+                content: deniedDocumentBuildResult,
+                name: "startDocumentBuild",
+                role: "tool",
+                tool_call_id: "verification-startDocumentBuild-free-verify-289",
+              },
+            ],
+            tools: [loadSkillTool, startDocumentBuildTool],
+          }),
+        );
+        expect(denialResponse).toMatchObject({
+          finish_reason: "stop",
+          response: "Document Build is not available on your current plan.",
+        });
+        const adventurerLoadResponse = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            messages: [{ content: request, role: "user" }],
+            tools: [loadSkillTool],
+          }),
+        );
+        expect(adventurerLoadResponse).toMatchObject({
+          tool_calls: [{ id: "verification-loadSkill", name: "loadSkill" }],
+        });
+        const adventurerStartResponse = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            messages: [
+              { content: request, role: "user" },
+              {
+                content: loadedSkillResult,
+                name: "loadSkill",
+                role: "tool",
+                tool_call_id: "verification-loadSkill",
+              },
+            ],
+            tools: [loadSkillTool, startDocumentBuildTool],
+          }),
+        );
+        expect(adventurerStartResponse).toMatchObject({
           tool_calls: [{ id: "verification-startDocumentBuild", name: "startDocumentBuild" }],
         });
         const ledger = yield* Effect.promise(() =>
@@ -380,6 +458,12 @@ it.effect("keeps the Free denial and Adventurer Document Build actions distinct"
         );
         expect(ledger).toEqual(
           expect.arrayContaining([
+            {
+              kind: "tool-selection",
+              operationId: "verification-loadSkill",
+              selectedTool: "loadSkill",
+              subject: "document-build@system-document-build-v1",
+            },
             {
               kind: "tool-selection",
               operationId: "verification-startDocumentBuild-free-verify-289",

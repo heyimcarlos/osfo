@@ -722,13 +722,47 @@ const handleResearch = (
           operationId: null,
           subject: lastMessageText(input).slice(0, 500),
         });
+        const documentBuildRequest = latestUserMessageContent(input);
+        const documentBuildFileId = /web:[0-9a-f-]{36}/iu.exec(documentBuildRequest)?.[0];
+        const isDocumentBuildRequest =
+          documentBuildFileId !== undefined &&
+          /(?:build|document|pdf)/iu.test(documentBuildRequest);
+        if (
+          isDocumentBuildRequest &&
+          toolNames.includes("loadSkill") &&
+          !toolNames.includes("startDocumentBuild") &&
+          lastMessageRole(input) === "user"
+        ) {
+          ledger.push({
+            kind: "tool-selection",
+            operationId: "verification-loadSkill",
+            selectedTool: "loadSkill",
+            subject: "document-build@system-document-build-v1",
+          });
+          respondJson(
+            response,
+            200,
+            toolResponse("loadSkill", {
+              skillId: "document-build",
+              skillVersion: "system-document-build-v1",
+            }),
+          );
+          return;
+        }
+        if (isDocumentBuildRequest && isDeniedDocumentBuildResult(input)) {
+          respondJson(response, 200, {
+            finish_reason: "stop",
+            response: "Document Build is not available on your current plan.",
+            usage: { completion_tokens: 1, prompt_tokens: 1 },
+          });
+          return;
+        }
         if (toolNames.includes("present_link") && lastMessageRole(input) === "user") {
           respondJson(response, 200, toolResponse("present_link", {}));
           return;
         }
         const workflowId = /research[:\w-]{8,300}/iu.exec(lastMessage)?.[0];
         const documentBuildWorkflowId = /document-build:[\w:-]{8,300}/iu.exec(lastMessage)?.[0];
-        const documentBuildFileId = /web:[0-9a-f-]{36}/iu.exec(lastMessage)?.[0];
         const scheduledEmailWorkflowId = /scheduled-email:[\w:-]{8,300}/iu.exec(lastMessage)?.[0];
         const scheduledEmailFixture =
           /recipient=([^;]+); subject=([^;]+); body=([^;]+); sendAt=([^;\s]+)/iu.exec(lastMessage);
@@ -807,8 +841,7 @@ const handleResearch = (
         if (
           documentBuildFileId !== undefined &&
           toolNames.includes("startDocumentBuild") &&
-          lastMessageRole(input) === "user" &&
-          /(?:build|document|pdf)/iu.test(lastMessage)
+          isDocumentBuildSkillLoadResult(input)
         ) {
           const actionId = control.nextDocumentBuildActionId ?? "verification-startDocumentBuild";
           control.nextDocumentBuildActionId = null;
@@ -959,6 +992,35 @@ const lastMessageContent = (input: ResearchRequest): string => {
 };
 
 const lastMessage = (input: ResearchRequest) => input.messages?.at(-1) ?? null;
+
+const latestUserMessageContent = (input: ResearchRequest): string => {
+  const message = input.messages?.reduceRight<(typeof input.messages)[number] | undefined>(
+    (found, candidate) => found ?? (candidate.role === "user" ? candidate : undefined),
+    undefined,
+  );
+  if (message?.content === undefined) return "";
+  if (typeof message.content === "string") return message.content;
+  return JSON.stringify(message.content);
+};
+
+const isDocumentBuildSkillLoadResult = (input: ResearchRequest): boolean => {
+  const message = lastMessage(input);
+  if (message?.role !== "tool" || message.name !== "loadSkill") return false;
+  const result = lastMessageContent(input);
+  return (
+    result.includes('"skillId":"document-build"') &&
+    result.includes('"skillVersion":"system-document-build-v1"')
+  );
+};
+
+const isDeniedDocumentBuildResult = (input: ResearchRequest): boolean => {
+  const message = lastMessage(input);
+  return (
+    message?.role === "tool" &&
+    message.name === "startDocumentBuild" &&
+    /"_tag"\s*:\s*"Denied"/u.test(lastMessageContent(input))
+  );
+};
 
 const handleStripe = (
   request: IncomingMessage,
