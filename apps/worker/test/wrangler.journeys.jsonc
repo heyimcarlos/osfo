@@ -5,7 +5,7 @@
   "rules": [{ "type": "Text", "globs": ["**/*.sql", "**/*.txt"], "fallthrough": true }],
   "compatibility_date": "2026-08-12",
   "compatibility_flags": ["nodejs_compat"],
-  "vars": { "OSFO_STAGE": "test" },
+  "vars": { "OSFO_STAGE": "test", "SANDBOX_TRANSPORT": "rpc" },
   "r2_buckets": [
     { "binding": "ARTIFACTS", "bucket_name": "osfo-test-generated-artifacts" },
     { "binding": "FILES", "bucket_name": "osfo-test-files" },

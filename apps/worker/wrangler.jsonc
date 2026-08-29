@@ -9,6 +9,7 @@
   "websearch": { "binding": "WEBSEARCH" },
   "vars": {
     "OSFO_STAGE": "test",
+    "SANDBOX_TRANSPORT": "rpc",
     "WHATSAPP_BOT_USERNAME": "osfo_test_whatsapp",
     "WHATSAPP_PHONE_NUMBER_ID": "123456789",
   },
