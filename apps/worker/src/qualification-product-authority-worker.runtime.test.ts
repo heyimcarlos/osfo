@@ -1,4 +1,4 @@
-/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date -- Runtime tests drive Promise-native Worker handlers with fixed timestamps. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, eslint/no-underscore-dangle -- Runtime tests drive Promise-native Worker handlers and assert closed _tag outcomes with fixed timestamps. */
 import { expect, it } from "vitest";
 
 import { AgentId } from "./domain";
@@ -12,11 +12,14 @@ import {
   qualificationChecksum,
 } from "./qualification/qualification-checksum";
 import { createBoundedBetaManifest } from "./qualification/qualification-manifest";
+import { ScheduledEmail } from "./services/scheduled-email";
 import {
   handleQualificationProductAuthority,
   qualificationMemoryAuthorityRecords,
   qualificationScheduledEmailAuthorityRecords,
+  retainQualificationProductAuthorityShard,
 } from "./qualification-product-authority-worker";
+import { scheduledEmailWorkflowEvidenceArtifactId } from "./workflows/scheduled-email";
 
 it("distinguishes failed, unsettled, and absent Memory obligations", () => {
   const root = { rootId: "root-1", userMessageId: "message-1" };
@@ -65,7 +68,7 @@ it("distinguishes failed, unsettled, and absent Memory obligations", () => {
   ]);
 });
 
-it("projects exact Scheduled Email Applied, NotApplied, and unsettled outcomes", () => {
+it("projects exact Scheduled Email Applied, NotApplied, and unsettled outcomes", async () => {
   const terminalAt = new Date("2026-08-29T17:01:00.000Z");
   const sendOutcomeAt = new Date("2026-08-29T17:00:30.000Z");
   const context = {
@@ -81,16 +84,46 @@ it("projects exact Scheduled Email Applied, NotApplied, and unsettled outcomes",
   const base = {
     acceptedAt: new Date("2026-08-29T17:00:10.000Z"),
     cloudflareInstanceId: "scheduled-email-instance-1",
+    dueAt: new Date("2026-08-29T17:00:30.000Z"),
     providerLogId: "provider-log-1",
     providerResourceId: "gmail-message-1",
     qualificationContext: context,
+    safeFailureCode: null,
+    sendAccountedAt: terminalAt,
+    sendAccountingBasis: "observed" as const,
     sendOutcomeAt,
+    sendReconciliationClaimedAt: null,
+    sendReconciliationLeaseExpiresAt: null,
+    sendReconciliationRecoveryUsed: false,
+    sendStartedAt: new Date("2026-08-29T17:00:30.000Z"),
     state: "success" as const,
     terminalAt,
-    workflowId: "scheduled-email-workflow-1",
+    workflowId: ScheduledEmail.WorkflowId.make("scheduled-email-workflow-1"),
   };
+  const workflowEvidenceFor = (
+    state: "canceled" | "failure" | "send_pending_reconciliation" | "success",
+    sendStartedAtUtc: string | null = base.sendStartedAt.toISOString(),
+  ) => {
+    const content = {
+      artifactId: scheduledEmailWorkflowEvidenceArtifactId(base.cloudflareInstanceId),
+      completedAtUtc: "2026-08-29T17:01:01.000Z",
+      dueAtUtc: base.dueAt.toISOString(),
+      instanceId: base.cloudflareInstanceId,
+      sendStartedAtUtc,
+      state,
+      terminalAtUtc: state === "send_pending_reconciliation" ? null : terminalAt.toISOString(),
+      version: "scheduled-email-workflow-evidence-v1" as const,
+      workflowId: base.workflowId,
+    };
+    return { ...content, artifactChecksum: qualificationChecksum(content) };
+  };
+  const nowEpochMs = Date.parse("2026-08-29T17:01:02.000Z");
   expect(
-    qualificationScheduledEmailAuthorityRecords({ ...base, sendOutcome: "applied" }),
+    qualificationScheduledEmailAuthorityRecords(
+      { ...base, sendOutcome: "applied" },
+      workflowEvidenceFor("success"),
+      nowEpochMs,
+    ),
   ).toMatchObject({
     _tag: "Ready",
     records: {
@@ -101,13 +134,17 @@ it("projects exact Scheduled Email Applied, NotApplied, and unsettled outcomes",
     },
   });
   expect(
-    qualificationScheduledEmailAuthorityRecords({
-      ...base,
-      providerLogId: null,
-      providerResourceId: null,
-      sendOutcome: "notApplied",
-      state: "failure",
-    }),
+    qualificationScheduledEmailAuthorityRecords(
+      {
+        ...base,
+        providerLogId: null,
+        providerResourceId: null,
+        sendOutcome: "notApplied",
+        state: "failure",
+      },
+      workflowEvidenceFor("failure"),
+      nowEpochMs,
+    ),
   ).toMatchObject({
     _tag: "Ready",
     records: {
@@ -117,21 +154,82 @@ it("projects exact Scheduled Email Applied, NotApplied, and unsettled outcomes",
     },
   });
   expect(
-    qualificationScheduledEmailAuthorityRecords({
-      ...base,
-      sendOutcome: "ambiguous",
-      state: "failure",
-    }),
+    qualificationScheduledEmailAuthorityRecords(
+      {
+        ...base,
+        sendAccountedAt: null,
+        sendAccountingBasis: null,
+        sendOutcome: "ambiguous",
+        state: "send_pending_reconciliation",
+        terminalAt: null,
+      },
+      workflowEvidenceFor("send_pending_reconciliation"),
+      nowEpochMs,
+    ),
+  ).toMatchObject({ _tag: "Pending", source: "provider_delivery_receipts" });
+  const reconciliationClaimedAt = new Date(base.sendStartedAt.getTime() + 300_000);
+  const reconciliationLeaseExpiresAt = new Date(reconciliationClaimedAt.getTime() + 60_000);
+  const leasedAmbiguity = {
+    ...base,
+    sendAccountedAt: null,
+    sendAccountingBasis: null,
+    sendOutcome: "ambiguous" as const,
+    sendReconciliationClaimedAt: reconciliationClaimedAt,
+    sendReconciliationLeaseExpiresAt: reconciliationLeaseExpiresAt,
+    state: "send_pending_reconciliation" as const,
+    terminalAt: null,
+  };
+  expect(
+    qualificationScheduledEmailAuthorityRecords(
+      leasedAmbiguity,
+      workflowEvidenceFor("send_pending_reconciliation"),
+      base.sendStartedAt.getTime() + 419_999,
+    ),
+  ).toMatchObject({ _tag: "Pending", source: "provider_delivery_receipts" });
+  expect(
+    qualificationScheduledEmailAuthorityRecords(
+      leasedAmbiguity,
+      workflowEvidenceFor("send_pending_reconciliation"),
+      base.sendStartedAt.getTime() + 420_000,
+    ),
   ).toEqual({ _tag: "Missing", source: "provider_delivery_receipts" });
   expect(
-    qualificationScheduledEmailAuthorityRecords({
-      ...base,
-      providerLogId: null,
-      providerResourceId: null,
-      sendOutcome: null,
-      sendOutcomeAt: null,
-      state: "failure",
-    }),
+    qualificationScheduledEmailAuthorityRecords(
+      {
+        ...base,
+        safeFailureCode: "send-outcome-unknown",
+        sendAccountingBasis: "conservative",
+        sendOutcome: "ambiguous",
+        state: "failure",
+      },
+      workflowEvidenceFor("send_pending_reconciliation"),
+      base.sendStartedAt.getTime() + ScheduledEmail.providerEvidenceHorizonMilliseconds + 1,
+    ),
+  ).toMatchObject({
+    _tag: "Ready",
+    records: {
+      gmail_provider_receipts: [{ deliveryStatus: "failed" }],
+      provider_delivery_receipts: [{ providerStatus: "failed" }],
+      workflow_instance_receipts: [{ workflowStatus: "failed" }],
+    },
+  });
+  expect(
+    qualificationScheduledEmailAuthorityRecords(
+      {
+        ...base,
+        providerLogId: null,
+        providerResourceId: null,
+        safeFailureCode: "cancel-requested",
+        sendAccountedAt: null,
+        sendAccountingBasis: null,
+        sendOutcome: null,
+        sendOutcomeAt: null,
+        sendStartedAt: null,
+        state: "canceled",
+      },
+      workflowEvidenceFor("canceled", null),
+      nowEpochMs,
+    ),
   ).toMatchObject({
     _tag: "Ready",
     records: {
@@ -139,6 +237,106 @@ it("projects exact Scheduled Email Applied, NotApplied, and unsettled outcomes",
       provider_delivery_receipts: [{ providerObligation: "notRequired" }],
     },
   });
+  expect(
+    qualificationScheduledEmailAuthorityRecords(
+      {
+        ...base,
+        providerLogId: null,
+        providerResourceId: null,
+        safeFailureCode: "unclassified-failure",
+        sendAccountedAt: null,
+        sendAccountingBasis: null,
+        sendOutcome: null,
+        sendOutcomeAt: null,
+        sendStartedAt: null,
+        state: "failure",
+      },
+      workflowEvidenceFor("failure", null),
+      nowEpochMs,
+    ),
+  ).toEqual({ _tag: "Missing", source: "provider_delivery_receipts" });
+  expect(
+    qualificationScheduledEmailAuthorityRecords(
+      {
+        ...base,
+        providerLogId: null,
+        providerResourceId: null,
+        sendOutcome: null,
+        sendOutcomeAt: null,
+        state: "failure",
+      },
+      workflowEvidenceFor("failure"),
+      nowEpochMs,
+    ),
+  ).toEqual({ _tag: "Missing", source: "provider_delivery_receipts" });
+  expect(
+    qualificationScheduledEmailAuthorityRecords(
+      { ...base, sendOutcome: "applied" },
+      null,
+      nowEpochMs,
+    ),
+  ).toMatchObject({ _tag: "Pending", source: "task_compute_receipts" });
+  expect(
+    qualificationScheduledEmailAuthorityRecords(
+      { ...base, sendOutcome: "applied" },
+      null,
+      base.sendStartedAt.getTime() + ScheduledEmail.providerEvidenceHorizonMilliseconds,
+    ),
+  ).toEqual({ _tag: "Missing", source: "task_compute_receipts" });
+
+  const appliedRecords = qualificationScheduledEmailAuthorityRecords(
+    { ...base, sendOutcome: "applied" },
+    workflowEvidenceFor("success"),
+    nowEpochMs,
+  );
+  if (appliedRecords._tag !== "Ready") {
+    throw new Error("Applied Scheduled Email authority must be ready");
+  }
+  const retained = new Map<string, string>();
+  let persistedWrites = 0;
+  let putAttempts = 0;
+  const bucket = {
+    get: (key: string) =>
+      Promise.resolve(
+        retained.has(key) ? { text: () => Promise.resolve(retained.get(key) ?? "") } : null,
+      ),
+    list: () => Promise.resolve({ objects: [], truncated: false }),
+    put: (
+      key: string,
+      value: string,
+      options: {
+        customMetadata: Record<string, string>;
+        httpMetadata: { contentType: string };
+        onlyIf: { etagDoesNotMatch: "*" };
+      },
+    ) => {
+      putAttempts += 1;
+      expect(options.onlyIf).toEqual({ etagDoesNotMatch: "*" });
+      if (retained.has(key)) return Promise.resolve(null);
+      persistedWrites += 1;
+      retained.set(key, value);
+      return Promise.resolve({});
+    },
+  };
+  const retainAppliedProviderShard = () =>
+    retainQualificationProductAuthorityShard({
+      bucket,
+      executionId: context.executionId,
+      planChecksum: context.planChecksum,
+      records: appliedRecords.records.provider_delivery_receipts,
+      source: "provider_delivery_receipts",
+      sourceVersion: "scheduled-email-source-v1",
+      startsAtEpochMs: context.offeredAtEpochMs,
+      streamChunkIndex: 4,
+    });
+
+  await expect(retainAppliedProviderShard()).resolves.toBe(true);
+  const retainedBytes = [...retained.values()][0];
+  await expect(retainAppliedProviderShard()).resolves.toBe(true);
+  expect(putAttempts).toBe(2);
+  expect(persistedWrites).toBe(1);
+  expect(retained.size).toBe(1);
+  expect([...retained.values()][0]).toBe(retainedBytes);
 });
 
 it("refuses the first arrival until the complete cohort inventory receipt exists", async () => {

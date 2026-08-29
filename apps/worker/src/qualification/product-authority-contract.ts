@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import { qualificationAuthoritySources } from "./authority-sources";
 
 export const QualificationAuthoritySource = Schema.Literals(qualificationAuthoritySources);
+export type QualificationAuthoritySource = typeof QualificationAuthoritySource.Type;
 
 export const QualificationProductAuthorityInvocation = Schema.Struct({
   executionId: Schema.String,
@@ -12,7 +13,7 @@ export const QualificationProductAuthorityInvocation = Schema.Struct({
   requestArtifactId: Schema.String,
 });
 
-const QualificationProductAuthorityMissing = Schema.Struct({
+export const QualificationProductAuthorityMissing = Schema.Struct({
   status: Schema.Literal("MISSING"),
   missingSources: Schema.Array(
     Schema.Struct({
@@ -20,6 +21,37 @@ const QualificationProductAuthorityMissing = Schema.Struct({
       source: QualificationAuthoritySource,
     }),
   ),
+});
+
+export const QualificationProductAuthoritySourceChunkInvocation = Schema.Struct({
+  ...QualificationProductAuthorityInvocation.fields,
+  chunkIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  runId: Schema.String,
+  source: Schema.Literals([
+    "allowance_and_billing_ledger",
+    "gmail_provider_receipts",
+    "memory_commit_receipts",
+    "model_access_receipts",
+    "osfo_committed_turns",
+    "provider_delivery_receipts",
+    "task_compute_receipts",
+    "workflow_instance_receipts",
+  ]),
+});
+export type QualificationProductAuthoritySourceChunkSource =
+  typeof QualificationProductAuthoritySourceChunkInvocation.Type.source;
+
+export const QualificationProductAuthoritySourceChunkComplete = Schema.Struct({
+  recordCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  source: QualificationAuthoritySource,
+  status: Schema.Literal("COMPLETE"),
+  streamChunkIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+
+export const QualificationProductAuthoritySourceChunkPending = Schema.Struct({
+  retryAtEpochMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  source: QualificationAuthoritySource,
+  status: Schema.Literal("PENDING"),
 });
 
 export const QualificationProductAuthorityRun = Schema.Struct({

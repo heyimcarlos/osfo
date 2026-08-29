@@ -1,10 +1,16 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, vitest/no-standalone-expect -- Promise-only fakes model the Cloudflare Workflow host with fixed timestamps. */
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import { AgentId } from "../domain";
 import { ScheduledEmail } from "../services/scheduled-email";
-import { runScheduledEmailHost, type ScheduledEmailWorkflowStep } from "./scheduled-email";
+import {
+  runAndRetainScheduledEmailHost,
+  runScheduledEmailHost,
+  scheduledEmailWorkflowEvidenceArtifactId,
+  ScheduledEmailWorkflowEvidence,
+  type ScheduledEmailWorkflowStep,
+} from "./scheduled-email";
 
 const payload = ScheduledEmail.WorkflowPayload.make({
   agentId: AgentId.make("scheduled-email-agent"),
@@ -92,4 +98,76 @@ it("rejects a Workflow instance that does not match the durable Workflow identit
       directory,
     ),
   ).rejects.toThrow("instance identity is invalid");
+});
+
+it("retains exact producer-owned Workflow evidence after the real due and send path", async () => {
+  const retained = new Map<string, string>();
+  const instanceId = await Effect.runPromise(
+    ScheduledEmail.cloudflareInstanceIdFor(payload.workflowId),
+  );
+  const result = await runAndRetainScheduledEmailHost(
+    { instanceId, payload: encodedPayload },
+    makeStep([]),
+    {
+      beginScheduledEmail: async () => encodedResult("waiting"),
+      executeScheduledEmail: async () => encodedResult("success"),
+    },
+    {
+      get: (key) =>
+        Promise.resolve(
+          retained.has(key) ? { text: () => Promise.resolve(retained.get(key) ?? "") } : null,
+        ),
+      put: (key, value, options) => {
+        expect(options.onlyIf).toEqual({ etagDoesNotMatch: "*" });
+        retained.set(key, value);
+        return Promise.resolve({});
+      },
+    },
+    () => new Date("2026-08-28T13:00:02.000Z"),
+  );
+
+  const artifactId = scheduledEmailWorkflowEvidenceArtifactId(instanceId);
+  const evidence = Schema.decodeSync(Schema.fromJsonString(ScheduledEmailWorkflowEvidence))(
+    retained.get(artifactId) ?? "",
+  );
+  expect(result.state).toBe("success");
+  expect(evidence).toMatchObject({
+    artifactId,
+    completedAtUtc: "2026-08-28T13:00:02.000Z",
+    instanceId,
+    state: "success",
+    workflowId: payload.workflowId,
+  });
+});
+
+it("reconciles an uncertain immutable Workflow evidence write by exact readback", async () => {
+  const retained = new Map<string, string>();
+  const instanceId = await Effect.runPromise(
+    ScheduledEmail.cloudflareInstanceIdFor(payload.workflowId),
+  );
+  const evidenceBucket = {
+    get: (key: string) =>
+      Promise.resolve(
+        retained.has(key) ? { text: () => Promise.resolve(retained.get(key) ?? "") } : null,
+      ),
+    put: (key: string, value: string) => {
+      if (!retained.has(key)) retained.set(key, value);
+      return Promise.resolve(null);
+    },
+  };
+  const execute = () =>
+    runAndRetainScheduledEmailHost(
+      { instanceId, payload: encodedPayload },
+      makeStep([]),
+      {
+        beginScheduledEmail: async () => encodedResult("waiting"),
+        executeScheduledEmail: async () => encodedResult("failure"),
+      },
+      evidenceBucket,
+      () => new Date("2026-08-28T13:00:02.000Z"),
+    );
+
+  await expect(execute()).resolves.toMatchObject({ state: "failure" });
+  await expect(execute()).resolves.toMatchObject({ state: "failure" });
+  expect(retained.size).toBe(1);
 });

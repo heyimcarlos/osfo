@@ -12,6 +12,11 @@ import { makeQualificationCohortAuthority } from "./integrations/postgres/qualif
 import { makeQualificationAttemptIndex } from "./integrations/postgres/qualification-attempt-index";
 import { readQualificationScheduledEmailAuthority } from "./integrations/postgres/scheduled-email";
 import { project } from "./services/authorization-context";
+import { ScheduledEmail } from "./services/scheduled-email";
+import {
+  scheduledEmailWorkflowEvidenceArtifactId,
+  ScheduledEmailWorkflowEvidence,
+} from "./workflows/scheduled-email";
 import { qualificationAuthoritySources } from "./qualification/authority-sources";
 import {
   createQualificationExecutionPlan,
@@ -21,6 +26,7 @@ import {
 import {
   QualificationProductAuthorityArrivalChunk,
   QualificationProductAuthorityInvocation,
+  QualificationProductAuthoritySourceChunkInvocation,
 } from "./qualification/product-authority-contract";
 import {
   qualificationAttemptArtifactId,
@@ -101,21 +107,6 @@ const ExecuteArrivalChunkInvocation = Schema.Struct({
   chunkIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   runId: Schema.String,
 });
-const CollectSourceChunkInvocation = Schema.Struct({
-  ...QualificationProductAuthorityInvocation.fields,
-  chunkIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  runId: Schema.String,
-  source: Schema.Literals([
-    "allowance_and_billing_ledger",
-    "gmail_provider_receipts",
-    "memory_commit_receipts",
-    "model_access_receipts",
-    "osfo_committed_turns",
-    "provider_delivery_receipts",
-    "task_compute_receipts",
-    "workflow_instance_receipts",
-  ]),
-});
 const ExecuteArrivalComplete = Schema.Struct({
   receipt: QualificationAdmissionReceipt,
   status: Schema.Literal("COMPLETE"),
@@ -150,7 +141,7 @@ const decodeExecuteArrivalChunk = Schema.decodeUnknownOption(
   Schema.fromJsonString(ExecuteArrivalChunkInvocation),
 );
 const decodeCollectSourceChunk = Schema.decodeUnknownOption(
-  Schema.fromJsonString(CollectSourceChunkInvocation),
+  Schema.fromJsonString(QualificationProductAuthoritySourceChunkInvocation),
 );
 const decodeQualificationJourney = Schema.decodeUnknownOption(QualificationContext.fields.journey);
 const decodeExecuteArrivalComplete = Schema.decodeUnknownOption(ExecuteArrivalComplete);
@@ -189,7 +180,7 @@ export interface QualificationProductAuthorityEnv {
   readonly OSFO_DIRECTORY?: DurableObjectNamespace<OsfoDirectory>;
 }
 
-interface QualificationProductAuthorityArtifactBucket {
+export interface QualificationProductAuthorityArtifactBucket {
   readonly get: (key: string) => Promise<{ readonly text: () => Promise<string> } | null>;
   readonly list: (options: {
     readonly cursor?: string;
@@ -242,54 +233,75 @@ const sha256Hex = async (encoded: string): Promise<string> => {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 };
 
-const retainProductAuthorityShard = async (
-  env: QualificationProductAuthorityEnv,
-  frozen: FrozenExecution,
-  source: (typeof qualificationAuthoritySources)[number],
-  streamChunkIndex: number,
-  records: ReadonlyArray<QualificationAuthorityRecord>,
-): Promise<boolean> => {
+export const retainQualificationProductAuthorityShard = async (input: {
+  readonly bucket: QualificationProductAuthorityArtifactBucket;
+  readonly executionId: string;
+  readonly planChecksum: string;
+  readonly records: ReadonlyArray<QualificationAuthorityRecord>;
+  readonly source: (typeof qualificationAuthoritySources)[number];
+  readonly sourceVersion: string;
+  readonly startsAtEpochMs: number;
+  readonly streamChunkIndex: number;
+}): Promise<boolean> => {
   const artifactId = productAuthorityShardArtifactId(
-    frozen.plan.executionId,
-    source,
-    streamChunkIndex,
+    input.executionId,
+    input.source,
+    input.streamChunkIndex,
   );
-  const exportedAtUtc = records.reduce((latest, record) => {
+  const exportedAtUtc = input.records.reduce((latest, record) => {
     const decoded = Schema.decodeUnknownOption(QualificationAuthorityOccurredAt)(record);
     return Option.isSome(decoded) && decoded.value.occurredAt > latest
       ? decoded.value.occurredAt
       : latest;
-  }, new Date(frozen.plan.startsAtEpochMs).toISOString());
+  }, new Date(input.startsAtEpochMs).toISOString());
   const content = {
     artifactId,
-    authority: source,
+    authority: input.source,
     exportedAtUtc,
-    records,
-    sourceVersion: frozen.manifest.sourceVersion,
+    records: input.records,
+    sourceVersion: input.sourceVersion,
   };
   const artifact = { ...content, checksum: qualificationChecksum(content) };
   const encoded = canonicalQualificationJson(artifact);
-  const retained = await env.ARTIFACTS.put(artifactId, encoded, {
+  const retained = await input.bucket.put(artifactId, encoded, {
     customMetadata: {
       "osfo-artifact-checksum": artifact.checksum,
       "osfo-body-sha256": await sha256Hex(encoded),
-      "osfo-execution-id": frozen.plan.executionId,
-      "osfo-index": String(streamChunkIndex),
+      "osfo-execution-id": input.executionId,
+      "osfo-index": String(input.streamChunkIndex),
       "osfo-kind": "qualification-product-authority-export-v1",
-      "osfo-plan-checksum": frozen.plan.planChecksum,
-      "osfo-source": source,
-      "osfo-source-version": frozen.manifest.sourceVersion,
+      "osfo-plan-checksum": input.planChecksum,
+      "osfo-source": input.source,
+      "osfo-source-version": input.sourceVersion,
     },
     httpMetadata: { contentType: "application/json" },
     onlyIf: { etagDoesNotMatch: "*" },
   });
   if (retained === null) {
-    const conflicted = await env.ARTIFACTS.get(artifactId);
+    const conflicted = await input.bucket.get(artifactId);
     return conflicted !== null && (await conflicted.text()) === encoded;
   }
-  const existing = await env.ARTIFACTS.get(artifactId);
+  const existing = await input.bucket.get(artifactId);
   return existing !== null && (await existing.text()) === encoded;
 };
+
+const retainProductAuthorityShard = (
+  env: QualificationProductAuthorityEnv,
+  frozen: FrozenExecution,
+  source: (typeof qualificationAuthoritySources)[number],
+  streamChunkIndex: number,
+  records: ReadonlyArray<QualificationAuthorityRecord>,
+) =>
+  retainQualificationProductAuthorityShard({
+    bucket: env.ARTIFACTS,
+    executionId: frozen.plan.executionId,
+    planChecksum: frozen.plan.planChecksum,
+    records,
+    source,
+    sourceVersion: frozen.manifest.sourceVersion,
+    startsAtEpochMs: frozen.plan.startsAtEpochMs,
+    streamChunkIndex,
+  });
 
 const streamRuns = (plan: QualificationExecutionPlan) => {
   let firstStreamChunkIndex = 0;
@@ -1353,11 +1365,19 @@ export const qualificationMemoryAuthorityRecords = (input: {
 interface QualificationScheduledEmailRecord {
   readonly acceptedAt: Date | null;
   readonly cloudflareInstanceId: string;
+  readonly dueAt: Date;
   readonly providerLogId: string | null;
   readonly providerResourceId: string | null;
   readonly qualificationContext?: QualificationContext;
+  readonly safeFailureCode: string | null;
+  readonly sendAccountedAt: Date | null;
+  readonly sendAccountingBasis: "conservative" | "observed" | null;
   readonly sendOutcome: "ambiguous" | "applied" | "notApplied" | null;
   readonly sendOutcomeAt: Date | null;
+  readonly sendReconciliationClaimedAt: Date | null;
+  readonly sendReconciliationLeaseExpiresAt: Date | null;
+  readonly sendReconciliationRecoveryUsed: boolean;
+  readonly sendStartedAt: Date | null;
   readonly state:
     | "accepted"
     | "admitted"
@@ -1373,8 +1393,12 @@ interface QualificationScheduledEmailRecord {
 
 export const qualificationScheduledEmailAuthorityRecords = (
   email: QualificationScheduledEmailRecord,
+  workflowEvidence: ScheduledEmailWorkflowEvidence | null,
+  nowEpochMs: number,
 ):
+  | { readonly _tag: "Conflict"; readonly source: string }
   | { readonly _tag: "Missing"; readonly source: string }
+  | { readonly _tag: "Pending"; readonly retryAtEpochMs: number; readonly source: string }
   | {
       readonly _tag: "Ready";
       readonly records: Readonly<
@@ -1388,8 +1412,81 @@ export const qualificationScheduledEmailAuthorityRecords = (
       >;
     } => {
   const context = email.qualificationContext;
-  if (context === undefined || email.terminalAt === null) {
+  if (context === undefined) {
     return { _tag: "Missing", source: "workflow_instance_receipts" };
+  }
+  const collectionDeadlineEpochMs = (() => {
+    if (email.sendStartedAt === null) return context.offeredAtEpochMs + 120_000;
+    const evidenceDeadline =
+      email.sendStartedAt.getTime() + ScheduledEmail.providerEvidenceHorizonMilliseconds;
+    if (
+      email.sendReconciliationClaimedAt === null ||
+      email.sendReconciliationClaimedAt.getTime() > evidenceDeadline ||
+      email.sendReconciliationLeaseExpiresAt === null
+    ) {
+      return evidenceDeadline;
+    }
+    const recoveryAllowance = email.sendReconciliationRecoveryUsed
+      ? 0
+      : ScheduledEmail.providerReconciliationRecoveryMilliseconds;
+    return Math.max(
+      evidenceDeadline,
+      email.sendReconciliationLeaseExpiresAt.getTime() + recoveryAllowance,
+    );
+  })();
+  const pending = (source: string) =>
+    nowEpochMs < collectionDeadlineEpochMs
+      ? {
+          _tag: "Pending" as const,
+          retryAtEpochMs: Math.min(nowEpochMs + 5_000, collectionDeadlineEpochMs),
+          source,
+        }
+      : { _tag: "Missing" as const, source };
+  const finalizedAmbiguity =
+    email.sendOutcome === "ambiguous" &&
+    email.terminalAt !== null &&
+    email.sendAccountingBasis === "conservative" &&
+    email.sendAccountedAt !== null &&
+    email.safeFailureCode === "send-outcome-unknown";
+  if (email.sendOutcome === "ambiguous" && !finalizedAmbiguity) {
+    return pending("provider_delivery_receipts");
+  }
+  if (email.terminalAt === null) return pending("workflow_instance_receipts");
+  if (workflowEvidence === null) return pending("task_compute_receipts");
+  const { artifactChecksum, ...workflowEvidenceContent } = workflowEvidence;
+  const completedAtEpochMs = canonicalUtcEpochMilliseconds(workflowEvidence.completedAtUtc);
+  const evidenceTerminalAtEpochMs =
+    workflowEvidence.terminalAtUtc === null
+      ? null
+      : canonicalUtcEpochMilliseconds(workflowEvidence.terminalAtUtc);
+  const evidenceSendStartedAtEpochMs =
+    workflowEvidence.sendStartedAtUtc === null
+      ? null
+      : canonicalUtcEpochMilliseconds(workflowEvidence.sendStartedAtUtc);
+  const workflowEvidenceIsTerminal = ScheduledEmail.terminalStates.has(workflowEvidence.state);
+  if (
+    artifactChecksum !== qualificationChecksum(workflowEvidenceContent) ||
+    workflowEvidence.artifactId !==
+      scheduledEmailWorkflowEvidenceArtifactId(email.cloudflareInstanceId) ||
+    workflowEvidence.instanceId !== email.cloudflareInstanceId ||
+    workflowEvidence.workflowId !== email.workflowId ||
+    workflowEvidence.dueAtUtc !== email.dueAt.toISOString() ||
+    (workflowEvidence.sendStartedAtUtc === null
+      ? email.sendStartedAt !== null
+      : email.sendStartedAt === null ||
+        workflowEvidence.sendStartedAtUtc !== email.sendStartedAt.toISOString()) ||
+    completedAtEpochMs === null ||
+    (workflowEvidence.sendStartedAtUtc !== null && evidenceSendStartedAtEpochMs === null) ||
+    (workflowEvidence.terminalAtUtc !== null && evidenceTerminalAtEpochMs === null) ||
+    (evidenceSendStartedAtEpochMs !== null && completedAtEpochMs < evidenceSendStartedAtEpochMs) ||
+    (workflowEvidenceIsTerminal
+      ? workflowEvidence.state !== email.state ||
+        workflowEvidence.terminalAtUtc !== email.terminalAt.toISOString() ||
+        evidenceTerminalAtEpochMs === null ||
+        completedAtEpochMs < evidenceTerminalAtEpochMs
+      : workflowEvidence.terminalAtUtc !== null)
+  ) {
+    return { _tag: "Conflict", source: "task_compute_receipts" };
   }
   const outcomeId = `scheduled-email-outcome:${email.workflowId}:${email.state}`;
   const base = {
@@ -1408,18 +1505,46 @@ export const qualificationScheduledEmailAuthorityRecords = (
         : [{ effectId: email.workflowId, kind: "workflowStarts" as const }],
     productFactId: email.workflowId,
     scheduledTaskId: email.cloudflareInstanceId,
+    taskExecutionEvidenceId: workflowEvidence.artifactId,
     workflowId: email.workflowId,
     workflowStatus: email.state === "success" ? ("completed" as const) : ("failed" as const),
   };
   const task = {
     ...base,
-    executionStatus: email.state === "success" ? ("completed" as const) : ("failed" as const),
+    executionStatus: "completed" as const,
+    occurredAt: workflowEvidence.completedAtUtc,
     productFactId: `scheduled-email-task:${email.cloudflareInstanceId}`,
+    runtimeEvidenceId: workflowEvidence.artifactId,
     scheduledTaskId: email.cloudflareInstanceId,
     taskExecutionId: email.cloudflareInstanceId,
   };
-  if (email.sendOutcome === "ambiguous") {
-    return { _tag: "Missing", source: "provider_delivery_receipts" };
+  if (finalizedAmbiguity) {
+    const failedProviderBase = {
+      ...base,
+      occurredAt: email.sendOutcomeAt?.toISOString() ?? email.terminalAt.toISOString(),
+      productFactId: `scheduled-email-provider-outcome:${email.workflowId}`,
+    };
+    return {
+      _tag: "Ready",
+      records: {
+        gmail_provider_receipts: [
+          {
+            ...failedProviderBase,
+            deliveryId: email.workflowId,
+            deliveryStatus: "failed",
+          },
+        ],
+        provider_delivery_receipts: [
+          {
+            ...failedProviderBase,
+            deliveryId: email.workflowId,
+            providerStatus: "failed",
+          },
+        ],
+        task_compute_receipts: [task],
+        workflow_instance_receipts: [workflow],
+      },
+    };
   }
   if (email.sendOutcome === "applied") {
     if (
@@ -1492,6 +1617,15 @@ export const qualificationScheduledEmailAuthorityRecords = (
       },
     };
   }
+  const providerNoEffectProven =
+    email.state === "canceled" &&
+    (email.safeFailureCode === "authority-ended" ||
+      (email.sendStartedAt === null &&
+        (email.safeFailureCode === "account-deletion" ||
+          email.safeFailureCode === "cancel-requested")));
+  if (!providerNoEffectProven) {
+    return { _tag: "Missing", source: "provider_delivery_receipts" };
+  }
   return {
     _tag: "Ready",
     records: {
@@ -1513,6 +1647,11 @@ export const qualificationScheduledEmailAuthorityRecords = (
       workflow_instance_receipts: [workflow],
     },
   };
+};
+
+const canonicalUtcEpochMilliseconds = (value: string): number | null => {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? parsed : null;
 };
 
 const collectAgentSourceChunk = async (
@@ -1655,7 +1794,48 @@ const collectAgentSourceChunk = async (
               { status: 424 },
             );
       }
-      const mapped = authority.records.map(qualificationScheduledEmailAuthorityRecords);
+      const retainedWorkflowEvidence = await Promise.all(
+        authority.records.map(async (email) => {
+          const artifact = await env.ARTIFACTS.get(
+            scheduledEmailWorkflowEvidenceArtifactId(email.cloudflareInstanceId),
+          );
+          if (artifact === null) return { email, evidence: null, invalid: false } as const;
+          const decoded = Schema.decodeOption(
+            Schema.fromJsonString(ScheduledEmailWorkflowEvidence),
+          )(await artifact.text());
+          return Option.isSome(decoded)
+            ? { email, evidence: decoded.value, invalid: false as const }
+            : { email, evidence: null, invalid: true as const };
+        }),
+      );
+      if (retainedWorkflowEvidence.some(({ invalid }) => invalid)) {
+        return Response.json(
+          { error: "qualificationScheduledEmailWorkflowEvidenceConflict" },
+          { status: 409 },
+        );
+      }
+      const nowEpochMs = Date.now();
+      const mapped = retainedWorkflowEvidence.map(({ email, evidence }) =>
+        qualificationScheduledEmailAuthorityRecords(email, evidence, nowEpochMs),
+      );
+      const conflict = mapped.find((entry) => entry._tag === "Conflict");
+      if (conflict !== undefined) {
+        return Response.json(
+          { error: "qualificationScheduledEmailWorkflowEvidenceConflict" },
+          { status: 409 },
+        );
+      }
+      const pending = mapped.find((entry) => entry._tag === "Pending");
+      if (pending !== undefined && pending._tag === "Pending") {
+        return Response.json(
+          {
+            retryAtEpochMs: pending.retryAtEpochMs,
+            source: pending.source,
+            status: "PENDING",
+          },
+          { headers: { "retry-after": "5" }, status: 202 },
+        );
+      }
       const missing = mapped.find((entry) => entry._tag === "Missing");
       if (missing !== undefined) {
         return Response.json(
