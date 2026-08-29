@@ -7,6 +7,7 @@ import {
   type HelpArea,
   type IntegrationToolkit,
   type RegistrationLocale,
+  type ScheduledEmailApprovalDecision,
   type SkillChangeRequest,
   type SkillDeletionPresentation,
   skillDeletionConfirmation,
@@ -110,6 +111,25 @@ export const disconnectIntegration = (toolkit: IntegrationToolkit) =>
     const client = yield* apiClient;
     return yield* client.integrations.disconnect({ payload: { toolkit } });
   });
+
+/** Inspect exact pending Scheduled Email Approvals for the authenticated User. */
+export const inspectScheduledEmailApprovals = Effect.gen(function* () {
+  const client = yield* apiClient;
+  return yield* client.scheduledEmails.approvals();
+});
+
+/** Dispatch one exact Scheduled Email Approval decision through the owning Agent. */
+export const decideScheduledEmailApproval = (payload: ScheduledEmailApprovalDecision) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    return yield* client.scheduledEmails.decideApproval({ payload });
+  });
+
+/** Inspect delivered privacy-safe Scheduled Email outcomes. */
+export const inspectScheduledEmailNotifications = Effect.gen(function* () {
+  const client = yield* apiClient;
+  return yield* client.scheduledEmails.notifications();
+});
 
 /** Start or recover Stripe-hosted Adventurer Checkout. */
 export const startBillingCheckout = Effect.gen(function* () {

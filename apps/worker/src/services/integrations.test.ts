@@ -1,6 +1,7 @@
 /* oxlint-disable eslint/no-underscore-dangle, vitest/no-standalone-expect -- Assertions execute inside Effect Vitest generators and inspect tagged outcomes. */
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Option, Schema } from "effect";
+import { TestClock } from "effect/testing";
 
 import { ActionId } from "../domain/action-execution";
 import { ManifestVersion, UserId } from "../domain";
@@ -12,6 +13,7 @@ import {
   type IntegrationProvider,
   type PersistedIntegrationAction,
   type ProviderExecutionResult,
+  type ProviderExecutionEvidence,
   type ProviderInput,
   type ProviderSession,
 } from "./integrations";
@@ -254,7 +256,7 @@ describe("Integrations", () => {
       const replay = yield* integrations.execute(request);
 
       expect(first).toEqual(replay);
-      expect(authorityChecks).toBe(2);
+      expect(authorityChecks).toBe(1);
       expect(first).toMatchObject({
         _tag: "IntegrationEffectCompleted",
         evidence: {
@@ -276,6 +278,95 @@ describe("Integrations", () => {
           providerTool: "GMAIL_SEND_EMAIL",
         },
       ]);
+    }),
+  );
+
+  it.effect("inspects one exact effect Action without provider I/O", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits = [
+        {
+          connectedAccount: { id: "account-1", status: "ACTIVE" },
+          isActive: true,
+          slug: "gmail",
+        },
+      ];
+      harness.executeResult = {
+        data: { id: "provider-message-1" },
+        error: null,
+        logId: "composio-log-1",
+      };
+      const integrations = make(harness);
+      const exact = {
+        actionId: ActionId.make("inspect-action"),
+        identity: {
+          manifestVersion: ManifestVersion.make("gmail-v1"),
+          operation: "GMAIL_SEND_EMAIL",
+          toolkit: "gmail",
+        },
+        input: {
+          body: "Hello",
+          recipients: ["person@example.test"],
+          subject: "Subject",
+        },
+        userId,
+      } as const;
+
+      expect(yield* integrations.inspectAction(exact)).toEqual({ _tag: "NotStarted" });
+      const result = yield* integrations.execute({
+        ...exact,
+        authorize: Effect.void,
+        userId,
+      });
+      expect(yield* integrations.inspectAction(exact)).toEqual({
+        _tag: "Applied",
+        result,
+      });
+      expect(
+        yield* integrations
+          .inspectAction({ ...exact, input: { ...exact.input, body: "changed" } })
+          .pipe(Effect.result),
+      ).toMatchObject({ failure: { _tag: "IntegrationActionConflict" } });
+      expect(harness.executed).toHaveLength(1);
+    }),
+  );
+
+  it.effect("retains malformed post-provider success as ambiguous", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits = [
+        {
+          connectedAccount: { id: "account-1", status: "ACTIVE" },
+          isActive: true,
+          slug: "gmail",
+        },
+      ];
+      harness.executeResult = { data: {}, error: null, logId: "malformed-success-log" };
+      const actionId = ActionId.make("malformed-success-action");
+      const integrations = make(harness);
+      const exact = {
+        actionId,
+        identity: {
+          manifestVersion: ManifestVersion.make("gmail-v1"),
+          operation: "GMAIL_SEND_EMAIL",
+          toolkit: "gmail",
+        },
+        input: {
+          body: "Hello",
+          recipients: ["person@example.test"],
+          subject: "Subject",
+        },
+        userId,
+      } as const;
+
+      expect(
+        yield* integrations.execute({ ...exact, authorize: Effect.void }).pipe(Effect.result),
+      ).toMatchObject({
+        failure: { _tag: "IntegrationExecutionRejected", code: "resultInvalid" },
+      });
+      expect(harness.actions.get(actionId)).toMatchObject({ _tag: "Ambiguous" });
+      expect(yield* integrations.inspectAction(exact)).toEqual({ _tag: "Ambiguous" });
+      expect(harness.executed).toHaveLength(1);
     }),
   );
 
@@ -314,7 +405,7 @@ describe("Integrations", () => {
     }),
   );
 
-  it.effect("rechecks the connection after current Action authority is restored", () =>
+  it.effect("discovers the connection before final authority and does not claim after denial", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
       harness.toolkits = [
@@ -328,8 +419,10 @@ describe("Integrations", () => {
       const failure = yield* Effect.flip(
         integrations.execute({
           actionId: ActionId.make("action-connection-revoked"),
-          authorize: Effect.sync(() => {
+          authorize: Effect.gen(function* () {
+            expect(harness.toolkitsInspected).toBe(1);
             harness.toolkits = [{ connectedAccount: null, isActive: false, slug: "gmail" }];
+            return yield* new TestAuthorityLost({ message: "Current authority is gone" });
           }),
           identity: {
             manifestVersion: ManifestVersion.make("gmail-v1"),
@@ -345,7 +438,7 @@ describe("Integrations", () => {
         }),
       );
 
-      expect(failure).toMatchObject({ _tag: "IntegrationConnectionUnavailable" });
+      expect(failure).toMatchObject({ _tag: "TestAuthorityLost" });
       expect(harness.executed).toEqual([]);
       expect(harness.actions.size).toBe(0);
     }),
@@ -988,6 +1081,205 @@ describe("Integrations", () => {
       }),
   );
 
+  it.effect("correlates identical concurrent effects to distinct provider sessions", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits = [
+        {
+          connectedAccount: { id: "account-1", status: "ACTIVE" },
+          isActive: true,
+          slug: "gmail",
+        },
+      ];
+      harness.executeFailure = new IntegrationProviderUnavailable({
+        cause: "execute",
+        message: "The provider response was lost",
+        operation: "execute",
+        reason: "unavailable",
+      });
+      const integrations = make(harness);
+      const exact = {
+        authorize: Effect.void,
+        identity: {
+          manifestVersion: ManifestVersion.make("gmail-v1"),
+          operation: "GMAIL_SEND_EMAIL",
+          toolkit: "gmail",
+        },
+        input: {
+          body: "Identical body",
+          recipients: ["person@example.test"],
+          subject: "Identical subject",
+        },
+        userId,
+      } as const;
+
+      yield* integrations
+        .execute({ ...exact, actionId: ActionId.make("identical-action-1") })
+        .pipe(Effect.result);
+      yield* integrations
+        .execute({ ...exact, actionId: ActionId.make("identical-action-2") })
+        .pipe(Effect.result);
+
+      expect(harness.actions.get(ActionId.make("identical-action-1"))).toMatchObject({
+        correlation: { providerSessionId: "provider-session-1" },
+      });
+      expect(harness.actions.get(ActionId.make("identical-action-2"))).toMatchObject({
+        correlation: { providerSessionId: "provider-session-2" },
+      });
+      expect(harness.executed).toHaveLength(2);
+    }),
+  );
+
+  it.effect("settles ambiguous Actions only from exact provider evidence", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits = [
+        {
+          connectedAccount: { id: "account-1", status: "ACTIVE" },
+          isActive: true,
+          slug: "gmail",
+        },
+      ];
+      harness.executeFailure = new IntegrationProviderUnavailable({
+        cause: "execute",
+        message: "The provider response was lost",
+        operation: "execute",
+        reason: "unavailable",
+      });
+      const integrations = make(harness);
+      const request = {
+        actionId: ActionId.make("action-evidence-repair"),
+        authorize: Effect.void,
+        identity: {
+          manifestVersion: ManifestVersion.make("gmail-v1"),
+          operation: "GMAIL_SEND_EMAIL",
+          toolkit: "gmail",
+        },
+        input: {
+          body: "Hello",
+          recipients: ["person@example.test"],
+          subject: "Subject",
+        },
+        userId,
+      } as const;
+
+      expect(yield* integrations.execute(request).pipe(Effect.result)).toMatchObject({
+        failure: { _tag: "IntegrationActionAmbiguous" },
+      });
+      expect(yield* integrations.inspectAction(request)).toEqual({ _tag: "Ambiguous" });
+      harness.inspectionEvidence = {
+        _tag: "Applied",
+        execution: {
+          data: { id: "provider-message-reconciled" },
+          error: null,
+          logId: "provider-log-reconciled",
+        },
+      };
+      expect(yield* integrations.inspectAction(request)).toMatchObject({
+        _tag: "Applied",
+        result: {
+          evidence: {
+            providerLogId: "provider-log-reconciled",
+            providerResourceId: "provider-message-reconciled",
+          },
+        },
+      });
+      expect(harness.executed).toHaveLength(1);
+    }),
+  );
+
+  it.effect("ages stale Pending truth into ambiguity without another provider call", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits = [
+        {
+          connectedAccount: { id: "account-1", status: "ACTIVE" },
+          isActive: true,
+          slug: "gmail",
+        },
+      ];
+      harness.executeFailure = new IntegrationProviderUnavailable({
+        cause: "execute",
+        message: "The provider response was lost",
+        operation: "execute",
+        reason: "unavailable",
+      });
+      const integrations = make(harness);
+      const request = {
+        actionId: ActionId.make("stale-pending-action"),
+        authorize: Effect.void,
+        identity: {
+          manifestVersion: ManifestVersion.make("gmail-v1"),
+          operation: "GMAIL_SEND_EMAIL",
+          toolkit: "gmail",
+        },
+        input: {
+          body: "Hello",
+          recipients: ["person@example.test"],
+          subject: "Subject",
+        },
+        userId,
+      } as const;
+      yield* TestClock.setTime(1);
+      yield* integrations.execute(request).pipe(Effect.result);
+      const retained = harness.actions.get(request.actionId);
+      if (retained?._tag !== "Ambiguous") throw new Error("ambiguous Action was not retained");
+      harness.actions.set(request.actionId, { ...retained, _tag: "Pending" });
+      yield* TestClock.setTime(120_002);
+
+      expect(yield* integrations.inspectAction(request)).toEqual({ _tag: "Ambiguous" });
+      expect(harness.actions.get(request.actionId)).toMatchObject({ _tag: "Ambiguous" });
+      expect(harness.executed).toHaveLength(1);
+    }),
+  );
+
+  it.effect("preserves exact provider log evidence for proven NotApplied repair", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const actionId = ActionId.make("action-not-applied-evidence");
+      harness.toolkits = [
+        {
+          connectedAccount: { id: "account-1", status: "ACTIVE" },
+          isActive: true,
+          slug: "gmail",
+        },
+      ];
+      harness.executeFailure = new IntegrationProviderUnavailable({
+        cause: "execute",
+        message: "The provider response was lost",
+        operation: "execute",
+        reason: "unavailable",
+      });
+      const integrations = make(harness);
+      const input = {
+        body: "Hello",
+        recipients: ["person@example.test"],
+        subject: "Subject",
+      };
+      const identity = {
+        manifestVersion: ManifestVersion.make("gmail-v1"),
+        operation: "GMAIL_SEND_EMAIL",
+        toolkit: "gmail",
+      } as const;
+      yield* integrations
+        .execute({ actionId, authorize: Effect.void, identity, input, userId })
+        .pipe(Effect.result);
+      harness.inspectionEvidence = {
+        _tag: "NotApplied",
+        providerLogId: "provider-log-not-applied",
+      };
+
+      expect(yield* integrations.inspectAction({ actionId, identity, input, userId })).toEqual({
+        _tag: "NotApplied",
+        providerLogId: "provider-log-not-applied",
+      });
+      expect(harness.actions.get(actionId)).toMatchObject({
+        _tag: "NotApplied",
+        providerLogId: "provider-log-not-applied",
+      });
+    }),
+  );
+
   it.effect("classifies explicit rejection as not applied and permits one safe Action retry", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
@@ -1118,6 +1410,7 @@ const makeHarness = (): IntegrationProvider &
     }>;
     disconnected: Array<string>;
     missingSessions: Set<string>;
+    inspectionEvidence: ProviderExecutionEvidence;
     sessions: Map<UserId, string>;
     stageFailure: IntegrationProviderUnavailable | null;
     staged: Array<{ bytes: Uint8Array; fileName: string; mediaType: string }>;
@@ -1156,6 +1449,7 @@ const makeHarness = (): IntegrationProvider &
     executeFailure: null,
     executed,
     missingSessions: new Set<string>(),
+    inspectionEvidence: { _tag: "Unknown" as const },
     sessions,
     stageFailure: null,
     staged,
@@ -1186,6 +1480,7 @@ const makeHarness = (): IntegrationProvider &
       harness.toolkitsInspected += 1;
       return Effect.succeed(harness.toolkits);
     },
+    inspectExecution: () => Effect.succeed(harness.inspectionEvidence),
     stageFile: (artifact) => {
       harness.staged.push(artifact);
       return harness.stageFailure === null
@@ -1200,7 +1495,10 @@ const makeHarness = (): IntegrationProvider &
   return Object.assign(harness, {
     createSession: (createdUserId: UserId, config: typeof directIntegrationProviderConfig) => {
       harness.created.push({ config, userId: createdUserId });
-      return Effect.succeed({ providerSessionId: "provider-session-1", session: session() });
+      return Effect.succeed({
+        providerSessionId: `provider-session-${harness.created.length}`,
+        session: session(),
+      });
     },
     readAction: (actionId: ActionId) => Effect.succeed(actions.get(actionId) ?? null),
     readSession: (mappedUserId: UserId) => Effect.succeed(sessions.get(mappedUserId) ?? null),

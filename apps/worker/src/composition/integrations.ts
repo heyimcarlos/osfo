@@ -4,29 +4,41 @@ import type { CloudflareConfig } from "../config";
 import { ContentId } from "../domain/client-content";
 import { ComposioPersistence } from "../integrations/composio/persistence";
 import { ComposioProvider } from "../integrations/composio/provider";
+import { LocalVerificationIntegrationProvider } from "../integrations/local-verification/provider";
 import { DocumentArtifacts } from "../integrations/cloudflare/document-artifacts";
 import { Integrations } from "../services/integrations";
 
-/** Compose production Integrations only when the ignored Composio secret is available. */
+/* oxlint-disable eslint/no-underscore-dangle -- Tagged provider configuration is narrowed by its canonical `_tag`. */
+
+/** Compose Integrations from production Composio or an explicit loopback verification provider. */
 export const make = (
-  config: Pick<CloudflareConfig, "composio">,
+  config: Pick<CloudflareConfig, "integrationProvider">,
   storage: DurableObjectStorage,
   artifacts?: R2Bucket,
-): Option.Option<Integrations.Interface> =>
-  config.composio === null
-    ? Option.none()
-    : Option.some(
-        artifacts === undefined
-          ? Integrations.make({
-              ...ComposioPersistence.make(storage),
-              ...ComposioProvider.make(config.composio.apiKey),
-            })
-          : Integrations.make({
-              ...ComposioPersistence.make(storage),
-              ...ComposioProvider.make(config.composio.apiKey),
-              ...artifactAccess(artifacts),
-            }),
-      );
+): Option.Option<Integrations.Interface> => {
+  const selected = config.integrationProvider;
+  if (selected._tag === "Composio" && selected.config === null) return Option.none();
+  const provider =
+    selected._tag === "LocalVerification"
+      ? LocalVerificationIntegrationProvider.make(selected.baseURL)
+      : ComposioProvider.make(composioConfig(selected).apiKey);
+  return Option.some(
+    artifacts === undefined
+      ? Integrations.make({ ...ComposioPersistence.make(storage), ...provider })
+      : Integrations.make({
+          ...ComposioPersistence.make(storage),
+          ...provider,
+          ...artifactAccess(artifacts),
+        }),
+  );
+};
+
+const composioConfig = (
+  selected: Extract<CloudflareConfig["integrationProvider"], { readonly _tag: "Composio" }>,
+) => {
+  if (selected.config === null) throw new Error("Composio provider config is unavailable");
+  return selected.config;
+};
 
 const artifactAccess = (bucket: R2Bucket): Integrations.IntegrationArtifactAccess => {
   const store = DocumentArtifacts.make(bucket);

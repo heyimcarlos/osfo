@@ -29,6 +29,10 @@ if ! grep -F -q 'DocumentBuildWorkflow' "$observer" ||
   printf 'Agent runtime observer must export every configured Document Build Workflow host\n' >&2
   exit 1
 fi
+if ! grep -F -q 'ScheduledEmailWorkflow' "$observer"; then
+  printf 'Agent runtime observer must export the configured Scheduled Email Workflow host\n' >&2
+  exit 1
+fi
 if ! grep -F -q 'inspectDocumentBuildSourceSnapshot' "$observer"; then
   printf 'Document Build verification must use the production-owned immutable source snapshot RPC\n' >&2
   exit 1

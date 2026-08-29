@@ -9,11 +9,14 @@ import {
   IntegrationProviderUnavailable,
   type IntegrationProvider,
   type ProviderExecutionResult,
+  type ProviderAttemptCorrelation,
   type ProviderInput,
   type ProviderSession,
   type ProviderToolkitEvidence,
   type directIntegrationProviderConfig,
 } from "../../services/integrations";
+
+/* oxlint-disable effecttsgo/async-function, eslint/no-await-in-loop -- Composio log cursors must be scanned sequentially under one bounded AbortSignal. */
 
 const requestTimeoutMillis = 30_000;
 const composioApiBaseUrl = "https://backend.composio.dev";
@@ -44,6 +47,28 @@ const DownloadedFile = Schema.Struct({
 });
 
 const DriveMetadataIdentity = Schema.Struct({ id: Schema.String });
+
+const ToolLogList = Schema.Struct({
+  data: Schema.Array(
+    Schema.Struct({
+      actionKey: Schema.String,
+      connectedAccountId: Schema.String,
+      createdAt: Schema.Finite,
+      id: Schema.String,
+      status: Schema.String,
+    }),
+  ),
+  nextCursor: Schema.NullOr(Schema.Finite),
+});
+
+const ToolLogDetail = Schema.Struct({
+  connection: Schema.Struct({ id: Schema.String }),
+  payloadReceived: Schema.JsonObject,
+  response: Schema.JsonObject,
+  session: Schema.JsonObject,
+  status: Schema.String,
+  steps: Schema.Array(Schema.Struct({ type: Schema.String })),
+});
 
 interface ComposioSessionPort {
   readonly authorize: (
@@ -85,6 +110,16 @@ interface ComposioClientPort {
     userId: string,
     toolkit: string,
   ) => Promise<ComposioConnectedAccountList>;
+  readonly listToolLogs?: (input: {
+    readonly cursor: number | null;
+    readonly from: number;
+    readonly signal: AbortSignal;
+    readonly to: number;
+  }) => Promise<typeof ToolLogList.Type>;
+  readonly retrieveToolLog?: (
+    id: string,
+    signal: AbortSignal,
+  ) => Promise<typeof ToolLogDetail.Type>;
   readonly uploadFile: (input: {
     readonly bytes: Uint8Array;
     readonly fileName: string;
@@ -180,6 +215,14 @@ export const make = (apiKey: Redacted.Redacted): IntegrationProvider => {
       composio.connectedAccounts.delete(connectedAccountId).then(() => undefined),
     listConnectedAccounts: (userId, toolkit) =>
       listConnectedAccounts(composio.connectedAccounts, userId, toolkit),
+    listToolLogs: ({ cursor, from, signal, to }) =>
+      filesClient.logs.tools
+        .list({ cursor, from, limit: 100, to }, { signal })
+        .then(Schema.decodeUnknownPromise(ToolLogList)),
+    retrieveToolLog: (id, signal) =>
+      filesClient.logs.tools
+        .retrieve(id, { signal })
+        .then(Schema.decodeUnknownPromise(ToolLogDetail)),
     uploadFile: (input) => uploadFile(filesClient.files, input),
     useSession: (providerSessionId) => composio.sessions.use(providerSessionId),
   });
@@ -260,8 +303,131 @@ const adaptSession = (
         ),
       { concurrency: 1 },
     ).pipe(Effect.map((groups) => groups.flat())),
+  inspectExecution: (correlation, input) => inspectExecution(client, correlation, input),
   stageFile: (artifact) => providerCall("stageFile", () => client.uploadFile(artifact)),
 });
+
+const inspectExecution = (
+  client: ComposioClientPort,
+  correlation: ProviderAttemptCorrelation,
+  input: ProviderInput,
+) => {
+  if (correlation.providerSessionId === null) {
+    return Effect.succeed({ _tag: "Unknown" as const });
+  }
+  if (client.listToolLogs === undefined || client.retrieveToolLog === undefined) {
+    return Effect.succeed({ _tag: "Unknown" as const });
+  }
+  const listToolLogs = client.listToolLogs;
+  const retrieveToolLog = client.retrieveToolLog;
+  const expectedInput = Schema.decodeUnknownSync(Schema.Json)(input);
+  // oxlint-disable-next-line effecttsgo/async-function -- This adapter owns the bounded Composio log-list Promise boundary.
+  return providerCall("inspectExecution", async () => {
+    const signal = AbortSignal.timeout(10_000);
+    const from = Math.floor((correlation.startedAt - 60_000) / 1_000);
+    const to = Math.ceil((correlation.startedAt + 300_000) / 1_000);
+    const listed = await boundedToolLogScan(listToolLogs, from, signal, to);
+    if (listed === null) return { _tag: "Unknown" as const };
+    const candidates = listed.filter((candidate) => {
+      const createdAt =
+        candidate.createdAt < 1_000_000_000_000 ? candidate.createdAt * 1_000 : candidate.createdAt;
+      return (
+        candidate.actionKey === correlation.providerTool &&
+        candidate.connectedAccountId === correlation.connectedAccountId &&
+        createdAt >= correlation.startedAt - 60_000 &&
+        createdAt <= correlation.startedAt + 300_000
+      );
+    });
+    if (candidates.length > 25) return { _tag: "Unknown" as const };
+    type ExactExecutionEvidence = {
+      readonly id: string;
+      readonly listedStatus: string;
+      readonly response: Schema.JsonObject;
+      readonly status: string;
+      readonly steps: ReadonlyArray<{ readonly type: string }>;
+    };
+    const exact = (
+      await Promise.all(
+        candidates.map((candidate) =>
+          retrieveToolLog(candidate.id, signal).then((detail): ExactExecutionEvidence | null => {
+            const received =
+              "arguments" in detail.payloadReceived
+                ? detail.payloadReceived.arguments
+                : detail.payloadReceived;
+            return detail.connection.id === correlation.connectedAccountId &&
+              providerSessionIdFrom(detail.session) === correlation.providerSessionId &&
+              sameJson(received, expectedInput)
+              ? {
+                  id: candidate.id,
+                  listedStatus: candidate.status,
+                  response: detail.response,
+                  status: detail.status,
+                  steps: detail.steps,
+                }
+              : null;
+          }),
+        ),
+      )
+    ).filter((evidence): evidence is ExactExecutionEvidence => evidence !== null);
+    if (exact.length !== 1) return { _tag: "Unknown" as const };
+    const evidence = exact[0];
+    if (evidence === undefined) return { _tag: "Unknown" as const };
+    const reachedTool = evidence.steps.some(({ type }) => type === "tool_execution");
+    if (evidence.listedStatus === "failed" && !reachedTool) {
+      return { _tag: "NotApplied" as const, providerLogId: evidence.id };
+    }
+    if (!reachedTool || evidence.status !== "success") return { _tag: "Unknown" as const };
+    try {
+      return {
+        _tag: "Applied" as const,
+        execution: decodeExecutionResponse(
+          Object.fromEntries([...Object.entries(evidence.response), ["log_id", evidence.id]]),
+        ),
+      };
+    } catch {
+      return { _tag: "Unknown" as const };
+    }
+  }).pipe(Effect.orElseSucceed(() => ({ _tag: "Unknown" as const })));
+};
+
+const boundedToolLogScan = async (
+  listToolLogs: NonNullable<ComposioClientPort["listToolLogs"]>,
+  from: number,
+  signal: AbortSignal,
+  to: number,
+) => {
+  const maximumPages = 5;
+  const collected: Array<(typeof ToolLogList.Type)["data"][number]> = [];
+  let cursor: number | null = null;
+  for (let page = 0; page < maximumPages; page += 1) {
+    if (signal.aborted) return null;
+    const listed = await listToolLogs({ cursor, from, signal, to });
+    collected.push(...listed.data);
+    if (listed.nextCursor === null) return collected;
+    cursor = listed.nextCursor;
+  }
+  return null;
+};
+
+const sameJson = (left: Schema.Json, right: Schema.Json): boolean =>
+  JSON.stringify(sortJson(left)) === JSON.stringify(sortJson(right));
+
+const sortJson = (value: Schema.Json): Schema.Json => {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!Schema.is(Schema.JsonObject)(value)) return value;
+  const entries = Object.entries(value);
+  // oxlint-disable-next-line unicorn/no-array-sort -- The Worker target does not include ES2023 Array#toSorted.
+  entries.sort(([left], [right]) => left.localeCompare(right));
+  return Object.fromEntries(entries.map(([key, child]) => [key, sortJson(child)]));
+};
+
+const providerSessionIdFrom = (session: Schema.JsonObject): string | null => {
+  for (const key of ["id", "sessionId", "session_id"] as const) {
+    const decoded = Schema.decodeUnknownOption(Schema.String)(session[key]);
+    if (Option.isSome(decoded)) return decoded.value;
+  }
+  return null;
+};
 
 const executeDriveDownload = (
   client: ComposioClientPort,

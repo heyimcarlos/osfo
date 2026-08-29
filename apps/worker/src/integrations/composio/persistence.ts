@@ -13,6 +13,12 @@ import {
 const persistenceVersion = "composio-direct-v1";
 const boundedProviderIdentity = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500));
 const actionDigest = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
+const ProviderAttemptCorrelation = Schema.Struct({
+  connectedAccountId: boundedProviderIdentity,
+  providerSessionId: Schema.optionalKey(Schema.NullOr(boundedProviderIdentity)),
+  providerTool: boundedProviderIdentity,
+  startedAt: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
 
 const PersistedEffectResult = Schema.TaggedStruct("IntegrationEffectCompleted", {
   evidence: Schema.Struct({
@@ -36,9 +42,18 @@ const PersistedEffectResult = Schema.TaggedStruct("IntegrationEffectCompleted", 
 });
 
 const PersistedAction = Schema.Union([
-  Schema.TaggedStruct("Pending", { digest: actionDigest }),
-  Schema.TaggedStruct("Ambiguous", { digest: actionDigest }),
-  Schema.TaggedStruct("NotApplied", { digest: actionDigest }),
+  Schema.TaggedStruct("Pending", {
+    correlation: Schema.optionalKey(Schema.NullOr(ProviderAttemptCorrelation)),
+    digest: actionDigest,
+  }),
+  Schema.TaggedStruct("Ambiguous", {
+    correlation: Schema.optionalKey(Schema.NullOr(ProviderAttemptCorrelation)),
+    digest: actionDigest,
+  }),
+  Schema.TaggedStruct("NotApplied", {
+    digest: actionDigest,
+    providerLogId: Schema.optionalKey(Schema.NullOr(boundedProviderIdentity)),
+  }),
   Schema.TaggedStruct("Applied", { digest: actionDigest, result: PersistedEffectResult }),
 ]);
 
@@ -146,6 +161,21 @@ export const make = (storage: DurableObjectStorage): IntegrationPersistence => (
 const normalizePersistedAction = (
   value: typeof PersistedAction.Type,
 ): PersistedIntegrationAction => {
+  if (value._tag === "Pending" || value._tag === "Ambiguous") {
+    return {
+      ...value,
+      correlation:
+        value.correlation === undefined || value.correlation === null
+          ? null
+          : {
+              ...value.correlation,
+              providerSessionId: value.correlation.providerSessionId ?? null,
+            },
+    };
+  }
+  if (value._tag === "NotApplied") {
+    return { ...value, providerLogId: value.providerLogId ?? null };
+  }
   if (value._tag !== "Applied") return value;
   return {
     ...value,

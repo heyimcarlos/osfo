@@ -1,5 +1,14 @@
 /* oxlint-disable effecttsgo/async-function -- Promise.allSettled owns the Cloudflare scheduled lifecycle boundary. */
 
+export const scheduledEmailReconciliationCron = "* * * * *";
+export const hourlyMaintenanceCron = "0 * * * *";
+
+export const scheduledRunKind = (cron: string) => {
+  if (cron === scheduledEmailReconciliationCron) return "scheduledEmailReconciliation" as const;
+  if (cron === hourlyMaintenanceCron) return "hourlyMaintenance" as const;
+  return "unknown" as const;
+};
+
 /** Keep every scheduled branch alive, then surface one safe aggregate failure. */
 export const settleScheduledBranches = async (
   operations: ReadonlyArray<() => Promise<void>>,

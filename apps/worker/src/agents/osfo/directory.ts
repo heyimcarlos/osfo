@@ -8,6 +8,7 @@ import { Effect, Layer, Option, Redacted, Result, Schema } from "effect";
 import { loadConfig } from "../../config";
 import { ResearchReportComposition } from "../../composition/research-report";
 import { DocumentBuildComposition } from "../../composition/document-build";
+import { ScheduledEmailComposition } from "../../composition/scheduled-email";
 import { Db } from "../../db";
 import { makeTelegramChannel } from "../../integrations/telegram";
 import { makeWhatsAppChannel } from "../../integrations/whatsapp";
@@ -18,6 +19,8 @@ import { ChannelLinks } from "../../services/channel-links";
 import { ResearchReportFollowUp } from "../../services/research-report-follow-up";
 import { DocumentBuild } from "../../services/document-build";
 import { DocumentBuildFollowUp } from "../../services/document-build-follow-up";
+import { ScheduledEmail } from "../../services/scheduled-email";
+import { ScheduledEmailFollowUp } from "../../services/scheduled-email-follow-up";
 import { OsfoAgent } from "./agent";
 import { channelAddressOf, messengerAuthorId } from "./channel-address";
 import { streamTextReply } from "./messenger-stream";
@@ -28,6 +31,7 @@ import { UserId } from "../../domain";
 import { AuthSessionId } from "../../domain/auth-session";
 import { WebFileUpload } from "./web-file-upload";
 import { DocumentBuildFileResolution } from "./document-build-file-resolution";
+import type { DecideActionApprovalRequest } from "./think-action-approvals";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle, osfo/no-unknown-parameters -- Think RPC methods receive untrusted payloads and immediately schema-decode them at this messenger composition root. */
 
@@ -248,6 +252,62 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     return agent.submitDocumentBuildFollowUp(notificationIdentity);
   }
 
+  /** Begin the durable wait through the exact Agent retained by the Workflow payload. */
+  async beginScheduledEmail(encoded: unknown) {
+    const decoded = Schema.decodeUnknownResult(ScheduledEmail.WorkflowPayload)(encoded);
+    if (Result.isFailure(decoded)) return { _tag: "ScheduledEmailInvalid" as const };
+    const payload = decoded.success;
+    if (!this.hasSubAgent(OsfoAgent, payload.agentId)) {
+      return { _tag: "ScheduledEmailUnavailable" as const };
+    }
+    return (await this.subAgent(OsfoAgent, payload.agentId)).beginScheduledEmail(payload);
+  }
+
+  /** Execute or reconcile the exact due Gmail effect through its retained Agent. */
+  async executeScheduledEmail(encoded: unknown) {
+    const decoded = Schema.decodeUnknownResult(ScheduledEmail.WorkflowPayload)(encoded);
+    if (Result.isFailure(decoded)) return { _tag: "ScheduledEmailInvalid" as const };
+    const payload = decoded.success;
+    if (!this.hasSubAgent(OsfoAgent, payload.agentId)) {
+      return { _tag: "ScheduledEmailUnavailable" as const };
+    }
+    return (await this.subAgent(OsfoAgent, payload.agentId)).executeScheduledEmail(payload);
+  }
+
+  /** Reconcile one already-claimed send after its ordinary Agent fence may have closed. */
+  async recoverScheduledEmail(encoded: unknown) {
+    const decoded = Schema.decodeUnknownResult(ScheduledEmail.WorkflowPayload)(encoded);
+    if (Result.isFailure(decoded)) return { _tag: "ScheduledEmailInvalid" as const };
+    const payload = decoded.success;
+    if (!this.hasSubAgent(OsfoAgent, payload.agentId)) {
+      return { _tag: "ScheduledEmailUnavailable" as const };
+    }
+    return (await this.subAgent(OsfoAgent, payload.agentId)).recoverScheduledEmail(payload);
+  }
+
+  /** Route one opaque, PostgreSQL-authorized Scheduled Email follow-up to its exact Agent. */
+  async submitScheduledEmailFollowUp(notificationIdentity: string) {
+    const decoded = Schema.decodeResult(ScheduledEmailFollowUp.NotificationId)(
+      notificationIdentity,
+    );
+    if (Result.isFailure(decoded)) return { _tag: "ScheduledEmailFollowUpInvalid" as const };
+    const notification = await Effect.runPromise(
+      ScheduledEmailComposition.followUpEffect(
+        { DB: this.env.DB },
+        ScheduledEmailFollowUp.Service.pipe(
+          Effect.flatMap((followUps) => followUps.inspect(decoded.success)),
+          Effect.orDie,
+        ),
+      ),
+    );
+    if (notification === null || !this.hasSubAgent(OsfoAgent, notification.agentId)) {
+      return { _tag: "ScheduledEmailFollowUpUnavailable" as const };
+    }
+    return (await this.subAgent(OsfoAgent, notification.agentId)).submitScheduledEmailFollowUp(
+      notificationIdentity,
+    );
+  }
+
   /** List current personal Skills through one registered User Agent. */
   async inspectPersonalSkills(
     agentId: string,
@@ -269,6 +329,20 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
       authSessionId: AuthSessionId.make(actor.authSessionId),
       userId: UserId.make(actor.userId),
     });
+  }
+
+  /** List one User Agent's exact pending Action presentations. */
+  async listActionPresentations(agentId: string, actor: unknown) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.listActionPresentations(actor);
+  }
+
+  /** Resolve one User Agent's exact pending Action presentation. */
+  async decideActionApproval(agentId: string, input: DecideActionApprovalRequest) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.decideActionApproval(input);
   }
 
   /** Acquire one provider-hosted Integration Connect Link. */

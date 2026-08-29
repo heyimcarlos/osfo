@@ -8,6 +8,7 @@ import { DocumentBuildTimerWorkflow } from "./DocumentBuildTimerWorkflow";
 import { DocumentBuildWorkflow } from "./DocumentBuildWorkflow";
 import { ResearchReportWorkflow } from "./ResearchReportWorkflow";
 import { ResearchReportTimerWorkflow } from "./ResearchReportTimerWorkflow";
+import { ScheduledEmailWorkflow } from "./ScheduledEmailWorkflow";
 import { Files } from "./Files";
 import { Artifacts } from "./Artifacts";
 
@@ -51,6 +52,7 @@ const worker = Worker(
         EXECUTION_UNIT_WORKFLOW: ExecutionUnitWorkflow,
         RESEARCH_REPORT_WORKFLOW: ResearchReportWorkflow,
         RESEARCH_REPORT_TIMER_WORKFLOW: ResearchReportTimerWorkflow,
+        SCHEDULED_EMAIL_WORKFLOW: ScheduledEmailWorkflow,
         FILES: Files,
         OSFO_DIRECTORY: DurableObject("OsfoDirectory", {
           className: "OsfoDirectory",
@@ -84,7 +86,7 @@ const worker = Worker(
           "WHATSAPP_WAKEUP_TEMPLATE_POLICY_VERSION",
         ).pipe(Config.withDefault("")),
       },
-      crons: ["0 * * * *"],
+      crons: ["* * * * *", "0 * * * *"],
       main: "./apps/worker/src/worker.ts",
       observability: {
         enabled: true,

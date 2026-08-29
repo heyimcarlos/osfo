@@ -110,7 +110,11 @@ it.effect("routes Reminder and Research Report sources to their distinct owners"
         return kind === "reminder" ? [{ committedAt, source }] : [{ committedAt, source: report }];
       }),
   });
-  const combined = combinedSourceAuthority(owner("reminder"), owner("report"));
+  const combined = combinedSourceAuthority(owner("reminder"), owner("report"), {
+    exposePending: () => Effect.void,
+    inspect: () => Effect.succeed(null),
+    pendingForUser: () => Effect.succeed([]),
+  });
 
   return Effect.gen(function* () {
     expect(yield* combined.inspect(userId, source)).toEqual({ committedAt, source });

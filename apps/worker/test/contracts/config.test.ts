@@ -39,6 +39,50 @@ it("admits only an explicit loopback Research provider in test or development", 
   );
 });
 
+it("admits only an explicit loopback Integration provider in test or development", () => {
+  const configuredEnv: CloudflareEnv = { ...env, COMPOSIO_API_KEY: "omitted-for-local-test" };
+  const { COMPOSIO_API_KEY: omittedComposioKey, ...envWithoutComposio } = configuredEnv;
+  expect(omittedComposioKey).toBe("omitted-for-local-test");
+  expect(
+    loadConfig({
+      ...envWithoutComposio,
+      INTEGRATION_PROVIDER_BASE_URL: "http://127.0.0.1:43124",
+      OSFO_STAGE: "development",
+    }).integrationProvider,
+  ).toEqual({ _tag: "LocalVerification", baseURL: "http://127.0.0.1:43124/" });
+  expect(() =>
+    loadConfig({
+      ...envWithoutComposio,
+      INTEGRATION_PROVIDER_BASE_URL: "http://127.0.0.1:43124",
+      OSFO_STAGE: "production",
+    }),
+  ).toThrowError(
+    "Worker configuration is invalid: INTEGRATION_PROVIDER_BASE_URL is restricted to local verification",
+  );
+  expect(() =>
+    loadConfig({
+      ...envWithoutComposio,
+      INTEGRATION_PROVIDER_BASE_URL: "https://provider.example.com",
+      OSFO_STAGE: "test",
+    }),
+  ).toThrowError(
+    "Worker configuration is invalid: INTEGRATION_PROVIDER_BASE_URL must use a loopback host",
+  );
+});
+
+it("rejects simultaneous local Integration verification and Composio credentials", () => {
+  expect(() =>
+    loadConfig({
+      ...env,
+      COMPOSIO_API_KEY: "must-not-be-retained",
+      INTEGRATION_PROVIDER_BASE_URL: "http://127.0.0.1:43124",
+      OSFO_STAGE: "test",
+    }),
+  ).toThrowError(
+    "Worker configuration is invalid: COMPOSIO_API_KEY cannot be configured with INTEGRATION_PROVIDER_BASE_URL",
+  );
+});
+
 it("keeps WhatsApp Wake-up inactive unless the exact policy attestation is present", () => {
   const configuredEnv: CloudflareEnv = env;
   const {

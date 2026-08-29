@@ -75,6 +75,7 @@ const fakeIntegrations: Integrations.Interface = {
         truncated: false,
       }),
     ),
+  inspectAction: () => Effect.succeed({ _tag: "NotStarted" }),
   resolveSession: (userId) =>
     Effect.succeed({ _tag: "IntegrationSessionResolved", resumed: true, userId }),
 };
@@ -126,7 +127,14 @@ it("publishes and executes only the selected connected pack through OsfoAgent", 
       tools: compiledIntegrationTools(agent),
     });
 
-    expect(config.activeTools).toEqual(["gmailFetchThread", "gmailSearchEmails", "gmailSendEmail"]);
+    expect(config.activeTools).toEqual([
+      "cancelScheduledEmail",
+      "gmailFetchThread",
+      "gmailSearchEmails",
+      "gmailSendEmail",
+      "inspectScheduledEmail",
+      "scheduleEmail",
+    ]);
     expect(config.activeTools).not.toContain("calendarListEvents");
     const gmailRead = config.tools?.gmailFetchThread;
     if (gmailRead?.execute === undefined) throw new Error("Gmail read was not published");
@@ -149,6 +157,7 @@ const compiledIntegrationTools = (agent: OsfoAgent): ToolSet => ({
       "calendarUpdateEvent",
       "driveDeliverArtifact",
       "gmailSendEmail",
+      "scheduleEmail",
     ].map((name) => [
       name,
       tool({

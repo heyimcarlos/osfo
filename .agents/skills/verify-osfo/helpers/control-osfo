@@ -16,11 +16,12 @@ usage() {
     '  control-osfo identity <run-id>' \
     '  control-osfo journeys <run-id>' \
     '  control-osfo account-deletion-envelope-journey <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> start' \
-    '  control-osfo record <run-id> <registration|channel-linking|research-report|document-build|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> <action|result> <summary>' \
-    '  control-osfo observe <run-id> <registration|channel-linking|research-report|document-build|billing|whatsapp-wakeup|account-deletion|account-deletion-replay>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> start' \
+    '  control-osfo record <run-id> <registration|channel-linking|research-report|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> <action|result> <summary>' \
+    '  control-osfo observe <run-id> <registration|channel-linking|research-report|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay>' \
     '  control-osfo channel-invite <run-id>' \
     '  control-osfo telegram-reply <run-id> <message>' \
+    '  control-osfo scheduled-email-request <run-id>' \
     '  control-osfo whatsapp-invite <run-id>' \
     '  control-osfo record-reminder-due <run-id> <rfc3339-instant>' \
     '  control-osfo capture-reminder-occurrence <run-id>' \
@@ -28,7 +29,7 @@ usage() {
     '  control-osfo whatsapp-reply <run-id> <message>' \
     '  control-osfo seed-account-deletion <run-id>' \
     '  control-osfo reconcile-account-deletion <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> finish' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> finish' \
     '  control-osfo cleanup <run-id>'
 }
 
@@ -42,7 +43,7 @@ require_run_id() {
 
 require_feature() {
   case "${1:-}" in
-    registration|channel-linking|research-report|document-build|billing|whatsapp-wakeup|account-deletion|account-deletion-replay) ;;
+    registration|channel-linking|research-report|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay) ;;
     *)
       printf 'Unknown browser feature: %s\n' "${1:-}" >&2
       exit 2
@@ -244,7 +245,7 @@ start_worker_process() {
 }
 
 inspect_agent_runtime() {
-  local run_id agent_id user_id file_id main_instance_id timer_instance_id artifact_id state_dir artifact_dir observer_origin observer_port inspector_port
+  local run_id agent_id user_id file_id main_instance_id timer_instance_id artifact_id scheduled_email_instance_id state_dir artifact_dir observer_origin observer_port inspector_port
   local observer_pid observation status
   local -a observer_query
   run_id="$1"
@@ -254,6 +255,7 @@ inspect_agent_runtime() {
   main_instance_id="${5:-}"
   timer_instance_id="${6:-}"
   artifact_id="${7:-}"
+  scheduled_email_instance_id="${8:-}"
   state_dir="$(state_dir_for "$run_id")"
   artifact_dir="$(artifact_dir_for "$run_id")"
   observer_port="$(pick_port)"
@@ -290,6 +292,9 @@ inspect_agent_runtime() {
         observer_query+=(--data-urlencode "timerInstanceId=$timer_instance_id")
       fi
       if [[ -n "$artifact_id" ]]; then observer_query+=(--data-urlencode "artifactId=$artifact_id"); fi
+      if [[ -n "$scheduled_email_instance_id" ]]; then
+        observer_query+=(--data-urlencode "scheduledEmailInstanceId=$scheduled_email_instance_id")
+      fi
       if ! observation="$(curl --fail --silent --show-error --get \
         "${observer_query[@]}" "$observer_origin/agent")"; then
         status=1
@@ -578,6 +583,13 @@ evidence_start() {
     printf 'provider_template_policy=fixed-variable-free-only\n' \
       >>"$feature_dir/metadata.txt"
   fi
+  if [[ "$feature" == scheduled-email ]]; then
+    provider_origin="$(state_value "$run_id" provider-origin)"
+    curl --fail --silent --show-error --request POST \
+      "$provider_origin/_test/integrations/reset-ledger" >/dev/null
+    printf 'provider_boundary=local-loopback-gmail-not-live-oauth\n' \
+      >>"$feature_dir/metadata.txt"
+  fi
   printf 'evidence_ready feature=%s action_screenshot=%s result_screenshot=%s\n' \
     "$feature" "$feature_dir/action.png" "$feature_dir/result.png"
 }
@@ -765,6 +777,27 @@ telegram_reply() {
     '.[ $before: ] | map(select(.method == "editMessageText")) | .[-1].body | fromjson | (.text? // .rich_message.markdown? // "")' \
     "$ledger_path")"
   printf 'telegram_reply=%s\n' "$reply"
+}
+
+scheduled_email_request() {
+  local run_id state_dir recipient subject body due_at message reply
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  state_dir="$(state_dir_for "$run_id")"
+  recipient="scheduled-email-$run_id@example.test"
+  subject="Scheduled Email verification $run_id"
+  body="Run-owned Scheduled Email verification $run_id"
+  due_at="$(bun -e 'process.stdout.write(new Date(Date.now() + 180000).toISOString())')"
+  message="Schedule this exact Gmail message: recipient=$recipient; subject=$subject; body=$body; sendAt=$due_at"
+  printf '%s\n' "$recipient" >"$state_dir/scheduled-email-recipient"
+  printf '%s\n' "$subject" >"$state_dir/scheduled-email-subject"
+  printf '%s\n' "$body" >"$state_dir/scheduled-email-body"
+  printf '%s\n' "$due_at" >"$state_dir/scheduled-email-due-at"
+  printf '%s\n' "$message" >"$state_dir/scheduled-email-agent-request"
+  reply="$(telegram_reply "$run_id" "$message")"
+  printf '%s\n' "$reply" >"$state_dir/scheduled-email-agent-reply"
+  printf 'scheduled_email_request_ready recipient=%s subject=%s due_at=%s\n' \
+    "$recipient" "$subject" "$due_at"
 }
 
 deliver_whatsapp_message() {
@@ -1120,7 +1153,9 @@ reconcile_account_deletion() {
   worker_origin="$(state_value "$run_id" worker-origin)"
   user_id="$(state_value "$run_id" account-deletion-user-id)"
   require_owned_identifier 'User ID' "$user_id"
-  curl --fail --silent --show-error "$worker_origin/cdn-cgi/handler/scheduled" >/dev/null
+  curl --fail --silent --show-error --get \
+    --data-urlencode 'cron=0 * * * *' \
+    "$worker_origin/cdn-cgi/handler/scheduled" >/dev/null
   for attempt in {1..120}; do
     user_exists="$(docker exec --env PGPASSWORD=osfo "$container_id" \
       psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
@@ -1473,6 +1508,121 @@ observe_document_build() {
   printf '%s\n' "$timer_instance_id" >"$state_dir/document-build-timer-instance-id"
   complete_observation "$run_id" "$feature_dir"
   printf 'observed document-build state=%s provider=%s\n' \
+    "$feature_dir/state.json" "$feature_dir/provider.json"
+}
+
+observe_scheduled_email() {
+  local run_id state_dir feature_dir container_id provider_origin phone state_json
+  local user_id agent_id instance_id recipient subject body due_at agent_runtime
+  run_id="$1"
+  state_dir="$(state_dir_for "$run_id")"
+  feature_dir="$(feature_artifact_dir_for "$run_id" scheduled-email)"
+  begin_observation "$feature_dir"
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  recipient="$(state_value "$run_id" scheduled-email-recipient)"
+  subject="$(state_value "$run_id" scheduled-email-subject)"
+  body="$(state_value "$run_id" scheduled-email-body)"
+  due_at="$(state_value "$run_id" scheduled-email-due-at)"
+  state_json="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userId', u.id,
+      'workflowId', se.workflow_id,
+      'actionId', se.action_id,
+      'agentId', se.agent_id,
+      'cloudflareInstanceId', se.cloudflare_instance_id,
+      'workflowCount', (select count(*) from scheduled_emails owned where owned.user_id = u.id),
+      'state', se.state,
+      'sendOutcome', se.send_outcome,
+      'sendAccountingBasis', se.send_accounting_basis,
+      'safeFailureCode', se.safe_failure_code,
+      'providerLogId', se.provider_log_id,
+      'providerResourceId', se.provider_resource_id,
+      'request', se.request_json::jsonb,
+      'approvalPresentation', se.approval_presentation::jsonb,
+      'admittedAt', se.admitted_at,
+      'acceptedAt', se.accepted_at,
+      'waitingAt', se.waiting_at,
+      'dueAt', se.due_at,
+      'sendStartedAt', se.send_started_at,
+      'sendOutcomeAt', se.send_outcome_at,
+      'terminalAt', se.terminal_at,
+      'dueToSendMilliseconds', extract(epoch from (se.send_started_at - se.due_at)) * 1000,
+      'sendToTerminalMilliseconds', extract(epoch from (se.terminal_at - se.send_started_at)) * 1000,
+      'terminalToFollowUpMilliseconds', extract(epoch from ((select n.accepted_at from scheduled_email_notifications n where n.workflow_id = se.workflow_id limit 1) - se.terminal_at)) * 1000,
+      'notificationCount', (select count(*) from scheduled_email_notifications n where n.workflow_id = se.workflow_id),
+      'acceptedNotifications', (select count(*) from scheduled_email_notifications n where n.workflow_id = se.workflow_id and n.accepted_at is not null and n.think_submission_id is not null),
+      'workflowStartUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_type = 'workflow' and a.source_id = se.workflow_id and a.allowance_kind = 'workflowStarts'),
+      'gmailSendUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_type = 'integrationAction' and a.source_id = se.action_id and a.allowance_kind = 'gmailSends'),
+      'gmailSendBasis', (select a.basis from allowance_usage a where a.user_id = u.id and a.source_type = 'integrationAction' and a.source_id = se.action_id and a.allowance_kind = 'gmailSends' limit 1)
+    ) from users u
+    join lateral (
+      select * from scheduled_emails where user_id = u.id order by admitted_at desc limit 1
+    ) se on true
+    where u.phone_number = '$phone';")"
+  if [[ -z "$state_json" ]]; then
+    printf 'No committed Scheduled Email found for the run-owned User\n' >&2
+    exit 1
+  fi
+  user_id="$(jq --exit-status --raw-output '.userId' <<<"$state_json")"
+  agent_id="$(jq --exit-status --raw-output '.agentId' <<<"$state_json")"
+  instance_id="$(jq --exit-status --raw-output '.cloudflareInstanceId' <<<"$state_json")"
+  agent_runtime="$(inspect_agent_runtime \
+    "$run_id" "$agent_id" "$user_id" '' '' '' '' "$instance_id")"
+  jq --null-input \
+    --argjson postgres "$state_json" \
+    --argjson agentRuntime "$agent_runtime" \
+    '$postgres + { agentRuntime: $agentRuntime }' \
+    >"$feature_dir/state.json"
+  jq --null-input \
+    --argjson integration "$(curl --fail --silent --show-error "$provider_origin/_test/integrations/ledger")" \
+    --argjson model "$(curl --fail --silent --show-error "$provider_origin/_test/research/ledger")" \
+    --argjson telegram "$(curl --fail --silent --show-error "$provider_origin/_test/telegram/ledger")" \
+    '{ integration: $integration, model: $model, telegram: $telegram }' \
+    >"$feature_dir/provider.json"
+  jq --exit-status \
+    --arg recipient "$recipient" --arg subject "$subject" --arg body "$body" --arg dueAt "$due_at" \
+    '.workflowCount == 1 and .state == "success" and .sendOutcome == "applied" and
+      .sendAccountingBasis == "observed" and .safeFailureCode == null and
+      (.providerLogId | length) > 0 and (.providerResourceId | length) > 0 and
+      .request.gmailResource == "primary" and .request.recipients == [$recipient] and
+      .request.subject == $subject and .request.body == $body and .request.scheduledAt == $dueAt and
+      .approvalPresentation.operation == "integration.effect" and
+      .approvalPresentation.actionDefinitionVersion == "osfo-scheduled-email-start-v1" and
+      .admittedAt != null and .acceptedAt != null and .waitingAt != null and
+      .dueAt != null and .sendStartedAt != null and .sendOutcomeAt != null and .terminalAt != null and
+      .admittedAt <= .acceptedAt and .acceptedAt <= .waitingAt and .waitingAt <= .dueAt and
+      .dueAt <= .sendStartedAt and .sendStartedAt <= .sendOutcomeAt and .sendOutcomeAt <= .terminalAt and
+      .dueToSendMilliseconds >= 0 and .dueToSendMilliseconds <= 60000 and
+      .sendToTerminalMilliseconds >= 0 and .sendToTerminalMilliseconds <= 120000 and
+      .terminalToFollowUpMilliseconds >= 0 and .terminalToFollowUpMilliseconds <= 60000 and
+      .notificationCount == 1 and .acceptedNotifications == 1 and
+      .workflowStartUsage == 1 and .gmailSendUsage == 1 and .gmailSendBasis == "observed" and
+      .agentRuntime.inspectable == true and .agentRuntime.registered == true and
+      .agentRuntime.scheduledEmailWorkflow.status == "complete"' \
+    "$feature_dir/state.json" >/dev/null
+  jq --exit-status \
+    --arg recipient "$recipient" --arg subject "$subject" --arg body "$body" --arg dueAt "$due_at" \
+    --from-file "$repo_root/.agents/skills/verify-osfo/helpers/scheduled-email-approval.jq" \
+    "$feature_dir/state.json" >/dev/null
+  jq --exit-status \
+    --arg recipient "$recipient" --arg subject "$subject" --arg body "$body" --arg dueAt "$due_at" \
+    --arg providerLogId "$(jq --raw-output '.providerLogId' <<<"$state_json")" \
+    --arg providerResourceId "$(jq --raw-output '.providerResourceId' <<<"$state_json")" \
+    '([.integration[] | select(
+        .providerTool == "GMAIL_SEND_EMAIL" and .input.recipient_email == $recipient and
+        .input.subject == $subject and .input.body == $body and
+        .logId == $providerLogId and .resourceId == $providerResourceId)] | length) == 1 and
+      (.integration | length) == 1 and
+      ([.model[] | select(.kind == "tool-selection" and .selectedTool == "scheduleEmail" and
+        .subject == ($recipient + "|" + $subject + "|" + $body + "|" + $dueAt))] | length) == 1' \
+    "$feature_dir/provider.json" >/dev/null
+  printf '%s\n' "$(jq --raw-output '.workflowId' <<<"$state_json")" \
+    >"$state_dir/scheduled-email-workflow-id"
+  complete_observation "$run_id" "$feature_dir"
+  printf 'observed scheduled-email state=%s provider=%s\n' \
     "$feature_dir/state.json" "$feature_dir/provider.json"
 }
 
@@ -1995,6 +2145,7 @@ case "$command_name" in
       channel-linking) observe_channel_linking "$2" ;;
       research-report) observe_research_report "$2" ;;
       document-build) observe_document_build "$2" ;;
+      scheduled-email) observe_scheduled_email "$2" ;;
       billing) observe_billing "$2" ;;
       whatsapp-wakeup) observe_whatsapp_wakeup "$2" ;;
       account-deletion|account-deletion-replay) observe_account_deletion "$2" "$3" ;;
@@ -2011,6 +2162,10 @@ case "$command_name" in
       exit 2
     fi
     telegram_reply "$2" "$3"
+    ;;
+  scheduled-email-request)
+    require_run_id "${2:-}"
+    scheduled_email_request "$2"
     ;;
   whatsapp-invite)
     require_run_id "${2:-}"

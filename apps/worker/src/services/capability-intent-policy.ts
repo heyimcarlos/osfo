@@ -263,6 +263,7 @@ export const capabilityIntentPolicy = {
     matches: matchesClosedIntent(
       /^(check|list|open|read|show|view) (my )?((latest|unread) )?(email|emails|gmail|gmail message|gmail messages|inbox)$/,
       /^(find|search) (my )?(email|emails|gmail|inbox)$/,
+      /^schedule this exact gmail message recipient .+ subject .+ body .+ sendat .+$/,
     ),
     taskKinds: ["integration"],
   },

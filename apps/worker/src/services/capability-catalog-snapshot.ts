@@ -394,7 +394,14 @@ const catalogIntegrationEntry = (policyCatalog: CapabilityCatalog) => {
       integrationToolkit: toolkit,
       toolRequirements:
         id === "gmail"
-          ? ["gmailFetchThread", "gmailSearchEmails", "gmailSendEmail"]
+          ? [
+              "cancelScheduledEmail",
+              "gmailFetchThread",
+              "gmailSearchEmails",
+              "gmailSendEmail",
+              "inspectScheduledEmail",
+              "scheduleEmail",
+            ]
           : id === "google-calendar"
             ? [
                 "calendarCreateEvent",

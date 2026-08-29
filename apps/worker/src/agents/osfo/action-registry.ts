@@ -9,6 +9,8 @@ import {
   researchReportStartActionName,
   ResearchReportStartInput,
   RetainedDocumentInput,
+  scheduledEmailStartActionName,
+  ScheduledEmailStartInput,
 } from "./action-presentation";
 import {
   ClearCoreMemoryInput,
@@ -28,6 +30,7 @@ import {
 import { personalSkillDeleteActionName, SkillDeleteInput } from "./personal-skill-tools";
 import type { PersonalSkillId } from "../../domain/personal-skill";
 import type { ResearchReport } from "../../services/research-report";
+import { ScheduledEmail } from "../../services/scheduled-email";
 import {
   CalendarCreateEventInput,
   CalendarDeleteEventInput,
@@ -54,6 +57,7 @@ type SanitizedPendingApprovalInput =
   | Partial<typeof CalendarUpdateEventInput.Type>
   | Partial<typeof DriveDeliverArtifactInput.Type>
   | Partial<typeof GmailMessageInput.Type>
+  | Partial<ScheduledEmailStartInput>
   | Partial<SkillDeleteInput>
   | Partial<SessionDeleteInput>;
 
@@ -66,6 +70,9 @@ export {
   researchReportRequiresApproval,
   ResearchReportStartInput,
   RetainedDocumentInput,
+  scheduledEmailStartActionName,
+  ScheduledEmailIdentityInput,
+  ScheduledEmailStartInput,
 } from "./action-presentation";
 
 export {
@@ -199,6 +206,17 @@ export const sanitizePendingApproval = (approval: PendingApproval): PendingAppro
       ),
     );
   }
+  if (approval.descriptor.action === scheduledEmailStartActionName) {
+    return withInput(
+      approval,
+      Schema.decodeUnknownOption(ScheduledEmailStartInput)(approval.descriptor.input).pipe(
+        Option.match({
+          onNone: () => ({}),
+          onSome: Schema.encodeSync(ScheduledEmailStartInput),
+        }),
+      ),
+    );
+  }
   if (approval.descriptor.action === forgetKnowledgeActionName) {
     return withInput(
       approval,
@@ -273,5 +291,14 @@ const withInput = (
   Object.assign({}, approval, {
     descriptor: Object.assign({}, approval.descriptor, { input }),
   });
+
+const ScheduledEmailActionInput = Schema.Union([
+  ScheduledEmail.Request,
+  ScheduledEmail.EncodedRequest,
+]);
+
+/** Normalize both the initial validated input and Think's JSON-retained durable-pause input. */
+export const decodeScheduledEmailActionInput =
+  Schema.decodeUnknownEffect(ScheduledEmailActionInput);
 
 const withoutInput = (approval: PendingApproval): PendingApproval => withInput(approval, {});

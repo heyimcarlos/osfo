@@ -5,6 +5,8 @@ import { Config, Effect, Ref, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import postgres from "postgres";
 
+import { hourlyMaintenanceCron } from "../../src/scheduled-lifecycle";
+
 const RegistrationResponse = Schema.Struct({ userId: Schema.String });
 const AccountDeletionPending = Schema.Struct({ status: Schema.Literal("deletion-pending") });
 const RetainedActionState = Schema.Struct({
@@ -160,7 +162,9 @@ it.effect("rejects an edited envelope and terminally removes the disposable iden
       const reconcile = Effect.gen(function* () {
         if (isTerminallyDeleted(yield* readTerminalDeletionState(userId))) return true;
         const scheduled = yield* httpClient.execute(
-          HttpClientRequest.get(`${workerOrigin}/cdn-cgi/handler/scheduled`),
+          HttpClientRequest.get(`${workerOrigin}/cdn-cgi/handler/scheduled`).pipe(
+            HttpClientRequest.setUrlParam("cron", hourlyMaintenanceCron),
+          ),
         );
         if (scheduled.status !== 200) {
           return yield* Effect.die(

@@ -10,6 +10,7 @@ import { DocumentBuildHandlers } from "./handlers/document-builds";
 import { FilesHandlers } from "./handlers/files";
 import { SkillsHandlers } from "./handlers/skills";
 import { IntegrationHandlers } from "./handlers/integrations";
+import { ScheduledEmailHandlers } from "./handlers/scheduled-emails";
 import type { ExecutionUnit } from "./layers";
 import { publicWebBaseUrl, type CloudflareConfig } from "./config";
 import { AccountDeletionComposition } from "./composition/account-deletion";
@@ -22,6 +23,7 @@ export const layer = (
   bindings: AccountDeletionComposition.Bindings &
     SkillsHandlers.Bindings &
     IntegrationHandlers.Bindings &
+    ScheduledEmailHandlers.Bindings &
     FilesHandlers.Bindings,
 ) =>
   Layer.mergeAll(
@@ -40,6 +42,7 @@ export const layer = (
     ),
     RegistrationHandlers.layer,
     ResearchReportHandlers.layer,
+    ScheduledEmailHandlers.layer(bindings),
     SkillsHandlers.layer(bindings),
   );
 

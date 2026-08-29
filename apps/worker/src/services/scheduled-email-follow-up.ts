@@ -1,0 +1,178 @@
+import { Context, DateTime, Effect, Layer, Schema } from "effect";
+
+import {
+  AgentId,
+  AllowancePeriodId,
+  CapabilityCatalogVersion,
+  ChannelLinkId,
+  ConversationRouteId,
+  ModelAccessPolicyVersion,
+  PlanPolicyVersion,
+  ResourcePriceVersion,
+  SessionId,
+  ThinkSubmissionId,
+  UserId,
+  Plan,
+} from "../domain";
+import { ManagedModelRoute } from "../domain/model-access-policy";
+import { ScheduledEmail } from "./scheduled-email";
+
+const identity = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
+export const NotificationId = identity.pipe(Schema.brand("ScheduledEmailNotificationId"));
+export type NotificationId = typeof NotificationId.Type;
+
+export const SubmissionSuccess = Schema.Union([
+  Schema.TaggedStruct("Accepted", {
+    notificationId: NotificationId,
+    submissionId: ThinkSubmissionId,
+  }),
+  Schema.TaggedStruct("Replayed", {
+    notificationId: NotificationId,
+    submissionId: ThinkSubmissionId,
+  }),
+]);
+export type SubmissionSuccess = typeof SubmissionSuccess.Type;
+
+export const Notification = Schema.Struct({
+  acceptedAt: Schema.NullOr(Schema.Date),
+  agentId: AgentId,
+  allowancePeriodId: AllowancePeriodId,
+  capabilityCatalogVersion: CapabilityCatalogVersion,
+  claimedAt: Schema.Date,
+  deliverySessionId: Schema.NullOr(SessionId),
+  modelAccessPolicyVersion: ModelAccessPolicyVersion,
+  modelRoute: ManagedModelRoute,
+  notificationId: NotificationId,
+  originSessionId: SessionId,
+  plan: Plan,
+  planPolicyVersion: PlanPolicyVersion,
+  resourcePriceVersion: ResourcePriceVersion,
+  routeId: ConversationRouteId,
+  sendOutcome: Schema.NullOr(Schema.Literals(["applied", "ambiguous", "notApplied"])),
+  state: Schema.Literals(["success", "failure", "canceled"]),
+  sourceExposedAt: Schema.NullOr(Schema.Date),
+  submissionId: Schema.NullOr(ThinkSubmissionId),
+  userId: UserId,
+  wakeRequestedAt: Schema.NullOr(Schema.Date),
+  workflowId: ScheduledEmail.WorkflowId,
+  whatsAppChannelLinkId: Schema.NullOr(ChannelLinkId),
+});
+export type Notification = typeof Notification.Type;
+
+export type Claim =
+  | { readonly _tag: "Claimed"; readonly notification: Notification }
+  | { readonly _tag: "NotTerminal" }
+  | { readonly _tag: "Suppressed" };
+
+export class Unavailable extends Schema.TaggedError<Unavailable>()(
+  "ScheduledEmailFollowUpUnavailable",
+  { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
+) {}
+
+export interface PortInterface {
+  readonly deliveredForUser: (
+    userId: UserId,
+  ) => Effect.Effect<ReadonlyArray<Notification>, Unavailable>;
+  readonly claimTerminal: (
+    email: ScheduledEmail.Record,
+    notificationId: NotificationId,
+    claimedAt: Date,
+  ) => Effect.Effect<Claim, Unavailable>;
+  readonly inspect: (
+    notificationId: NotificationId,
+  ) => Effect.Effect<Notification | null, Unavailable>;
+  readonly markAccepted: (
+    notificationId: NotificationId,
+    submissionId: ThinkSubmissionId,
+    acceptedAt: Date,
+  ) => Effect.Effect<Notification, Unavailable>;
+  readonly markWakeRequested: (
+    notificationId: NotificationId,
+    requestedAt: Date,
+  ) => Effect.Effect<Notification, Unavailable>;
+  readonly selectDeliverySession: (
+    notificationId: NotificationId,
+    sessionId: SessionId,
+  ) => Effect.Effect<Notification, Unavailable>;
+}
+
+export class Port extends Context.Service<Port, PortInterface>()(
+  "@osfo/ScheduledEmailFollowUp/Port",
+) {}
+
+export class Service extends Context.Service<
+  Service,
+  {
+    readonly claimTerminal: (email: ScheduledEmail.Record) => Effect.Effect<Claim, Unavailable>;
+    readonly deliveredForUser: PortInterface["deliveredForUser"];
+    readonly inspect: PortInterface["inspect"];
+    readonly markAccepted: (
+      notificationId: NotificationId,
+      submissionId: ThinkSubmissionId,
+    ) => Effect.Effect<Notification, Unavailable>;
+    readonly markWakeRequested: (
+      notificationId: NotificationId,
+    ) => Effect.Effect<Notification, Unavailable>;
+    readonly selectDeliverySession: PortInterface["selectDeliverySession"];
+  }
+>()("@osfo/ScheduledEmailFollowUp") {}
+
+export const make = Effect.gen(function* () {
+  const port = yield* Port;
+  return Service.of({
+    claimTerminal: (email) =>
+      DateTime.now.pipe(
+        Effect.map(DateTime.toDateUtc),
+        Effect.flatMap((claimedAt) =>
+          port.claimTerminal(email, NotificationId.make(`${email.workflowId}-terminal`), claimedAt),
+        ),
+      ),
+    deliveredForUser: port.deliveredForUser,
+    inspect: port.inspect,
+    markAccepted: (notificationId, submissionId) =>
+      DateTime.now.pipe(
+        Effect.map(DateTime.toDateUtc),
+        Effect.flatMap((acceptedAt) => port.markAccepted(notificationId, submissionId, acceptedAt)),
+      ),
+    markWakeRequested: (notificationId) =>
+      DateTime.now.pipe(
+        Effect.map(DateTime.toDateUtc),
+        Effect.flatMap((requestedAt) => port.markWakeRequested(notificationId, requestedAt)),
+      ),
+    selectDeliverySession: port.selectDeliverySession,
+  });
+});
+
+export const layerWithoutDependencies = Layer.effect(Service, make);
+
+export const submissionIdFor = (notificationId: NotificationId) =>
+  Effect.promise(() =>
+    crypto.subtle.digest("SHA-256", new TextEncoder().encode(notificationId)),
+  ).pipe(
+    Effect.map((bytes) =>
+      ThinkSubmissionId.make(
+        `scheduled-email-${Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("")}`,
+      ),
+    ),
+  );
+
+export const deliverySessionFor = (
+  notification: Notification,
+  agentId: AgentId,
+  route: { readonly currentSessionId: SessionId; readonly routeId: ConversationRouteId },
+) => {
+  if (notification.agentId !== agentId || notification.routeId !== route.routeId) return null;
+  if (notification.acceptedAt !== null) return notification.deliverySessionId;
+  return route.currentSessionId;
+};
+
+export const message = (notification: Notification) =>
+  notification.state === "success"
+    ? "The scheduled email was sent. Confirm the completed delivery concisely."
+    : notification.state === "canceled"
+      ? "The scheduled email was canceled before provider use. Confirm that no email was sent."
+      : notification.sendOutcome === "ambiguous"
+        ? "The scheduled email delivery could not be confirmed and it may have been sent. Tell the User not to resend it blindly."
+        : "The scheduled email was not sent. Explain the safe outcome without claiming delivery.";
+
+export * as ScheduledEmailFollowUp from "./scheduled-email-follow-up";

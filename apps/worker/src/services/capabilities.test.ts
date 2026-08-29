@@ -61,9 +61,12 @@ it.effect(
     Effect.gen(function* () {
       const capabilities = Capabilities.make();
       const availableToolNames = [
+        "cancelScheduledEmail",
         "gmailFetchThread",
         "gmailSearchEmails",
         "gmailSendEmail",
+        "inspectScheduledEmail",
+        "scheduleEmail",
       ] as const;
       const index = yield* capabilities.eligibleIndex({
         ...baseInput,
@@ -78,7 +81,14 @@ it.effect(
       expect(
         capabilities.assembleToolBundle({ availableToolNames, index, loadedSkills: [] })
           .activeToolNames,
-      ).toEqual(["gmailFetchThread", "gmailSearchEmails", "gmailSendEmail"]);
+      ).toEqual([
+        "cancelScheduledEmail",
+        "gmailFetchThread",
+        "gmailSearchEmails",
+        "gmailSendEmail",
+        "inspectScheduledEmail",
+        "scheduleEmail",
+      ]);
     }),
 );
 
@@ -1031,9 +1041,12 @@ it("explains missing requirements and denies unknown catalog entries", () => {
     availableRequirements: ["composio", "personal-agent"],
     availableToolNames: [
       ...baseInput.availableToolNames,
+      "cancelScheduledEmail",
       "gmailFetchThread",
       "gmailSearchEmails",
       "gmailSendEmail",
+      "inspectScheduledEmail",
+      "scheduleEmail",
     ],
     catalogVersion: baseInput.catalogVersion,
     capabilityId: "gmail",
@@ -1142,7 +1155,14 @@ it("projects exact governed result bounds from the pinned #252 catalog", () => {
     },
   });
   expect(
-    available("gmail", ["gmailFetchThread", "gmailSearchEmails", "gmailSendEmail"]),
+    available("gmail", [
+      "cancelScheduledEmail",
+      "gmailFetchThread",
+      "gmailSearchEmails",
+      "gmailSendEmail",
+      "inspectScheduledEmail",
+      "scheduleEmail",
+    ]),
   ).toMatchObject({
     resultBounds: {
       maximumBytes: 262_144n,

@@ -10,6 +10,7 @@ import { FilesGroup } from "./groups/files";
 import { AccountGroup } from "./groups/account";
 import { SkillsGroup } from "./groups/skills";
 import { IntegrationsGroup } from "./groups/integrations";
+import { ScheduledEmailsGroup } from "./groups/scheduled-emails";
 
 /** Shared HTTP contract implemented by the Worker and consumed by clients. */
 export const Api = HttpApi.make("osfo")
@@ -22,6 +23,7 @@ export const Api = HttpApi.make("osfo")
   .add(IntegrationsGroup)
   .add(RegistrationGroup)
   .add(ResearchReportsGroup)
+  .add(ScheduledEmailsGroup)
   .add(SkillsGroup)
   .annotateMerge(
     OpenApi.annotations({
@@ -62,6 +64,16 @@ export {
   IntegrationsGroup,
   IntegrationsUnavailable,
 } from "./groups/integrations";
+export {
+  ScheduledEmailApproval,
+  ScheduledEmailApprovalDecision,
+  ScheduledEmailApprovalDecisionAccepted,
+  ScheduledEmailApprovals,
+  ScheduledEmailNotifications,
+  ScheduledEmailNotificationSummary,
+  ScheduledEmailsGroup,
+  ScheduledEmailsUnavailable,
+} from "./groups/scheduled-emails";
 export {
   AccountDeletionAction,
   AccountDeletionActionPresentation,

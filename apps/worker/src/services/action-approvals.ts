@@ -3,10 +3,11 @@ import { Effect, Predicate } from "effect";
 import type { UserId } from "../domain";
 import {
   ActionPresentationFound,
+  ActionPresentationId,
+  ActionPresentationsFound,
   ApprovalActorUnauthorized,
   ApprovalDecisionAccepted,
   type ActionPresentation,
-  type ActionPresentationId,
   type ActionPresentationNotFound,
   type ActionPresentationUnavailable,
   type ApprovalActor,
@@ -25,6 +26,7 @@ export interface ApprovalActorAuthorizer {
 
 /** Think-owned Approval lifecycle operations used by the application service. */
 export interface ActionApprovalLifecycle {
+  readonly listPending: Effect.Effect<ReadonlyArray<PendingThinkAction>, ThinkApprovalUnavailable>;
   readonly findPending: (
     presentationId: ActionPresentationId,
   ) => Effect.Effect<PendingThinkAction, ActionPresentationNotFound | ThinkApprovalUnavailable>;
@@ -93,7 +95,21 @@ export const makeActionApprovals = (options: {
     );
   });
 
-  return { dispatch, read };
+  const list = Effect.fn("ActionApprovals.list")(function* (actor: ApprovalActor) {
+    const pending = yield* options.lifecycle.listPending;
+    yield* authorize(
+      actor,
+      pending[0]?.executionId ?? ActionPresentationId.make("pending-action-list"),
+    );
+    const presentations = yield* Effect.forEach(
+      pending,
+      (candidate) => options.present(candidate).pipe(Effect.flatMap(options.presentations.retain)),
+      { concurrency: 1 },
+    );
+    return ActionPresentationsFound.make({ presentations });
+  });
+
+  return { dispatch, list, read };
 };
 
 const unauthorized = (userId: UserId, presentationId: ActionPresentationId) =>

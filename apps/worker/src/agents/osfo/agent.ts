@@ -43,11 +43,15 @@ import {
   AllowancePeriodId,
   AssistantMessageId,
   ChannelLinkId,
+  type CapabilityCatalogVersion,
   ConversationRouteId,
   SessionId,
   ThinkSubmissionId,
   ThinkRequestId,
   UserId,
+  type Plan,
+  type PlanPolicyVersion,
+  type ResourcePriceVersion,
 } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
 import { AuthSessionId } from "../../domain/auth-session";
@@ -70,6 +74,7 @@ import { ArtifactGenerationComposition } from "../../composition/artifact-genera
 import { DocumentGenerationComposition } from "../../composition/document-generation";
 import { ResearchReportComposition } from "../../composition/research-report";
 import { DocumentBuildComposition } from "../../composition/document-build";
+import { ScheduledEmailComposition } from "../../composition/scheduled-email";
 import { WhatsAppWakeUpComposition } from "../../composition/whatsapp-wakeups";
 import { ArtifactGeneration } from "../../services/artifact-generation";
 import { DocumentBuild } from "../../services/document-build";
@@ -83,6 +88,7 @@ import { ChannelLinkAuthorizationPostgres } from "../../integrations/postgres/ch
 import { SessionRecallAuthorizationPostgres } from "../../integrations/postgres/session-recall-authorization";
 import { ResearchReportPostgres } from "../../integrations/postgres/research-report";
 import { DocumentBuildPostgres } from "../../integrations/postgres/document-build";
+import { ScheduledEmailPostgres } from "../../integrations/postgres/scheduled-email";
 import { SupermemoryMemoryProvider } from "../../integrations/supermemory/memory-provider";
 import {
   CancelManagedConversationInput,
@@ -108,6 +114,7 @@ import {
 } from "../../services/managed-conversation";
 import {
   launchModelAccessPolicy,
+  type ManagedModelRoute,
   type ManagedRouteUnavailable,
 } from "../../domain/model-access-policy";
 import {
@@ -218,6 +225,8 @@ import { PromptAssembly } from "../../services/prompt-assembly";
 import { PromptUtilization } from "../../services/prompt-utilization";
 import { ResearchReportFollowUp } from "../../services/research-report-follow-up";
 import { ResearchReport } from "../../services/research-report";
+import { ScheduledEmail } from "../../services/scheduled-email";
+import { ScheduledEmailFollowUp } from "../../services/scheduled-email-follow-up";
 import { Capabilities } from "../../services/capabilities";
 import { CapabilityTurn } from "./capability-turn";
 import { CapabilityContext } from "./capability-context";
@@ -257,6 +266,7 @@ import {
   type ActionPresentationNotFound,
   type ActionPresentationUnavailable,
   ActionApprovalRequestInvalid,
+  ApprovalActor,
   ApprovalActorAuthorizationUnavailable,
   type ApprovalActorUnauthorized,
   type ApprovalAlreadyResolved,
@@ -278,9 +288,13 @@ import {
   ResearchReportIdentityInput,
   researchReportRequiresApproval,
   ResearchReportStartInput,
+  scheduledEmailStartActionName,
+  ScheduledEmailIdentityInput,
+  ScheduledEmailStartInput,
   type ForgetKnowledgeInput,
   makeOsfoActions,
   RetainedDocumentInput,
+  decodeScheduledEmailActionInput,
   sanitizePendingApproval,
   type SessionDeleteInput,
 } from "./action-registry";
@@ -293,6 +307,7 @@ import {
   hasExactPersonalSkillDeleteInput,
   hasExactReminderManageInput,
   hasExactResearchReportStartInput,
+  hasExactScheduledEmailStartInput,
   hasExactSessionDeleteInput,
   makeActionPresentationPersistence,
   presentOsfoAction,
@@ -429,6 +444,7 @@ const capabilityActionNames = [
   "generatePresentation",
   documentBuildStartActionName,
   researchReportStartActionName,
+  scheduledEmailStartActionName,
   "revisePresentation",
   "osfoClearCoreMemory",
   "osfoDeleteSession",
@@ -1130,6 +1146,11 @@ export class OsfoAgent extends Think<Env> {
       execute: (input) => this.#cancelDocumentBuild(input),
       inputSchema: effectToolSchema(DocumentBuildIdentityInput),
     }),
+    cancelScheduledEmail: tool({
+      description: "Cancel one owned Scheduled Email before its provider effect is claimed.",
+      execute: (input) => this.#cancelScheduledEmail(input),
+      inputSchema: effectToolSchema(ScheduledEmailIdentityInput),
+    }),
     exportDocument: tool({
       description: "Export one retained generated PDF or DOCX owned by the current User.",
       execute: (input, context) => this.#exportDocument(input, context.toolCallId),
@@ -1157,6 +1178,11 @@ export class OsfoAgent extends Think<Env> {
         "Inspect the safe current status of one owned Document Build Workflow without exposing source or provider state.",
       execute: (input) => this.#inspectDocumentBuild(input),
       inputSchema: effectToolSchema(DocumentBuildIdentityInput),
+    }),
+    inspectScheduledEmail: tool({
+      description: "Inspect the safe current status of one owned Scheduled Email Workflow.",
+      execute: (input) => this.#inspectScheduledEmail(input),
+      inputSchema: effectToolSchema(ScheduledEmailIdentityInput),
     }),
     skillInspect: tool({
       description: "List active personal Skills or inspect one immutable Skill lineage.",
@@ -1462,6 +1488,19 @@ export class OsfoAgent extends Think<Env> {
         inputSchema: effectToolSchema(DocumentBuildStartInput),
         kind: "durable-pause",
         permissions: ["workflows:start"],
+      }),
+      [scheduledEmailStartActionName]: action({
+        approval: true,
+        approvalRisk: "high",
+        approvalSummary: "Schedule the exact Gmail message shown",
+        description:
+          "Schedule one exact Gmail message for one exact future instant from the connected primary mailbox.",
+        execute: (input, context) =>
+          this.#startScheduledEmail(input, ActionId.make(context.toolCallId)),
+        idempotencyKey: ({ ctx }) => `scheduled-email-start:${ctx.toolCallId}`,
+        inputSchema: effectToolSchema(ScheduledEmailStartInput),
+        kind: "durable-pause",
+        permissions: ["workflows:start", "integrations:gmail:send"],
       }),
       generatePresentation: action({
         description: "Generate one validated PPTX with at most 20 slides and 20 MB.",
@@ -3971,6 +4010,272 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  /** Begin waiting for one exact Scheduled Email payload routed by the Directory. */
+  async beginScheduledEmail(encoded: unknown) {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeUnknownResult(ScheduledEmail.WorkflowPayload)(encoded);
+    if (Result.isFailure(decoded) || decoded.success.agentId !== this.name) {
+      return invalidRequest("beginScheduledEmail");
+    }
+    const payload = decoded.success;
+    const operation = ScheduledEmail.Service.pipe(
+      Effect.flatMap((emails) => emails.beginWaiting(payload)),
+      Effect.map(projectScheduledEmailStatus),
+    );
+    return runRpc(
+      this.#accountDeletionFence.run(this.#runScheduledEmail(operation), () =>
+        scheduledEmailUnavailable("begin.deletionFence"),
+      ),
+    );
+  }
+
+  /** Execute or reconcile one exact due Scheduled Email through the Agent-owned Integration DO. */
+  async executeScheduledEmail(encoded: unknown) {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeUnknownResult(ScheduledEmail.WorkflowPayload)(encoded);
+    if (Result.isFailure(decoded) || decoded.success.agentId !== this.name) {
+      return invalidRequest("executeScheduledEmail");
+    }
+    const payload = decoded.success;
+    const operation = ScheduledEmail.Service.pipe(
+      Effect.flatMap((emails) => emails.sendDue(payload)),
+      Effect.map(projectScheduledEmailStatus),
+    );
+    return runRpc(
+      this.#accountDeletionFence.runTracked(
+        () => this.#runScheduledEmail(operation),
+        () => scheduledEmailUnavailable("execute.deletionFence"),
+      ),
+    );
+  }
+
+  /** Reconcile only an already-claimed send, including after account-deletion quiescence. */
+  async recoverScheduledEmail(encoded: unknown) {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeUnknownResult(ScheduledEmail.WorkflowPayload)(encoded);
+    if (Result.isFailure(decoded) || decoded.success.agentId !== this.name) {
+      return invalidRequest("recoverScheduledEmail");
+    }
+    const payload = decoded.success;
+    const operation = ScheduledEmail.Service.pipe(
+      Effect.flatMap((emails) => emails.recoverClaimed(payload)),
+      Effect.map(projectScheduledEmailStatus),
+    );
+    return runRpc(this.#runScheduledEmail(operation));
+  }
+
+  /** Accept the one durable terminal Scheduled Email notification into the current route Session. */
+  async submitScheduledEmailFollowUp(notificationIdentity: string) {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeResult(ScheduledEmailFollowUp.NotificationId)(
+      notificationIdentity,
+    );
+    if (Result.isFailure(decoded)) return invalidRequest("submitScheduledEmailFollowUp");
+    const notificationId = decoded.success;
+    const readNotification = () => this.#readScheduledEmailFollowUp(notificationId);
+    const notification = await readNotification();
+    if (notification === null || notification.agentId !== this.name) {
+      return invalidRequest("submitScheduledEmailFollowUp");
+    }
+    const submissionId = await Effect.runPromise(
+      ScheduledEmailFollowUp.submissionIdFor(notificationId),
+    );
+    const activateSession = (sessionId: SessionId) => this.#activateSession(sessionId);
+    const markAccepted = () =>
+      this.#markScheduledEmailFollowUpAccepted(notificationId, submissionId);
+    const requestWakeUp = (accepted: ScheduledEmailFollowUp.Notification) =>
+      this.#requestScheduledEmailWakeUp(accepted);
+    const ensureWakeUp = (accepted: ScheduledEmailFollowUp.Notification) =>
+      accepted.wakeRequestedAt !== null
+        ? Effect.void
+        : requestWakeUp(accepted).pipe(
+            Effect.andThen(
+              Effect.tryPromise({
+                try: () => this.#markScheduledEmailWakeRequested(notificationId),
+                catch: (cause) => scheduledEmailFollowUpUnavailable("markWakeRequested", cause),
+              }),
+            ),
+            Effect.asVoid,
+          );
+    const runFollowUp = (current: ScheduledEmailFollowUp.Notification) =>
+      this.runTurn({
+        idempotencyKey: `scheduled-email-follow-up-${submissionId}`,
+        input: {
+          id: submissionId,
+          metadata: { turnMetadata: scheduledEmailFollowUpMetadata(current, submissionId) },
+          parts: [{ text: ScheduledEmailFollowUp.message(current), type: "text" }],
+          role: "user",
+        },
+        metadata: scheduledEmailFollowUpMetadata(current, submissionId),
+        mode: "submit",
+        submissionId,
+      });
+    const selectDeliverySession = (sessionId: SessionId) =>
+      this.#selectScheduledEmailDeliverySession(notificationId, sessionId);
+    const store = this.#store;
+    const operation = Effect.gen(function* () {
+      const agent = yield* store.inspect();
+      const route = yield* store.readRoute(notification.routeId);
+      const deliveryCandidate = ScheduledEmailFollowUp.deliverySessionFor(
+        notification,
+        agent.agentId,
+        route,
+      );
+      if (deliveryCandidate === null) {
+        return yield* scheduledEmailFollowUpUnavailable("authority", notificationId);
+      }
+      if (notification.acceptedAt !== null) {
+        yield* ensureWakeUp(notification);
+        return { _tag: "Replayed" as const, notificationId, submissionId };
+      }
+      const selected = yield* Effect.tryPromise({
+        try: () => selectDeliverySession(deliveryCandidate),
+        catch: (cause) => scheduledEmailFollowUpUnavailable("selectSession", cause),
+      });
+      const deliverySessionId = ScheduledEmailFollowUp.deliverySessionFor(
+        selected,
+        agent.agentId,
+        route,
+      );
+      if (deliverySessionId === null || selected.deliverySessionId === null) {
+        return yield* scheduledEmailFollowUpUnavailable("selectedSession", notificationId);
+      }
+      yield* Effect.tryPromise({
+        try: () => activateSession(deliverySessionId),
+        catch: (cause) => scheduledEmailFollowUpUnavailable("activateSession", cause),
+      });
+      const current = yield* Effect.tryPromise({
+        try: readNotification,
+        catch: (cause) => scheduledEmailFollowUpUnavailable("refresh", cause),
+      });
+      if (
+        current === null ||
+        current.agentId !== notification.agentId ||
+        current.deliverySessionId !== deliverySessionId
+      ) {
+        return yield* scheduledEmailFollowUpUnavailable("refreshIdentity", notificationId);
+      }
+      yield* callThinkSubmission("submitScheduledEmailFollowUp.runTurn", () =>
+        runFollowUp(current),
+      );
+      const accepted = yield* Effect.tryPromise({
+        try: markAccepted,
+        catch: (cause) => scheduledEmailFollowUpUnavailable("markAccepted", cause),
+      });
+      yield* ensureWakeUp(accepted);
+      return { _tag: "Accepted" as const, notificationId, submissionId };
+    }).pipe(
+      Effect.mapError((cause) =>
+        Predicate.isTagged(cause, "ThinkSubmissionUnavailable")
+          ? cause
+          : new ThinkSubmissionUnavailable({
+              cause,
+              message: "Scheduled Email follow-up Agent state is unavailable",
+              operation: "submitScheduledEmailFollowUp.agentState",
+            }),
+      ),
+    );
+    return runRpc(
+      this.#accountDeletionFencedSessionExecution.run(operation, () =>
+        scheduledEmailFollowUpUnavailable("deletionFence", notificationId),
+      ),
+    );
+  }
+
+  #readScheduledEmailFollowUp(notificationId: ScheduledEmailFollowUp.NotificationId) {
+    return Effect.runPromise(
+      ScheduledEmailComposition.followUpEffect(
+        { DB: this.env.DB },
+        ScheduledEmailFollowUp.Service.pipe(
+          Effect.flatMap((followUps) => followUps.inspect(notificationId)),
+          Effect.orDie,
+        ),
+      ),
+    );
+  }
+
+  #selectScheduledEmailDeliverySession(
+    notificationId: ScheduledEmailFollowUp.NotificationId,
+    sessionId: SessionId,
+  ) {
+    return Effect.runPromise(
+      ScheduledEmailComposition.followUpEffect(
+        { DB: this.env.DB },
+        ScheduledEmailFollowUp.Service.pipe(
+          Effect.flatMap((followUps) => followUps.selectDeliverySession(notificationId, sessionId)),
+          Effect.orDie,
+        ),
+      ),
+    );
+  }
+
+  #markScheduledEmailFollowUpAccepted(
+    notificationId: ScheduledEmailFollowUp.NotificationId,
+    submissionId: ThinkSubmissionId,
+  ) {
+    return Effect.runPromise(
+      ScheduledEmailComposition.followUpEffect(
+        { DB: this.env.DB },
+        ScheduledEmailFollowUp.Service.pipe(
+          Effect.flatMap((followUps) => followUps.markAccepted(notificationId, submissionId)),
+          Effect.orDie,
+        ),
+      ),
+    );
+  }
+
+  #markScheduledEmailWakeRequested(notificationId: ScheduledEmailFollowUp.NotificationId) {
+    return Effect.runPromise(
+      ScheduledEmailComposition.followUpEffect(
+        { DB: this.env.DB },
+        ScheduledEmailFollowUp.Service.pipe(
+          Effect.flatMap((followUps) => followUps.markWakeRequested(notificationId)),
+          Effect.orDie,
+        ),
+      ),
+    );
+  }
+
+  #requestScheduledEmailWakeUp(notification: ScheduledEmailFollowUp.Notification) {
+    if (notification.whatsAppChannelLinkId === null) return Effect.void;
+    const channelLinkId = notification.whatsAppChannelLinkId;
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        scheduledEmailFollowUpUnavailable("wakeUp.runtime", notification.notificationId),
+      );
+    }
+    const source = WhatsAppWakeUps.Source.cases.ScheduledEmail.make({
+      identity: WhatsAppWakeUps.SourceIdentity.make(notification.notificationId),
+    });
+    return Effect.tryPromise({
+      try: () =>
+        runtime.runPromise(
+          Effect.scoped(
+            WhatsAppWakeUps.Service.pipe(
+              Effect.flatMap((wakeUps) =>
+                wakeUps.request({
+                  channelLinkId,
+                  source,
+                  traceId: WhatsAppWakeUps.TraceId.make(notification.notificationId),
+                  userId: notification.userId,
+                  wakeUpId: WhatsAppWakeUps.WakeUpId.make(notification.notificationId),
+                }),
+              ),
+              // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The public Agent RPC is the application entry point for this complete Wake-up composition.
+              Effect.provide(
+                WhatsAppWakeUpComposition.layer(
+                  loadConfig(this.env),
+                  this.#wakeUpSourceAuthorityLayer,
+                ),
+              ),
+            ),
+          ),
+        ),
+      catch: (cause) => scheduledEmailFollowUpUnavailable("wakeUp.request", cause),
+    }).pipe(Effect.asVoid);
+  }
+
   #requestDocumentBuildWakeUp(notification: DocumentBuildFollowUp.Notification) {
     if (notification.whatsAppChannelLinkId === null) return Effect.void;
     const channelLinkId = notification.whatsAppChannelLinkId;
@@ -4391,6 +4696,23 @@ export class OsfoAgent extends Think<Env> {
             }),
         ),
         Effect.flatMap((parsed) => this.#actionApprovals.read(parsed.actor, parsed.presentationId)),
+      ),
+    );
+  }
+
+  /** List immutable pending presentations for an authenticated User. */
+  async listActionPresentations(input: unknown) {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeUnknownEffect(ApprovalActor)(input).pipe(
+        Effect.mapError(
+          () =>
+            new ActionApprovalRequestInvalid({
+              message: "The Action Presentation list request is invalid",
+              operation: "listActionPresentations",
+            }),
+        ),
+        Effect.flatMap((actor) => this.#actionApprovals.list(actor)),
       ),
     );
   }
@@ -5013,6 +5335,178 @@ export class OsfoAgent extends Think<Env> {
       this.#accountDeletionFence.runTracked(
         () => this.#runDocumentBuildControl(effect),
         () => documentBuildUnavailable("start.deletionFence"),
+      ),
+    );
+  }
+
+  async #startScheduledEmail(untrustedInput: unknown, actionId: ActionId) {
+    const input = await Effect.runPromise(
+      decodeScheduledEmailActionInput(untrustedInput).pipe(
+        Effect.mapError((cause) => scheduledEmailUnavailable("start.input", cause)),
+      ),
+    );
+    const metadata = await Effect.runPromise(
+      Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
+    );
+    const approved = this.#currentApprovedActions.get(actionId);
+    if (
+      approved?.operation !== "integration.effect" ||
+      !hasExactScheduledEmailStartInput(approved.actionPresentation, input)
+    ) {
+      throw scheduledEmailUnavailable("start.exactApproval", actionId);
+    }
+    const current = await Effect.runPromise(
+      this.#currentScheduledEmailAuthorization(metadata, {
+        actionId,
+        presentation: approved.presentation,
+      }),
+    );
+    const operation = ScheduledEmail.Service.pipe(
+      Effect.flatMap((emails) =>
+        emails.start({
+          actionId,
+          agentId: AgentId.make(this.name),
+          authorization: current,
+          request: input,
+          routeId: metadata.routeId,
+          sessionId: metadata.sessionId,
+        }),
+      ),
+      Effect.map((result) => ({
+        _tag: result._tag,
+        email: projectScheduledEmailStatus(result.email),
+      })),
+    );
+    return Effect.runPromise(
+      this.#accountDeletionFence.runTracked(
+        () => this.#runScheduledEmail(operation),
+        () => scheduledEmailUnavailable("start.deletionFence"),
+      ),
+    );
+  }
+
+  async #inspectScheduledEmail(input: typeof ScheduledEmailIdentityInput.Type) {
+    const metadata = await Effect.runPromise(
+      Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
+    );
+    const current = await Effect.runPromise(
+      this.#currentScheduledEmailAuthorization(metadata, null),
+    );
+    const operation = ScheduledEmail.Service.pipe(
+      Effect.flatMap((emails) => emails.inspect(input.workflowId, current)),
+      Effect.map(projectScheduledEmailStatus),
+    );
+    return Effect.runPromise(
+      this.#accountDeletionFence.run(this.#runScheduledEmail(operation), () =>
+        scheduledEmailUnavailable("inspect.deletionFence"),
+      ),
+    );
+  }
+
+  async #cancelScheduledEmail(input: typeof ScheduledEmailIdentityInput.Type) {
+    const metadata = await Effect.runPromise(
+      Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
+    );
+    const current = await Effect.runPromise(
+      this.#currentScheduledEmailAuthorization(metadata, null),
+    );
+    const operation = ScheduledEmail.Service.pipe(
+      Effect.flatMap((emails) => emails.cancel(input.workflowId, current)),
+      Effect.map((result) => ({
+        _tag: result._tag,
+        email: projectScheduledEmailStatus(result.email),
+      })),
+    );
+    return Effect.runPromise(
+      this.#accountDeletionFence.runTracked(
+        () => this.#runScheduledEmail(operation),
+        () => scheduledEmailUnavailable("cancel.deletionFence"),
+      ),
+    );
+  }
+
+  #runScheduledEmail<Value, Failure>(
+    operation: Effect.Effect<Value, Failure, ScheduledEmail.Service>,
+  ): Effect.Effect<Value, Failure | ScheduledEmail.Unavailable> {
+    return ScheduledEmailComposition.effect(
+      ScheduledEmailComposition.bindingsFromEnv(this.env),
+      Option.getOrNull(this.#integrations),
+      operation,
+    );
+  }
+
+  #currentScheduledEmailAuthorization(
+    metadata: ManagedTurnMetadata,
+    approved: { readonly actionId: ActionId; readonly presentation: ApprovalPresentation } | null,
+  ) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    const integrations = Option.getOrUndefined(this.#integrations);
+    if (runtime === undefined || (approved !== null && integrations === undefined)) {
+      return Effect.fail(scheduledEmailUnavailable("start.runtime"));
+    }
+    return this.#inspectSessionRecallAuthorization(metadata.authorityIdentity).pipe(
+      Effect.flatMap((facts) =>
+        Effect.tryPromise({
+          try: () =>
+            runtime.runPromise(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const database = yield* Db.database;
+                  const [allowance, concurrentWorkflows] = yield* Effect.all([
+                    BillingDb.make(database).admit(facts.user.userId, facts.now),
+                    ScheduledEmailPostgres.countActiveForUser(database, facts.user.userId),
+                  ]);
+                  let connection: Integrations.IntegrationConnectionEvidence | null = null;
+                  if (approved !== null) {
+                    if (integrations === undefined) {
+                      return yield* scheduledEmailUnavailable("start.integrations");
+                    }
+                    connection = yield* integrations.connectionEvidence({
+                      toolkit: "gmail",
+                      userId: facts.user.userId,
+                    });
+                  }
+                  const gmailConnection = Predicate.isTagged(
+                    connection,
+                    "IntegrationConnectionConnected",
+                  )
+                    ? ({
+                        _tag: "Connected" as const,
+                        toolkit: "gmail",
+                        userId: facts.user.userId,
+                      } as const)
+                    : null;
+                  const { userId: _userId, ...originatingAuthority } = metadata.authorityIdentity;
+                  return AuthorizationContext.make({
+                    allowance: { _tag: "Metered", ...allowance },
+                    approval:
+                      approved === null
+                        ? null
+                        : approvalFor(
+                            facts.user.userId,
+                            ScheduledEmail.integrationOperation(approved.actionId),
+                            approved.presentation,
+                          ),
+                    ...facts,
+                    gmailConnection,
+                    integrationConnections: gmailConnection === null ? [] : [gmailConnection],
+                    liveFacts: {
+                      ...emptyLiveResourceFacts,
+                      concurrentWorkflows,
+                    },
+                    originatingAuthority,
+                    requestVendorUsdMicros: 0n,
+                  });
+                }),
+              ),
+            ),
+          catch: (cause) => scheduledEmailUnavailable("start.currentAuthorization", cause),
+        }),
+      ),
+      Effect.mapError((cause) =>
+        Schema.is(ScheduledEmail.Unavailable)(cause)
+          ? cause
+          : scheduledEmailUnavailable("start.currentAuthorization", cause),
       ),
     );
   }
@@ -6850,8 +7344,22 @@ export const documentBuildFollowUpSubmissionId = async (
   return ThinkSubmissionId.make(`document-build-${hex}`);
 };
 
+interface CompanyContinuityNotificationFacts {
+  readonly allowancePeriodId: AllowancePeriodId;
+  readonly capabilityCatalogVersion: CapabilityCatalogVersion;
+  readonly claimedAt: Date;
+  readonly modelRoute: ManagedModelRoute;
+  readonly plan: Plan;
+  readonly planPolicyVersion: PlanPolicyVersion;
+  readonly resourcePriceVersion: ResourcePriceVersion;
+  readonly routeId: ConversationRouteId;
+  readonly sessionId: SessionId;
+  readonly userId: UserId;
+  readonly workflowId: string;
+}
+
 export const researchReportFollowUpMetadata = (
-  notification: ResearchReportFollowUp.Notification | DocumentBuildFollowUp.Notification,
+  notification: CompanyContinuityNotificationFacts,
   submissionId: ThinkSubmissionId,
 ) => {
   const limits = currentCapabilityCatalog.exhaustedConversation;
@@ -6917,6 +7425,19 @@ export const documentBuildFollowUpMetadata = (
     {
       ...notification,
       sessionId: notification.deliverySessionId ?? notification.sessionId,
+    },
+    submissionId,
+  );
+};
+
+export const scheduledEmailFollowUpMetadata = (
+  notification: ScheduledEmailFollowUp.Notification,
+  submissionId: ThinkSubmissionId,
+) => {
+  return researchReportFollowUpMetadata(
+    {
+      ...notification,
+      sessionId: notification.deliverySessionId ?? notification.originSessionId,
     },
     submissionId,
   );
@@ -7108,11 +7629,34 @@ const projectDocumentBuildStatus = (build: DocumentBuild.Record) => ({
   workflowId: build.workflowId,
 });
 
+const projectScheduledEmailStatus = (email: ScheduledEmail.Record) => ({
+  dueAt: email.dueAt.toISOString(),
+  safeFailureCode: email.safeFailureCode,
+  sendStartedAt: email.sendStartedAt?.toISOString() ?? null,
+  state: email.state,
+  terminalAt: email.terminalAt?.toISOString() ?? null,
+  workflowId: email.workflowId,
+});
+
 const documentBuildUnavailable = (operation: string, cause: unknown = operation) =>
   new DocumentBuild.Unavailable({
     cause,
     message: "The Document Build control is temporarily unavailable",
     operation,
+  });
+
+const scheduledEmailUnavailable = (operation: string, cause: unknown = operation) =>
+  new ScheduledEmail.Unavailable({
+    cause,
+    message: "The Scheduled Email control is temporarily unavailable",
+    operation,
+  });
+
+const scheduledEmailFollowUpUnavailable = (operation: string, cause: unknown) =>
+  new ThinkSubmissionUnavailable({
+    cause,
+    message: "The Scheduled Email follow-up is temporarily unavailable",
+    operation: `submitScheduledEmailFollowUp.${operation}`,
   });
 
 const researchReportUnavailable = (operation: string, cause: unknown = operation) =>

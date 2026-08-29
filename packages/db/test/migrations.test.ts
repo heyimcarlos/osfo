@@ -61,6 +61,8 @@ describe("Postgres migrations", () => {
             "research_report_provider_operations",
             "research_report_synthesis_operations",
             "research_reports",
+            "scheduled_email_notifications",
+            "scheduled_emails",
             "sessions",
             "usage_event_components",
             "usage_event_evidence_references",

@@ -55,6 +55,18 @@ export interface ResearchLedgerEntry {
   readonly subject: string;
 }
 
+/** One exact local Integration provider execution observed at the provider boundary. */
+export interface IntegrationLedgerEntry {
+  readonly connectedAccountId: string;
+  readonly input: JsonObject;
+  readonly logId: string;
+  readonly providerSessionId: string;
+  readonly providerTool: string;
+  readonly recordedAt: string;
+  readonly resourceId: string;
+  readonly userId: string;
+}
+
 interface TelegramPayload {
   readonly chatId: number | string;
   readonly messageId?: number;
@@ -121,6 +133,20 @@ const ResearchRequest = Schema.Struct({
 });
 type ResearchRequest = typeof ResearchRequest.Type;
 const ResearchRequestFromJson = Schema.fromJsonString(ResearchRequest);
+const LocalIntegrationRequestFromJson = Schema.fromJsonString(
+  Schema.StructWithRest(
+    Schema.Struct({
+      callbackUrl: Schema.optional(Schema.String),
+      connectedAccountId: Schema.optional(Schema.String),
+      input: Schema.optional(Schema.JsonObject),
+      providerTool: Schema.optional(Schema.String),
+      toolkit: Schema.optional(Schema.String),
+      toolkits: Schema.optional(Schema.Array(Schema.String)),
+      userId: Schema.optional(Schema.String),
+    }),
+    [Schema.Record(Schema.String, Schema.Unknown)],
+  ),
+);
 
 const researchSourceUrl = "https://research.verify.osfo.test/durable-workflows";
 const researchSourceContent =
@@ -143,6 +169,9 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
     const twilioLedger: Array<TwilioLedgerEntry> = [];
     const whatsAppLedger: Array<WhatsAppLedgerEntry> = [];
     const researchLedger: Array<ResearchLedgerEntry> = [];
+    const integrationLedger: Array<IntegrationLedgerEntry> = [];
+    const integrationSessions = new Map<string, string>();
+    const integrationConnections = new Set<string>();
     let whatsAppNextResponseStatus: number | null = null;
     let whatsAppTemplateOnly = false;
     const server = createServer((request, response) => {
@@ -159,6 +188,9 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         twilioLedger.length = 0;
         whatsAppLedger.length = 0;
         researchLedger.length = 0;
+        integrationLedger.length = 0;
+        integrationSessions.clear();
+        integrationConnections.clear();
         whatsAppNextResponseStatus = null;
         whatsAppTemplateOnly = false;
         response.statusCode = 204;
@@ -238,6 +270,27 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
       }
       if (request.method === "GET" && pathname === "/_test/research/ledger") {
         respondJson(response, 200, researchLedger);
+        return;
+      }
+      if (request.method === "GET" && pathname === "/_test/integrations/ledger") {
+        respondJson(response, 200, integrationLedger);
+        return;
+      }
+      if (request.method === "POST" && pathname === "/_test/integrations/reset-ledger") {
+        integrationLedger.length = 0;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      if (pathname.startsWith("/_local/integrations/")) {
+        handleLocalIntegrations(
+          request,
+          response,
+          url,
+          integrationSessions,
+          integrationConnections,
+          integrationLedger,
+        );
         return;
       }
       if (request.method === "POST" && pathname.startsWith("/_local/research/")) {
@@ -421,6 +474,197 @@ const hasExactKeys = (value: unknown, keys: ReadonlyArray<string>): value is Jso
   return actualKeys.length === keys.length && keys.every((key) => actualKeys.includes(key));
 };
 
+const handleLocalIntegrations = (
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  sessions: Map<string, string>,
+  connections: Set<string>,
+  ledger: Array<IntegrationLedgerEntry>,
+): void => {
+  const segments = url.pathname.split("/").filter(Boolean);
+  const sessionId = segments[3];
+  const operation = segments[4];
+  if (request.method === "GET" && operation === undefined && sessionId !== undefined) {
+    const userId = sessions.get(sessionId);
+    respondJson(
+      response,
+      userId === undefined ? 404 : 200,
+      userId === undefined ? { error: "Session not found" } : { providerSessionId: sessionId },
+    );
+    return;
+  }
+  if (request.method === "GET" && operation === "connect" && sessionId !== undefined) {
+    renderLocalIntegrationConnect(response, url, sessionId, sessions);
+    return;
+  }
+  if (request.method === "POST" && operation === "connect" && sessionId !== undefined) {
+    completeLocalIntegrationConnect(response, url, sessionId, sessions, connections);
+    return;
+  }
+  readTextBody(request)
+    .then(Schema.decodeUnknownPromise(LocalIntegrationRequestFromJson))
+    .then((input) => {
+      if (request.method === "POST" && sessionId === undefined && operation === undefined) {
+        const userId = input.userId;
+        if (userId === undefined) {
+          respondJson(response, 400, { error: "User is required" });
+          return;
+        }
+        const nextSessionId = `integration-session-${sessions.size + 1}`;
+        sessions.set(nextSessionId, userId);
+        respondJson(response, 201, { providerSessionId: nextSessionId });
+        return;
+      }
+      if (sessionId === undefined || sessions.get(sessionId) !== input.userId) {
+        respondJson(response, 404, { error: "Session not found" });
+        return;
+      }
+      if (operation === "authorize") {
+        if (input.toolkit !== "gmail" || input.callbackUrl === undefined) {
+          respondJson(response, 400, { error: "Only Gmail verification is supported" });
+          return;
+        }
+        const host = headerValue(request.headers.host);
+        const redirect = new URL(
+          `/_local/integrations/sessions/${sessionId}/connect`,
+          host === null ? url.origin : `http://${host}`,
+        );
+        redirect.searchParams.set("callback", input.callbackUrl);
+        redirect.searchParams.set("toolkit", input.toolkit);
+        respondJson(response, 200, { redirectUrl: redirect.href });
+        return;
+      }
+      if (operation === "toolkits") {
+        const requested = input.toolkits ?? [];
+        respondJson(
+          response,
+          200,
+          requested.map((toolkit) => ({
+            connectedAccount:
+              toolkit === "gmail" && connections.has(input.userId ?? "")
+                ? { id: integrationAccountId(input.userId ?? ""), status: "ACTIVE" }
+                : null,
+            isActive: toolkit === "gmail" && connections.has(input.userId ?? ""),
+            slug: toolkit,
+          })),
+        );
+        return;
+      }
+      if (operation === "disconnect") {
+        connections.delete(input.userId ?? "");
+        respondJson(response, 200, { disconnected: true });
+        return;
+      }
+      if (operation === "execute") {
+        executeLocalIntegration(response, sessionId, input, connections, ledger);
+        return;
+      }
+      if (operation === "inspect") {
+        const exact = ledger.filter(
+          (entry) =>
+            entry.providerSessionId === sessionId && sameJsonObject(entry.input, input.input),
+        );
+        respondJson(
+          response,
+          200,
+          exact.length === 1
+            ? {
+                _tag: "Applied",
+                execution: {
+                  data: { id: exact[0]?.resourceId ?? "" },
+                  error: null,
+                  logId: exact[0]?.logId ?? "",
+                },
+              }
+            : { _tag: "Unknown" },
+        );
+        return;
+      }
+      respondJson(response, 404, { error: "Unsupported local Integration operation" });
+    })
+    .catch((cause: unknown) => respondJson(response, 400, { error: String(cause) }));
+};
+
+const renderLocalIntegrationConnect = (
+  response: ServerResponse,
+  url: URL,
+  sessionId: string,
+  sessions: ReadonlyMap<string, string>,
+): void => {
+  if (!sessions.has(sessionId) || url.searchParams.get("toolkit") !== "gmail") {
+    respondJson(response, 404, { error: "Connect request not found" });
+    return;
+  }
+  response.statusCode = 200;
+  response.setHeader("content-type", "text/html; charset=utf-8");
+  response.end(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Local Gmail verification</title></head>
+<body><main><h1>Local Gmail verification</h1>
+<p>This deterministic provider-boundary account is local and is not live Gmail OAuth.</p>
+<form method="post"><button type="submit">Connect local Gmail</button></form>
+</main></body></html>`);
+};
+
+const completeLocalIntegrationConnect = (
+  response: ServerResponse,
+  url: URL,
+  sessionId: string,
+  sessions: ReadonlyMap<string, string>,
+  connections: Set<string>,
+): void => {
+  const userId = sessions.get(sessionId);
+  const callback = url.searchParams.get("callback");
+  if (userId === undefined || callback === null || !URL.canParse(callback)) {
+    respondJson(response, 400, { error: "Connect request is invalid" });
+    return;
+  }
+  connections.add(userId);
+  response.statusCode = 303;
+  response.setHeader("location", callback);
+  response.end();
+};
+
+const executeLocalIntegration = (
+  response: ServerResponse,
+  sessionId: string,
+  input: typeof LocalIntegrationRequestFromJson.Type,
+  connections: ReadonlySet<string>,
+  ledger: Array<IntegrationLedgerEntry>,
+): void => {
+  const userId = input.userId ?? "";
+  const message = input.input;
+  if (
+    !connections.has(userId) ||
+    input.providerTool !== "GMAIL_SEND_EMAIL" ||
+    input.connectedAccountId !== integrationAccountId(userId) ||
+    message === undefined
+  ) {
+    respondJson(response, 409, { error: "Exact Gmail authority is unavailable" });
+    return;
+  }
+  const ordinal = ledger.length + 1;
+  const logId = `local-gmail-log-${ordinal}`;
+  const resourceId = `local-gmail-message-${ordinal}`;
+  ledger.push({
+    connectedAccountId: input.connectedAccountId,
+    input: message,
+    logId,
+    providerSessionId: sessionId,
+    providerTool: input.providerTool,
+    recordedAt: new Date().toISOString(),
+    resourceId,
+    userId,
+  });
+  respondJson(response, 200, { data: { id: resourceId }, error: null, logId });
+};
+
+const integrationAccountId = (userId: string) =>
+  `local-gmail-${createHash("sha256").update(userId).digest("hex").slice(0, 16)}`;
+
+const sameJsonObject = (left: JsonObject, right: JsonObject | undefined): boolean =>
+  right !== undefined && JSON.stringify(left) === JSON.stringify(right);
+
 const handleSupermemorySeed = (
   request: IncomingMessage,
   response: ServerResponse,
@@ -447,8 +691,12 @@ const handleResearch = (
     .then((input) => {
       if (pathname.endsWith("/agent")) {
         const toolNames = availableToolNames(input);
-        const lastMessage = lastMessageText(input);
-        ledger.push({ kind: "agent", operationId: null, subject: lastMessage.slice(0, 500) });
+        const lastMessage = lastMessageContent(input);
+        ledger.push({
+          kind: "agent",
+          operationId: null,
+          subject: lastMessageText(input).slice(0, 500),
+        });
         if (toolNames.includes("present_link") && lastMessageRole(input) === "user") {
           respondJson(response, 200, toolResponse("present_link", {}));
           return;
@@ -456,6 +704,62 @@ const handleResearch = (
         const workflowId = /research[:\w-]{8,300}/iu.exec(lastMessage)?.[0];
         const documentBuildWorkflowId = /document-build:[\w:-]{8,300}/iu.exec(lastMessage)?.[0];
         const documentBuildFileId = /web:[0-9a-f-]{36}/iu.exec(lastMessage)?.[0];
+        const scheduledEmailWorkflowId = /scheduled-email:[\w:-]{8,300}/iu.exec(lastMessage)?.[0];
+        const scheduledEmailFixture =
+          /recipient=([^;]+); subject=([^;]+); body=([^;]+); sendAt=([^;\s]+)/iu.exec(lastMessage);
+        if (
+          scheduledEmailWorkflowId !== undefined &&
+          toolNames.includes("inspectScheduledEmail") &&
+          lastMessageRole(input) === "user" &&
+          /(?:inspect|status|check)/iu.test(lastMessage)
+        ) {
+          ledger.push({
+            kind: "tool-selection",
+            operationId: null,
+            selectedTool: "inspectScheduledEmail",
+            subject: scheduledEmailWorkflowId,
+          });
+          respondJson(
+            response,
+            200,
+            toolResponse("inspectScheduledEmail", { workflowId: scheduledEmailWorkflowId }),
+          );
+          return;
+        }
+        if (
+          scheduledEmailFixture !== null &&
+          toolNames.includes("scheduleEmail") &&
+          lastMessageRole(input) === "user"
+        ) {
+          const [, recipient, subject, body, scheduledAt] = scheduledEmailFixture;
+          if (
+            recipient === undefined ||
+            subject === undefined ||
+            body === undefined ||
+            scheduledAt === undefined
+          ) {
+            respondJson(response, 400, { error: "Scheduled Email fixture is incomplete" });
+            return;
+          }
+          ledger.push({
+            kind: "tool-selection",
+            operationId: null,
+            selectedTool: "scheduleEmail",
+            subject: `${recipient}|${subject}|${body}|${scheduledAt}`,
+          });
+          respondJson(
+            response,
+            200,
+            toolResponse("scheduleEmail", {
+              body,
+              gmailResource: "primary",
+              recipients: [recipient],
+              scheduledAt,
+              subject,
+            }),
+          );
+          return;
+        }
         if (
           documentBuildWorkflowId !== undefined &&
           toolNames.includes("inspectDocumentBuild") &&

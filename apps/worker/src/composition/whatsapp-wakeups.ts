@@ -8,7 +8,9 @@ import type { ChannelLinkId, UserId } from "../domain";
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { wakeUpSenderLayer } from "../integrations/whatsapp";
 import { ResearchReportFollowUpPostgres } from "../integrations/postgres/research-report-follow-up";
+import { ScheduledEmailFollowUpPostgres } from "../integrations/postgres/scheduled-email-follow-up";
 import { ResearchReportFollowUp } from "../services/research-report-follow-up";
+import { ScheduledEmailFollowUp } from "../services/scheduled-email-follow-up";
 import { WhatsAppWakeUps } from "../services/whatsapp-wakeups";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect/domain variants use the canonical _tag discriminator. */
@@ -137,22 +139,95 @@ export const researchReportSourceAuthority = (
   };
 };
 
+/** PostgreSQL is the only authority for an accepted Scheduled Email terminal source. */
+export const scheduledEmailSourceAuthority = (
+  database: Database,
+): WhatsAppWakeUps.SourceAuthorityInterface => {
+  const followUps = ScheduledEmailFollowUpPostgres.make(database);
+  return {
+    inspect: (userId, source) => {
+      if (source._tag !== "ScheduledEmail") return Effect.succeed(null);
+      return Schema.decodeEffect(ScheduledEmailFollowUp.NotificationId)(source.identity).pipe(
+        Effect.flatMap(followUps.inspect),
+        Effect.map((notification) =>
+          notification === null ||
+          notification.userId !== userId ||
+          notification.acceptedAt === null ||
+          notification.sourceExposedAt !== null ||
+          notification.whatsAppChannelLinkId === null
+            ? null
+            : { committedAt: notification.acceptedAt, source },
+        ),
+        Effect.mapError((cause) => sourceUnavailable("scheduledEmail.inspect", cause)),
+      );
+    },
+    pendingForUser: (userId) =>
+      ScheduledEmailFollowUpPostgres.pendingSources(database, userId).pipe(
+        Effect.map((notifications) =>
+          notifications.flatMap((notification) =>
+            notification.acceptedAt === null || notification.whatsAppChannelLinkId === null
+              ? []
+              : [
+                  {
+                    committedAt: notification.acceptedAt,
+                    source: WhatsAppWakeUps.Source.cases.ScheduledEmail.make({
+                      identity: WhatsAppWakeUps.SourceIdentity.make(notification.notificationId),
+                    }),
+                  },
+                ],
+          ),
+        ),
+        Effect.mapError((cause) => sourceUnavailable("scheduledEmail.pending", cause)),
+      ),
+    exposePending: (userId, committed) =>
+      DateTime.now.pipe(
+        Effect.flatMap((now) =>
+          Effect.forEach(
+            committed.flatMap(({ source }) =>
+              source._tag === "ScheduledEmail" ? [source.identity] : [],
+            ),
+            (identity) => Schema.decodeEffect(ScheduledEmailFollowUp.NotificationId)(identity),
+          ).pipe(
+            Effect.flatMap((notificationIds) =>
+              ScheduledEmailFollowUpPostgres.exposeSources(
+                database,
+                userId,
+                notificationIds,
+                DateTime.toDateUtc(now),
+              ),
+            ),
+          ),
+        ),
+        Effect.mapError((cause) => sourceUnavailable("scheduledEmail.expose", cause)),
+      ),
+  };
+};
+
 /** Route each source kind to its owning authority without replacing Reminder support. */
 export const combinedSourceAuthority = (
   reminder: WhatsAppWakeUps.SourceAuthorityInterface,
   researchReport: WhatsAppWakeUps.SourceAuthorityInterface,
+  scheduledEmail: WhatsAppWakeUps.SourceAuthorityInterface,
 ): WhatsAppWakeUps.SourceAuthorityInterface => ({
   inspect: (userId, source) =>
     source._tag === "ResearchReport"
       ? researchReport.inspect(userId, source)
-      : reminder.inspect(userId, source),
+      : source._tag === "ScheduledEmail"
+        ? scheduledEmail.inspect(userId, source)
+        : reminder.inspect(userId, source),
   pendingForUser: (userId) =>
-    Effect.all([reminder.pendingForUser(userId), researchReport.pendingForUser(userId)]).pipe(
-      Effect.map(([reminders, reports]) => [...reminders, ...reports]),
-    ),
+    Effect.all([
+      reminder.pendingForUser(userId),
+      researchReport.pendingForUser(userId),
+      scheduledEmail.pendingForUser(userId),
+    ]).pipe(Effect.map(([reminders, reports, emails]) => [...reminders, ...reports, ...emails])),
   exposePending: (userId, committed) =>
     Effect.all(
-      [reminder.exposePending(userId, committed), researchReport.exposePending(userId, committed)],
+      [
+        reminder.exposePending(userId, committed),
+        researchReport.exposePending(userId, committed),
+        scheduledEmail.exposePending(userId, committed),
+      ],
       { discard: true },
     ),
 });
@@ -165,7 +240,11 @@ export const combinedSourceAuthorityLayer = (
     WhatsAppWakeUps.SourceAuthority,
     Db.database.pipe(
       Effect.map((database) =>
-        combinedSourceAuthority(reminder, researchReportSourceAuthority(database)),
+        combinedSourceAuthority(
+          reminder,
+          researchReportSourceAuthority(database),
+          scheduledEmailSourceAuthority(database),
+        ),
       ),
     ),
   ).pipe(Layer.provide(Db.layer({ db: databaseBinding })));

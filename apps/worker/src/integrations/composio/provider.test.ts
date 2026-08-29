@@ -13,6 +13,22 @@ import {
   uploadFile,
 } from "./provider";
 
+interface ListedToolLog {
+  readonly actionKey: string;
+  readonly connectedAccountId: string;
+  readonly createdAt: number;
+  readonly id: string;
+  readonly status: "failed" | "success";
+}
+
+const exactToolLog = (id: string, status: ListedToolLog["status"] = "success"): ListedToolLog => ({
+  actionKey: "GMAIL_SEND_EMAIL",
+  connectedAccountId: "private-account",
+  createdAt: 1_000,
+  id,
+  status,
+});
+
 describe("Composio Provider", () => {
   it("translates direct manifests into a fully confined current session config", () => {
     expect(composioSessionConfig(directIntegrationProviderConfig)).toEqual({
@@ -110,6 +126,138 @@ describe("Composio Provider", () => {
           providerTool: "GMAIL_SEND_EMAIL",
         },
       ]);
+    }),
+  );
+
+  it.effect("matches bounded exact execution logs and keeps absence or duplicates unknown", () =>
+    Effect.gen(function* () {
+      const input = {
+        body: "bounded",
+        is_html: false,
+        recipient_email: "person@example.test",
+        subject: "Subject",
+        user_id: "me",
+      } as const;
+      let listed = [exactToolLog("log-1")];
+      let detailMode: "applied" | "failedNoStep" | "malformed" | "successNoStep" = "applied";
+      let endlessPages = false;
+      let listFailure = false;
+      let listCalls = 0;
+      let laterPage = false;
+      let retrieveFailure = false;
+      const session = {
+        authorize: async () => ({ redirectUrl: "https://connect.composio.dev/link" }),
+        sessionId: "provider-session-1",
+      };
+      const provider = makeFromClient({
+        createSession: async () => session,
+        disconnect: async () => undefined,
+        executeOnce: async () => ({ data: {}, error: null, logId: "unused" }),
+        listConnectedAccounts: async () => ({ items: [] }),
+        listToolLogs: async ({ cursor }) => {
+          listCalls += 1;
+          if (listFailure) throw new Error("list unavailable");
+          if (endlessPages) {
+            return { data: [], nextCursor: (cursor ?? 0) + 100 };
+          }
+          if (laterPage && cursor === null) {
+            return {
+              data: Array.from({ length: 100 }, (_, index) => ({
+                ...exactToolLog(`unrelated-${index}`),
+                connectedAccountId: "another-account",
+              })),
+              nextCursor: 100,
+            };
+          }
+          return { data: listed, nextCursor: null };
+        },
+        retrieveToolLog: async (id) => {
+          if (retrieveFailure) throw new Error("retrieve unavailable");
+          return {
+            connection: { id: "private-account" },
+            payloadReceived: {
+              arguments: id === "wrong-payload" ? { ...input, body: "changed" } : input,
+            },
+            response:
+              detailMode === "malformed"
+                ? { unexpected: true }
+                : { data: { id: "message-1" }, error: null },
+            status: detailMode === "failedNoStep" ? ("error" as const) : ("success" as const),
+            session: { id: id === "other-session" ? "provider-session-2" : "provider-session-1" },
+            steps:
+              detailMode === "failedNoStep" || detailMode === "successNoStep"
+                ? []
+                : [{ type: "tool_execution" as const }],
+          };
+        },
+        uploadFile: async () => ({ mimetype: "text/plain", name: "file", s3key: "key" }),
+        useSession: async () => session,
+      });
+      const created = yield* provider.createSession(
+        UserId.make("user-1"),
+        directIntegrationProviderConfig,
+      );
+      const correlation = {
+        connectedAccountId: "private-account",
+        providerSessionId: "provider-session-1",
+        providerTool: "GMAIL_SEND_EMAIL",
+        startedAt: 1_000_000,
+      };
+      const inspectExecution = created.session.inspectExecution;
+      if (inspectExecution === undefined) throw new Error("provider log inspection is missing");
+
+      expect(yield* inspectExecution({ ...correlation, providerSessionId: null }, input)).toEqual({
+        _tag: "Unknown",
+      });
+      expect(yield* inspectExecution(correlation, input)).toMatchObject({
+        _tag: "Applied",
+        execution: { logId: "log-1" },
+      });
+      listed = [exactToolLog("other-session")];
+      expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
+      listed = [
+        exactToolLog("log-1"),
+        { ...exactToolLog("wrong-account"), connectedAccountId: "another-account" },
+        { ...exactToolLog("wrong-tool"), actionKey: "GMAIL_FETCH_EMAILS" },
+        { ...exactToolLog("wrong-time"), createdAt: 900 },
+        { ...exactToolLog("future-time"), createdAt: 1_400 },
+        exactToolLog("other-session"),
+        exactToolLog("wrong-payload"),
+      ];
+      expect(yield* inspectExecution(correlation, input)).toMatchObject({ _tag: "Applied" });
+      listed = [exactToolLog("log-1"), exactToolLog("log-2")];
+      expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
+      listed = [];
+      expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
+      listed = [exactToolLog("failed-before-tool", "failed")];
+      detailMode = "failedNoStep";
+      expect(yield* inspectExecution(correlation, input)).toEqual({
+        _tag: "NotApplied",
+        providerLogId: "failed-before-tool",
+      });
+      listed = [exactToolLog("contradictory-success")];
+      detailMode = "successNoStep";
+      expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
+      detailMode = "malformed";
+      expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
+      detailMode = "applied";
+      listed = [exactToolLog("later-page-exact")];
+      laterPage = true;
+      expect(yield* inspectExecution(correlation, input)).toMatchObject({
+        _tag: "Applied",
+        execution: { logId: "later-page-exact" },
+      });
+      laterPage = false;
+      endlessPages = true;
+      listCalls = 0;
+      expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
+      expect(listCalls).toBe(5);
+      endlessPages = false;
+      listFailure = true;
+      expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
+      listFailure = false;
+      retrieveFailure = true;
+      expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
     }),
   );
 

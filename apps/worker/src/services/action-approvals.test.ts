@@ -34,6 +34,7 @@ it.effect("reuses the immutable Action presentation retained on its first read",
     authorizer: { ownsAgent: () => Effect.succeed(true) },
     lifecycle: {
       findPending: () => Effect.succeed(pending),
+      listPending: Effect.succeed([pending]),
       resolve: () => Effect.void,
     },
     now: Effect.succeed(new Date("2026-08-24T00:00:00.000Z")),
@@ -70,8 +71,10 @@ it.effect("reuses the immutable Action presentation retained on its first read",
     const first = yield* approvals.read(actor, pending.executionId);
     title = "Changed after deployment";
     const second = yield* approvals.read(actor, pending.executionId);
+    const listed = yield* approvals.list(actor);
 
     expect(first.presentation.title).toBe("Delete retained document");
     expect(second.presentation).toEqual(first.presentation);
+    expect(listed.presentations).toEqual([first.presentation]);
   });
 });

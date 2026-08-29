@@ -2,8 +2,9 @@ import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
 import { and, eq, inArray } from "drizzle-orm";
 import { DateTime, Effect, Layer } from "effect";
 
+import type { Database } from "@osfo/db";
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
-import { AllowancePeriodId, type AgentId } from "../domain";
+import { AllowancePeriodId, type AgentId, type UserId } from "../domain";
 import { Db } from "../db";
 import { AccountDeletionCloudflare } from "../integrations/cloudflare/account-deletion";
 import { AccountDeletionPostgres } from "../integrations/postgres/account-deletion";
@@ -13,6 +14,8 @@ import { AccountDeletion } from "../services/account-deletion";
 import { WhatsAppWakeUps } from "../services/whatsapp-wakeups";
 import { ResearchReportComposition } from "./research-report";
 import { DocumentBuildComposition } from "./document-build";
+import { ScheduledEmailComposition } from "./scheduled-email";
+import { ScheduledEmailPostgres } from "../integrations/postgres/scheduled-email";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Closed capability variants use the canonical _tag discriminator, and the deletion preflight adapts one Promise transaction at its Effect boundary. */
 
@@ -46,7 +49,94 @@ export interface Bindings {
   readonly DOCUMENT_BUILD_WORKFLOW?: DocumentBuildComposition.WorkflowBinding;
   readonly RESEARCH_REPORT_TIMER_WORKFLOW?: ResearchReportComposition.WorkflowBinding;
   readonly RESEARCH_REPORT_WORKFLOW?: ResearchReportComposition.WorkflowBinding;
+  readonly SCHEDULED_EMAIL_WORKFLOW?: ScheduledEmailComposition.WorkflowBinding;
 }
+
+/** Quiesce every Workflow family under its shared User lock before account erasure. */
+export const quiesceWorkflows = (bindings: Bindings, database: Database, userId: UserId) => {
+  if (
+    bindings.RESEARCH_REPORT_WORKFLOW === undefined ||
+    bindings.RESEARCH_REPORT_TIMER_WORKFLOW === undefined ||
+    bindings.DOCUMENT_BUILD_WORKFLOW === undefined ||
+    bindings.DOCUMENT_BUILD_TIMER_WORKFLOW === undefined ||
+    bindings.SCHEDULED_EMAIL_WORKFLOW === undefined
+  ) {
+    return Effect.fail(
+      new AccountDeletion.AccountDeletionUnavailable({
+        cause: "missing Workflow bindings",
+        message: "Workflow account-deletion quiescence is unavailable",
+        operation: "quiesceWorkflows",
+      }),
+    );
+  }
+  const workflow = ResearchReportComposition.makeWorkflowPort(
+    bindings.RESEARCH_REPORT_WORKFLOW,
+    bindings.RESEARCH_REPORT_TIMER_WORKFLOW,
+  );
+  const documentWorkflow = DocumentBuildComposition.makeWorkflowPort(
+    bindings.DOCUMENT_BUILD_WORKFLOW,
+    bindings.DOCUMENT_BUILD_TIMER_WORKFLOW,
+  );
+  const scheduledEmailWorkflow = ScheduledEmailComposition.makeWorkflowPort(
+    bindings.SCHEDULED_EMAIL_WORKFLOW,
+  );
+  return Effect.gen(function* () {
+    const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    const [instanceIds, documentQuiescence, scheduledEmailQuiescence] = yield* Effect.all([
+      ResearchReportPostgres.quiesceForAccountDeletion(database, userId, now),
+      DocumentBuildPostgres.quiesceForAccountDeletion(database, userId, now),
+      ScheduledEmailPostgres.quiesceForAccountDeletion(database, userId, now),
+    ]).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AccountDeletion.AccountDeletionUnavailable({
+            cause,
+            message: "Workflow product truth could not be terminalized",
+            operation: "quiesceWorkflows",
+          }),
+      ),
+    );
+    yield* Effect.all(
+      [
+        Effect.forEach(instanceIds, workflow.terminate, { concurrency: 2, discard: true }),
+        Effect.forEach(
+          documentQuiescence._tag === "Ready" ? documentQuiescence.instances : [],
+          ({ main, timer }) => documentWorkflow.terminate(main, timer),
+          { concurrency: 2, discard: true },
+        ),
+        Effect.forEach(scheduledEmailQuiescence.instances, scheduledEmailWorkflow.terminate, {
+          concurrency: 2,
+          discard: true,
+        }),
+      ],
+      { concurrency: 2, discard: true },
+    ).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AccountDeletion.AccountDeletionUnavailable({
+            cause,
+            message: "Workflow execution hosts could not be terminated",
+            operation: "quiesceWorkflows",
+          }),
+      ),
+    );
+    if (documentQuiescence._tag === "RecoveryPending") {
+      return yield* new AccountDeletion.AccountDeletionUnavailable({
+        cause: documentQuiescence.workflowIds,
+        message: "A committed Document Build publication is still recovering",
+        operation: "quiesceWorkflows",
+      });
+    }
+    if (scheduledEmailQuiescence._tag === "RecoveryPending") {
+      return yield* new AccountDeletion.AccountDeletionUnavailable({
+        cause: scheduledEmailQuiescence.workflowIds,
+        message: "A claimed Scheduled Email send is still reconciling",
+        operation: "quiesceWorkflows",
+      });
+    }
+    return undefined;
+  });
+};
 
 /** Compose provider-independent local account erasure boundaries. */
 const makePort = (bindings: Bindings) =>
@@ -99,77 +189,7 @@ const makePort = (bindings: Bindings) =>
       },
       integrations: integrationDeletionPort(bindings.integrationAuthorityDeletion),
       workflows: {
-        quiesce: (userId) => {
-          if (
-            bindings.RESEARCH_REPORT_WORKFLOW === undefined ||
-            bindings.RESEARCH_REPORT_TIMER_WORKFLOW === undefined ||
-            bindings.DOCUMENT_BUILD_WORKFLOW === undefined ||
-            bindings.DOCUMENT_BUILD_TIMER_WORKFLOW === undefined
-          ) {
-            return Effect.fail(
-              new AccountDeletion.AccountDeletionUnavailable({
-                cause: "missing Workflow bindings",
-                message: "Workflow account-deletion quiescence is unavailable",
-                operation: "quiesceWorkflows",
-              }),
-            );
-          }
-          const workflow = ResearchReportComposition.makeWorkflowPort(
-            bindings.RESEARCH_REPORT_WORKFLOW,
-            bindings.RESEARCH_REPORT_TIMER_WORKFLOW,
-          );
-          const documentWorkflow = DocumentBuildComposition.makeWorkflowPort(
-            bindings.DOCUMENT_BUILD_WORKFLOW,
-            bindings.DOCUMENT_BUILD_TIMER_WORKFLOW,
-          );
-          return Effect.gen(function* () {
-            const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-            const [instanceIds, documentQuiescence] = yield* Effect.all([
-              ResearchReportPostgres.quiesceForAccountDeletion(database, userId, now),
-              DocumentBuildPostgres.quiesceForAccountDeletion(database, userId, now),
-            ]).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new AccountDeletion.AccountDeletionUnavailable({
-                    cause,
-                    message: "Workflow product truth could not be terminalized",
-                    operation: "quiesceWorkflows",
-                  }),
-              ),
-            );
-            if (documentQuiescence._tag === "RecoveryPending") {
-              return yield* new AccountDeletion.AccountDeletionUnavailable({
-                cause: documentQuiescence.workflowIds,
-                message: "A committed Document Build publication is still recovering",
-                operation: "quiesceWorkflows",
-              });
-            }
-            yield* Effect.all(
-              [
-                Effect.forEach(instanceIds, workflow.terminate, {
-                  concurrency: 2,
-                  discard: true,
-                }),
-                Effect.forEach(
-                  documentQuiescence.instances,
-                  ({ main, timer }) => documentWorkflow.terminate(main, timer),
-                  { concurrency: 2, discard: true },
-                ),
-              ],
-              { concurrency: 2, discard: true },
-            ).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new AccountDeletion.AccountDeletionUnavailable({
-                    cause,
-                    message: "Workflow execution hosts could not be terminated",
-                    operation: "quiesceWorkflows",
-                  }),
-              ),
-            );
-            return undefined;
-          });
-        },
+        quiesce: (userId) => quiesceWorkflows(bindings, database, userId),
       },
       objects:
         bindings.FILES === undefined || bindings.ARTIFACTS === undefined

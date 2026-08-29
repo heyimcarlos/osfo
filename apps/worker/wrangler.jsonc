@@ -61,7 +61,7 @@
       "max_instances": 20,
     },
   ],
-  "triggers": { "crons": ["0 * * * *"] },
+  "triggers": { "crons": ["* * * * *", "0 * * * *"] },
   "workflows": [
     {
       "binding": "EXECUTION_UNIT_WORKFLOW",
@@ -87,6 +87,11 @@
       "binding": "DOCUMENT_BUILD_TIMER_WORKFLOW",
       "name": "osfo-test-document-build-timer",
       "class_name": "DocumentBuildTimerWorkflow",
+    },
+    {
+      "binding": "SCHEDULED_EMAIL_WORKFLOW",
+      "name": "osfo-test-scheduled-email",
+      "class_name": "ScheduledEmailWorkflow",
     },
   ],
   "observability": {
