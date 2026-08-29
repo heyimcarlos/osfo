@@ -337,7 +337,7 @@ it.effect("loads Document Build before selecting and safely presenting its denie
           baseURL: emulator.origin,
         });
         const fileId = "web:00000000-0000-4000-8000-000000000289";
-        const request = `Build a PDF from supplied File ID ${fileId}.`;
+        const request = `Build a PDF from uploaded File ID ${fileId}.`;
         const loadedSkillResult =
           '{"skillId":"document-build","skillVersion":"system-document-build-v1"}';
         const deniedDocumentBuildResult =

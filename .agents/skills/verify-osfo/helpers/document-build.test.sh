@@ -6,6 +6,7 @@ control="$repo_root/.agents/skills/verify-osfo/helpers/control-osfo"
 feature="$repo_root/.agents/skills/verify-osfo/features/document-build.md"
 emulator="$repo_root/apps/worker/test/emulators/provider-emulator.ts"
 emulator_test="$repo_root/apps/worker/src/integrations/cloudflare/research-verification-provider.node.test.ts"
+agent_runtime_test="$repo_root/apps/worker/src/agents/osfo/document-build-agent.runtime.test.ts"
 free_denial_assertion="$repo_root/.agents/skills/verify-osfo/helpers/assert-document-build-free-denial"
 
 for required in \
@@ -35,9 +36,19 @@ for required in \
   fi
 done
 
+for required in \
+  "publishes loadSkill for the verifier's natural Document Build request" \
+  'Build a PDF from uploaded File ID' \
+  'expect(turn.activeTools).toEqual(["loadSkill"])'; do
+  if ! grep -F -q "$required" "$agent_runtime_test"; then
+    printf 'Agent runtime is missing Document Build publication regression: %s\n' "$required" >&2
+    exit 1
+  fi
+done
+
 fixture_dir="$(mktemp -d)"
 trap 'rm -rf -- "$fixture_dir"' EXIT
-printf '%s\n' 'Committed Osfo result: Build a PDF from supplied File ID web:00000000-0000-4000-8000-000000000289.' \
+printf '%s\n' 'Committed Osfo result: Build a PDF from uploaded File ID web:00000000-0000-4000-8000-000000000289.' \
   >"$fixture_dir/echo.txt"
 printf '%s\n' 'Document Build is not available on your current plan.' >"$fixture_dir/denial.txt"
 jq --null-input '[
@@ -94,7 +105,7 @@ fi
 
 for required in \
   'loads Document Build before selecting and safely presenting its denied action' \
-  'const request = `Build a PDF from supplied File ID ${fileId}.`' \
+  'const request = `Build a PDF from uploaded File ID ${fileId}.`' \
   'verification-startDocumentBuild-free-verify-289' \
   'verification-startDocumentBuild"'; do
   if ! grep -F -q "$required" "$emulator_test"; then

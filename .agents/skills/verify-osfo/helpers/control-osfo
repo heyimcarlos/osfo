@@ -881,7 +881,7 @@ document_build_free_denial() {
   curl --fail --silent --show-error --request POST --get \
     --data-urlencode "actionId=$action_id" \
     "$provider_origin/_test/research/next-document-build-action" >/dev/null
-  request="Build a PDF from supplied File ID $file_id."
+  request="Build a PDF from uploaded File ID $file_id."
   reply_output="$(telegram_reply "$run_id" "$request")"
   if [[ "$reply_output" != telegram_reply=* ]]; then
     printf 'The Free Document Build attempt returned no captured Telegram reply\n' >&2
