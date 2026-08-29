@@ -785,19 +785,24 @@ const handleResearch = (
           lastMessageRole(input) === "user" &&
           /(?:build|document|pdf)/iu.test(lastMessage)
         ) {
+          const actionId = freeDenialActionIdFor(lastMessage) ?? "verification-startDocumentBuild";
           ledger.push({
             kind: "tool-selection",
-            operationId: null,
+            operationId: actionId,
             selectedTool: "startDocumentBuild",
             subject: documentBuildFileId,
           });
           respondJson(
             response,
             200,
-            toolResponse("startDocumentBuild", {
-              fileIds: [documentBuildFileId],
-              format: "pdf",
-            }),
+            toolResponse(
+              "startDocumentBuild",
+              {
+                fileIds: [documentBuildFileId],
+                format: "pdf",
+              },
+              actionId,
+            ),
           );
           return;
         }
@@ -894,10 +899,19 @@ const handleResearch = (
     .catch((cause: unknown) => respondJson(response, 400, { error: String(cause) }));
 };
 
-const toolResponse = (name: string, arguments_: JsonObject) => ({
+const freeDenialActionIdFor = (message: string) => {
+  const runId = /Free denial checkpoint run=([a-z0-9][a-z0-9-]{0,47})/u.exec(message)?.[1];
+  return runId === undefined ? null : `verification-startDocumentBuild-free-${runId}`;
+};
+
+const toolResponse = (
+  name: string,
+  arguments_: JsonObject,
+  toolCallId = `verification-${name}`,
+) => ({
   finish_reason: "tool_calls",
   response: "",
-  tool_calls: [{ arguments: arguments_, id: `verification-${name}`, name }],
+  tool_calls: [{ arguments: arguments_, id: toolCallId, name }],
   usage: { completion_tokens: 1, prompt_tokens: 1 },
 });
 

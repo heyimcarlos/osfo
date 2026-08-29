@@ -326,3 +326,72 @@ it.effect("projects the strict Scheduled Email request into the local model sele
     (emulator) => Effect.promise(emulator.close),
   ),
 );
+
+it.effect("keeps the Free denial and Adventurer Document Build actions distinct", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(startProviderEmulator),
+    (emulator) =>
+      Effect.gen(function* () {
+        const binding = ResearchVerificationProvider.makeAiBinding({
+          _tag: "LocalVerification",
+          baseURL: emulator.origin,
+        });
+        const fileId = "web:00000000-0000-4000-8000-000000000289";
+        const tool = {
+          function: {
+            name: "startDocumentBuild",
+            parameters: { properties: {}, type: "object" },
+          },
+          type: "function" as const,
+        };
+        const freeResponse = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            messages: [
+              {
+                content: `Build a PDF from supplied File ID ${fileId}. Free denial checkpoint run=verify-289`,
+                role: "user",
+              },
+            ],
+            tools: [tool],
+          }),
+        );
+        const adventurerResponse = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            messages: [{ content: `Build a PDF from supplied File ID ${fileId}.`, role: "user" }],
+            tools: [tool],
+          }),
+        );
+        expect(freeResponse).toMatchObject({
+          tool_calls: [
+            {
+              id: "verification-startDocumentBuild-free-verify-289",
+              name: "startDocumentBuild",
+            },
+          ],
+        });
+        expect(adventurerResponse).toMatchObject({
+          tool_calls: [{ id: "verification-startDocumentBuild", name: "startDocumentBuild" }],
+        });
+        const ledger = yield* Effect.promise(() =>
+          fetch(`${emulator.origin}/_test/research/ledger`).then((response) => response.json()),
+        );
+        expect(ledger).toEqual(
+          expect.arrayContaining([
+            {
+              kind: "tool-selection",
+              operationId: "verification-startDocumentBuild-free-verify-289",
+              selectedTool: "startDocumentBuild",
+              subject: fileId,
+            },
+            {
+              kind: "tool-selection",
+              operationId: "verification-startDocumentBuild",
+              selectedTool: "startDocumentBuild",
+              subject: fileId,
+            },
+          ]),
+        );
+      }),
+    (emulator) => Effect.promise(emulator.close),
+  ),
+);
