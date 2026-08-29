@@ -88,6 +88,13 @@ const OwnerStreamDescriptor = Schema.Struct({
   terminalChecksum: Schema.String,
   verificationVersion: Schema.Literal("qualification-owner-stream-v1"),
 });
+const ProductAuthorityStreamDescriptor = Schema.Struct({
+  artifactPrefix: Schema.String,
+  chunkCount: NonNegativeInteger,
+  recordCount: NonNegativeInteger,
+  source: Schema.Literals(qualificationAuthoritySources),
+  terminalChecksum: Schema.String,
+});
 const OwnerBundleDescriptor = Schema.Struct({
   artifactChecksum: Schema.String,
   authoritySources: Schema.Array(Schema.String),
@@ -96,6 +103,7 @@ const OwnerBundleDescriptor = Schema.Struct({
   manifestChecksum: Schema.String,
   ownerIdentity: Schema.Literal("osfo-qualification-owner-v1"),
   planChecksum: Schema.String,
+  productAuthorityStreams: Schema.Array(ProductAuthorityStreamDescriptor),
   reportArtifactChecksum: Schema.String,
   reportArtifactId: Schema.String,
   streams: Schema.Array(OwnerStreamDescriptor),
@@ -566,6 +574,7 @@ export const runProductionQualification = (
       executionId: bundle.executionId,
       manifestChecksum: bundle.manifestChecksum,
       planChecksum: bundle.planChecksum,
+      productAuthorityStreams: bundle.productAuthorityStreams,
       streams: bundle.streams,
     });
     if (

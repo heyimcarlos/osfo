@@ -19,3 +19,17 @@ export interface QualificationOwnerWorkflowPayload {
   readonly requestArtifactChecksum: string;
   readonly requestArtifactId: string;
 }
+
+/** One bounded child of a frozen qualification owner execution. */
+export interface QualificationOwnerPartitionWorkflowPayload extends QualificationOwnerWorkflowPayload {
+  readonly chunks: ReadonlyArray<{
+    readonly chunkIndex: number;
+    readonly firstOfferedAtEpochMs: number;
+    readonly runId: string;
+    readonly streamChunkIndex: number;
+  }>;
+  readonly firstStreamChunkIndex: number;
+  readonly lastStreamChunkIndex: number;
+  readonly partitionIndex: number;
+  readonly sourceVersion: string;
+}

@@ -11,15 +11,33 @@ import {
   type QualificationProductAuthorityInvocation,
   type QualificationProductAuthoritySourceChunkSource,
 } from "../qualification/product-authority-contract";
-import { qualificationChecksum } from "../qualification/qualification-checksum";
-import type { QualificationOwnerWorkflowPayload } from "../workflow-contracts";
-import { retainMissingQualificationReport } from "./qualification-owner-report";
+import {
+  canonicalQualificationJson,
+  qualificationChecksum,
+} from "../qualification/qualification-checksum";
+import type {
+  QualificationOwnerPartitionWorkflowPayload,
+  QualificationOwnerWorkflowPayload,
+} from "../workflow-contracts";
+import {
+  retainFailedQualificationReport,
+  retainMissingQualificationReport,
+} from "./qualification-owner-report";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-await-in-loop, eslint/no-underscore-dangle -- Cloudflare Workflow APIs are Promise-only host boundaries; source polling must run as ordered, durable, uniquely named tagged steps. */
 
 interface QualificationOwnerWorkflowEnv {
-  readonly ARTIFACTS: R2Bucket;
-  readonly PRODUCT_AUTHORITY: Fetcher;
+  readonly ARTIFACTS: QualificationOwnerArtifactBucket;
+  readonly PRODUCT_AUTHORITY: Pick<Fetcher, "fetch">;
+  readonly QUALIFICATION_OWNER_PARTITION_WORKFLOW: {
+    readonly createBatch: (
+      batch: ReadonlyArray<{
+        readonly id: string;
+        readonly params: QualificationOwnerPartitionWorkflowPayload;
+      }>,
+    ) => Promise<ReadonlyArray<{ readonly id: string }>>;
+    readonly get: (id: string) => Promise<{ readonly id: string }>;
+  };
 }
 
 const RetainedOwnerRequest = Schema.Struct({
@@ -60,12 +78,289 @@ type QualificationSourceCollectionStepResult = typeof QualificationSourceCollect
 const decodeSourceStepResult = Schema.decodePromise(QualificationSourceCollectionStepResult);
 
 const maximumSourceCollectionPolls = 100;
+const RetainedManifestIdentity = Schema.Struct({ sourceVersion: Schema.String });
+const RetainedPlanIdentity = Schema.Struct({ startsAtEpochMs: Schema.Int });
+const PartitionCompletion = Schema.Struct({
+  arrivalArtifactChecksum: Schema.NullOr(Schema.String),
+  arrivalArtifactId: Schema.NullOr(Schema.String),
+  artifactId: Schema.String,
+  checksum: Schema.String,
+  chunkIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  executionId: Schema.String,
+  failureCode: Schema.NullOr(Schema.String),
+  missingSources: Schema.Array(Schema.Literals(qualificationAuthoritySources)),
+  outcome: Schema.Literals(["COMPLETE", "FAIL", "MISSING"]),
+  partitionIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  planChecksum: Schema.String,
+  recordCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  runId: Schema.String,
+  sourceChecksums: Schema.Array(
+    Schema.Struct({
+      checksum: Schema.String,
+      recordCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      source: Schema.Literals(qualificationAuthoritySources),
+    }),
+  ),
+  streamChunkIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  version: Schema.Literal("qualification-owner-partition-v1"),
+});
+const PartitionCompletionMetadata = Schema.Struct({
+  "osfo-artifact-checksum": Schema.String,
+  "osfo-body-sha256": Schema.String,
+  "osfo-execution-id": Schema.String,
+  "osfo-index": Schema.String,
+  "osfo-kind": Schema.Literal("qualification-owner-partition-v1"),
+  "osfo-outcome": Schema.Literals(["COMPLETE", "FAIL", "MISSING"]),
+  "osfo-plan-checksum": Schema.String,
+  "osfo-record-count": Schema.String,
+});
+const qualificationPartitionBatchSize = 50;
+const qualificationFanoutSafetyMs = 60_000;
+
+interface QualificationOwnerArtifactBucket {
+  readonly get: (key: string) => Promise<{ readonly text: () => Promise<string> } | null>;
+  readonly list: (options: {
+    readonly cursor?: string;
+    readonly include: ReadonlyArray<"customMetadata">;
+    readonly limit: number;
+    readonly prefix: string;
+  }) => Promise<{
+    readonly cursor?: string;
+    readonly objects: ReadonlyArray<{
+      readonly checksums: { readonly sha256?: ArrayBuffer | ArrayBufferView };
+      readonly customMetadata?: Record<string, string>;
+      readonly key: string;
+    }>;
+    readonly truncated: boolean;
+  }>;
+  readonly put: (
+    key: string,
+    value: string,
+    options: R2PutOptions,
+  ) => Promise<{ readonly etag: string } | null>;
+}
+
+const listedSha256 = (value: ArrayBuffer | ArrayBufferView): string => {
+  const bytes =
+    value instanceof ArrayBuffer
+      ? new Uint8Array(value)
+      : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
+const retainImmutableJson = async (
+  bucket: QualificationOwnerArtifactBucket,
+  artifactId: string,
+  encoded: string,
+  metadata: Record<string, string>,
+): Promise<void> => {
+  const retained = await bucket.put(artifactId, encoded, {
+    customMetadata: metadata,
+    httpMetadata: { contentType: "application/json" },
+    onlyIf: { etagDoesNotMatch: "*" },
+  });
+  if (retained !== null) return;
+  const existing = await bucket.get(artifactId);
+  if (existing === null || (await existing.text()) !== encoded) {
+    throw new Error(`Retained qualification artifact conflicts: ${artifactId}`);
+  }
+};
+
+interface FrozenPartition {
+  readonly chunkIndex: number;
+  readonly firstOfferedAtEpochMs: number;
+  readonly partitionIndex: number;
+  readonly runId: string;
+  readonly streamChunkIndex: number;
+}
+
+const frozenPartitions = (
+  runs: ReadonlyArray<{
+    readonly chunkCount: number;
+    readonly chunkStartsAtEpochMs: ReadonlyArray<number>;
+    readonly firstStreamChunkIndex: number;
+    readonly runId: string;
+  }>,
+): ReadonlyArray<FrozenPartition> => {
+  let partitionIndex = 0;
+  return runs.flatMap((run) =>
+    Array.from({ length: run.chunkCount }, (_, chunkIndex) => {
+      const firstOfferedAtEpochMs = run.chunkStartsAtEpochMs[chunkIndex];
+      if (firstOfferedAtEpochMs === undefined) {
+        throw new Error("Qualification preflight omits a chunk offer time");
+      }
+      return {
+        chunkIndex,
+        firstOfferedAtEpochMs,
+        partitionIndex: partitionIndex++,
+        runId: run.runId,
+        streamChunkIndex: run.firstStreamChunkIndex + chunkIndex,
+      };
+    }),
+  );
+};
+
+const fanoutLeadTimeMs = (partitionCount: number) =>
+  Math.ceil(partitionCount / qualificationPartitionBatchSize) * 1_000 + qualificationFanoutSafetyMs;
+
+const partitionCompletionPrefix = (executionId: string) =>
+  `qualification/executions/${encodeURIComponent(executionId)}/owner-partitions`;
+const partitionPagePrefix = (executionId: string) =>
+  `qualification/executions/${encodeURIComponent(executionId)}/owner-partition-pages`;
+
+const verifyPartitionCompletionPages = async (input: {
+  readonly bucket: QualificationOwnerArtifactBucket;
+  readonly executionId: string;
+  readonly partitions: ReadonlyArray<FrozenPartition>;
+  readonly planChecksum: string;
+  readonly step: QualificationSourceCollectionStep;
+}) => {
+  const pages = new Array<{
+    readonly checksum: string;
+    readonly failureCodes: ReadonlyArray<string>;
+    readonly firstStreamChunkIndex: number;
+    readonly lastStreamChunkIndex: number;
+    readonly recordCount: number;
+    readonly missingSources: ReadonlyArray<string>;
+    readonly sourceDigests: ReadonlyArray<{
+      readonly digest: string;
+      readonly recordCount: number;
+      readonly source: string;
+    }>;
+  }>();
+  let cursor: string | undefined;
+  let expectedIndex = 0;
+  let pageIndex = 0;
+  let previousPageChecksum = "NONE";
+  do {
+    const pageResult = await input.step.do(
+      `verify partition completion page ${pageIndex}`,
+      async () => {
+        const listOptions = {
+          include: ["customMetadata"] as const,
+          limit: 100,
+          prefix: `${partitionCompletionPrefix(input.executionId)}/`,
+        };
+        const page = await input.bucket.list(
+          cursor === undefined ? listOptions : { ...listOptions, cursor },
+        );
+        if (page.truncated && (page.cursor === undefined || page.objects.length === 0)) {
+          throw new Error("Qualification partition completion listing did not advance");
+        }
+        const receipts = new Array<typeof PartitionCompletion.Type>();
+        for (let offset = 0; offset < page.objects.length; offset += 1) {
+          const object = page.objects[offset];
+          const expected = input.partitions[expectedIndex + offset];
+          if (object === undefined || expected === undefined) {
+            throw new Error("Qualification partition completion has an unexpected object");
+          }
+          // oxlint-disable-next-line effecttsgo/prefer-typed-schema-decoder -- R2 custom metadata is optional untrusted input at this boundary.
+          const metadata = Schema.decodeUnknownSync(PartitionCompletionMetadata)(
+            object.customMetadata,
+          );
+          const retained = await input.bucket.get(object.key);
+          if (retained === null)
+            throw new Error("Qualification partition completion body is missing");
+          const encoded = await retained.text();
+          const receipt = Schema.decodeSync(Schema.fromJsonString(PartitionCompletion))(encoded);
+          const { checksum, ...content } = receipt;
+          const bodySha256 = object.checksums.sha256;
+          const exactSources = new Set<string>(qualificationAuthoritySources);
+          const hasExactSources =
+            receipt.sourceChecksums.length === exactSources.size &&
+            receipt.sourceChecksums.every(({ source }) => exactSources.delete(source));
+          if (
+            object.key !==
+              `${partitionCompletionPrefix(input.executionId)}/${expected.streamChunkIndex.toString().padStart(8, "0")}.json` ||
+            receipt.artifactId !== object.key ||
+            receipt.chunkIndex !== expected.chunkIndex ||
+            receipt.executionId !== input.executionId ||
+            receipt.partitionIndex !== expected.partitionIndex ||
+            receipt.planChecksum !== input.planChecksum ||
+            receipt.runId !== expected.runId ||
+            receipt.streamChunkIndex !== expected.streamChunkIndex ||
+            (receipt.outcome === "COMPLETE"
+              ? !hasExactSources ||
+                receipt.missingSources.length !== 0 ||
+                receipt.failureCode !== null
+              : receipt.sourceChecksums.length !== 0) ||
+            checksum !== qualificationChecksum(content) ||
+            metadata["osfo-artifact-checksum"] !== checksum ||
+            metadata["osfo-body-sha256"] !==
+              (bodySha256 === undefined ? "" : listedSha256(bodySha256)) ||
+            metadata["osfo-execution-id"] !== input.executionId ||
+            metadata["osfo-index"] !== String(expected.streamChunkIndex) ||
+            metadata["osfo-outcome"] !== receipt.outcome ||
+            metadata["osfo-plan-checksum"] !== input.planChecksum ||
+            metadata["osfo-record-count"] !== String(receipt.recordCount)
+          ) {
+            throw new Error(`Qualification partition ${expected.streamChunkIndex} conflicts`);
+          }
+          receipts.push(receipt);
+        }
+        if (receipts.length === 0) {
+          return { nextCursor: null, pageReceipt: null, receiptCount: 0 };
+        }
+        const sourceDigests = qualificationAuthoritySources.map((source) => ({
+          digest: qualificationChecksum(
+            receipts.map(
+              (receipt) =>
+                receipt.sourceChecksums.find((candidate) => candidate.source === source)?.checksum,
+            ),
+          ),
+          recordCount: receipts.reduce(
+            (total, receipt) =>
+              total +
+              (receipt.sourceChecksums.find((candidate) => candidate.source === source)
+                ?.recordCount ?? 0),
+            0,
+          ),
+          source,
+        }));
+        const pageContent = {
+          executionId: input.executionId,
+          failureCodes: receipts.flatMap(({ failureCode }) =>
+            failureCode === null ? [] : [failureCode],
+          ),
+          firstStreamChunkIndex: receipts[0]?.streamChunkIndex ?? -1,
+          lastStreamChunkIndex: receipts.at(-1)?.streamChunkIndex ?? -1,
+          missingSources: [...new Set(receipts.flatMap(({ missingSources }) => missingSources))],
+          pageIndex,
+          planChecksum: input.planChecksum,
+          previousPageChecksum,
+          recordCount: receipts.reduce((total, receipt) => total + receipt.recordCount, 0),
+          sourceDigests,
+          version: "qualification-owner-partition-page-v1" as const,
+        };
+        const pageReceipt = { ...pageContent, checksum: qualificationChecksum(pageContent) };
+        await retainImmutableJson(
+          input.bucket,
+          `${partitionPagePrefix(input.executionId)}/${pageIndex.toString().padStart(8, "0")}.json`,
+          canonicalQualificationJson(pageReceipt),
+          {
+            "osfo-artifact-checksum": pageReceipt.checksum,
+            "osfo-execution-id": input.executionId,
+            "osfo-kind": "qualification-owner-partition-page-v1",
+          },
+        );
+        return {
+          nextCursor: page.truncated ? page.cursor : null,
+          pageReceipt,
+          receiptCount: receipts.length,
+        };
+      },
+    );
+    if (pageResult.pageReceipt !== null) pages.push(pageResult.pageReceipt);
+    expectedIndex += pageResult.receiptCount;
+    if (pageResult.pageReceipt !== null) previousPageChecksum = pageResult.pageReceipt.checksum;
+    cursor = pageResult.nextCursor ?? undefined;
+    pageIndex += 1;
+  } while (cursor !== undefined);
+  return { missingPartitionCount: input.partitions.length - expectedIndex, pages };
+};
 
 export interface QualificationSourceCollectionStep {
-  readonly do: (
-    name: string,
-    callback: () => Promise<QualificationSourceCollectionStepResult>,
-  ) => Promise<QualificationSourceCollectionStepResult>;
+  readonly do: <Value>(name: string, callback: () => Promise<Value>) => Promise<Value>;
   readonly sleepUntil: (name: string, timestamp: Date | number) => Promise<void>;
 }
 
@@ -159,6 +454,177 @@ export const collectQualificationSourceChunk = async (input: {
   });
 };
 
+type QualificationOwnerWorkflowResult =
+  | { readonly status: "COMPLETE"; readonly verdict: "FAIL" | "MISSING" | "PASS" }
+  | { readonly status: "MISSING" };
+
+/** Execute one frozen qualification through serializable, replay-safe Workflow phases. */
+export const runQualificationOwnerWorkflow = async (input: {
+  readonly env: QualificationOwnerWorkflowEnv;
+  readonly payload: QualificationOwnerWorkflowPayload;
+  readonly step: QualificationSourceCollectionStep;
+}): Promise<QualificationOwnerWorkflowResult> => {
+  const request = await input.step.do("validate frozen qualification request", async () => {
+    const retained = await input.env.ARTIFACTS.get(input.payload.requestArtifactId);
+    if (retained === null) throw new Error("Frozen qualification request is missing");
+    const decoded = await decodeRetainedOwnerRequest(await retained.text());
+    const { artifactChecksum, ...content } = decoded;
+    const manifestIdentity = Schema.decodeUnknownSync(RetainedManifestIdentity)(decoded.manifest);
+    const planIdentity = Schema.decodeUnknownSync(RetainedPlanIdentity)(decoded.plan);
+    if (
+      artifactChecksum !== input.payload.requestArtifactChecksum ||
+      artifactChecksum !== qualificationChecksum(content) ||
+      decoded.executionId !== input.payload.executionId ||
+      decoded.manifestChecksum !== input.payload.manifestChecksum ||
+      decoded.planChecksum !== input.payload.planChecksum
+    ) {
+      throw new Error("Frozen qualification request conflicts with the Workflow identity");
+    }
+    return {
+      authoritySources: [...decoded.authoritySources],
+      sourceVersion: manifestIdentity.sourceVersion,
+      startsAtEpochMs: planIdentity.startsAtEpochMs,
+    };
+  });
+  const preflight = await input.step.do("attempt product authority sources", async () => {
+    if (
+      request.authoritySources.length !== qualificationAuthoritySources.length ||
+      qualificationAuthoritySources.some((source) => !request.authoritySources.includes(source))
+    ) {
+      throw new Error("Frozen qualification request omits a required authority source");
+    }
+    const response = await input.env.PRODUCT_AUTHORITY.fetch(
+      "https://qualification-product-authority.internal/v1/executions/preflight",
+      {
+        body: canonicalQualificationJson(input.payload),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    if (response.status !== 200 && response.status !== 424) {
+      throw new Error(`Product authority preflight returned ${response.status}`);
+    }
+    return decodePreflight(await response.text());
+  });
+  if (preflight.status === "MISSING") {
+    await input.step.do("retain attempted missing qualification authority report", async () => {
+      await retainMissingQualificationReport(
+        input.env.ARTIFACTS,
+        input.payload,
+        preflight.missingSources.map(({ source }) => source),
+      );
+      return { retained: true };
+    });
+    return { status: "MISSING" };
+  }
+
+  const partitions = frozenPartitions(preflight.runs);
+  if (
+    partitions.length !== preflight.totalArrivalChunks ||
+    partitions.some(({ partitionIndex, streamChunkIndex }) => partitionIndex !== streamChunkIndex)
+  ) {
+    throw new Error("Qualification preflight partition topology conflicts");
+  }
+  const fanoutStartedAtEpochMs = await input.step.do("capture qualification fanout time", () =>
+    // oxlint-disable-next-line effecttsgo/global-date -- The Workflow step durably captures one replay-stable host timestamp.
+    Promise.resolve(Date.now()),
+  );
+  const minimumStartsAtEpochMs = fanoutStartedAtEpochMs + fanoutLeadTimeMs(partitions.length);
+  if (request.startsAtEpochMs < minimumStartsAtEpochMs) {
+    await input.step.do("retain missing qualification fanout lead time", async () => {
+      await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
+        "qualification_fault_controller_receipts",
+      ]);
+      return { retained: true };
+    });
+    return { status: "MISSING" };
+  }
+  for (let offset = 0; offset < partitions.length; offset += qualificationPartitionBatchSize) {
+    const batch = partitions.slice(offset, offset + qualificationPartitionBatchSize);
+    const batchIndex = Math.floor(offset / qualificationPartitionBatchSize);
+    await input.step.do(`create qualification partition batch ${batchIndex}`, async () => {
+      const instances = batch.map((partition) => ({
+        id: `${input.payload.executionId}:partition:${partition.partitionIndex}`,
+        params: {
+          ...input.payload,
+          chunks: [partition],
+          firstStreamChunkIndex: partition.streamChunkIndex,
+          lastStreamChunkIndex: partition.streamChunkIndex,
+          partitionIndex: partition.partitionIndex,
+          sourceVersion: request.sourceVersion,
+        },
+      }));
+      try {
+        await input.env.QUALIFICATION_OWNER_PARTITION_WORKFLOW.createBatch(instances);
+      } catch (cause) {
+        try {
+          await Promise.all(
+            instances.map(({ id }) => input.env.QUALIFICATION_OWNER_PARTITION_WORKFLOW.get(id)),
+          );
+        } catch {
+          throw cause;
+        }
+      }
+      return { count: instances.length };
+    });
+    if (offset + qualificationPartitionBatchSize < partitions.length) {
+      await input.step.sleepUntil(
+        `rate limit qualification partition batch ${batchIndex + 1}`,
+        fanoutStartedAtEpochMs + (batchIndex + 1) * 1_000,
+      );
+    }
+  }
+  const latestOfferedAtEpochMs = Math.max(
+    ...partitions.map(({ firstOfferedAtEpochMs }) => firstOfferedAtEpochMs),
+  );
+  await input.step.sleepUntil(
+    "await qualification partition authority horizon",
+    latestOfferedAtEpochMs + 8 * 60_000,
+  );
+  const completion = await verifyPartitionCompletionPages({
+    bucket: input.env.ARTIFACTS,
+    executionId: input.payload.executionId,
+    partitions,
+    planChecksum: input.payload.planChecksum,
+    step: input.step,
+  });
+  if (completion.missingPartitionCount > 0) {
+    await input.step.do("retain missing qualification partitions", async () => {
+      await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
+        "worker_admission_receipts",
+      ]);
+      return { retained: true };
+    });
+    return { status: "MISSING" };
+  }
+  const completionPages = completion.pages;
+  const failureCodes = completionPages.flatMap(({ failureCodes: pageFailures }) => pageFailures);
+  if (failureCodes.length > 0) {
+    await input.step.do("retain failed qualification partition report", async () => {
+      await retainFailedQualificationReport(input.env.ARTIFACTS, input.payload, failureCodes);
+      return { retained: true };
+    });
+    return { status: "COMPLETE", verdict: "FAIL" };
+  }
+  const missingSources = [
+    ...new Set(completionPages.flatMap(({ missingSources: pageMissing }) => pageMissing)),
+  ];
+  if (missingSources.length > 0) {
+    await input.step.do("retain missing qualification partition report", async () => {
+      await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, missingSources);
+      return { retained: true };
+    });
+    return { status: "MISSING" };
+  }
+  await input.step.do("retain missing bounded qualification reducer", async () => {
+    await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
+      "bounded_qualification_reducer",
+    ]);
+    return { retained: true };
+  });
+  return { status: "MISSING" };
+};
+
 /** Durable owner that records exact unavailable authority sources instead of inventing evidence. */
 export class QualificationOwnerWorkflow extends WorkflowEntrypoint<
   QualificationOwnerWorkflowEnv,
@@ -167,56 +633,7 @@ export class QualificationOwnerWorkflow extends WorkflowEntrypoint<
   override async run(
     event: Readonly<WorkflowEvent<QualificationOwnerWorkflowPayload>>,
     step: WorkflowStep,
-  ): Promise<{ readonly status: "MISSING" }> {
-    const authoritySources = await step.do("validate frozen qualification request", async () => {
-      const retained = await this.env.ARTIFACTS.get(event.payload.requestArtifactId);
-      if (retained === null) throw new Error("Frozen qualification request is missing");
-      const decoded = await decodeRetainedOwnerRequest(await retained.text());
-      const { artifactChecksum, ...content } = decoded;
-      if (
-        artifactChecksum !== event.payload.requestArtifactChecksum ||
-        artifactChecksum !== qualificationChecksum(content) ||
-        decoded.executionId !== event.payload.executionId ||
-        decoded.manifestChecksum !== event.payload.manifestChecksum ||
-        decoded.planChecksum !== event.payload.planChecksum
-      ) {
-        throw new Error("Frozen qualification request conflicts with the Workflow identity");
-      }
-      return [...decoded.authoritySources];
-    });
-    const preflight = await step.do("attempt product authority sources", async () => {
-      if (
-        authoritySources.length !== qualificationAuthoritySources.length ||
-        qualificationAuthoritySources.some((source) => !authoritySources.includes(source))
-      ) {
-        throw new Error("Frozen qualification request omits a required authority source");
-      }
-      const response = await this.env.PRODUCT_AUTHORITY.fetch(
-        "https://qualification-product-authority.internal/v1/executions/preflight",
-        {
-          body: JSON.stringify(event.payload),
-          headers: { "content-type": "application/json" },
-          method: "POST",
-        },
-      );
-      if (response.status !== 200 && response.status !== 424) {
-        throw new Error(`Product authority preflight returned ${response.status}`);
-      }
-      return decodePreflight(await response.text());
-    });
-    if (preflight.status === "READY") {
-      throw new Error(
-        "Product authority sources are ready but the bounded evaluator did not produce a report",
-      );
-    }
-    await step.do("retain attempted missing qualification authority report", async () => {
-      await retainMissingQualificationReport(
-        this.env.ARTIFACTS,
-        event.payload,
-        preflight.missingSources.map(({ source }) => source),
-      );
-      return { retained: true };
-    });
-    return { status: "MISSING" };
+  ): Promise<QualificationOwnerWorkflowResult> {
+    return runQualificationOwnerWorkflow({ env: this.env, payload: event.payload, step });
   }
 }

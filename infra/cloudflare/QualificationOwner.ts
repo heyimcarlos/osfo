@@ -3,6 +3,7 @@ import { Effect } from "effect";
 
 import { Artifacts } from "./Artifacts";
 import { QualificationOwnerWorkflow } from "./QualificationOwnerWorkflow";
+import { QualificationOwnerPartitionWorkflow } from "./QualificationOwnerPartitionWorkflow";
 import { ApiWorker, QualificationOwnerWorker } from "./WorkerBindings";
 
 // SAFETY: Alchemy resource tags are the supported representation for circular
@@ -25,6 +26,7 @@ export const QualificationOwnerLayer = QualificationOwnerWorker.make(
     env: {
       ARTIFACTS: Artifacts,
       PRODUCT_AUTHORITY: qualificationProductAuthority,
+      QUALIFICATION_OWNER_PARTITION_WORKFLOW: QualificationOwnerPartitionWorkflow,
       QUALIFICATION_OWNER_WORKFLOW: QualificationOwnerWorkflow,
     },
     main: "./apps/worker/src/qualification-owner-worker.ts",

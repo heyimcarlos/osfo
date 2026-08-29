@@ -351,9 +351,15 @@ export interface ProductAuthorityExport {
   readonly artifactId: string;
   readonly authority: ProductAuthorityName;
   readonly checksum: string;
+  readonly executionId?: string;
   readonly exportedAtUtc: string;
+  readonly index?: number;
+  readonly planChecksum?: string;
+  readonly previousArtifactChecksum?: string;
+  readonly recordCount?: number;
   readonly records: ReadonlyArray<ProductAuthorityExportRecord>;
   readonly sourceVersion: string;
+  readonly streamChunkIndex?: number;
 }
 
 const ProductExportRecordBaseBoundary = {
@@ -408,9 +414,15 @@ const productAuthorityExportBoundary = <A>(
     artifactId: QualificationId,
     authority: Schema.Literal(authority),
     checksum: ArtifactChecksum,
+    executionId: Schema.optionalKey(QualificationId),
     exportedAtUtc: QualificationUtcInstant,
+    index: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+    planChecksum: Schema.optionalKey(QualificationId),
+    previousArtifactChecksum: Schema.optionalKey(QualificationId),
+    recordCount: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
     records: Schema.Array(record),
     sourceVersion: QualificationId,
+    streamChunkIndex: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   });
 
 /** Parser for one retained authority-specific product export. */
@@ -918,15 +930,50 @@ export const assessSemanticEvidence = (
   }
   const parsedProductEvidence: Array<ProductAuthorityEvidence> =
     parsedAuthorityExports.flatMap<ProductAuthorityEvidence>((artifact) => {
+      const chainIdentity = [
+        artifact.executionId,
+        artifact.index,
+        artifact.planChecksum,
+        artifact.previousArtifactChecksum,
+        artifact.recordCount,
+        artifact.streamChunkIndex,
+      ];
+      const hasChainIdentity = chainIdentity.every((value) => value !== undefined);
+      if (chainIdentity.some((value) => value !== undefined) && !hasChainIdentity) {
+        findings.push(
+          finding(
+            "productAuthorityExportChainInvalid",
+            `${artifact.artifactId} has a partial retained shard chain identity`,
+            artifact.artifactId,
+            "FAIL",
+          ),
+        );
+        return [];
+      }
+      const checksumContent = hasChainIdentity
+        ? {
+            artifactId: artifact.artifactId,
+            authority: artifact.authority,
+            executionId: artifact.executionId,
+            exportedAtUtc: artifact.exportedAtUtc,
+            index: artifact.index,
+            planChecksum: artifact.planChecksum,
+            previousArtifactChecksum: artifact.previousArtifactChecksum,
+            recordCount: artifact.recordCount,
+            records: artifact.records,
+            sourceVersion: artifact.sourceVersion,
+            streamChunkIndex: artifact.streamChunkIndex,
+          }
+        : {
+            artifactId: artifact.artifactId,
+            authority: artifact.authority,
+            exportedAtUtc: artifact.exportedAtUtc,
+            records: artifact.records,
+            sourceVersion: artifact.sourceVersion,
+          };
       if (
-        artifact.checksum !==
-        qualificationChecksum({
-          artifactId: artifact.artifactId,
-          authority: artifact.authority,
-          exportedAtUtc: artifact.exportedAtUtc,
-          records: artifact.records,
-          sourceVersion: artifact.sourceVersion,
-        })
+        artifact.checksum !== qualificationChecksum(checksumContent) ||
+        (hasChainIdentity && artifact.recordCount !== artifact.records.length)
       ) {
         findings.push(
           finding(

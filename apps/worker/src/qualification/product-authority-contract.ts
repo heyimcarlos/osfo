@@ -27,16 +27,7 @@ export const QualificationProductAuthoritySourceChunkInvocation = Schema.Struct(
   ...QualificationProductAuthorityInvocation.fields,
   chunkIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   runId: Schema.String,
-  source: Schema.Literals([
-    "allowance_and_billing_ledger",
-    "gmail_provider_receipts",
-    "memory_commit_receipts",
-    "model_access_receipts",
-    "osfo_committed_turns",
-    "provider_delivery_receipts",
-    "task_compute_receipts",
-    "workflow_instance_receipts",
-  ]),
+  source: QualificationAuthoritySource,
 });
 export type QualificationProductAuthoritySourceChunkSource =
   typeof QualificationProductAuthoritySourceChunkInvocation.Type.source;
@@ -54,8 +45,57 @@ export const QualificationProductAuthoritySourceChunkPending = Schema.Struct({
   status: Schema.Literal("PENDING"),
 });
 
+export const QualificationProductAuthoritySourceBundleComplete = Schema.Struct({
+  recordCounts: Schema.Array(
+    Schema.Struct({
+      recordCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      source: QualificationAuthoritySource,
+    }),
+  ),
+  status: Schema.Literal("COMPLETE"),
+  streamChunkIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+
+export const QualificationProductAuthoritySourceBundlePending = Schema.Struct({
+  pendingSources: Schema.Array(QualificationAuthoritySource),
+  retryAtEpochMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  status: Schema.Literal("PENDING"),
+});
+
+export const QualificationProductAuthorityEvaluationInvocation = Schema.Struct({
+  ...QualificationProductAuthorityInvocation.fields,
+  productAuthorityInventoryChecksum: Schema.String,
+  productAuthorityStreams: Schema.Array(
+    Schema.Struct({
+      artifactPrefix: Schema.String,
+      chunkCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      recordCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      source: QualificationAuthoritySource,
+      terminalChecksum: Schema.String,
+    }),
+  ),
+});
+
+export const QualificationProductAuthorityEvaluationComplete = Schema.Struct({
+  report: Schema.Json,
+  status: Schema.Literal("COMPLETE"),
+  streams: Schema.Array(
+    Schema.Struct({
+      artifactPrefix: Schema.String,
+      canonicalDigest: Schema.String,
+      chunkCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      component: Schema.String,
+      recordCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      sourceVersion: Schema.String,
+      terminalChecksum: Schema.String,
+      verificationVersion: Schema.Literal("qualification-owner-stream-v1"),
+    }),
+  ),
+});
+
 export const QualificationProductAuthorityRun = Schema.Struct({
   arrivalCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  chunkStartsAtEpochMs: Schema.Array(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   chunkCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   firstStreamChunkIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   runId: Schema.String,

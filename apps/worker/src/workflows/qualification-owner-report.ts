@@ -48,3 +48,39 @@ export const retainMissingQualificationReport = async (
     throw new Error("Retained qualification-owner response conflicts");
   }
 };
+
+/** Retain a deterministic qualification authority conflict as FAIL, never source absence. */
+// oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-native boundary.
+export const retainFailedQualificationReport = async (
+  bucket: QualificationOwnerResponseBucket,
+  payload: QualificationOwnerWorkflowPayload,
+  failureCodes: ReadonlyArray<string>,
+): Promise<void> => {
+  const report = {
+    body: {
+      error: "qualificationAuthorityConflict",
+      executionId: payload.executionId,
+      failureCodes,
+      manifestChecksum: payload.manifestChecksum,
+      planChecksum: payload.planChecksum,
+      verdict: "FAIL",
+    },
+    status: 409,
+  };
+  const encoded = canonicalQualificationJson(report);
+  const artifactId = responseArtifactId(payload.executionId);
+  const retained = await bucket.put(artifactId, encoded, {
+    customMetadata: {
+      "osfo-execution-id": payload.executionId,
+      "osfo-kind": "qualification-owner-response-v1",
+      "osfo-verdict": "FAIL",
+    },
+    httpMetadata: { contentType: "application/json" },
+    onlyIf: { etagDoesNotMatch: "*" },
+  });
+  if (retained !== null) return;
+  const existing = await bucket.get(artifactId);
+  if (existing === null || (await existing.text()) !== encoded) {
+    throw new Error("Retained qualification-owner FAIL response conflicts");
+  }
+};

@@ -26,6 +26,8 @@ import {
 import {
   QualificationProductAuthorityArrivalChunk,
   QualificationProductAuthorityInvocation,
+  QualificationProductAuthoritySourceBundleComplete,
+  QualificationProductAuthoritySourceBundlePending,
   QualificationProductAuthoritySourceChunkInvocation,
 } from "./qualification/product-authority-contract";
 import {
@@ -143,6 +145,17 @@ const decodeExecuteArrivalChunk = Schema.decodeUnknownOption(
 const decodeCollectSourceChunk = Schema.decodeUnknownOption(
   Schema.fromJsonString(QualificationProductAuthoritySourceChunkInvocation),
 );
+const AgentCollectedAuthoritySource = Schema.Literals([
+  "allowance_and_billing_ledger",
+  "gmail_provider_receipts",
+  "memory_commit_receipts",
+  "model_access_receipts",
+  "osfo_committed_turns",
+  "provider_delivery_receipts",
+  "task_compute_receipts",
+  "workflow_instance_receipts",
+]);
+const isAgentCollectedAuthoritySource = Schema.is(AgentCollectedAuthoritySource);
 const decodeQualificationJourney = Schema.decodeUnknownOption(QualificationContext.fields.journey);
 const decodeExecuteArrivalComplete = Schema.decodeUnknownOption(ExecuteArrivalComplete);
 const decodeAuthorityArrivalShard = Schema.decodeUnknownOption(
@@ -219,14 +232,14 @@ const authorityArrivalStreamPrefix = (executionId: string): string =>
   `qualification/executions/${encodeURIComponent(executionId)}/authority-streams/arrivals`;
 
 const authorityArrivalStreamArtifactId = (executionId: string, streamChunkIndex: number): string =>
-  `${authorityArrivalStreamPrefix(executionId)}/${streamChunkIndex.toString().padStart(8, "0")}.json`;
+  `${authorityArrivalStreamPrefix(executionId)}/partitions/${streamChunkIndex.toString().padStart(8, "0")}/00000000.json`;
 
 const productAuthorityShardArtifactId = (
   executionId: string,
   source: (typeof qualificationAuthoritySources)[number],
   streamChunkIndex: number,
 ): string =>
-  `qualification/executions/${encodeURIComponent(executionId)}/producer-authority/${source}/${streamChunkIndex.toString().padStart(8, "0")}.json`;
+  `qualification/executions/${encodeURIComponent(executionId)}/producer-authority/${source}/partitions/${streamChunkIndex.toString().padStart(8, "0")}/00000000.json`;
 
 const sha256Hex = async (encoded: string): Promise<string> => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
@@ -254,12 +267,19 @@ export const retainQualificationProductAuthorityShard = async (input: {
       ? decoded.value.occurredAt
       : latest;
   }, new Date(input.startsAtEpochMs).toISOString());
+  const previousArtifactChecksum = "NONE";
   const content = {
     artifactId,
     authority: input.source,
+    executionId: input.executionId,
     exportedAtUtc,
+    index: 0,
+    planChecksum: input.planChecksum,
+    previousArtifactChecksum,
+    recordCount: input.records.length,
     records: input.records,
     sourceVersion: input.sourceVersion,
+    streamChunkIndex: input.streamChunkIndex,
   };
   const artifact = { ...content, checksum: qualificationChecksum(content) };
   const encoded = canonicalQualificationJson(artifact);
@@ -268,11 +288,14 @@ export const retainQualificationProductAuthorityShard = async (input: {
       "osfo-artifact-checksum": artifact.checksum,
       "osfo-body-sha256": await sha256Hex(encoded),
       "osfo-execution-id": input.executionId,
-      "osfo-index": String(input.streamChunkIndex),
+      "osfo-index": "0",
       "osfo-kind": "qualification-product-authority-export-v1",
       "osfo-plan-checksum": input.planChecksum,
+      "osfo-previous-checksum": previousArtifactChecksum,
+      "osfo-record-count": String(input.records.length),
       "osfo-source": input.source,
       "osfo-source-version": input.sourceVersion,
+      "osfo-stream-chunk-index": String(input.streamChunkIndex),
     },
     httpMetadata: { contentType: "application/json" },
     onlyIf: { etagDoesNotMatch: "*" },
@@ -303,12 +326,21 @@ const retainProductAuthorityShard = (
     streamChunkIndex,
   });
 
-const streamRuns = (plan: QualificationExecutionPlan) => {
+const streamRuns = (
+  plan: QualificationExecutionPlan,
+  manifest: ProductionQualificationManifest,
+) => {
   let firstStreamChunkIndex = 0;
   return plan.runs.map((run) => {
     const chunkCount = Math.ceil(run.arrivalCount / 256);
     const descriptor = {
       arrivalCount: run.arrivalCount,
+      chunkStartsAtEpochMs: Array.from(
+        { length: chunkCount },
+        (_, chunkIndex) =>
+          qualificationRunArrivalAt(manifest, run, chunkIndex * 256)?.offeredAtEpochMs ??
+          run.startsAtEpochMs,
+      ),
       chunkCount,
       firstStreamChunkIndex,
       runId: run.runId,
@@ -1179,7 +1211,7 @@ const authorityShardDescriptor = async (
     bodySha256,
     component: "arrivals" as const,
     executionId: frozen.plan.executionId,
-    index: shard.streamChunkIndex,
+    index: 0,
     planChecksum: frozen.plan.planChecksum,
     previousArtifactChecksum: shard.previousArtifactChecksum,
     recordCount: shard.records.length,
@@ -1192,27 +1224,11 @@ const authorityShardDescriptor = async (
 };
 
 const readPreviousArrivalStreamChecksum = async (
-  env: QualificationProductAuthorityEnv,
-  frozen: FrozenExecution,
-  streamChunkIndex: number,
+  _env: QualificationProductAuthorityEnv,
+  _frozen: FrozenExecution,
+  _streamChunkIndex: number,
 ): Promise<string | null> => {
-  if (streamChunkIndex === 0) return "NONE";
-  const retained = await env.ARTIFACTS.get(
-    authorityArrivalStreamArtifactId(frozen.plan.executionId, streamChunkIndex - 1),
-  );
-  if (retained === null) return null;
-  const encoded = await retained.text();
-  const decoded = decodeAuthorityArrivalShard(encoded);
-  if (
-    Option.isNone(decoded) ||
-    decoded.value.executionId !== frozen.plan.executionId ||
-    decoded.value.planChecksum !== frozen.plan.planChecksum ||
-    decoded.value.streamChunkIndex !== streamChunkIndex - 1
-  ) {
-    return null;
-  }
-  const descriptor = await authorityShardDescriptor(frozen, encoded, decoded.value);
-  return descriptor?.artifactChecksum ?? null;
+  return "NONE";
 };
 
 const retainArrivalDerivedAuthority = async (
@@ -1669,7 +1685,9 @@ const collectAgentSourceChunk = async (
     | "task_compute_receipts"
     | "workflow_instance_receipts",
 ): Promise<Response> => {
-  const runDescriptor = streamRuns(frozen.plan).find((candidate) => candidate.runId === runId);
+  const runDescriptor = streamRuns(frozen.plan, frozen.manifest).find(
+    (candidate) => candidate.runId === runId,
+  );
   if (runDescriptor === undefined || chunkIndex >= runDescriptor.chunkCount) {
     return Response.json({ error: "qualificationSourceChunkNotFound" }, { status: 409 });
   }
@@ -2090,7 +2108,9 @@ const executeArrivalChunk = async (
   runId: string,
   chunkIndex: number,
 ): Promise<Response> => {
-  const runDescriptor = streamRuns(frozen.plan).find((candidate) => candidate.runId === runId);
+  const runDescriptor = streamRuns(frozen.plan, frozen.manifest).find(
+    (candidate) => candidate.runId === runId,
+  );
   const run = frozen.plan.runs.find((candidate) => candidate.runId === runId);
   if (run === undefined || runDescriptor === undefined || chunkIndex >= runDescriptor.chunkCount) {
     return Response.json({ error: "qualificationArrivalChunkNotFound" }, { status: 409 });
@@ -2245,12 +2265,13 @@ const executeArrivalChunk = async (
       "osfo-body-sha256": descriptor.bodySha256,
       "osfo-component": "arrivals",
       "osfo-execution-id": frozen.plan.executionId,
-      "osfo-index": String(streamChunkIndex),
+      "osfo-index": "0",
       "osfo-kind": "qualification-authority-stream-v1",
       "osfo-plan-checksum": frozen.plan.planChecksum,
       "osfo-previous-checksum": previousArtifactChecksum,
       "osfo-record-count": String(count),
       "osfo-source-version": frozen.manifest.sourceVersion,
+      "osfo-stream-chunk-index": String(streamChunkIndex),
     },
     httpMetadata: { contentType: "application/json" },
     onlyIf: { etagDoesNotMatch: "*" },
@@ -2294,14 +2315,107 @@ export const handleQualificationProductAuthority = async (
       return Response.json({ error: "qualificationProductAuthorityInvalid" }, { status: 400 });
     }
     const frozen = await readFrozenExecution(decoded.value, env);
-    return frozen === null
-      ? Response.json({ error: "qualificationProductAuthorityConflict" }, { status: 409 })
-      : collectAgentSourceChunk(
-          env,
-          frozen,
-          decoded.value.runId,
-          decoded.value.chunkIndex,
-          decoded.value.source,
+    if (frozen === null) {
+      return Response.json({ error: "qualificationProductAuthorityConflict" }, { status: 409 });
+    }
+    if (!isAgentCollectedAuthoritySource(decoded.value.source)) {
+      return Response.json(
+        {
+          missingSources: [
+            {
+              detail: `No production-owned ${decoded.value.source} qualification export adapter is installed`,
+              source: decoded.value.source,
+            },
+          ],
+          status: "MISSING",
+        },
+        { status: 424 },
+      );
+    }
+    return collectAgentSourceChunk(
+      env,
+      frozen,
+      decoded.value.runId,
+      decoded.value.chunkIndex,
+      decoded.value.source,
+    );
+  }
+  if (url.pathname === "/v1/executions/source-bundles") {
+    const decoded = decodeExecuteArrivalChunk(encoded);
+    if (Option.isNone(decoded)) {
+      return Response.json({ error: "qualificationProductAuthorityInvalid" }, { status: 400 });
+    }
+    const frozen = await readFrozenExecution(decoded.value, env);
+    if (frozen === null) {
+      return Response.json({ error: "qualificationProductAuthorityConflict" }, { status: 409 });
+    }
+    const recordCounts = new Array<{
+      readonly recordCount: number;
+      readonly source: (typeof qualificationAuthoritySources)[number];
+    }>();
+    const pendingSources = new Array<(typeof qualificationAuthoritySources)[number]>();
+    let retryAtEpochMs = 0;
+    for (const source of qualificationAuthoritySources) {
+      if (!isAgentCollectedAuthoritySource(source)) {
+        return Response.json(
+          {
+            missingSources: [
+              {
+                detail: `No production-owned ${source} qualification export adapter is installed`,
+                source,
+              },
+            ],
+            status: "MISSING",
+          },
+          { status: 424 },
+        );
+      }
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The bundled collector stops at the first missing/conflicting owning source and preserves source order.
+      const response = await collectAgentSourceChunk(
+        env,
+        frozen,
+        decoded.value.runId,
+        decoded.value.chunkIndex,
+        source,
+      );
+      if (response.status === 424 || response.status === 409) return response;
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Decode each ordered source response before advancing to the next authority.
+      const outcome = await response.json();
+      if (response.status === 202) {
+        const pending = Schema.decodeUnknownSync(
+          Schema.Struct({ retryAtEpochMs: Schema.Int, source: Schema.String }),
+        )(outcome);
+        pendingSources.push(source);
+        retryAtEpochMs = Math.max(retryAtEpochMs, pending.retryAtEpochMs);
+        continue;
+      }
+      if (response.status !== 200) return response;
+      const complete = Schema.decodeUnknownSync(
+        Schema.Struct({ recordCount: Schema.Int, source: Schema.String }),
+      )(outcome);
+      recordCounts.push({ recordCount: complete.recordCount, source });
+    }
+    const runDescriptor = streamRuns(frozen.plan, frozen.manifest).find(
+      (candidate) => candidate.runId === decoded.value.runId,
+    );
+    if (runDescriptor === undefined) {
+      return Response.json({ error: "qualificationArrivalChunkNotFound" }, { status: 409 });
+    }
+    return pendingSources.length > 0
+      ? Response.json(
+          QualificationProductAuthoritySourceBundlePending.make({
+            pendingSources,
+            retryAtEpochMs,
+            status: "PENDING",
+          }),
+          { status: 202 },
+        )
+      : Response.json(
+          QualificationProductAuthoritySourceBundleComplete.make({
+            recordCounts,
+            status: "COMPLETE",
+            streamChunkIndex: runDescriptor.firstStreamChunkIndex + decoded.value.chunkIndex,
+          }),
         );
   }
   if (url.pathname === "/v1/executions/arrival-chunks") {
@@ -2343,7 +2457,7 @@ export const handleQualificationProductAuthority = async (
       source: "osfo_agent_activation_log",
     });
   }
-  const runs = streamRuns(frozen.plan);
+  const runs = streamRuns(frozen.plan, frozen.manifest);
   return missingSources.length === 0
     ? Response.json({
         runs,

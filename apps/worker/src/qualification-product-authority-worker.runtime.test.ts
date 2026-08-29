@@ -1,5 +1,6 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, eslint/no-underscore-dangle -- Runtime tests drive Promise-native Worker handlers and assert closed _tag outcomes with fixed timestamps. */
 import { expect, it } from "vitest";
+import { Schema } from "effect";
 
 import { AgentId } from "./domain";
 import { qualificationAuthoritySources } from "./qualification/authority-sources";
@@ -327,7 +328,7 @@ it("projects exact Scheduled Email Applied, NotApplied, and unsettled outcomes",
       source: "provider_delivery_receipts",
       sourceVersion: "scheduled-email-source-v1",
       startsAtEpochMs: context.offeredAtEpochMs,
-      streamChunkIndex: 4,
+      streamChunkIndex: 0,
     });
 
   await expect(retainAppliedProviderShard()).resolves.toBe(true);
@@ -337,6 +338,71 @@ it("projects exact Scheduled Email Applied, NotApplied, and unsettled outcomes",
   expect(persistedWrites).toBe(1);
   expect(retained.size).toBe(1);
   expect([...retained.values()][0]).toBe(retainedBytes);
+});
+
+it("retains replay-safe partition-local authority shards and refuses spliced bodies", async () => {
+  const retained = new Map<
+    string,
+    { readonly metadata: Record<string, string>; readonly value: string }
+  >();
+  const bucket = {
+    get: (key: string) => {
+      const object = retained.get(key);
+      return Promise.resolve(
+        object === undefined ? null : { text: () => Promise.resolve(object.value) },
+      );
+    },
+    list: () => Promise.resolve({ objects: [], truncated: false as const }),
+    put: (
+      key: string,
+      value: string,
+      options: { readonly customMetadata?: Record<string, string> },
+    ) => {
+      if (retained.has(key)) return Promise.resolve(null);
+      retained.set(key, { metadata: options.customMetadata ?? {}, value });
+      return Promise.resolve({});
+    },
+  };
+  const input = {
+    bucket,
+    executionId: "chain-execution",
+    planChecksum: "chain-plan",
+    records: [{ occurredAt: "2026-08-29T17:00:00.000Z", rootId: "root-1" }],
+    source: "provider_delivery_receipts" as const,
+    sourceVersion: "chain-source-v1",
+    startsAtEpochMs: Date.parse("2026-08-29T17:00:00.000Z"),
+  };
+
+  await expect(
+    retainQualificationProductAuthorityShard({ ...input, streamChunkIndex: 0 }),
+  ).resolves.toBe(true);
+  await expect(
+    retainQualificationProductAuthorityShard({ ...input, streamChunkIndex: 1 }),
+  ).resolves.toBe(true);
+
+  const firstKey = [...retained.keys()][0];
+  const secondKey = [...retained.keys()][1];
+  if (firstKey === undefined || secondKey === undefined) throw new Error("Expected shard keys");
+  const first = retained.get(firstKey);
+  const second = retained.get(secondKey);
+  if (first === undefined || second === undefined) throw new Error("Expected retained chain");
+  const decodedSecond = Schema.decodeSync(
+    Schema.fromJsonString(
+      Schema.Struct({ previousArtifactChecksum: Schema.String, streamChunkIndex: Schema.Int }),
+    ),
+  )(second.value);
+  expect(decodedSecond.previousArtifactChecksum).toBe("NONE");
+  expect(decodedSecond.streamChunkIndex).toBe(1);
+  expect(second.metadata["osfo-previous-checksum"]).toBe("NONE");
+
+  retained.set(firstKey, {
+    ...first,
+    value: first.value.replace("root-1", "spliced-root"),
+  });
+  await expect(
+    retainQualificationProductAuthorityShard({ ...input, streamChunkIndex: 0 }),
+  ).resolves.toBe(false);
+  expect(retained.has(secondKey)).toBe(true);
 });
 
 it("refuses the first arrival until the complete cohort inventory receipt exists", async () => {
@@ -508,7 +574,7 @@ it("resumes an immutable canonical arrival chunk without replaying product effec
     bodyChecksum: qualificationChecksum(bodyContent),
   });
   const shardArtifactId =
-    "qualification/executions/resume-test-execution/authority-streams/arrivals/00000000.json";
+    "qualification/executions/resume-test-execution/authority-streams/arrivals/partitions/00000000/00000000.json";
   const retained = new Map([
     [requestArtifactId, retainedRequest],
     [shardArtifactId, encodedShard],
@@ -570,12 +636,12 @@ it("resumes an immutable canonical arrival chunk without replaying product effec
   expect(authorityShardWrites).toBe(4);
   expect(
     retained.has(
-      "qualification/executions/resume-test-execution/producer-authority/worker_admission_receipts/00000000.json",
+      "qualification/executions/resume-test-execution/producer-authority/worker_admission_receipts/partitions/00000000/00000000.json",
     ),
   ).toBe(true);
   expect(
     retained.has(
-      "qualification/executions/resume-test-execution/producer-authority/think_submission_receipts/00000000.json",
+      "qualification/executions/resume-test-execution/producer-authority/think_submission_receipts/partitions/00000000/00000000.json",
     ),
   ).toBe(true);
 });
