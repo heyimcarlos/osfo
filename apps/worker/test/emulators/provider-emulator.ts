@@ -27,6 +27,10 @@ interface StripeCheckoutState {
   state: "complete" | "open";
 }
 
+interface ResearchControl {
+  nextDocumentBuildActionId: string | null;
+}
+
 /** One observed Supermemory request. */
 export interface SupermemoryLedgerEntry {
   readonly method: string;
@@ -158,7 +162,14 @@ export interface ProviderEmulator {
   readonly origin: string;
 }
 
-export const startProviderEmulator = (): Promise<ProviderEmulator> =>
+export const startProviderEmulator = (): Promise<ProviderEmulator> => startProvider({});
+
+export const startRunProviderEmulator = (verificationRunId: string): Promise<ProviderEmulator> =>
+  startProvider({ verificationRunId });
+
+const startProvider = (options: {
+  readonly verificationRunId?: string;
+}): Promise<ProviderEmulator> =>
   new Promise((resolve, reject) => {
     const stripeLedger: Array<StripeLedgerEntry> = [];
     const stripeCheckouts = new Map<string, StripeCheckoutState>();
@@ -172,12 +183,17 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
     const integrationLedger: Array<IntegrationLedgerEntry> = [];
     const integrationSessions = new Map<string, string>();
     const integrationConnections = new Set<string>();
+    const researchControl: ResearchControl = { nextDocumentBuildActionId: null };
     let whatsAppNextResponseStatus: number | null = null;
     let whatsAppTemplateOnly = false;
     const server = createServer((request, response) => {
       const rawUrl = request.url ?? "/";
       const url = new URL(rawUrl.startsWith("//") ? rawUrl.slice(1) : rawUrl, "http://localhost");
       const pathname = url.pathname;
+      if (request.method === "GET" && pathname === "/inbox") {
+        renderTelegramInbox(response, options.verificationRunId ?? "standalone", telegramLedger);
+        return;
+      }
       if (request.method === "POST" && pathname === "/_test/reset") {
         stripeLedger.length = 0;
         stripeCheckouts.clear();
@@ -188,6 +204,7 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         twilioLedger.length = 0;
         whatsAppLedger.length = 0;
         researchLedger.length = 0;
+        researchControl.nextDocumentBuildActionId = null;
         integrationLedger.length = 0;
         integrationSessions.clear();
         integrationConnections.clear();
@@ -272,6 +289,24 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         respondJson(response, 200, researchLedger);
         return;
       }
+      if (request.method === "POST" && pathname === "/_test/research/next-document-build-action") {
+        const actionId = url.searchParams.get("actionId");
+        if (
+          actionId === null ||
+          !/^verification-startDocumentBuild-free-[a-z0-9][a-z0-9-]{0,47}$/u.test(actionId)
+        ) {
+          respondJson(response, 400, { error: "Invalid Free Document Build action ID" });
+          return;
+        }
+        if (researchControl.nextDocumentBuildActionId !== null) {
+          respondJson(response, 409, { error: "A Document Build action is already configured" });
+          return;
+        }
+        researchControl.nextDocumentBuildActionId = actionId;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
       if (request.method === "GET" && pathname === "/_test/integrations/ledger") {
         respondJson(response, 200, integrationLedger);
         return;
@@ -294,7 +329,7 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         return;
       }
       if (request.method === "POST" && pathname.startsWith("/_local/research/")) {
-        handleResearch(request, response, pathname, researchLedger);
+        handleResearch(request, response, pathname, researchLedger, researchControl);
         return;
       }
       if (request.method === "GET" && pathname === "/_test/whatsapp/ledger") {
@@ -685,6 +720,7 @@ const handleResearch = (
   response: ServerResponse,
   pathname: string,
   ledger: Array<ResearchLedgerEntry>,
+  control: ResearchControl,
 ): void => {
   readTextBody(request)
     .then(Schema.decodeUnknownPromise(ResearchRequestFromJson))
@@ -697,13 +733,53 @@ const handleResearch = (
           operationId: null,
           subject: lastMessageText(input).slice(0, 500),
         });
+        const documentBuildRequest = latestUserMessageContent(input);
+        const documentBuildFileId = /web:[0-9a-f-]{36}/iu.exec(documentBuildRequest)?.[0];
+        const documentBuildWorkflowId = /document-build:[\w:-]{8,300}/iu.exec(
+          documentBuildRequest,
+        )?.[0];
+        const isDocumentBuildRequest =
+          documentBuildFileId !== undefined &&
+          /(?:build|document|pdf)/iu.test(documentBuildRequest);
+        const isDocumentBuildStatusRequest =
+          documentBuildWorkflowId !== undefined &&
+          /(?:inspect|status|check)/iu.test(documentBuildRequest);
+        if (
+          (isDocumentBuildRequest || isDocumentBuildStatusRequest) &&
+          toolNames.includes("loadSkill") &&
+          !toolNames.includes("startDocumentBuild") &&
+          !toolNames.includes("inspectDocumentBuild") &&
+          lastMessageRole(input) === "user"
+        ) {
+          ledger.push({
+            kind: "tool-selection",
+            operationId: "verification-loadSkill",
+            selectedTool: "loadSkill",
+            subject: "document-build@system-document-build-v1",
+          });
+          respondJson(
+            response,
+            200,
+            toolResponse("loadSkill", {
+              skillId: "document-build",
+              skillVersion: "system-document-build-v1",
+            }),
+          );
+          return;
+        }
+        if (isDocumentBuildRequest && isDeniedDocumentBuildResult(input)) {
+          respondJson(response, 200, {
+            finish_reason: "stop",
+            response: "Document Build is not available on your current plan.",
+            usage: { completion_tokens: 1, prompt_tokens: 1 },
+          });
+          return;
+        }
         if (toolNames.includes("present_link") && lastMessageRole(input) === "user") {
           respondJson(response, 200, toolResponse("present_link", {}));
           return;
         }
         const workflowId = /research[:\w-]{8,300}/iu.exec(lastMessage)?.[0];
-        const documentBuildWorkflowId = /document-build:[\w:-]{8,300}/iu.exec(lastMessage)?.[0];
-        const documentBuildFileId = /web:[0-9a-f-]{36}/iu.exec(lastMessage)?.[0];
         const scheduledEmailWorkflowId = /scheduled-email:[\w:-]{8,300}/iu.exec(lastMessage)?.[0];
         const scheduledEmailFixture =
           /recipient=([^;]+); subject=([^;]+); body=([^;]+); sendAt=([^;\s]+)/iu.exec(lastMessage);
@@ -763,8 +839,8 @@ const handleResearch = (
         if (
           documentBuildWorkflowId !== undefined &&
           toolNames.includes("inspectDocumentBuild") &&
-          lastMessageRole(input) === "user" &&
-          /(?:inspect|status|check)/iu.test(lastMessage)
+          isDocumentBuildStatusRequest &&
+          (lastMessageRole(input) === "user" || isDocumentBuildSkillLoadResult(input))
         ) {
           ledger.push({
             kind: "tool-selection",
@@ -782,22 +858,27 @@ const handleResearch = (
         if (
           documentBuildFileId !== undefined &&
           toolNames.includes("startDocumentBuild") &&
-          lastMessageRole(input) === "user" &&
-          /(?:build|document|pdf)/iu.test(lastMessage)
+          isDocumentBuildSkillLoadResult(input)
         ) {
+          const actionId = control.nextDocumentBuildActionId ?? "verification-startDocumentBuild";
+          control.nextDocumentBuildActionId = null;
           ledger.push({
             kind: "tool-selection",
-            operationId: null,
+            operationId: actionId,
             selectedTool: "startDocumentBuild",
             subject: documentBuildFileId,
           });
           respondJson(
             response,
             200,
-            toolResponse("startDocumentBuild", {
-              fileIds: [documentBuildFileId],
-              format: "pdf",
-            }),
+            toolResponse(
+              "startDocumentBuild",
+              {
+                fileIds: [documentBuildFileId],
+                format: "pdf",
+              },
+              actionId,
+            ),
           );
           return;
         }
@@ -894,10 +975,14 @@ const handleResearch = (
     .catch((cause: unknown) => respondJson(response, 400, { error: String(cause) }));
 };
 
-const toolResponse = (name: string, arguments_: JsonObject) => ({
+const toolResponse = (
+  name: string,
+  arguments_: JsonObject,
+  toolCallId = `verification-${name}`,
+) => ({
   finish_reason: "tool_calls",
   response: "",
-  tool_calls: [{ arguments: arguments_, id: `verification-${name}`, name }],
+  tool_calls: [{ arguments: arguments_, id: toolCallId, name }],
   usage: { completion_tokens: 1, prompt_tokens: 1 },
 });
 
@@ -924,6 +1009,35 @@ const lastMessageContent = (input: ResearchRequest): string => {
 };
 
 const lastMessage = (input: ResearchRequest) => input.messages?.at(-1) ?? null;
+
+const latestUserMessageContent = (input: ResearchRequest): string => {
+  const message = input.messages?.reduceRight<(typeof input.messages)[number] | undefined>(
+    (found, candidate) => found ?? (candidate.role === "user" ? candidate : undefined),
+    undefined,
+  );
+  if (message?.content === undefined) return "";
+  if (typeof message.content === "string") return message.content;
+  return JSON.stringify(message.content);
+};
+
+const isDocumentBuildSkillLoadResult = (input: ResearchRequest): boolean => {
+  const message = lastMessage(input);
+  if (message?.role !== "tool" || message.name !== "loadSkill") return false;
+  const result = lastMessageContent(input);
+  return (
+    result.includes('"skillId":"document-build"') &&
+    result.includes('"skillVersion":"system-document-build-v1"')
+  );
+};
+
+const isDeniedDocumentBuildResult = (input: ResearchRequest): boolean => {
+  const message = lastMessage(input);
+  return (
+    message?.role === "tool" &&
+    message.name === "startDocumentBuild" &&
+    /"_tag"\s*:\s*"Denied"/u.test(lastMessageContent(input))
+  );
+};
 
 const handleStripe = (
   request: IncomingMessage,
@@ -1121,6 +1235,45 @@ const handleTelegram = (
     })
     .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
 };
+
+const renderTelegramInbox = (
+  response: ServerResponse,
+  verificationRunId: string,
+  ledger: ReadonlyArray<TelegramLedgerEntry>,
+): void => {
+  const deliveries = ledger.flatMap((entry, index) => {
+    const decoded = Option.getOrUndefined(Schema.decodeOption(TelegramRequestFromJson)(entry.body));
+    const text = decoded?.text ?? decoded?.rich_message?.markdown;
+    return text === undefined ? [] : [{ index: index + 1, method: entry.method, text }];
+  });
+  const delivery = deliveries[deliveries.length - 1];
+  const message =
+    delivery === undefined
+      ? "<p>No delivered Telegram messages.</p>"
+      : `<article>
+<h2>Latest delivery ${delivery.index}</h2>
+<p>Telegram method: <code>${escapeHtml(delivery.method)}</code></p>
+<pre>${escapeHtml(delivery.text)}</pre>
+</article>`;
+  response.statusCode = 200;
+  response.setHeader("cache-control", "no-store");
+  response.setHeader("content-type", "text/html; charset=utf-8");
+  response.setHeader("x-content-type-options", "nosniff");
+  response.end(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Local Telegram inbox</title></head>
+<body><main><h1>Local Telegram inbox</h1>
+<p>Verification run: <code>${escapeHtml(verificationRunId)}</code></p>
+${message}
+</main></body></html>`);
+};
+
+const escapeHtml = (value: string): string =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 
 const telegramPayload = (body: string): TelegramPayload => {
   const payload = Option.getOrUndefined(Schema.decodeOption(TelegramRequestFromJson)(body));

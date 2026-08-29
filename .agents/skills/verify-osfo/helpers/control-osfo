@@ -16,11 +16,12 @@ usage() {
     '  control-osfo identity <run-id>' \
     '  control-osfo journeys <run-id>' \
     '  control-osfo account-deletion-envelope-journey <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> start' \
-    '  control-osfo record <run-id> <registration|channel-linking|research-report|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> <action|result> <summary>' \
-    '  control-osfo observe <run-id> <registration|channel-linking|research-report|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> start' \
+    '  control-osfo record <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> <action|result> <summary>' \
+    '  control-osfo observe <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay>' \
     '  control-osfo channel-invite <run-id>' \
     '  control-osfo telegram-reply <run-id> <message>' \
+    '  control-osfo document-build-free-denial <run-id> <file-id>' \
     '  control-osfo scheduled-email-request <run-id>' \
     '  control-osfo whatsapp-invite <run-id>' \
     '  control-osfo record-reminder-due <run-id> <rfc3339-instant>' \
@@ -29,7 +30,7 @@ usage() {
     '  control-osfo whatsapp-reply <run-id> <message>' \
     '  control-osfo seed-account-deletion <run-id>' \
     '  control-osfo reconcile-account-deletion <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> finish' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> finish' \
     '  control-osfo cleanup <run-id>'
 }
 
@@ -43,7 +44,7 @@ require_run_id() {
 
 require_feature() {
   case "${1:-}" in
-    registration|channel-linking|research-report|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay) ;;
+    registration|channel-linking|research-report|document-build-free-denial|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay) ;;
     *)
       printf 'Unknown browser feature: %s\n' "${1:-}" >&2
       exit 2
@@ -590,6 +591,11 @@ evidence_start() {
     printf 'provider_boundary=local-loopback-gmail-not-live-oauth\n' \
       >>"$feature_dir/metadata.txt"
   fi
+  if [[ "$feature" == document-build-free-denial ]]; then
+    provider_origin="$(state_value "$run_id" provider-origin)"
+    printf 'provider_browser_boundary=telegram-delivery-ledger\nprovider_inbox_url=%s/inbox\n' \
+      "$provider_origin" >>"$feature_dir/metadata.txt"
+  fi
   printf 'evidence_ready feature=%s action_screenshot=%s result_screenshot=%s\n' \
     "$feature" "$feature_dir/action.png" "$feature_dir/result.png"
 }
@@ -777,6 +783,136 @@ telegram_reply() {
     '.[ $before: ] | map(select(.method == "editMessageText")) | .[-1].body | fromjson | (.text? // .rich_message.markdown? // "")' \
     "$ledger_path")"
   printf 'telegram_reply=%s\n' "$reply"
+}
+
+document_build_identities() {
+  local user_id action_id
+  user_id="$1"
+  action_id="$2"
+  require_owned_identifier 'User ID' "$user_id"
+  require_owned_identifier 'Document Build action ID' "$action_id"
+  (
+    cd "$repo_root"
+    OSFO_DOCUMENT_BUILD_USER_ID="$user_id" OSFO_DOCUMENT_BUILD_ACTION_ID="$action_id" \
+      bun -e '
+        import { Effect } from "effect";
+        import { UserId } from "./apps/worker/src/domain";
+        import { ActionId } from "./apps/worker/src/domain/action-execution";
+        import { DocumentBuild } from "./apps/worker/src/services/document-build";
+
+        const userId = process.env.OSFO_DOCUMENT_BUILD_USER_ID;
+        const actionId = process.env.OSFO_DOCUMENT_BUILD_ACTION_ID;
+        if (userId === undefined || actionId === undefined) {
+          throw new Error("Document Build verification identity is missing");
+        }
+        const workflowId = await Effect.runPromise(DocumentBuild.workflowIdFor(
+          UserId.make(userId),
+          ActionId.make(actionId),
+        ));
+        const instances = await Effect.runPromise(DocumentBuild.cloudflareInstanceIdsFor(workflowId));
+        process.stdout.write(JSON.stringify({ workflowId, ...instances }));
+      '
+  )
+}
+
+document_build_free_denial() {
+  local run_id file_id state_dir feature_dir container_id provider_origin inbox_url phone identity
+  local user_id agent_id billing_plan billing_policy allowance_plan allowance_policy
+  local action_id success_action_id identities workflow_id main_instance_id timer_instance_id
+  local request before_model_count reply_output reply
+  run_id="$1"
+  file_id="$2"
+  doctor_run "$run_id" >/dev/null
+  state_dir="$(state_dir_for "$run_id")"
+  feature_dir="$(feature_artifact_dir_for "$run_id" document-build-free-denial)"
+  if [[ ! -s "$feature_dir/metadata.txt" ]]; then
+    printf 'Start document-build-free-denial evidence before the checkpoint\n' >&2
+    exit 1
+  fi
+  if [[ ! "$file_id" =~ ^web:[0-9a-f-]{36}$ ]]; then
+    printf 'Invalid browser-owned Document Build File ID: %s\n' "$file_id" >&2
+    exit 2
+  fi
+  "$script_dir/claim-single-attempt" "$state_dir/document-build-free-denial-attempted"
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  inbox_url="$provider_origin/inbox"
+  phone="$(state_value "$run_id" phone-e164)"
+  identity="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userId', u.id,
+      'agentId', a.agent_id,
+      'billingPlan', bs.plan,
+      'billingPolicy', bs.plan_policy_version,
+      'allowancePlan', ap.plan,
+      'allowancePolicy', ap.plan_policy_version
+    ) from users u
+    join agents a on a.user_id = u.id
+    join billing_subscriptions bs on bs.user_id = u.id
+    join lateral (
+      select plan, plan_policy_version from allowance_periods
+      where user_id = u.id order by starts_at desc limit 1
+    ) ap on true
+    where u.phone_number = '$phone';")"
+  if [[ -z "$identity" ]]; then
+    printf 'No registered User and Agent exist for the run-owned phone\n' >&2
+    exit 1
+  fi
+  user_id="$(jq --exit-status --raw-output '.userId' <<<"$identity")"
+  agent_id="$(jq --exit-status --raw-output '.agentId' <<<"$identity")"
+  billing_plan="$(jq --exit-status --raw-output '.billingPlan' <<<"$identity")"
+  billing_policy="$(jq --exit-status --raw-output '.billingPolicy' <<<"$identity")"
+  allowance_plan="$(jq --exit-status --raw-output '.allowancePlan' <<<"$identity")"
+  allowance_policy="$(jq --exit-status --raw-output '.allowancePolicy' <<<"$identity")"
+  require_owned_identifier 'User ID' "$user_id"
+  require_owned_identifier 'Agent ID' "$agent_id"
+  if [[ "$billing_plan" != free || "$allowance_plan" != free || \
+    "$billing_policy" != launch-v1 || "$allowance_policy" != launch-v1 ]]; then
+    printf 'Free denial checkpoint requires current launch-v1 Free billing and allowance facts\n' >&2
+    exit 1
+  fi
+  action_id="verification-startDocumentBuild-free-$run_id"
+  success_action_id='verification-startDocumentBuild'
+  if [[ "$action_id" == "$success_action_id" ]]; then
+    printf 'Free denial and Adventurer success actions must differ\n' >&2
+    exit 1
+  fi
+  identities="$(document_build_identities "$user_id" "$action_id")"
+  workflow_id="$(jq --exit-status --raw-output '.workflowId' <<<"$identities")"
+  main_instance_id="$(jq --exit-status --raw-output '.main' <<<"$identities")"
+  timer_instance_id="$(jq --exit-status --raw-output '.timer' <<<"$identities")"
+  before_model_count="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/research/ledger" | jq 'length')"
+  curl --fail --silent --show-error --request POST --get \
+    --data-urlencode "actionId=$action_id" \
+    "$provider_origin/_test/research/next-document-build-action" >/dev/null
+  request="Build a PDF from uploaded File ID $file_id."
+  reply_output="$(telegram_reply "$run_id" "$request")"
+  if [[ "$reply_output" != telegram_reply=* ]]; then
+    printf 'The Free Document Build attempt returned no captured Telegram reply\n' >&2
+    exit 1
+  fi
+  reply="${reply_output#telegram_reply=}"
+  printf '%s\n' "$request" >"$feature_dir/agent-request.txt"
+  printf '%s\n' "$reply" >"$feature_dir/agent-reply.txt"
+  curl --fail --silent --show-error "$provider_origin/_test/research/ledger" \
+    | jq --argjson before "$before_model_count" '.[ $before: ]' \
+      >"$feature_dir/model-selection.json"
+  "$script_dir/assert-document-build-free-denial" \
+    "$feature_dir/agent-reply.txt" "$feature_dir/model-selection.json" "$action_id" "$file_id"
+  printf '%s\n' "$file_id" >"$state_dir/document-build-free-file-id"
+  printf '%s\n' "$user_id" >"$state_dir/document-build-free-user-id"
+  printf '%s\n' "$agent_id" >"$state_dir/document-build-free-agent-id"
+  printf '%s\n' "$action_id" >"$state_dir/document-build-free-action-id"
+  printf '%s\n' "$success_action_id" >"$state_dir/document-build-success-action-id"
+  printf '%s\n' "$workflow_id" >"$state_dir/document-build-free-workflow-id"
+  printf '%s\n' "$main_instance_id" >"$state_dir/document-build-free-main-instance-id"
+  printf '%s\n' "$timer_instance_id" >"$state_dir/document-build-free-timer-instance-id"
+  printf '%s\n' "$before_model_count" >"$state_dir/document-build-free-model-ledger-before-count"
+  printf '%s\n' "$inbox_url" >"$state_dir/document-build-free-inbox-url"
+  printf 'document_build_free_denial_ready action=%s workflow=%s inbox=%s reply=%s\n' \
+    "$action_id" "$workflow_id" "$inbox_url" "$feature_dir/agent-reply.txt"
 }
 
 scheduled_email_request() {
@@ -1035,6 +1171,20 @@ r2_object_exists() {
     --local \
     --persist-to "$state_dir/wrangler-state" \
     --pipe >/dev/null 2>&1
+}
+
+r2_object_sha256() {
+  local state_dir bucket key
+  state_dir="$1"
+  bucket="$2"
+  key="$3"
+  "$repo_root/apps/worker/node_modules/.bin/wrangler" r2 object get "$bucket/$key" \
+    --config "$state_dir/wrangler.json" \
+    --local \
+    --persist-to "$state_dir/wrangler-state" \
+    --pipe 2>/dev/null \
+    | sha256sum \
+    | cut --delimiter=' ' --fields=1
 }
 
 put_r2_object() {
@@ -1335,10 +1485,124 @@ observe_research_report() {
     "$feature_dir/state.json" "$feature_dir/provider.json"
 }
 
+observe_document_build_free_denial() {
+  local run_id state_dir feature_dir container_id provider_origin phone user_id agent_id file_id
+  local action_id workflow_id main_instance_id timer_instance_id artifact_id state_json runtime
+  local files_bucket artifacts_bucket source_key artifact_key attempt_key owner_key
+  local source_exists artifact_exists attempt_exists owner_exists before_model_count model_ledger
+  run_id="$1"
+  state_dir="$(state_dir_for "$run_id")"
+  feature_dir="$(feature_artifact_dir_for "$run_id" document-build-free-denial)"
+  begin_observation "$feature_dir"
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  user_id="$(state_value "$run_id" document-build-free-user-id)"
+  agent_id="$(state_value "$run_id" document-build-free-agent-id)"
+  file_id="$(state_value "$run_id" document-build-free-file-id)"
+  action_id="$(state_value "$run_id" document-build-free-action-id)"
+  workflow_id="$(state_value "$run_id" document-build-free-workflow-id)"
+  main_instance_id="$(state_value "$run_id" document-build-free-main-instance-id)"
+  timer_instance_id="$(state_value "$run_id" document-build-free-timer-instance-id)"
+  before_model_count="$(state_value "$run_id" document-build-free-model-ledger-before-count)"
+  require_owned_identifier 'User ID' "$user_id"
+  require_owned_identifier 'Agent ID' "$agent_id"
+  require_owned_identifier 'Document Build action ID' "$action_id"
+  artifact_id="document:workflow:$workflow_id"
+  state_json="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userId', u.id,
+      'billingPlan', bs.plan,
+      'billingPolicy', bs.plan_policy_version,
+      'allowancePlan', ap.plan,
+      'allowancePolicy', ap.plan_policy_version,
+      'documentBuildCount', (select count(*) from document_builds db where db.user_id = u.id),
+      'actionDocumentBuildCount', (select count(*) from document_builds db where db.user_id = u.id and db.action_id = '$action_id'),
+      'workflowStartUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_type = 'documentBuild' and a.allowance_kind = 'workflowStarts'),
+      'generatedDocumentUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_type = 'documentBuild' and a.allowance_kind = 'generatedDocuments'),
+      'providerCostUsage', (select count(*) from allowance_usage a where a.user_id = u.id and a.source_type = 'documentProviderOperation' and a.allowance_kind = 'vendorUsdMicros'),
+      'documentUsageEvents', (select count(*) from usage_events e where e.user_id = u.id and (e.root_operation_id = '$action_id' or e.root_operation_id = '$workflow_id' or e.source_type in ('documentBuild', 'documentProviderOperation'))),
+      'documentNotificationCount', (select count(*) from document_build_notifications n join document_builds db on db.workflow_id = n.workflow_id where db.user_id = u.id)
+    ) from users u
+    join billing_subscriptions bs on bs.user_id = u.id
+    join lateral (
+      select plan, plan_policy_version from allowance_periods
+      where user_id = u.id order by starts_at desc limit 1
+    ) ap on true
+    where u.phone_number = '$phone';")"
+  if [[ -z "$state_json" ]]; then
+    printf 'No launch-v1 Free User exists for the denial observation\n' >&2
+    exit 1
+  fi
+  runtime="$(inspect_agent_runtime "$run_id" "$agent_id" "$user_id" "$file_id" \
+    "$main_instance_id" "$timer_instance_id" "$artifact_id")"
+  files_bucket="$(jq --exit-status --raw-output \
+    '.r2_buckets[] | select(.binding == "FILES") | .bucket_name' "$state_dir/wrangler.json")"
+  artifacts_bucket="$(jq --exit-status --raw-output \
+    '.r2_buckets[] | select(.binding == "ARTIFACTS") | .bucket_name' "$state_dir/wrangler.json")"
+  source_key="users/$(VERIFICATION_PART="$user_id" bun -e 'process.stdout.write(encodeURIComponent(process.env.VERIFICATION_PART))')/files/$(VERIFICATION_PART="$file_id" bun -e 'process.stdout.write(encodeURIComponent(process.env.VERIFICATION_PART))')/source"
+  artifact_key="client-content/$(VERIFICATION_CONTENT_ID="$artifact_id" bun -e '
+    process.stdout.write(Array.from(new TextEncoder().encode(process.env.VERIFICATION_CONTENT_ID), (byte) => byte.toString(16).padStart(2, "0")).join(""));
+  ')"
+  attempt_key="${artifact_key/client-content\//document-attempts/}"
+  owner_key="document-owners/by-user/$(VERIFICATION_PART="$user_id" bun -e 'process.stdout.write(encodeURIComponent(process.env.VERIFICATION_PART))')/${artifact_key#client-content/}"
+  if r2_object_exists "$state_dir" "$files_bucket" "$source_key"; then source_exists=true; else source_exists=false; fi
+  if r2_object_exists "$state_dir" "$artifacts_bucket" "$artifact_key"; then artifact_exists=true; else artifact_exists=false; fi
+  if r2_object_exists "$state_dir" "$artifacts_bucket" "$attempt_key"; then attempt_exists=true; else attempt_exists=false; fi
+  if r2_object_exists "$state_dir" "$artifacts_bucket" "$owner_key"; then owner_exists=true; else owner_exists=false; fi
+  jq --null-input \
+    --arg actionId "$action_id" \
+    --arg workflowId "$workflow_id" \
+    --argjson postgres "$state_json" \
+    --argjson runtime "$runtime" \
+    --argjson sourceExists "$source_exists" \
+    --argjson artifactExists "$artifact_exists" \
+    --argjson attemptExists "$attempt_exists" \
+    --argjson ownerExists "$owner_exists" \
+    '$postgres + { actionId: $actionId, workflowId: $workflowId,
+      agentRuntime: $runtime, sourceExists: $sourceExists,
+      artifactExists: $artifactExists, attemptExists: $attemptExists,
+      ownerExists: $ownerExists }' >"$feature_dir/state.json"
+  model_ledger="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/research/ledger" | jq --argjson before "$before_model_count" '.[ $before: ]')"
+  jq --null-input \
+    --arg actionId "$action_id" \
+    --arg agentReply "$(<"$feature_dir/agent-reply.txt")" \
+    --arg agentRequest "$(<"$feature_dir/agent-request.txt")" \
+    --argjson model "$model_ledger" \
+    --argjson telegram "$(curl --fail --silent --show-error "$provider_origin/_test/telegram/ledger")" \
+    '{ actionId: $actionId, agentReply: $agentReply, agentRequest: $agentRequest,
+      model: $model, telegram: $telegram }' >"$feature_dir/provider.json"
+  "$script_dir/assert-document-build-free-state" \
+    "$feature_dir/state.json" "$user_id" "$file_id"
+  jq --exit-status \
+    --arg actionId "$action_id" --arg fileId "$file_id" \
+    '. as $provider |
+      .actionId == $actionId and
+      .agentReply == "Document Build is not available on your current plan." and
+      ([.model[] | select(.kind == "tool-selection" and
+        .selectedTool == "loadSkill" and
+        .subject == "document-build@system-document-build-v1" and
+        .operationId == "verification-loadSkill")] | length) == 1 and
+      ([.model[] | select(.kind == "tool-selection" and
+        .selectedTool == "startDocumentBuild" and .subject == $fileId and
+        .operationId == $actionId)] | length) == 1 and
+      ([.model[] | select(.selectedTool == "inspectDocumentBuild")] | length) == 0 and
+      (any(.telegram[];
+        (.body | fromjson?) as $body |
+        (($body.text? // $body.rich_message.markdown? // "") | contains($provider.agentReply))))' \
+    "$feature_dir/provider.json" >/dev/null
+  complete_observation "$run_id" "$feature_dir"
+  printf 'observed document-build-free-denial state=%s provider=%s\n' \
+    "$feature_dir/state.json" "$feature_dir/provider.json"
+}
+
 observe_document_build() {
   local run_id state_dir feature_dir container_id provider_origin phone state_json user_id agent_id file_id
-  local artifact_id main_instance_id timer_instance_id runtime source_key artifact_key attempt_key owner_key
+  local action_id free_action_id provider_operation_id artifact_id main_instance_id timer_instance_id runtime source_key artifact_key attempt_key owner_key
   local files_bucket artifacts_bucket source_exists artifact_exists attempt_exists owner_exists
+  local artifact_object_sha256
   run_id="$1"
   state_dir="$(state_dir_for "$run_id")"
   feature_dir="$(feature_artifact_dir_for "$run_id" document-build)"
@@ -1351,6 +1615,7 @@ observe_document_build() {
     --command "select json_build_object(
       'userId', u.id,
       'agentId', db.agent_id,
+      'actionId', db.action_id,
       'workflowId', db.workflow_id,
       'state', db.state,
       'format', db.request_json::jsonb ->> 'format',
@@ -1395,6 +1660,9 @@ observe_document_build() {
   fi
   user_id="$(jq --exit-status --raw-output '.userId' <<<"$state_json")"
   agent_id="$(jq --exit-status --raw-output '.agentId' <<<"$state_json")"
+  action_id="$(jq --exit-status --raw-output '.actionId' <<<"$state_json")"
+  free_action_id="$(state_value "$run_id" document-build-free-action-id)"
+  provider_operation_id='verification-startDocumentBuild'
   file_id="$(jq --exit-status --raw-output '.sourceFileId' <<<"$state_json")"
   artifact_id="$(jq --exit-status --raw-output '.artifactContentId' <<<"$state_json")"
   main_instance_id="$(jq --exit-status --raw-output '.cloudflareInstanceId' <<<"$state_json")"
@@ -1412,7 +1680,13 @@ observe_document_build() {
   attempt_key="${artifact_key/client-content\//document-attempts/}"
   owner_key="document-owners/by-user/$(VERIFICATION_PART="$user_id" bun -e 'process.stdout.write(encodeURIComponent(process.env.VERIFICATION_PART))')/${artifact_key#client-content/}"
   if r2_object_exists "$state_dir" "$files_bucket" "$source_key"; then source_exists=true; else source_exists=false; fi
-  if r2_object_exists "$state_dir" "$artifacts_bucket" "$artifact_key"; then artifact_exists=true; else artifact_exists=false; fi
+  if artifact_object_sha256="$(r2_object_sha256 \
+    "$state_dir" "$artifacts_bucket" "$artifact_key")"; then
+    artifact_exists=true
+  else
+    artifact_exists=false
+    artifact_object_sha256=''
+  fi
   if r2_object_exists "$state_dir" "$artifacts_bucket" "$attempt_key"; then attempt_exists=true; else attempt_exists=false; fi
   if r2_object_exists "$state_dir" "$artifacts_bucket" "$owner_key"; then owner_exists=true; else owner_exists=false; fi
   jq --null-input \
@@ -1420,10 +1694,12 @@ observe_document_build() {
     --argjson runtime "$runtime" \
     --argjson sourceExists "$source_exists" \
     --argjson artifactExists "$artifact_exists" \
+    --arg artifactObjectSha256 "$artifact_object_sha256" \
     --argjson attemptExists "$attempt_exists" \
     --argjson ownerExists "$owner_exists" \
     '$postgres + { agentRuntime: $runtime, sourceExists: $sourceExists,
-      artifactExists: $artifactExists, attemptExists: $attemptExists,
+      artifactExists: $artifactExists, artifactObjectSha256: $artifactObjectSha256,
+      attemptExists: $attemptExists,
       ownerExists: $ownerExists }' >"$feature_dir/state.json"
   jq --null-input \
     --argjson costEvidence "$(jq '.costEvidence' <<<"$state_json")" \
@@ -1435,7 +1711,9 @@ observe_document_build() {
       providerCostBasis: $providerCostBasis, model: $model, telegram: $telegram }' \
     >"$feature_dir/provider.json"
   jq --exit-status \
+    --arg freeActionId "$free_action_id" \
     '.state == "success" and .format == "pdf" and .safeFailureCode == null and
+      .actionId != $freeActionId and
       .artifactContentId == ("document:workflow:" + .workflowId) and
       (.inputDigest | test("^[0-9a-f]{64}$")) and .sourceCount == 1 and
       .sourceMediaType == "text/plain" and
@@ -1458,50 +1736,13 @@ observe_document_build() {
       .agentRuntime.documentBuildSource.mediaType == .sourceMediaType and
       .agentRuntime.documentBuildSource.byteLength == .sourceByteLength and
       .agentRuntime.documentBuildSource.sha256 == .sourceSha256 and
-      .agentRuntime.documentBuildMain != null and .agentRuntime.documentBuildTimer != null and
-      (.agentRuntime.documentContent.customMetadata.osfo | fromjson) as $content and
-      (.agentRuntime.documentAttempt.customMetadata.osfo | fromjson) as $attempt and
-      (.agentRuntime.documentOwner.customMetadata.osfo | fromjson) as $owner and
-      $content.userId == .userId and $content.owner._tag == "Workflow" and
-      $content.owner.workflowId == .workflowId and $content.intentDigest == $attempt.intentDigest and
-      $content.format == .format and $content.retention == "accounted" and
-      $content.artifact.content.contentId == .artifactContentId and
-      ($content.artifact.content.byteLength | tostring) == (.agentRuntime.documentContent.size | tostring) and
-      .agentRuntime.documentContent.checksums.sha256 == $content.artifact.content.sha256 and
-      $content.artifact.artifactRole._tag == "GeneratedDocumentV1" and
-      $content.artifact.artifactRole.format == .format and
-      $content.artifact.artifactRole.pageCount >= 1 and
-      $content.artifact.artifactRole.pageCount <= 20 and
-      $attempt.userId == .userId and $attempt.status == "completed" and
-      $attempt.renderedPageCount == $content.artifact.artifactRole.pageCount and
-      $attempt.cost.providerOperationId == .costEvidence.providerOperationId and
-      $attempt.cost.usdMicros == .costEvidence.usdMicros and
-      $content.cost.providerOperationId == .costEvidence.providerOperationId and
-      $content.cost.usdMicros == .costEvidence.usdMicros and
-      $owner.userId == .userId and $owner.contentId == .artifactContentId and
-      .agentRuntime.documentSourceObject.customMetadata["osfo-sha256"] == .sourceSha256 and
-      .agentRuntime.documentSourceObject.checksums.sha256 == (.sourceSha256 | sub("^sha256:"; "")) and
-      (.agentRuntime.documentSourceObject.size | tostring) == .sourceByteLength' \
+      .agentRuntime.documentBuildMain != null and .agentRuntime.documentBuildTimer != null' \
     "$feature_dir/state.json" >/dev/null
-  jq --exit-status \
-    --arg fileId "$file_id" --arg workflowId "$(jq --raw-output '.workflowId' <<<"$state_json")" \
-    --arg artifactId "$artifact_id" \
-    '.costEvidence._tag == "Incurred" and
-      (.costEvidence.providerOperationId | length) > 0 and
-      .costEvidence.usdMicros != "0" and
-      .providerCostQuantity == .costEvidence.usdMicros and
-      .providerCostBasis == .costEvidence.basis and
-      ([.model[] | select(.kind == "tool-selection" and
-        .selectedTool == "startDocumentBuild" and .subject == $fileId)] | length) == 1 and
-      ([.model[] | select(.kind == "tool-selection" and
-        .selectedTool == "inspectDocumentBuild" and .subject == $workflowId)] | length) == 1 and
-      (any(.telegram[];
-        (.body | fromjson?) as $body |
-        (($body.text? // $body.rich_message.markdown? // "") | contains($workflowId)))) and
-      (any(.telegram[];
-        (.body | fromjson?) as $body |
-        (($body.text? // $body.rich_message.markdown? // "") | contains($artifactId))))' \
-    "$feature_dir/provider.json" >/dev/null
+  "$script_dir/assert-document-build-artifact-state" "$feature_dir/state.json"
+  "$script_dir/assert-document-build-provider-state" \
+    "$feature_dir/provider.json" "$file_id" \
+    "$(jq --raw-output '.workflowId' <<<"$state_json")" "$artifact_id" \
+    "$action_id" "$provider_operation_id"
   printf '%s\n' "$file_id" >"$state_dir/document-build-file-id"
   printf '%s\n' "$artifact_id" >"$state_dir/document-build-artifact-id"
   printf '%s\n' "$main_instance_id" >"$state_dir/document-build-main-instance-id"
@@ -1966,14 +2207,9 @@ observe_account_deletion() {
       (.researchProofExpected == false or
         (.researchManifestExists == false and .researchSourceExists == false and
           .researchSynthesisExists == false and
-          .researchArtifactExists == false)) and
-      (.documentProofExpected == false or
-        (.documentSourceExists == false and .documentArtifactExists == false and
-          .documentAttemptExists == false and .documentOwnerExists == false and
-          .agentRuntime.documentBuildSource._tag == "Unavailable" and
-          .agentRuntime.documentBuildMain.status == "terminated" and
-          .agentRuntime.documentBuildTimer.status == "terminated"))' \
+          .researchArtifactExists == false))' \
     "$feature_dir/state.json" >/dev/null
+  "$script_dir/assert-document-build-deletion-state" "$feature_dir/state.json"
   jq --exit-status \
     '.inspectable == true and .registered == true and
       .reminderVerification.reminderCount >= 0 and
@@ -2027,6 +2263,13 @@ evidence_finish() {
       [[ ! -s "$feature_dir/reminder-runtime.json" ]] || \
       [[ ! -s "$feature_dir/reminder-think-runtime.json" ]]; }; then
     printf 'WhatsApp Wake-up evidence needs the approved nominal due, occurrence SLO, and Think claim\n' >&2
+    exit 1
+  fi
+  if [[ "$feature" == document-build-free-denial ]] && \
+    { [[ ! -s "$feature_dir/agent-request.txt" ]] || \
+      [[ ! -s "$feature_dir/agent-reply.txt" ]] || \
+      ! grep -F -q 'launch-v1 Free safe denial' "$feature_dir/browser-actions.txt"; }; then
+    printf 'Free Document Build denial evidence needs the exact Agent request, safe reply, and browser record\n' >&2
     exit 1
   fi
   if ! grep -q 'phase=action ' "$feature_dir/browser-actions.txt" || \
@@ -2144,6 +2387,7 @@ case "$command_name" in
       registration) observe_registration "$2" ;;
       channel-linking) observe_channel_linking "$2" ;;
       research-report) observe_research_report "$2" ;;
+      document-build-free-denial) observe_document_build_free_denial "$2" ;;
       document-build) observe_document_build "$2" ;;
       scheduled-email) observe_scheduled_email "$2" ;;
       billing) observe_billing "$2" ;;
@@ -2162,6 +2406,14 @@ case "$command_name" in
       exit 2
     fi
     telegram_reply "$2" "$3"
+    ;;
+  document-build-free-denial)
+    require_run_id "${2:-}"
+    if [[ -z "${3:-}" ]]; then
+      printf 'A browser-owned Document Build File ID is required\n' >&2
+      exit 2
+    fi
+    document_build_free_denial "$2" "$3"
     ;;
   scheduled-email-request)
     require_run_id "${2:-}"

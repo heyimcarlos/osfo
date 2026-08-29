@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$#" -ne 1 ]]; then
+  printf 'Usage: assert-document-build-tab-sequence <feature-file>\n' >&2
+  exit 2
+fi
+
+feature_file="$1"
+remaining="$(<"$feature_file")"
+for required in \
+  'Choose text file' \
+  'Keep the original authenticated Agent dashboard tab mounted' \
+  'Open a second Chrome tab in the same Chrome session' \
+  'complete the browser-owned Adventurer upgrade' \
+  'After the Adventurer paid state is visible' \
+  'close or leave the billing tab' \
+  'Return to the original dashboard tab' \
+  'require the same `Ready. File ID:` value to remain visible' \
+  'Start `document-build` evidence there' \
+  'capture that ready File ID as `action.png`'; do
+  if [[ "$remaining" != *"$required"* ]]; then
+    printf 'Document Build browser drive is missing or reorders: %s\n' "$required" >&2
+    exit 1
+  fi
+  remaining="${remaining#*"$required"}"
+done

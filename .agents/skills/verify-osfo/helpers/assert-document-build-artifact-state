@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$#" -ne 1 ]]; then
+  printf 'Usage: assert-document-build-artifact-state <state-file>\n' >&2
+  exit 2
+fi
+
+state_file="$1"
+
+jq --exit-status '
+  (.agentRuntime.documentContent.customMetadata.osfo | fromjson) as $content |
+  (.agentRuntime.documentAttempt.customMetadata.osfo | fromjson) as $attempt |
+  (.agentRuntime.documentOwner.customMetadata.osfo | fromjson) as $owner |
+  $content.userId == .userId and $content.owner._tag == "Workflow" and
+  $content.owner.workflowId == .workflowId and $content.intentDigest == $attempt.intentDigest and
+  $content.format == .format and $content.retention == "accounted" and
+  $content.artifact.content.contentId == .artifactContentId and
+  ($content.artifact.content.byteLength | tostring) == (.agentRuntime.documentContent.size | tostring) and
+  (.artifactObjectSha256 | test("^[0-9a-f]{64}$")) and
+  .artifactObjectSha256 == $content.artifact.content.sha256 and
+  $content.artifact.artifactRole._tag == "GeneratedDocumentV1" and
+  $content.artifact.artifactRole.format == .format and
+  $content.artifact.artifactRole.pageCount >= 1 and
+  $content.artifact.artifactRole.pageCount <= 20 and
+  $attempt.userId == .userId and $attempt.status == "completed" and
+  $attempt.renderedPageCount == $content.artifact.artifactRole.pageCount and
+  $attempt.cost.providerOperationId == .costEvidence.providerOperationId and
+  $attempt.cost.usdMicros == .costEvidence.usdMicros and
+  $content.cost.providerOperationId == .costEvidence.providerOperationId and
+  $content.cost.usdMicros == .costEvidence.usdMicros and
+  $owner.userId == .userId and $owner.contentId == .artifactContentId and
+  .agentRuntime.documentSourceObject.customMetadata["osfo-sha256"] == .sourceSha256 and
+  .agentRuntime.documentSourceObject.checksums.sha256 == (.sourceSha256 | sub("^sha256:"; "")) and
+  (.agentRuntime.documentSourceObject.size | tostring) == .sourceByteLength
+' "$state_file" >/dev/null

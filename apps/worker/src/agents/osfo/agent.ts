@@ -312,6 +312,7 @@ import {
   makeActionPresentationPersistence,
   presentOsfoAction,
 } from "./action-presentation";
+import { runDocumentBuildStartAction } from "./document-build-action";
 import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-authorization";
 import {
   makeAccountDeletionFencedSessionExecution,
@@ -1486,7 +1487,7 @@ export class OsfoAgent extends Think<Env> {
           this.#startDocumentBuild(input, ActionId.make(context.toolCallId)),
         idempotencyKey: ({ ctx }) => `document-build-start:${ctx.toolCallId}`,
         inputSchema: effectToolSchema(DocumentBuildStartInput),
-        kind: "durable-pause",
+        kind: "server",
         permissions: ["workflows:start"],
       }),
       [scheduledEmailStartActionName]: action({
@@ -4594,7 +4595,9 @@ export class OsfoAgent extends Think<Env> {
     );
     return Effect.runPromise(
       resolution.pipe(
-        Effect.flatMap(Schema.decodeUnknownEffect(DocumentBuild.FileResolutionResult)),
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(Schema.toType(DocumentBuild.FileResolutionResult)),
+        ),
         Effect.orElseSucceed(
           () => ({ _tag: "Unavailable", reason: "resolverUnavailable" }) as const,
         ),
@@ -5331,7 +5334,7 @@ export class OsfoAgent extends Think<Env> {
         build: projectDocumentBuildStatus(result.build),
       })),
     );
-    return Effect.runPromise(
+    return runDocumentBuildStartAction(
       this.#accountDeletionFence.runTracked(
         () => this.#runDocumentBuildControl(effect),
         () => documentBuildUnavailable("start.deletionFence"),

@@ -7,7 +7,7 @@ This map covers User-visible behavior that the local Worker and web UI can drive
 - Start a unique run and require `control-osfo doctor <run-id>` to pass at the current commit.
 - Drive the public UI in Chrome with accessible roles and names.
 - Use the run-owned fictional phone and local OTP from `control-osfo identity <run-id>`.
-- Keep the same Chrome tab when a later feature depends on the registered session.
+- Keep one Chrome session per run. Complete registration and channel linking in the same authenticated dashboard tab. Preserve tabs the selected feature explicitly marks mounted; close or leave tabs it marks temporary.
 - Capture the visible action and result, then prove committed state with the read-only observer.
 - Treat Vitest and direct Worker requests as qualification, never browser verification.
 
@@ -16,7 +16,7 @@ This map covers User-visible behavior that the local Worker and web UI can drive
 - [Register a User](registration.md) is the foundation. It proves SMS verification, session creation, registration, Agent creation, and Free Plan provisioning.
 - [Link a Telegram channel](channel-linking.md) proves provider delivery, private invite presentation, browser acceptance, and the durable Channel Link.
 - [Complete a Research Report](research-report.md) proves the Agent start and inspect controls, dedicated Workflow execution, deterministic local public-source and synthesis boundaries, immutable R2 evidence and artifact publication, launch accounting, and terminal follow-up.
-- [Build a document](document-build.md) proves authenticated text-file ingress, Agent start and inspect controls, dedicated main and timer Workflows, immutable source snapshots, validated publication, launch accounting, terminal follow-up, authenticated download, and deletion cleanup.
+- [Build a document](document-build.md) first proves a launch-v1 Free denial with zero accepted or costly effects, then upgrades the same User and proves Adventurer Agent start and inspect controls, dedicated main and timer Workflows, immutable source snapshots, validated publication, launch accounting, terminal follow-up, authenticated download, and deletion cleanup.
 - [Send a scheduled email](scheduled-email.md) proves Chrome-owned Gmail connection, one exact Approval, durable scheduled execution, once-only local provider application, launch accounting, terminal follow-up, and Workflow-host completion.
 - [Verify local billing](billing.md) proves the visible Free Plan and, when required, browser-owned Checkout initiation plus deterministic loopback completion through the production billing reconciliation service.
 - [Consume a WhatsApp Reminder Wake-up](whatsapp-wakeup.md) proves exact Reminder Approvals, fixed local Utility-template delivery, one authorized reply with private Agent-owned exposure, revocation, and deletion cleanup without treating the template as result delivery.

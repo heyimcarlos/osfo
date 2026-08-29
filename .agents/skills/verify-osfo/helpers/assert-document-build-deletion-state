@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$#" -ne 1 ]]; then
+  printf 'Usage: assert-document-build-deletion-state <state-file>\n' >&2
+  exit 2
+fi
+
+state_file="$1"
+
+jq --exit-status '
+  .documentProofExpected == false or
+  (.documentSourceExists == false and .documentArtifactExists == false and
+    .documentAttemptExists == false and .documentOwnerExists == false and
+    .agentRuntime.documentBuildSource._tag == "Unavailable" and
+    (.agentRuntime.documentBuildMain.status == "complete" or
+      .agentRuntime.documentBuildMain.status == "terminated") and
+    (.agentRuntime.documentBuildTimer.status == "complete" or
+      .agentRuntime.documentBuildTimer.status == "terminated"))
+' "$state_file" >/dev/null

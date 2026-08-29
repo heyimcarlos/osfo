@@ -341,9 +341,11 @@ export const makeFileResolver = (
             .resolveDocumentBuildFiles({ agentId, fileIds, userId }),
         catch: (cause) => documentBuildUnavailable("files.resolve", cause),
       });
-      const result = yield* Schema.decodeUnknownEffect(DocumentBuild.FileResolutionResult)(
-        untrusted,
-      ).pipe(Effect.mapError((cause) => documentBuildUnavailable("files.resolve.decode", cause)));
+      const result = yield* Schema.decodeUnknownEffect(
+        Schema.toType(DocumentBuild.FileResolutionResult),
+      )(untrusted).pipe(
+        Effect.mapError((cause) => documentBuildUnavailable("files.resolve.decode", cause)),
+      );
       if (result._tag === "Resolved") {
         const exactIdentity =
           result.files.length === fileIds.length &&
