@@ -5,6 +5,7 @@ import type { QualificationOwnerWorkflowPayload } from "./workflow-contracts";
 
 export { QualificationOwnerWorkflow } from "./workflows/qualification-owner";
 export { QualificationOwnerPartitionWorkflow } from "./workflows/qualification-owner-partition";
+export { QualificationEvaluationReducerWorkflow } from "./workflows/qualification-evaluation-reducer";
 
 const OwnerInvocation = Schema.Struct({
   executionId: Schema.String,

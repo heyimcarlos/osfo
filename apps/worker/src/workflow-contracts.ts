@@ -33,3 +33,18 @@ export interface QualificationOwnerPartitionWorkflowPayload extends Qualificatio
   readonly partitionIndex: number;
   readonly sourceVersion: string;
 }
+
+/** One resumable bounded exact-order merge for a qualification sample dimension. */
+export interface QualificationEvaluationReducerWorkflowPayload {
+  readonly dimension: string;
+  readonly executionId: string;
+  readonly index: number;
+  readonly inputs: ReadonlyArray<{
+    readonly artifactId: string;
+    readonly checksum: string;
+  }>;
+  readonly level: number;
+  readonly outputArtifactPrefix: string;
+  readonly outputRunId: string;
+  readonly planChecksum: string;
+}
