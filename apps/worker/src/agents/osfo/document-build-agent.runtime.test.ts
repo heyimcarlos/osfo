@@ -5,13 +5,14 @@ import { expect, it } from "@effect/vitest";
 import { runInDurableObject } from "cloudflare:test";
 import { simulateReadableStream, tool, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { AgentId, ChannelLinkId, ThinkSubmissionId, UserId } from "../../domain";
 import { ChannelAddress, ChannelAuthorId, ChannelId } from "../../domain/channel-link";
 import { ManagedTurnMetadata } from "../../domain/managed-conversation";
 import { OsfoAgent } from "./agent";
 import { documentBuildStartActionName } from "./action-presentation";
+import { runDocumentBuildStartAction } from "./document-build-action";
 import { effectToolSchema } from "./effect-tool-schema";
 
 const deniedActionIds: Array<string> = [];
@@ -43,9 +44,15 @@ class DocumentBuildActionBoundaryAgent extends OsfoAgent {
       ...actions,
       [documentBuildStartActionName]: action({
         ...startDocumentBuild.config,
-        execute: async (_input, context) => {
+        execute: (_input, context) => {
           deniedActionIds.push(context.toolCallId);
-          throw new Error("Document Build is not available on your current plan.");
+          return runDocumentBuildStartAction(
+            Effect.fail({
+              _tag: "Denied" as const,
+              reason: "missingEntitlement" as const,
+              resetAt: null,
+            }),
+          );
         },
       }),
     };
@@ -135,6 +142,20 @@ it("executes a launch-v1 Free Document Build Action without pausing for Approval
     const messages = await agent.getMessages();
     const assistant = messages[messages.length - 1];
     expect(assistant?.role).toBe("assistant");
+    expect(assistant?.parts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          output: {
+            _tag: "Denied",
+            reason: "missingEntitlement",
+            resetAt: null,
+          },
+          state: "output-available",
+          toolCallId: "document-build-runtime-start",
+          toolName: documentBuildStartActionName,
+        }),
+      ]),
+    );
     expect(assistant?.parts[assistant.parts.length - 1]).toEqual({
       state: "done",
       text: "Document Build is not available on your current plan.",

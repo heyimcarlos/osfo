@@ -312,6 +312,7 @@ import {
   makeActionPresentationPersistence,
   presentOsfoAction,
 } from "./action-presentation";
+import { runDocumentBuildStartAction } from "./document-build-action";
 import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-authorization";
 import {
   makeAccountDeletionFencedSessionExecution,
@@ -5331,7 +5332,7 @@ export class OsfoAgent extends Think<Env> {
         build: projectDocumentBuildStatus(result.build),
       })),
     );
-    return Effect.runPromise(
+    return runDocumentBuildStartAction(
       this.#accountDeletionFence.runTracked(
         () => this.#runDocumentBuildControl(effect),
         () => documentBuildUnavailable("start.deletionFence"),
