@@ -138,7 +138,14 @@ export const nextTerminalReconciliationLease = (
   const recoveryDeadline =
     existingLeaseExpiresAt.getTime() + providerReconciliationRecoveryMilliseconds;
   return claimedAtMilliseconds < recoveryDeadline
-    ? { claimedAt, leaseExpiresAt: new Date(recoveryDeadline) }
+    ? {
+        claimedAt,
+        leaseExpiresAt: DateTime.toDateUtc(
+          DateTime.add(DateTime.makeUnsafe(existingLeaseExpiresAt), {
+            milliseconds: providerReconciliationRecoveryMilliseconds,
+          }),
+        ),
+      }
     : null;
 };
 
