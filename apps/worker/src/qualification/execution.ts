@@ -315,11 +315,16 @@ export const executeQualification = Effect.fn("ProductionQualification.execute")
   readonly plan: QualificationExecutionPlan;
 }): Effect.fn.Return<ProductionQualificationReport, E | QualificationExecutionInvalid> {
   const { planChecksum, ...content } = plan;
+  const expectedPlanChecksum = createQualificationExecutionPlan(
+    manifest,
+    plan.startsAtEpochMs,
+  ).planChecksum;
   if (
     plan.manifestChecksum !== manifest.manifestChecksum ||
     plan.sourceVersion !== manifest.sourceVersion ||
     plan.topologyVersion !== manifest.topologyVersion ||
-    planChecksum !== qualificationChecksum(content)
+    planChecksum !== qualificationChecksum(content) ||
+    planChecksum !== expectedPlanChecksum
   ) {
     return yield* new QualificationExecutionInvalid({
       message: "Execution plan is not bound to the manifest",

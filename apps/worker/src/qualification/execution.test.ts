@@ -11,6 +11,7 @@ import {
   executeQualification,
   type QualificationExecutionDriver,
 } from "./execution";
+import { qualificationChecksum } from "./qualification-checksum";
 
 it.effect("builds and executes the frozen open-arrival and fault plan before qualification", () =>
   Effect.gen(function* () {
@@ -134,6 +135,25 @@ it.effect("rejects mismatched plan and collected source or topology versions", (
       expect(evidenceFailure._tag).toBe("QualificationExecutionInvalid");
       expect(yield* Ref.get(tornDown)).toBe(true);
     }
+  }),
+);
+
+it.effect("rejects a self-consistent plan that omits the frozen workload", () =>
+  Effect.gen(function* () {
+    const manifest = compactManifest();
+    const plan = createQualificationExecutionPlan(manifest, Date.parse("2026-08-17T12:00:00.000Z"));
+    const { planChecksum: _planChecksum, ...content } = { ...plan, runs: [] };
+    const incompletePlan = { ...content, planChecksum: qualificationChecksum(content) };
+    const driver: QualificationExecutionDriver<never> = {
+      collectEvidence: () => Effect.succeed(completeProductionEvidence()),
+      executeRun: () => Effect.void,
+      prepare: () => Effect.die(new Error("invalid plan must not prepare")),
+      teardown: () => Effect.void,
+    };
+
+    expect(
+      (yield* Effect.flip(executeQualification({ driver, manifest, plan: incompletePlan })))._tag,
+    ).toBe("QualificationExecutionInvalid");
   }),
 );
 
