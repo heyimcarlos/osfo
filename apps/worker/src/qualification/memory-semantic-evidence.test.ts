@@ -66,6 +66,27 @@ describe("Memory semantic qualification", () => {
     });
   });
 
+  it("rejects evidence that self-declares the wrong required outcome", () => {
+    const evidence = completeMemorySemanticEvidence();
+    const observations = evidence.observations.map((observation) =>
+      observation.assertion === "correctionCurrent"
+        ? { ...observation, expected: "absent" as const, observed: "absent" as const }
+        : observation,
+    );
+
+    expect(
+      assessMemorySemanticEvidence(withMemorySemanticObservations(evidence, observations)),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({
+          code: "memorySemanticExpectedOutcomeConflict",
+          verdict: "FAIL",
+        }),
+      ]),
+      verdict: "FAIL",
+    });
+  });
+
   it("requires the pre-ingest admin tag path and bounded exhausted recall", () => {
     const evidence = completeMemorySemanticEvidence();
     const {
@@ -103,6 +124,60 @@ describe("Memory semantic qualification", () => {
     ).toMatchObject({
       findings: expect.arrayContaining([
         expect.objectContaining({ code: "memoryBoundedRecallFailed", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
+    });
+  });
+
+  it("requires post-delete provider authority for the exact container and documents", () => {
+    const evidence = completeMemorySemanticEvidence();
+    const { authorityReceipt: _receipt, ...selfReportedTeardown } = evidence.teardown;
+    const withoutReceipt = {
+      ...evidence,
+      teardown: selfReportedTeardown,
+    };
+    const { artifactChecksum: _checksum, ...withoutReceiptContent } = withoutReceipt;
+    expect(
+      assessMemorySemanticEvidence({
+        ...withoutReceipt,
+        artifactChecksum: qualificationChecksum(withoutReceiptContent),
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({
+          code: "memorySemanticTeardownAuthorityMissing",
+          verdict: "MISSING",
+        }),
+      ]),
+      verdict: "MISSING",
+    });
+
+    const receipt = evidence.teardown.authorityReceipt;
+    expect(receipt).toBeDefined();
+    if (receipt === undefined) return;
+    const { artifactChecksum: _receiptChecksum, ...receiptContent } = {
+      ...receipt,
+      remainingDocumentIds: ["document-1"],
+    };
+    const teardown = {
+      ...evidence.teardown,
+      authorityReceipt: {
+        ...receiptContent,
+        artifactChecksum: qualificationChecksum(receiptContent),
+      },
+    };
+    const { artifactChecksum: _evidenceChecksum, ...content } = { ...evidence, teardown };
+    expect(
+      assessMemorySemanticEvidence({
+        ...content,
+        artifactChecksum: qualificationChecksum(content),
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({
+          code: "memorySemanticTeardownAuthorityConflict",
+          verdict: "FAIL",
+        }),
       ]),
       verdict: "FAIL",
     });

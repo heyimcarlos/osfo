@@ -10,12 +10,12 @@ import {
 } from "../../test/support/qualification-fixtures";
 
 describe("Qualification stage evidence", () => {
-  it("requires every stage and cold cause in every target, stress, and recovery repetition", () => {
+  it("requires every stage and cold cause in target, stress, all-cold, and recovery runs", () => {
     const manifest = compactManifest();
     const measurements = completeStageMeasurements(completeRunEvidence(manifest));
     expect(assessStageEvidence(manifest, measurements)).toMatchObject({
       findings: [],
-      summaries: { length: 135 },
+      summaries: { length: 139 },
       verdict: "PASS",
     });
     expect(
@@ -74,6 +74,40 @@ describe("Qualification stage evidence", () => {
     ).toMatchObject({
       findings: expect.arrayContaining([
         expect.objectContaining({ code: "stageEvidenceBoundaryInvalid", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
+    });
+  });
+
+  it("measures the all-cold lane directly for every activation cause", () => {
+    const manifest = compactManifest();
+    const measurements = completeStageMeasurements(completeRunEvidence(manifest));
+    const allColdMeasurement = measurements.find(
+      ({ lane, stage }) => lane === "allCold" && stage === "coldDurableAcceptance",
+    );
+    expect(allColdMeasurement).toBeDefined();
+    if (allColdMeasurement === undefined) return;
+    const samples = allColdMeasurement.samples.map((sample) => ({
+      ...sample,
+      endedAtUtc: DateTime.formatIso(DateTime.makeUnsafe(Date.parse(sample.startedAtUtc) + 3_001)),
+      latencyMs: 3_001,
+    }));
+
+    expect(
+      assessStageEvidence(
+        manifest,
+        measurements.map((measurement) =>
+          measurement === allColdMeasurement
+            ? Object.assign({}, measurement, {
+                artifactChecksum: qualificationChecksum(samples),
+                samples,
+              })
+            : measurement,
+        ),
+      ),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "stageObjectiveMissed", verdict: "FAIL" }),
       ]),
       verdict: "FAIL",
     });

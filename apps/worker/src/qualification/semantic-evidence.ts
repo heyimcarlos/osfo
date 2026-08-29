@@ -179,6 +179,7 @@ interface ProductAuthorityEvidence {
   readonly authority: ProductAuthorityName;
   readonly component: SemanticComponent;
   readonly correlations: Readonly<Partial<Record<SemanticCorrelation, string>>>;
+  readonly effectReceipts: ProductExportRecordBase["effectReceipts"];
   readonly occurredAt: string;
   readonly productFactId: string;
   readonly rootId: string;
@@ -241,6 +242,10 @@ const componentForAuthority = (authority: ProductAuthorityName): SemanticCompone
 };
 
 interface ProductExportRecordBase {
+  readonly effectReceipts: ReadonlyArray<{
+    readonly effectId: string;
+    readonly kind: "providerEffects" | "thinkSubmissions" | "workflowStarts";
+  }>;
   readonly occurredAt: string;
   readonly productFactId: string;
   readonly rootId: string;
@@ -328,6 +333,12 @@ export interface ProductAuthorityExport {
 }
 
 const ProductExportRecordBaseBoundary = {
+  effectReceipts: Schema.Array(
+    Schema.Struct({
+      effectId: QualificationId,
+      kind: Schema.Literals(["providerEffects", "thinkSubmissions", "workflowStarts"]),
+    }),
+  ),
   occurredAt: QualificationUtcInstant,
   productFactId: QualificationId,
   rootId: QualificationId,
@@ -627,6 +638,7 @@ const evidenceFromAuthorityExport = (
     authority: artifact.authority,
     component: componentForAuthority(artifact.authority),
     correlations,
+    effectReceipts: record.effectReceipts,
     occurredAt: record.occurredAt,
     productFactId: record.productFactId,
     rootId: record.rootId,
@@ -895,6 +907,7 @@ export const assessSemanticEvidence = (
               thinkRequestId: record.thinkRequestId,
               userMessageId: record.rootId,
             },
+            effectReceipts: [],
             occurredAt: record.occurredAt,
             productFactId: record.productFactId,
             rootId: record.rootId,
@@ -917,6 +930,7 @@ export const assessSemanticEvidence = (
             acceptanceReceiptId: record.acceptanceReceiptId,
             allowanceConsumptionId: record.allowanceConsumptionId,
           },
+          effectReceipts: [],
           occurredAt: record.occurredAt,
           productFactId: record.productFactId,
           rootId,
@@ -933,6 +947,7 @@ export const assessSemanticEvidence = (
       activation: null,
       component: "R2",
       correlations: { r2ObjectId: record.objectId },
+      effectReceipts: [],
       occurredAt: record.uploadedAt,
       productFactId: record.objectId,
       rootId: record.rootId,
@@ -1423,6 +1438,12 @@ export const assessSemanticEvidence = (
     }
     for (const [kind, maximum] of Object.entries(requirements.amplificationLimits)) {
       const records = trace.amplification.filter((entry) => entry.kind === kind);
+      const authorityReceipts = rootProductEvidence.flatMap((record) =>
+        record.effectReceipts.filter((receipt) => receipt.kind === kind),
+      );
+      const authorityCount = new Set(authorityReceipts.map(({ effectId }) => effectId)).size;
+      const authorityInvalid =
+        authorityReceipts.length === 0 || authorityCount !== authorityReceipts.length;
       if (records.length === 0) {
         findings.push(
           finding(
@@ -1439,6 +1460,17 @@ export const assessSemanticEvidence = (
             `${rootId} has duplicate ${kind} amplification counts`,
             rootId,
             "FAIL",
+          ),
+        );
+      } else if (authorityInvalid) {
+        findings.push(
+          finding(
+            authorityReceipts.length === 0
+              ? "amplificationAuthorityMissing"
+              : "amplificationAuthorityDuplicate",
+            `${rootId} has no unique retained ${kind} effect receipts`,
+            rootId,
+            authorityReceipts.length === 0 ? "MISSING" : "FAIL",
           ),
         );
       } else {
@@ -1458,11 +1490,20 @@ export const assessSemanticEvidence = (
               "FAIL",
             ),
           );
-        } else if (count > maximum) {
+        } else if (count !== authorityCount) {
+          findings.push(
+            finding(
+              "amplificationAuthorityConflict",
+              `${rootId} declared ${count} ${kind}, authority receipts contain ${authorityCount}`,
+              rootId,
+              "FAIL",
+            ),
+          );
+        } else if (authorityCount > maximum) {
           findings.push(
             finding(
               "amplificationExceeded",
-              `${rootId} produced ${count} ${kind}, maximum ${maximum}`,
+              `${rootId} produced ${authorityCount} ${kind}, maximum ${maximum}`,
               rootId,
               "FAIL",
             ),

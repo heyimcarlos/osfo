@@ -265,6 +265,16 @@ const usageAuthorityKey = (
     line.usdMicros,
   ].join("\u001f");
 
+const providerBillKey = (
+  line: Pick<
+    ProviderBillLine,
+    "category" | "provider" | "quantity" | "unit" | "usageId" | "usdMicros"
+  >,
+): string =>
+  [line.category, line.provider, line.quantity, line.unit, line.usageId, line.usdMicros].join(
+    "\u001f",
+  );
+
 /** Reconcile raw usage against one price book and derive every economics measure. */
 export const assessCostEvidence = (evidence: CostEvidence): CostAssessment => {
   const findings: Array<QualificationFinding> = [];
@@ -519,6 +529,12 @@ export const assessCostEvidence = (evidence: CostEvidence): CostAssessment => {
     (total, record) => total + usageTotal(record.usage),
     0n,
   );
+  const rootAuthorityBillCounts = new Map<string, number>();
+  for (const record of evidence.usageAuthorityRecords) {
+    if (record.scope !== "root") continue;
+    const key = providerBillKey(record);
+    rootAuthorityBillCounts.set(key, (rootAuthorityBillCounts.get(key) ?? 0) + 1);
+  }
   if (evidence.billedUsageUsdMicros === undefined) {
     findings.push(
       costFinding(
@@ -546,38 +562,51 @@ export const assessCostEvidence = (evidence: CostEvidence): CostAssessment => {
         "MISSING",
       ),
     );
-  } else if (
-    evidence.billedUsageArtifactChecksum !==
-      qualificationChecksum({
-        artifactId: evidence.billedUsageArtifactId,
-        invoiceId: evidence.billedUsageInvoiceId,
-        lines: evidence.billedUsageLines,
-        monthEndedAtUtc: evidence.billingMonthEndedAtUtc,
-        monthStartedAtUtc: evidence.billingMonthStartedAtUtc,
-        priceBookId: evidence.priceBookId,
-        provider: evidence.billedUsageProvider,
-      }) ||
-    evidence.billedUsageLines.reduce((total, line) => total + line.usdMicros, 0n) !==
-      evidence.billedUsageUsdMicros ||
-    evidence.billedUsageLines.some(
-      (line) =>
-        line.quantity < 0n ||
-        line.usdMicros < 0n ||
-        line.provider.length === 0 ||
-        line.usageId.length === 0 ||
-        line.unit !== requiredPriceUnits[line.category],
-    ) ||
-    evidence.billedUsageUsdMicros !== rootBilledUsage ||
-    Date.parse(evidence.billingMonthEndedAtUtc) <= Date.parse(evidence.billingMonthStartedAtUtc)
-  ) {
-    findings.push(
-      costFinding(
-        "costReconciliationMismatch",
-        `Derived ${rootBilledUsage} USD micros does not match billed ${evidence.billedUsageUsdMicros}`,
-        "costReconciliation",
-        "FAIL",
-      ),
-    );
+  } else {
+    const providerBillCounts = new Map<string, number>();
+    for (const line of evidence.billedUsageLines) {
+      const key = providerBillKey(line);
+      providerBillCounts.set(key, (providerBillCounts.get(key) ?? 0) + 1);
+    }
+    const billLinesMatchAuthority =
+      evidence.billedUsageLines.length ===
+        evidence.usageAuthorityRecords.filter(({ scope }) => scope === "root").length &&
+      [...rootAuthorityBillCounts].every(([key, count]) => providerBillCounts.get(key) === count) &&
+      [...providerBillCounts].every(([key, count]) => rootAuthorityBillCounts.get(key) === count);
+    if (
+      evidence.billedUsageArtifactChecksum !==
+        qualificationChecksum({
+          artifactId: evidence.billedUsageArtifactId,
+          invoiceId: evidence.billedUsageInvoiceId,
+          lines: evidence.billedUsageLines,
+          monthEndedAtUtc: evidence.billingMonthEndedAtUtc,
+          monthStartedAtUtc: evidence.billingMonthStartedAtUtc,
+          priceBookId: evidence.priceBookId,
+          provider: evidence.billedUsageProvider,
+        }) ||
+      evidence.billedUsageLines.reduce((total, line) => total + line.usdMicros, 0n) !==
+        evidence.billedUsageUsdMicros ||
+      evidence.billedUsageLines.some(
+        (line) =>
+          line.quantity < 0n ||
+          line.usdMicros < 0n ||
+          line.provider.length === 0 ||
+          line.usageId.length === 0 ||
+          line.unit !== requiredPriceUnits[line.category],
+      ) ||
+      !billLinesMatchAuthority ||
+      evidence.billedUsageUsdMicros !== rootBilledUsage ||
+      Date.parse(evidence.billingMonthEndedAtUtc) <= Date.parse(evidence.billingMonthStartedAtUtc)
+    ) {
+      findings.push(
+        costFinding(
+          "costReconciliationMismatch",
+          `Derived ${rootBilledUsage} USD micros does not match the exact retained provider bill lines`,
+          "costReconciliation",
+          "FAIL",
+        ),
+      );
+    }
   }
   if (
     evidence.priceBookId.length === 0 ||

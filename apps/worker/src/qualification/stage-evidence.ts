@@ -79,7 +79,7 @@ export interface StageMeasurement {
   readonly artifactChecksum: string;
   readonly coldCause?: ColdCause;
   readonly eligibleRootIds: ReadonlyArray<string>;
-  readonly lane: "dependencyOutageRecovery" | "stress" | "target";
+  readonly lane: "allCold" | "dependencyOutageRecovery" | "stress" | "target";
   readonly region: QualificationRegion;
   readonly repetition: number;
   readonly runArtifactChecksum: string;
@@ -93,7 +93,7 @@ export const StageMeasurementBoundary = Schema.Struct({
     Schema.Literals(["deployment", "faultRecovery", "firstUse", "idleEviction"]),
   ),
   eligibleRootIds: Schema.Array(QualificationId),
-  lane: Schema.Literals(["dependencyOutageRecovery", "stress", "target"]),
+  lane: Schema.Literals(["allCold", "dependencyOutageRecovery", "stress", "target"]),
   region: Schema.Literals(["americas", "asiaPacific", "europe"]),
   repetition: EvidenceCount,
   runArtifactChecksum: ArtifactChecksum,
@@ -202,6 +202,7 @@ const coldCauses: ReadonlyArray<ColdCause> = [
 const measuredLanes: ReadonlyArray<StageMeasurement["lane"]> = [
   "target",
   "stress",
+  "allCold",
   "dependencyOutageRecovery",
 ];
 const percentile = (sorted: ReadonlyArray<number>, ratio: number): number =>
@@ -233,7 +234,11 @@ export const assessStageEvidence = (
   for (const lane of measuredLanes) {
     for (const region of manifest.regions) {
       for (let repetition = 1; repetition <= repetitionsFor(manifest, lane); repetition += 1) {
-        for (const objective of stageObjectives) {
+        const objectives =
+          lane === "allCold"
+            ? stageObjectives.filter(({ stage }) => stage === "coldDurableAcceptance")
+            : stageObjectives;
+        for (const objective of objectives) {
           const causes = objective.stage === "coldDurableAcceptance" ? coldCauses : [undefined];
           for (const coldCause of causes) {
             const matches = parsedMeasurements.filter(
@@ -374,7 +379,9 @@ export const assessStageEvidence = (
   return { ...assessmentFromFindings(findings), summaries };
 };
 
-/** Return true when a lane is required to carry per-repetition stage evidence. */
 /** Identify workload lanes that must provide complete stage evidence. */
 export const isMeasuredStageLane = (lane: WorkloadLane["kind"]): lane is StageMeasurement["lane"] =>
-  lane === "target" || lane === "stress" || lane === "dependencyOutageRecovery";
+  lane === "target" ||
+  lane === "stress" ||
+  lane === "allCold" ||
+  lane === "dependencyOutageRecovery";

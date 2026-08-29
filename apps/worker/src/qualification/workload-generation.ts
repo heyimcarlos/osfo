@@ -48,18 +48,30 @@ const arrivalOffsetSeconds = (index: number, windowValue: WorkloadWindow): numbe
   );
 };
 
+/** Exact arrival cardinality for a clock-driven open-arrival window. */
+export const openArrivalCount = (windowValue: WorkloadWindow): number =>
+  Math.floor(
+    ((windowValue.startRatePerSecond + windowValue.endRatePerSecond) / 2) *
+      windowValue.durationSeconds,
+  );
+
+/** Derive one arrival by index without retaining the rest of the workload. */
+export const openWorkloadArrivalAt = (
+  input: OpenArrivalInput,
+  index: number,
+): OpenWorkloadArrival => ({
+  journey: journeyForBucket(bucket(index, input.seed), input.journeyMix),
+  offeredAtEpochMs:
+    input.startsAtEpochMs + Math.round(arrivalOffsetSeconds(index, input.window) * 1_000),
+  plan:
+    bucket(index, input.seed * 31) * 100 < input.planMixBasisPoints.free ? "free" : "adventurer",
+  rootId: `${input.identityPrefix}:${index}`,
+});
+
 /** Generate the Plan and journey mix on a clock-driven open-arrival schedule. */
 export const generateOpenArrivals = (
   input: OpenArrivalInput,
 ): ReadonlyArray<OpenWorkloadArrival> => {
-  const averageRate = (input.window.startRatePerSecond + input.window.endRatePerSecond) / 2;
-  const arrivalCount = Math.floor(averageRate * input.window.durationSeconds);
-  return Array.from({ length: arrivalCount }, (_, index) => ({
-    journey: journeyForBucket(bucket(index, input.seed), input.journeyMix),
-    offeredAtEpochMs:
-      input.startsAtEpochMs + Math.round(arrivalOffsetSeconds(index, input.window) * 1_000),
-    plan:
-      bucket(index, input.seed * 31) * 100 < input.planMixBasisPoints.free ? "free" : "adventurer",
-    rootId: `${input.identityPrefix}:${index}`,
-  }));
+  const arrivalCount = openArrivalCount(input.window);
+  return Array.from({ length: arrivalCount }, (_, index) => openWorkloadArrivalAt(input, index));
 };

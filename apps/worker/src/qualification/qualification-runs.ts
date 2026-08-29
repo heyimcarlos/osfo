@@ -48,13 +48,18 @@ const CharacterizationArrivalBoundary = Schema.Struct({
   rootId: QualificationId,
 });
 const FaultObservationBoundary = Schema.Struct({
+  authorityFactIds: Schema.Array(QualificationId),
   arrivalChecksum: ArtifactChecksum,
   identityChecksum: ArtifactChecksum,
   injectedAtUtc: QualificationUtcInstant,
   invariant: QualificationId,
   invariantHeld: Schema.Boolean,
   observationId: QualificationId,
+  observedState: Schema.Literals(["invariantHeld", "invariantViolated"]),
+  observedAtUtc: QualificationUtcInstant,
   runId: QualificationId,
+  target: QualificationId,
+  trigger: QualificationId,
 });
 
 /** One actual clock observation for an intended open arrival. */
@@ -155,14 +160,34 @@ export interface ChallengeRunEvidence {
   readonly dispositions: ReadonlyArray<ArrivalDisposition>;
   readonly eligibleRoots: number;
   readonly faultInjection: FaultInjection | null;
+  readonly faultControllerReceipt: {
+    readonly artifactChecksum: string;
+    readonly artifactId: string;
+    readonly controllerOperationId: string;
+    readonly controllerSource: string;
+    readonly durationSeconds: number;
+    readonly endedAtUtc: string;
+    readonly injectedAtUtc: string;
+    readonly kind: FaultInjection["kind"];
+    readonly manifestChecksum: string;
+    readonly planChecksum: string;
+    readonly runId: string;
+    readonly target: FaultInjection["target"];
+    readonly trigger: FaultInjection["trigger"];
+  } | null;
   readonly faultObservations: EvidenceArtifact<{
+    readonly authorityFactIds: ReadonlyArray<string>;
     readonly arrivalChecksum: string;
     readonly identityChecksum: string;
     readonly injectedAtUtc: string;
     readonly invariant: string;
     readonly invariantHeld: boolean;
     readonly observationId: string;
+    readonly observedAtUtc: string;
+    readonly observedState: "invariantHeld" | "invariantViolated";
     readonly runId: string;
+    readonly target: string;
+    readonly trigger: string;
   }>;
   readonly goodRootOutcomes: number;
   readonly identitySet: EvidenceArtifact;
@@ -203,7 +228,9 @@ export interface GrowthCorpusRunEvidence {
     readonly queryVersion: string;
     readonly registeredUsers: number;
     readonly retainedRegisteredMessages: number;
+    readonly sourceSnapshots: ReadonlyArray<CorpusAuthoritySnapshot>;
     readonly sourceSnapshotChecksum: string;
+    readonly sourceVersion: string;
   }>;
   readonly corpusChecksum: string;
   readonly characterizationResultArtifact: EvidenceArtifact<{
@@ -231,9 +258,24 @@ export interface CharacterizationRunEvidence {
 
 /** Exact retained corpus loaded before production qualification begins. */
 export interface AcceptanceCorpusEvidence {
+  readonly artifactId: string;
   readonly checksum: string;
+  readonly measuredAtUtc: string;
+  readonly queryVersion: string;
   readonly registeredUsers: number;
   readonly retainedRegisteredMessages: number;
+  readonly sourceSnapshots: ReadonlyArray<CorpusAuthoritySnapshot>;
+  readonly sourceVersion: string;
+}
+
+/** Retained authority query receipt for one acceptance/growth corpus dimension. */
+export interface CorpusAuthoritySnapshot {
+  readonly artifactChecksum: string;
+  readonly artifactId: string;
+  readonly count: number;
+  readonly identityDigest: string;
+  readonly kind: "registeredUsers" | "retainedRegisteredMessages";
+  readonly store: "AgentSQLite" | "PostgreSQL";
 }
 
 /** Minimum successful beta history needed before public qualification. */
@@ -260,6 +302,7 @@ export interface ContinuedBetaEvidence {
   readonly dailyEvidence: EvidenceArtifact<{
     readonly acceptedRegisteredMessages: number;
     readonly acceptedRootIds: ReadonlyArray<string>;
+    readonly authorityArtifactChecksum: string;
     readonly authorityArtifactId: string;
     readonly correctnessViolations: ReadonlyArray<CorrectnessViolation["code"]>;
     readonly dayStartedAtUtc: string;
@@ -650,19 +693,56 @@ export const assessQualificationRuns = (
       ),
     );
   }
+  const corpusSnapshots = new Map(evidence.corpus.sourceSnapshots.map((item) => [item.kind, item]));
+  const registeredUsersSnapshot = corpusSnapshots.get("registeredUsers");
+  const retainedMessagesSnapshot = corpusSnapshots.get("retainedRegisteredMessages");
   if (
-    evidence.corpus.checksum.length === 0 ||
-    evidence.corpus.registeredUsers !== manifest.corpus.registeredUsers ||
-    evidence.corpus.retainedRegisteredMessages !== manifest.corpus.retainedRegisteredMessages
+    evidence.corpus.artifactId.length === 0 ||
+    evidence.corpus.queryVersion.length === 0 ||
+    evidence.corpus.sourceVersion.length === 0 ||
+    !validUtc(evidence.corpus.measuredAtUtc) ||
+    registeredUsersSnapshot === undefined ||
+    retainedMessagesSnapshot === undefined
   ) {
     findings.push(
       finding(
-        "acceptanceCorpusIncomplete",
-        `Observed corpus ${evidence.corpus.registeredUsers}/${evidence.corpus.retainedRegisteredMessages} does not match ${manifest.corpus.registeredUsers}/${manifest.corpus.retainedRegisteredMessages}`,
+        "acceptanceCorpusAuthorityMissing",
+        "Acceptance Corpus has no retained PostgreSQL and AgentSQLite authority snapshots",
         manifest.acceptanceLevel,
         "MISSING",
       ),
     );
+  } else {
+    const { checksum, ...corpusContent } = evidence.corpus;
+    const snapshotInvalid = evidence.corpus.sourceSnapshots.some((snapshot) => {
+      const { artifactChecksum, ...snapshotContent } = snapshot;
+      return (
+        artifactChecksum !== qualificationChecksum(snapshotContent) ||
+        snapshot.artifactId.length === 0 ||
+        snapshot.identityDigest.length === 0
+      );
+    });
+    if (
+      checksum !== qualificationChecksum(corpusContent) ||
+      evidence.corpus.sourceSnapshots.length !== 2 ||
+      snapshotInvalid ||
+      evidence.corpus.sourceVersion !== manifest.sourceVersion ||
+      registeredUsersSnapshot.store !== "PostgreSQL" ||
+      retainedMessagesSnapshot.store !== "AgentSQLite" ||
+      registeredUsersSnapshot.count !== evidence.corpus.registeredUsers ||
+      retainedMessagesSnapshot.count !== evidence.corpus.retainedRegisteredMessages ||
+      evidence.corpus.registeredUsers !== manifest.corpus.registeredUsers ||
+      evidence.corpus.retainedRegisteredMessages !== manifest.corpus.retainedRegisteredMessages
+    ) {
+      findings.push(
+        finding(
+          "acceptanceCorpusAuthorityConflict",
+          `Authority corpus ${evidence.corpus.registeredUsers}/${evidence.corpus.retainedRegisteredMessages} does not match the frozen acceptance corpus`,
+          manifest.acceptanceLevel,
+          "FAIL",
+        ),
+      );
+    }
   }
 
   for (const characterization of manifest.characterizationLanes) {
@@ -1014,6 +1094,54 @@ export const assessQualificationRuns = (
           ),
         );
       }
+      const controllerReceipt = run.faultControllerReceipt;
+      if (expectedFault === undefined) {
+        if (controllerReceipt !== null) {
+          findings.push(
+            finding(
+              "faultControllerReceiptUnexpected",
+              `${subject} names a controller injection for a non-fault challenge`,
+              subject,
+              "FAIL",
+            ),
+          );
+        }
+      } else if (controllerReceipt === null) {
+        findings.push(
+          finding(
+            "faultControllerReceiptMissing",
+            `${subject} has no retained fault-controller injection receipt`,
+            subject,
+            "MISSING",
+          ),
+        );
+      } else {
+        const { artifactChecksum, ...receiptContent } = controllerReceipt;
+        if (
+          artifactChecksum !== qualificationChecksum(receiptContent) ||
+          controllerReceipt.manifestChecksum !== manifest.manifestChecksum ||
+          controllerReceipt.planChecksum.length === 0 ||
+          controllerReceipt.runId !== identitySet.artifactId ||
+          controllerReceipt.kind !== expectedFault.kind ||
+          controllerReceipt.target !== expectedFault.target ||
+          controllerReceipt.trigger !== expectedFault.trigger ||
+          controllerReceipt.durationSeconds !== expectedFault.durationSeconds ||
+          controllerReceipt.injectedAtUtc !== run.startedAtUtc ||
+          Date.parse(controllerReceipt.endedAtUtc) !==
+            Date.parse(controllerReceipt.injectedAtUtc) +
+              controllerReceipt.durationSeconds * 1_000 ||
+          Date.parse(controllerReceipt.endedAtUtc) > Date.parse(run.completedAtUtc)
+        ) {
+          findings.push(
+            finding(
+              "faultControllerReceiptConflict",
+              `${subject} controller receipt is not bound to its manifest, run, window, and fault`,
+              subject,
+              "FAIL",
+            ),
+          );
+        }
+      }
       const faultRecords = faultObservations.records;
       const faultEvidencePasses =
         run.faultInjection === null
@@ -1022,15 +1150,24 @@ export const assessQualificationRuns = (
             faultRecords.every(
               (record) =>
                 record.observationId.length > 0 &&
+                record.authorityFactIds.length > 0 &&
                 !faultObservationIds.has(record.observationId) &&
                 record.runId === identitySet.artifactId &&
                 record.arrivalChecksum === actualArrivals.checksum &&
                 record.identityChecksum === identitySet.checksum &&
                 validUtc(record.injectedAtUtc) &&
+                validUtc(record.observedAtUtc) &&
                 Date.parse(record.injectedAtUtc) >= Date.parse(run.startedAtUtc) &&
                 Date.parse(record.injectedAtUtc) <= Date.parse(run.completedAtUtc) &&
+                Date.parse(record.observedAtUtc) >= Date.parse(record.injectedAtUtc) &&
+                Date.parse(record.observedAtUtc) <= Date.parse(run.completedAtUtc) &&
+                record.target === run.faultInjection?.target &&
+                record.trigger === run.faultInjection?.trigger &&
                 record.invariant === run.faultInjection?.expectedInvariant &&
-                record.invariantHeld,
+                record.invariantHeld === (record.observedState === "invariantHeld") &&
+                record.observedState === "invariantHeld" &&
+                controllerReceipt !== null &&
+                record.injectedAtUtc === controllerReceipt.injectedAtUtc,
             );
       for (const record of faultRecords) faultObservationIds.add(record.observationId);
       if (!faultEvidencePasses) {

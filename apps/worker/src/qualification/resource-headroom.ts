@@ -5,8 +5,10 @@ import {
   EvidenceCount,
   NonNegativeMeasurement,
   QualificationId,
+  QualificationUtcInstant,
 } from "./evidence-primitives";
 import type { ProductionQualificationManifest } from "./qualification-manifest";
+import { qualificationChecksum } from "./qualification-checksum";
 import {
   assessmentFromFindings,
   type QualificationAssessment,
@@ -15,6 +17,19 @@ import {
 
 /** Maximum target-window use observed in one exact repetition. */
 export interface ResourceUseMeasurement {
+  readonly authorityArtifact?: {
+    readonly artifactChecksum: string;
+    readonly artifactId: string;
+    readonly records: ReadonlyArray<{
+      readonly authorityFactId: string;
+      readonly observedAtUtc: string;
+      readonly rootId: string;
+      readonly value: number;
+    }>;
+    readonly runArtifactChecksum: string;
+    readonly source: string;
+    readonly sourceVersion: string;
+  };
   readonly limitName: string;
   readonly maximumObserved: number;
   readonly region: ProductionQualificationManifest["regions"][number];
@@ -25,6 +40,23 @@ export interface ResourceUseMeasurement {
 
 /** Parser for one run-bound hard-limit measurement. */
 export const ResourceUseMeasurementBoundary = Schema.Struct({
+  authorityArtifact: Schema.optionalKey(
+    Schema.Struct({
+      artifactChecksum: ArtifactChecksum,
+      artifactId: QualificationId,
+      records: Schema.Array(
+        Schema.Struct({
+          authorityFactId: QualificationId,
+          observedAtUtc: QualificationUtcInstant,
+          rootId: QualificationId,
+          value: NonNegativeMeasurement,
+        }),
+      ),
+      runArtifactChecksum: ArtifactChecksum,
+      source: QualificationId,
+      sourceVersion: QualificationId,
+    }),
+  ),
   limitName: QualificationId,
   maximumObserved: NonNegativeMeasurement,
   region: Schema.Literals(["americas", "asiaPacific", "europe"]),
@@ -96,26 +128,67 @@ export const assessResourceHeadroom = (
             subject,
             verdict: "MISSING",
           });
-        } else if (
-          !Number.isFinite(measurement.maximumObserved) ||
-          measurement.maximumObserved < 0 ||
-          measurement.runArtifactChecksum.length === 0 ||
-          !Number.isFinite(limit.maximum) ||
-          limit.maximum <= 0
-        ) {
+        } else if (measurement.authorityArtifact === undefined) {
           findings.push({
-            code: "invalidHardLimitMeasurement",
-            detail: `${subject} has an invalid limit or target-use value`,
+            code: "resourceAuthorityEvidenceMissing",
+            detail: `${subject} has no retained raw resource authority artifact`,
             subject,
-            verdict: "FAIL",
+            verdict: "MISSING",
           });
-        } else if (measurement.maximumObserved > limit.maximum * 0.7) {
-          findings.push({
-            code: "platformHeadroomInsufficient",
-            detail: `${subject} reached ${measurement.maximumObserved} ${measurement.unit}, above the 70% maximum`,
-            subject,
-            verdict: "FAIL",
-          });
+        } else {
+          const authority = measurement.authorityArtifact;
+          const { artifactChecksum, ...content } = authority;
+          const maximumObserved = authority.records.reduce(
+            (maximum, record) => Math.max(maximum, record.value),
+            0,
+          );
+          if (
+            artifactChecksum !==
+              qualificationChecksum({
+                ...content,
+                limitName: measurement.limitName,
+                unit: measurement.unit,
+              }) ||
+            authority.records.length === 0 ||
+            authority.runArtifactChecksum !== measurement.runArtifactChecksum ||
+            authority.sourceVersion !== manifest.sourceVersion ||
+            new Set(authority.records.map(({ authorityFactId }) => authorityFactId)).size !==
+              authority.records.length
+          ) {
+            findings.push({
+              code: "resourceAuthorityEvidenceInvalid",
+              detail: `${subject} raw authority artifact is missing, duplicated, or checksum-conflicting`,
+              subject,
+              verdict: "FAIL",
+            });
+          } else if (measurement.maximumObserved !== maximumObserved) {
+            findings.push({
+              code: "resourceAuthorityMeasurementConflict",
+              detail: `${subject} declares ${measurement.maximumObserved}; authority maximum is ${maximumObserved}`,
+              subject,
+              verdict: "FAIL",
+            });
+          } else if (
+            !Number.isFinite(measurement.maximumObserved) ||
+            measurement.maximumObserved < 0 ||
+            measurement.runArtifactChecksum.length === 0 ||
+            !Number.isFinite(limit.maximum) ||
+            limit.maximum <= 0
+          ) {
+            findings.push({
+              code: "invalidHardLimitMeasurement",
+              detail: `${subject} has an invalid limit or target-use value`,
+              subject,
+              verdict: "FAIL",
+            });
+          } else if (maximumObserved > limit.maximum * 0.7) {
+            findings.push({
+              code: "platformHeadroomInsufficient",
+              detail: `${subject} reached ${maximumObserved} ${measurement.unit}, above the 70% maximum`,
+              subject,
+              verdict: "FAIL",
+            });
+          }
         }
       }
     }

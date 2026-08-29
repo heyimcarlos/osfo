@@ -77,6 +77,17 @@ export interface MemorySemanticEvidence {
   readonly providerVersion: string;
   readonly sourceVersion: string;
   readonly teardown: {
+    readonly authorityReceipt?: {
+      readonly artifactChecksum: string;
+      readonly artifactId: string;
+      readonly containerTag: string;
+      readonly deletedDocumentIds: ReadonlyArray<string>;
+      readonly observedAtUtc: string;
+      readonly operationId: string;
+      readonly providerSource: string;
+      readonly remainingDocumentIds: ReadonlyArray<string>;
+      readonly status: "deleted";
+    };
     readonly containerDeleted: boolean;
     readonly remainingDocuments: number;
   };
@@ -140,6 +151,19 @@ const MemorySemanticEvidenceBoundary = Schema.Struct({
   providerVersion: QualificationId,
   sourceVersion: QualificationId,
   teardown: Schema.Struct({
+    authorityReceipt: Schema.optionalKey(
+      Schema.Struct({
+        artifactChecksum: ArtifactChecksum,
+        artifactId: QualificationId,
+        containerTag: QualificationId,
+        deletedDocumentIds: Schema.Array(QualificationId),
+        observedAtUtc: QualificationUtcInstant,
+        operationId: QualificationId,
+        providerSource: QualificationId,
+        remainingDocumentIds: Schema.Array(QualificationId),
+        status: Schema.Literal("deleted"),
+      }),
+    ),
     containerDeleted: Schema.Boolean,
     remainingDocuments: EvidenceCount,
   }),
@@ -159,6 +183,18 @@ const requiredObservations: ReadonlyArray<
   ["afterDreaming", "hypotheticalExcluded"],
   ["afterDreaming", "quotedThirdPartyExcluded"],
 ];
+
+/** Versioned v1 truth table; evidence records cannot choose their own success condition. */
+const requiredOutcomeByAssertion = {
+  assistantOnlyExcluded: "absent",
+  correctionCurrent: "present",
+  crossUserIsolation: "absent",
+  directUserFact: "present",
+  explicitConfirmationLearned: "present",
+  hypotheticalExcluded: "absent",
+  quotedThirdPartyExcluded: "absent",
+  rememberedPersonOpportunityAssociated: "present",
+} as const satisfies Readonly<Record<MemorySemanticAssertion, "absent" | "present">>;
 
 const expectedSource = (
   checkpoint: MemorySemanticCheckpoint,
@@ -315,10 +351,18 @@ export const assessMemorySemanticEvidence = (
         verdict: "FAIL",
       });
     }
-    if (observation.expected !== observation.observed) {
+    const requiredOutcome = requiredOutcomeByAssertion[observation.assertion];
+    if (observation.expected !== requiredOutcome) {
+      findings.push({
+        code: "memorySemanticExpectedOutcomeConflict",
+        detail: `${subject} declared ${observation.expected}; v1 policy requires ${requiredOutcome}`,
+        subject,
+        verdict: "FAIL",
+      });
+    } else if (observation.observed !== requiredOutcome) {
       findings.push({
         code: "memorySemanticAssertionFailed",
-        detail: `${subject} expected ${observation.expected} but observed ${observation.observed}`,
+        detail: `${subject} required ${requiredOutcome} but observed ${observation.observed}`,
         subject,
         verdict: "FAIL",
       });
@@ -397,6 +441,41 @@ export const assessMemorySemanticEvidence = (
       subject: evidence.artifactId,
       verdict: "FAIL",
     });
+  }
+  const teardownReceipt = evidence.teardown.authorityReceipt;
+  if (teardownReceipt === undefined) {
+    findings.push({
+      code: "memorySemanticTeardownAuthorityMissing",
+      detail: "Memory teardown has no retained post-delete provider authority receipt",
+      subject: evidence.artifactId,
+      verdict: "MISSING",
+    });
+  } else {
+    const { artifactChecksum: receiptChecksum, ...receiptContent } = teardownReceipt;
+    const documentIds = new Set(evidence.observations.map(({ documentId }) => documentId));
+    const deletedIds = new Set(teardownReceipt.deletedDocumentIds);
+    const latestObservation = Math.max(
+      ...evidence.observations.map(({ observedAtUtc }) => Date.parse(observedAtUtc)),
+    );
+    if (
+      receiptChecksum !== qualificationChecksum(receiptContent) ||
+      (evidence.observations.length > 0 &&
+        (primaryTags.size !== 1 ||
+          !primaryTags.has(teardownReceipt.containerTag) ||
+          deletedIds.size !== teardownReceipt.deletedDocumentIds.length ||
+          deletedIds.size !== documentIds.size ||
+          [...documentIds].some((documentId) => !deletedIds.has(documentId)))) ||
+      teardownReceipt.remainingDocumentIds.length > 0 ||
+      Date.parse(teardownReceipt.observedAtUtc) <= latestObservation
+    ) {
+      findings.push({
+        code: "memorySemanticTeardownAuthorityConflict",
+        detail:
+          "Post-delete provider authority does not prove deletion of the exact container data",
+        subject: teardownReceipt.artifactId,
+        verdict: "FAIL",
+      });
+    }
   }
   return assessmentFromFindings(findings);
 };

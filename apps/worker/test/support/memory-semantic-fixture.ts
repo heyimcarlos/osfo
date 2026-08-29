@@ -93,6 +93,16 @@ export const completeMemorySemanticEvidence = (
       }),
     ),
   ];
+  const teardownReceiptContent = {
+    artifactId: "memory-delete-receipt-1",
+    containerTag: common.containerTag,
+    deletedDocumentIds: [common.documentId],
+    observedAtUtc: "2026-08-24T12:07:00.000Z",
+    operationId: "memory-delete-operation-1",
+    providerSource: "supermemory-container-delete-and-list",
+    remainingDocumentIds: [],
+    status: "deleted" as const,
+  };
   const content = {
     artifactId: "memory-semantic-1",
     boundedRecall: {
@@ -111,7 +121,14 @@ export const completeMemorySemanticEvidence = (
     observations,
     providerVersion: "supermemory-v4",
     sourceVersion,
-    teardown: { containerDeleted: true, remainingDocuments: 0 },
+    teardown: {
+      authorityReceipt: {
+        ...teardownReceiptContent,
+        artifactChecksum: qualificationChecksum(teardownReceiptContent),
+      },
+      containerDeleted: true,
+      remainingDocuments: 0,
+    },
   };
   return { ...content, artifactChecksum: qualificationChecksum(content) };
 };

@@ -57,6 +57,10 @@ const authorityRecord = (
   suffix: string,
 ): ProductAuthorityExport["records"][number] => {
   const base = {
+    effectReceipts:
+      authority === "think_submission_receipts"
+        ? [{ effectId: `think-submission-${suffix}`, kind: "thinkSubmissions" as const }]
+        : [],
     occurredAt: "2026-08-17T12:00:00.010Z",
     productFactId:
       authority === "provider_delivery_receipts"
@@ -200,12 +204,36 @@ describe("Semantic evidence", () => {
     expect(assessSemanticEvidence({ ...input, traces: [trace] }, requirements)).toEqual({
       findings: [
         {
-          code: "amplificationExceeded",
-          detail: "message-1 produced 2 thinkSubmissions, maximum 1",
+          code: "amplificationAuthorityConflict",
+          detail: "message-1 declared 2 thinkSubmissions, authority receipts contain 1",
           subject: "message-1",
           verdict: "FAIL",
         },
       ],
+      verdict: "FAIL",
+    });
+  });
+
+  it("derives amplification from unique authority effect receipts", () => {
+    const input = semanticEvidenceInput();
+    const productAuthorityExports = input.productAuthorityExports.map((artifact) => {
+      if (artifact.authority !== "think_submission_receipts") return artifact;
+      const records = artifact.records.map((record) => ({
+        ...record,
+        effectReceipts: [
+          ...record.effectReceipts,
+          { effectId: "second-think-submission", kind: "thinkSubmissions" as const },
+        ],
+      }));
+      return authorityExport(artifact.authority, records);
+    });
+
+    expect(
+      assessSemanticEvidence({ ...input, productAuthorityExports }, requirements),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "amplificationAuthorityConflict", verdict: "FAIL" }),
+      ]),
       verdict: "FAIL",
     });
   });

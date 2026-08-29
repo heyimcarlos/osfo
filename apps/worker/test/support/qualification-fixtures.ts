@@ -24,7 +24,11 @@ import {
   type QualificationRunEvidence,
   type RootOutcomeRecord,
 } from "../../src/qualification/qualification-runs";
-import type { ProductionQualificationEvidence } from "../../src/qualification/production-qualification";
+import {
+  qualificationExecutionEvidence,
+  qualificationRunExecutionReceipt,
+  type ProductionQualificationEvidence,
+} from "../../src/qualification/production-qualification";
 import type {
   ProductAuthorityExport,
   ProductStageBoundary,
@@ -124,6 +128,14 @@ const authorityRecord = (
   const productFactId =
     component === "Provider" ? `outcome-${rootId}` : `signal-${component}-${rootId}`;
   const base = {
+    effectReceipts:
+      component === "Provider"
+        ? [{ effectId: `provider-effect-${rootId}`, kind: "providerEffects" as const }]
+        : component === "Think"
+          ? [{ effectId: `think-submission-${rootId}`, kind: "thinkSubmissions" as const }]
+          : component === "Workflow"
+            ? [{ effectId: `workflow-start-${rootId}`, kind: "workflowStarts" as const }]
+            : [],
     occurredAt,
     productFactId,
     rootId,
@@ -432,6 +444,9 @@ const outcomesFor = (
 /** Build complete root-bound workload, challenge, and promotion evidence. */
 export const completeRunEvidence = (
   manifest: ProductionQualificationManifest,
+  executionPlanChecksum = qualificationChecksum({
+    fixturePlanForManifest: manifest.manifestChecksum,
+  }),
 ): QualificationRunEvidence => {
   const laneRuns = manifest.lanes.flatMap((lane, laneIndex) =>
     manifest.regions.flatMap((region, regionIndex) =>
@@ -557,18 +572,46 @@ export const completeRunEvidence = (
         windowEndedAtUtc,
       );
       const faultInjection = manifest.faults.find((fault) => fault.kind === challenge.kind) ?? null;
+      const faultControllerContent =
+        faultInjection === null
+          ? null
+          : {
+              artifactId: `fault-controller-${subject}`,
+              controllerOperationId: `fault-operation-${subject}`,
+              controllerSource: "qualification-fault-controller",
+              durationSeconds: faultInjection.durationSeconds,
+              endedAtUtc: DateTime.formatIso(
+                DateTime.makeUnsafe(
+                  Date.parse(windowStartedAtUtc) + faultInjection.durationSeconds * 1_000,
+                ),
+              ),
+              injectedAtUtc: windowStartedAtUtc,
+              kind: faultInjection.kind,
+              manifestChecksum: manifest.manifestChecksum,
+              planChecksum: executionPlanChecksum,
+              runId: identitySet.artifactId,
+              target: faultInjection.target,
+              trigger: faultInjection.trigger,
+            };
       const faultObservations =
         faultInjection === null
           ? []
           : [
               {
+                authorityFactIds: [`fault-target-state-${subject}`],
                 arrivalChecksum: actualArrivalArtifact.checksum,
                 identityChecksum: identitySet.checksum,
-                injectedAtUtc: "2026-08-17T12:00:01.000Z",
+                injectedAtUtc: windowStartedAtUtc,
                 invariant: faultInjection.expectedInvariant,
                 invariantHeld: true,
                 observationId: `fault-observation-${subject}`,
+                observedAtUtc: DateTime.formatIso(
+                  DateTime.makeUnsafe(Date.parse(windowStartedAtUtc) + 1_000),
+                ),
+                observedState: "invariantHeld" as const,
                 runId: identitySet.artifactId,
+                target: faultInjection.target,
+                trigger: faultInjection.trigger,
               },
             ];
       return {
@@ -578,6 +621,13 @@ export const completeRunEvidence = (
         completedAtUtc: isCombined ? "2026-08-17T15:00:00.000Z" : "2026-08-17T13:00:00.000Z",
         eligibleRoots: count,
         dispositions: dispositionsFor(actualArrivals),
+        faultControllerReceipt:
+          faultControllerContent === null
+            ? null
+            : {
+                ...faultControllerContent,
+                artifactChecksum: qualificationChecksum(faultControllerContent),
+              },
         faultInjection,
         faultObservations: artifact(`${subject}-fault`, faultObservations),
         goodRootOutcomes: count,
@@ -605,10 +655,17 @@ export const completeRunEvidence = (
       { length: acceptedRegisteredMessages },
       (_, rootIndex) => `beta-day-${index}-root-${rootIndex}`,
     );
+    const authorityArtifactId = `beta-day-${index}-product-authority`;
     return {
       acceptedRegisteredMessages,
       acceptedRootIds,
-      authorityArtifactId: `beta-day-${index}-product-authority`,
+      authorityArtifactChecksum: qualificationChecksum({
+        acceptedRootIds,
+        artifactId: authorityArtifactId,
+        goodRootIds: acceptedRootIds,
+        sourceVersion: manifest.sourceVersion,
+      }),
+      authorityArtifactId,
       correctnessViolations: [],
       dayStartedAtUtc: DateTime.formatIso(
         DateTime.makeUnsafe(Date.parse("2026-07-20T00:00:00.000Z") + index * 86_400_000),
@@ -656,6 +713,39 @@ export const completeRunEvidence = (
     "2026-08-17T00:00:00.000Z",
   );
   const errorBudget28DayArtifactId = "error-budget-28d";
+  const corpusSnapshots = [
+    {
+      artifactId: `corpus-users-${manifest.acceptanceLevel}`,
+      count: manifest.corpus.registeredUsers,
+      identityDigest: qualificationChecksum({
+        corpus: manifest.acceptanceLevel,
+        identities: "registered-user-primary-keys",
+      }),
+      kind: "registeredUsers" as const,
+      store: "PostgreSQL" as const,
+    },
+    {
+      artifactId: `corpus-messages-${manifest.acceptanceLevel}`,
+      count: manifest.corpus.retainedRegisteredMessages,
+      identityDigest: qualificationChecksum({
+        corpus: manifest.acceptanceLevel,
+        identities: "retained-message-primary-keys",
+      }),
+      kind: "retainedRegisteredMessages" as const,
+      store: "AgentSQLite" as const,
+    },
+  ].map((snapshot) =>
+    Object.assign({}, snapshot, { artifactChecksum: qualificationChecksum(snapshot) }),
+  );
+  const corpusContent = {
+    artifactId: `acceptance-corpus-${manifest.acceptanceLevel}`,
+    measuredAtUtc: "2026-08-17T11:59:00.000Z",
+    queryVersion: "acceptance-corpus-query-v1",
+    registeredUsers: manifest.corpus.registeredUsers,
+    retainedRegisteredMessages: manifest.corpus.retainedRegisteredMessages,
+    sourceSnapshots: corpusSnapshots,
+    sourceVersion: manifest.sourceVersion,
+  };
   return {
     characterizationRuns: manifest.characterizationLanes.flatMap((lane) =>
       manifest.regions.map((region) => {
@@ -674,11 +764,7 @@ export const completeRunEvidence = (
       }),
     ),
     challengeRuns,
-    corpus: {
-      checksum: `corpus-${manifest.acceptanceLevel}`,
-      registeredUsers: manifest.corpus.registeredUsers,
-      retainedRegisteredMessages: manifest.corpus.retainedRegisteredMessages,
-    },
+    corpus: { ...corpusContent, checksum: qualificationChecksum(corpusContent) },
     correctnessViolations: [],
     continuedBeta:
       manifest.acceptanceLevel === "ScaleQualifiedPublic"
@@ -695,7 +781,7 @@ export const completeRunEvidence = (
             errorBudget28DayArtifactId,
             observedTraceReplacement: null,
             productionDays: 28,
-            rollingSevenDaySloArtifactId: "rolling-slo-7d",
+            rollingSevenDaySloArtifactId: sloSplits.artifactId,
             sloSplits,
           }
         : null,
@@ -703,18 +789,43 @@ export const completeRunEvidence = (
     growthCorpusRuns:
       "growthCorpora" in manifest
         ? manifest.growthCorpora.map((corpus) => {
+            const sourceSnapshots = [
+              {
+                artifactId: `${corpus.kind}-growth-users`,
+                count: corpus.registeredUsers,
+                identityDigest: qualificationChecksum({
+                  corpus: corpus.kind,
+                  identities: "registered-user-primary-keys",
+                }),
+                kind: "registeredUsers" as const,
+                store: "PostgreSQL" as const,
+              },
+              {
+                artifactId: `${corpus.kind}-growth-messages`,
+                count: corpus.retainedRegisteredMessages,
+                identityDigest: qualificationChecksum({
+                  corpus: corpus.kind,
+                  identities: "retained-message-primary-keys",
+                }),
+                kind: "retainedRegisteredMessages" as const,
+                store: "AgentSQLite" as const,
+              },
+            ].map((source) =>
+              Object.assign({}, source, { artifactChecksum: qualificationChecksum(source) }),
+            );
             const snapshot = {
               allowancePeriods: corpus.allowancePeriods ?? null,
-              kind: corpus.kind,
               measuredAtUtc: "2026-08-17T12:00:00.000Z",
               queryVersion: "growth-corpus-query-v1",
               registeredUsers: corpus.registeredUsers,
               retainedRegisteredMessages: corpus.retainedRegisteredMessages,
+              sourceSnapshots,
+              sourceVersion: manifest.sourceVersion,
             };
             const corpusArtifact = artifact(`${corpus.kind}-growth-corpus`, [
               {
                 ...snapshot,
-                sourceSnapshotChecksum: qualificationChecksum(snapshot),
+                sourceSnapshotChecksum: qualificationChecksum({ ...snapshot, kind: corpus.kind }),
               },
             ]);
             const characterizationResultArtifact = artifact(
@@ -850,10 +961,14 @@ export const completeSemanticEvidence = (
           return manifest.semanticRequirements[journey].requiredComponents;
         }),
       );
+      components.add("Workflow");
       return [...components].flatMap((component) => {
         const records = acceptedRootIds.flatMap((rootId) => {
           const journey = rootProfiles.get(rootId)?.journey ?? "ordinaryConversation";
-          if (!manifest.semanticRequirements[journey].requiredComponents.includes(component))
+          if (
+            component !== "Workflow" &&
+            !manifest.semanticRequirements[journey].requiredComponents.includes(component)
+          )
             return [];
           const profile = rootProfiles.get(rootId) ?? {
             cause: "warm" as const,
@@ -1014,7 +1129,11 @@ export const completeStageMeasurements = (
   runs.laneRuns.flatMap((run) => {
     const lane = run.lane;
     if (!isMeasuredStageLane(lane)) return [];
-    return stageObjectives.flatMap<StageMeasurement>((objective) => {
+    const objectives =
+      lane === "allCold"
+        ? stageObjectives.filter(({ stage }) => stage === "coldDurableAcceptance")
+        : stageObjectives;
+    return objectives.flatMap<StageMeasurement>((objective) => {
       const journeysForStage =
         objective.stage === "scheduledEmailOutcome" ||
         objective.stage === "scheduledEmailProtectedSendStart"
@@ -1083,7 +1202,14 @@ export const completeStageMeasurements = (
                 "deployment",
                 "faultRecovery",
               ].indexOf(coldCause);
-              const eligibleRootIds = run.acceptedRootIds.slice(causeIndex, causeIndex + 1);
+              const eligibleRootIds =
+                semantic === undefined
+                  ? run.acceptedRootIds.slice(causeIndex, causeIndex + 1)
+                  : run.acceptedRootIds.filter((rootId) =>
+                      semantic.traces.some(
+                        (trace) => trace.rootId === rootId && trace.activation.cause === coldCause,
+                      ),
+                    );
               const coldSamples = eligibleRootIds.map(sampleFor);
               return Object.assign({}, common, {
                 artifactChecksum: qualificationChecksum(coldSamples),
@@ -1112,7 +1238,11 @@ export const completeStageMeasurements = (
 /** Build a complete fail-closed production qualification evidence bundle. */
 export const completeProductionEvidence = (): ProductionQualificationEvidence => {
   const manifest = compactManifest();
-  const runs = completeRunEvidence(manifest);
+  const fixturePlanChecksum = qualificationChecksum({
+    fixture: true,
+    manifestChecksum: manifest.manifestChecksum,
+  });
+  const runs = completeRunEvidence(manifest, fixturePlanChecksum);
   const semantic = completeSemanticEvidence(manifest, runs);
   const priceBookId = "price-book-v1";
   const rootCosts = semantic.traces.map((trace) => ({
@@ -1225,6 +1355,17 @@ export const completeProductionEvidence = (): ProductionQualificationEvidence =>
   const usageLedgerWindowStartedAtUtc = "2026-08-01T00:00:00.000Z";
   const usageLedgerWindowEndedAtUtc = "2026-09-01T00:00:00.000Z";
   const goodRootOutcomeIds = rootCosts.map((record) => record.rootId);
+  const fixtureRunReceipt = qualificationRunExecutionReceipt({
+    arrivalArtifactChecksum: qualificationChecksum({ fixtureArrivals: true }),
+    arrivalCount: 1,
+    artifactId: "qualification-execution-run-fixture",
+    endedAtEpochMs: Date.parse("2026-08-17T12:00:01.000Z"),
+    planChecksum: fixturePlanChecksum,
+    runDescriptorChecksum: qualificationChecksum({ fixtureRun: true }),
+    runId: "qualification-run-fixture",
+    startedAtEpochMs: Date.parse("2026-08-17T12:00:00.000Z"),
+    windowsChecksum: qualificationChecksum({ fixtureWindows: true }),
+  });
   return {
     cost: {
       activeAdventurerPeriods: 1,
@@ -1322,40 +1463,135 @@ export const completeProductionEvidence = (): ProductionQualificationEvidence =>
       windowEndedAtUtc: "2026-08-24T00:00:00.000Z",
       windowStartedAtUtc: "2026-08-17T00:00:00.000Z",
     })),
+    execution: qualificationExecutionEvidence(
+      manifest,
+      fixturePlanChecksum,
+      "qualification-execution-fixture",
+      [fixtureRunReceipt],
+    ),
     manifest,
     memorySemantic: completeMemorySemanticEvidence(manifest.sourceVersion),
     recoveryRuns: manifest.regions.flatMap((region) =>
-      Array.from({ length: 3 }, (_, repetition) => ({
-        evidence: {
-          acceptedDemandPerSecond: 5,
-          backlogSlopeBecameNegativeAfterSeconds: 240,
-          interruptedAgentSettledAfterSeconds: 45,
-          lostAcceptedRoots: 0,
-          recoverableBacklogSettledAfterSeconds: 1_100,
-          recoveryGoodputPerSecond: 7,
-        },
-        region,
-        repetition: repetition + 1,
-        runArtifactChecksum: qualificationChecksum(
+      Array.from({ length: 3 }, (_, repetition) => {
+        const acceptedRootIds =
           runs.laneRuns.find(
             (run) =>
               run.lane === "dependencyOutageRecovery" &&
               run.region === region &&
               run.repetition === repetition + 1,
-          )?.acceptedRootIds ?? [],
-        ),
-      })),
+          )?.acceptedRootIds ?? [];
+        const runArtifactChecksum = qualificationChecksum(acceptedRootIds);
+        const recoverableBacklogRootIds = Array.from(
+          { length: 120 },
+          (_entry, index) => `pre-outage-backlog-${region}-${repetition + 1}-${index}`,
+        );
+        const outageEndedAtUtc = "2026-08-17T12:00:00.000Z";
+        const authorityContent = {
+          artifactId: `recovery-authority-${region}-${repetition + 1}`,
+          outageEndedAtUtc,
+          runArtifactChecksum,
+          source: "workflow-and-agent-recovery-authority",
+          sourceVersion: manifest.sourceVersion,
+          stateObservations: [
+            {
+              authorityFactIds: ["recovery-state-0"],
+              backlogRootIds: recoverableBacklogRootIds,
+              durablyWaitingRootIds: recoverableBacklogRootIds,
+              interruptedAgentIds: ["recovery-interrupted-agent-1"],
+              lostAcceptedRootIds: [],
+              observedAtUtc: outageEndedAtUtc,
+            },
+            {
+              authorityFactIds: ["recovery-state-45"],
+              backlogRootIds: recoverableBacklogRootIds,
+              durablyWaitingRootIds: recoverableBacklogRootIds,
+              interruptedAgentIds: [],
+              lostAcceptedRootIds: [],
+              observedAtUtc: "2026-08-17T12:00:45.000Z",
+            },
+            {
+              authorityFactIds: ["recovery-state-240"],
+              backlogRootIds: recoverableBacklogRootIds.slice(0, 100),
+              durablyWaitingRootIds: recoverableBacklogRootIds.slice(0, 100),
+              interruptedAgentIds: [],
+              lostAcceptedRootIds: [],
+              observedAtUtc: "2026-08-17T12:04:00.000Z",
+            },
+            {
+              authorityFactIds: ["recovery-state-1100"],
+              backlogRootIds: [],
+              durablyWaitingRootIds: [],
+              interruptedAgentIds: [],
+              lostAcceptedRootIds: [],
+              observedAtUtc: "2026-08-17T12:18:20.000Z",
+            },
+          ],
+          throughputWindows: [
+            {
+              acceptedRootIds: acceptedRootIds.slice(0, 5),
+              authorityFactIds: ["recovery-throughput-1"],
+              completedRootIds: [
+                ...acceptedRootIds.slice(0, 5),
+                ...recoverableBacklogRootIds.slice(0, 2),
+              ],
+              windowEndedAtUtc: "2026-08-17T12:00:01.000Z",
+              windowStartedAtUtc: outageEndedAtUtc,
+            },
+          ],
+        };
+        return {
+          evidence: {
+            acceptedDemandPerSecond: 5,
+            authorityArtifact: {
+              ...authorityContent,
+              artifactChecksum: qualificationChecksum(authorityContent),
+            },
+            backlogSlopeBecameNegativeAfterSeconds: 240,
+            interruptedAgentSettledAfterSeconds: 45,
+            lostAcceptedRoots: 0,
+            recoverableBacklogSettledAfterSeconds: 1_100,
+            recoveryGoodputPerSecond: 7,
+          },
+          region,
+          repetition: repetition + 1,
+          runArtifactChecksum,
+        };
+      }),
     ),
     resourceUse: Array.from({ length: 3 }, (_, repetition) => {
       const run = runs.laneRuns.find(
         (candidate) => candidate.lane === "target" && candidate.repetition === repetition + 1,
       );
+      const runArtifactChecksum = qualificationChecksum(run?.acceptedRootIds ?? []);
+      const records = (run?.acceptedRootIds ?? []).map((rootId, index) => ({
+        authorityFactId: `resource-sqlQueries-${repetition + 1}-${index}`,
+        observedAtUtc: run?.actualArrivals.windowStartedAtUtc ?? "2026-08-17T12:00:00.000Z",
+        rootId,
+        value: index === 0 ? 700 : 1,
+      }));
+      const authorityContent = {
+        artifactId: `resource-authority-sqlQueries-americas-${repetition + 1}`,
+        limitName: "sqlQueries",
+        records,
+        runArtifactChecksum,
+        source: "cloudflare-worker-resource-authority",
+        sourceVersion: manifest.sourceVersion,
+        unit: "queries",
+      };
       return {
+        authorityArtifact: {
+          artifactChecksum: qualificationChecksum(authorityContent),
+          artifactId: authorityContent.artifactId,
+          records,
+          runArtifactChecksum,
+          source: authorityContent.source,
+          sourceVersion: authorityContent.sourceVersion,
+        },
         limitName: "sqlQueries",
         maximumObserved: 700,
         region: "americas" as const,
         repetition: repetition + 1,
-        runArtifactChecksum: qualificationChecksum(run?.acceptedRootIds ?? []),
+        runArtifactChecksum,
         unit: "queries",
       };
     }),

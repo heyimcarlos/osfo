@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { DateTime } from "effect";
 
 import { qualificationChecksum } from "./qualification-checksum";
-import { qualifyProduction } from "./production-qualification";
+import { qualificationExecutionEvidence, qualifyProduction } from "./production-qualification";
 import { completeProductionEvidence } from "../../test/support/qualification-fixtures";
 import { withMemorySemanticObservations } from "../../test/support/memory-semantic-fixture";
 
@@ -19,7 +19,42 @@ describe("Production qualification", () => {
       taxesUsdMicros: 3_000n,
       verdict: "PASS",
     });
-    expect(result.stageSummaries).toHaveLength(135);
+    expect(result.stageSummaries).toHaveLength(139);
+  });
+
+  it("makes an absent retained execution-plan binding MISSING", () => {
+    const evidence = completeProductionEvidence();
+    const result = qualifyProduction({
+      ...evidence,
+      execution: {
+        ...evidence.execution,
+        artifactChecksum: "",
+        artifactId: "",
+        planChecksum: "",
+      },
+    });
+
+    expect(result).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "executionEvidenceMissing", verdict: "MISSING" }),
+      ]),
+      verdict: "MISSING",
+    });
+  });
+
+  it("fails a tampered retained execution-plan binding", () => {
+    const evidence = completeProductionEvidence();
+    const result = qualifyProduction({
+      ...evidence,
+      execution: { ...evidence.execution, planChecksum: "different-plan" },
+    });
+
+    expect(result).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "executionEvidenceConflict", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
+    });
   });
 
   it("keeps FAIL precedence over simultaneous missing material evidence", () => {
@@ -120,6 +155,83 @@ describe("Production qualification", () => {
       ]),
       recoveryReservePerSecond: 2,
       verdict: "MISSING",
+    });
+  });
+
+  it("binds recovery authority to the frozen source version", () => {
+    const evidence = completeProductionEvidence();
+    const first = evidence.recoveryRuns[0];
+    const authority = first?.evidence.authorityArtifact;
+    expect(first).toBeDefined();
+    expect(authority).toBeDefined();
+    if (first === undefined || authority === undefined) return;
+    const { artifactChecksum: _artifactChecksum, ...authorityContent } = {
+      ...authority,
+      sourceVersion: "different-source",
+    };
+    const changedAuthority = {
+      ...authorityContent,
+      artifactChecksum: qualificationChecksum(authorityContent),
+    };
+    expect(
+      qualifyProduction({
+        ...evidence,
+        recoveryRuns: evidence.recoveryRuns.map((run) =>
+          run === first
+            ? Object.assign({}, run, {
+                evidence: Object.assign({}, run.evidence, {
+                  authorityArtifact: changedAuthority,
+                }),
+              })
+            : run,
+        ),
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "recoveryAuthorityVersionConflict", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
+    });
+  });
+
+  it("rejects raw resource facts outside the exact accepted run corpus", () => {
+    const evidence = completeProductionEvidence();
+    const first = evidence.resourceUse[0];
+    const authority = first?.authorityArtifact;
+    expect(first).toBeDefined();
+    expect(authority).toBeDefined();
+    if (first === undefined || authority === undefined) return;
+    const records = authority.records.map((record, index) =>
+      index === 0 ? Object.assign({}, record, { rootId: "unaccepted-root" }) : record,
+    );
+    const authorityContent = {
+      artifactId: authority.artifactId,
+      limitName: first.limitName,
+      records,
+      runArtifactChecksum: authority.runArtifactChecksum,
+      source: authority.source,
+      sourceVersion: authority.sourceVersion,
+      unit: first.unit,
+    };
+    expect(
+      qualifyProduction({
+        ...evidence,
+        resourceUse: evidence.resourceUse.map((measurement) =>
+          measurement === first
+            ? Object.assign({}, measurement, {
+                authorityArtifact: Object.assign({}, authority, {
+                  artifactChecksum: qualificationChecksum(authorityContent),
+                  records,
+                }),
+              })
+            : measurement,
+        ),
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "resourceAuthorityRunConflict", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
     });
   });
 
@@ -314,9 +426,29 @@ describe("Production qualification", () => {
     expect(
       qualifyProduction({
         ...evidence,
+        execution: qualificationExecutionEvidence(
+          manifest,
+          evidence.execution.planChecksum,
+          evidence.execution.artifactId,
+          evidence.execution.runReceipts,
+        ),
         manifest,
         runs: {
           ...evidence.runs,
+          challengeRuns: evidence.runs.challengeRuns.map((run) => {
+            const receipt = run.faultControllerReceipt;
+            if (receipt === null) return run;
+            const { artifactChecksum: _artifactChecksum, ...content } = {
+              ...receipt,
+              manifestChecksum: manifest.manifestChecksum,
+            };
+            return Object.assign({}, run, {
+              faultControllerReceipt: {
+                ...content,
+                artifactChecksum: qualificationChecksum(content),
+              },
+            });
+          }),
           dependencyVersions: {},
           manifestChecksum: manifest.manifestChecksum,
         },
@@ -448,6 +580,10 @@ const withoutFirstRootCost = (
   const billedUsageLines = (cost.billedUsageLines ?? []).filter((line) =>
     rootCosts.some((record) => record.usage.some((usage) => usage.usageId === line.usageId)),
   );
+  const rootIds = new Set(rootCosts.map(({ rootId }) => rootId));
+  const usageAuthorityRecords = cost.usageAuthorityRecords.filter(
+    (record) => record.scope === "scenario" || rootIds.has(record.subject),
+  );
   const goodRootOutcomeIds = rootCosts.map((record) => record.rootId);
   return {
     ...cost,
@@ -477,6 +613,15 @@ const withoutFirstRootCost = (
     }),
     goodRootOutcomeIds,
     rootCosts,
+    usageAuthorityArtifactChecksum: qualificationChecksum({
+      artifactId: cost.usageAuthorityArtifactId,
+      records: usageAuthorityRecords,
+      source: cost.usageAuthoritySource,
+      sourceVersion: cost.usageAuthoritySourceVersion,
+      windowEndedAtUtc: cost.usageAuthorityWindowEndedAtUtc,
+      windowStartedAtUtc: cost.usageAuthorityWindowStartedAtUtc,
+    }),
+    usageAuthorityRecords,
     usageLedgerArtifactChecksum: qualificationChecksum({
       artifactId: cost.usageLedgerArtifactId,
       rootCosts,

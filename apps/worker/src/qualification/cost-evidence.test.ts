@@ -53,6 +53,36 @@ describe("Qualification cost evidence", () => {
     });
   });
 
+  it("rejects substituted provider bill lines even when aggregate dollars match", () => {
+    const evidence = completeCostEvidence();
+    const lines = evidence.billedUsageLines?.map((line, index) =>
+      index === 0 ? { ...line, usageId: "unrelated-usage" } : line,
+    );
+    expect(lines).toBeDefined();
+    if (lines === undefined) return;
+
+    expect(
+      assessCostEvidence({
+        ...evidence,
+        billedUsageArtifactChecksum: qualificationChecksum({
+          artifactId: evidence.billedUsageArtifactId,
+          invoiceId: evidence.billedUsageInvoiceId,
+          lines,
+          monthEndedAtUtc: evidence.billingMonthEndedAtUtc,
+          monthStartedAtUtc: evidence.billingMonthStartedAtUtc,
+          priceBookId: evidence.priceBookId,
+          provider: evidence.billedUsageProvider,
+        }),
+        billedUsageLines: lines,
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "costReconciliationMismatch", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
+    });
+  });
+
   it("returns MISSING for stale prices, a missing bill, or a missing scenario ledger", () => {
     const evidence = completeCostEvidence();
     const { billedUsageUsdMicros: _bill, ...withoutBill } = evidence;

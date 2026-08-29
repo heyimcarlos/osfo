@@ -53,9 +53,61 @@ export interface RecoveryRunEvidence {
   readonly runArtifactChecksum: string;
 }
 
+/** Retained authority artifact binding collected evidence to one exact executed plan. */
+export interface QualificationExecutionEvidence {
+  readonly artifactChecksum: string;
+  readonly artifactId: string;
+  readonly manifestChecksum: string;
+  readonly planChecksum: string;
+  readonly runReceipts: ReadonlyArray<QualificationRunExecutionReceipt>;
+  readonly sourceVersion: string;
+  readonly topologyVersion: string;
+}
+
+/** Persisted authority receipt for one exact planned run and its offered-arrival artifact. */
+export interface QualificationRunExecutionReceipt {
+  readonly arrivalArtifactChecksum: string;
+  readonly arrivalCount: number;
+  readonly artifactChecksum: string;
+  readonly artifactId: string;
+  readonly endedAtEpochMs: number;
+  readonly planChecksum: string;
+  readonly runDescriptorChecksum: string;
+  readonly runId: string;
+  readonly startedAtEpochMs: number;
+  readonly windowsChecksum: string;
+}
+
+/** Freeze one driver-produced run receipt after its authority artifact is retained. */
+export const qualificationRunExecutionReceipt = (
+  content: Omit<QualificationRunExecutionReceipt, "artifactChecksum">,
+): QualificationRunExecutionReceipt => ({
+  ...content,
+  artifactChecksum: qualificationChecksum(content),
+});
+
+/** Bind a collector's retained evidence to the exact manifest and execution plan it observed. */
+export const qualificationExecutionEvidence = (
+  manifest: ProductionQualificationManifest,
+  planChecksum: string,
+  artifactId: string,
+  runReceipts: ReadonlyArray<QualificationRunExecutionReceipt>,
+): QualificationExecutionEvidence => {
+  const content = {
+    artifactId,
+    manifestChecksum: manifest.manifestChecksum,
+    planChecksum,
+    runReceipts,
+    sourceVersion: manifest.sourceVersion,
+    topologyVersion: manifest.topologyVersion,
+  };
+  return { ...content, artifactChecksum: qualificationChecksum(content) };
+};
+
 /** Complete evidence bundle evaluated against one exact frozen manifest. */
 export interface ProductionQualificationEvidence {
   readonly cost: CostEvidence;
+  readonly execution: QualificationExecutionEvidence;
   readonly externalGates: ReadonlyArray<ExternalGateEvidence>;
   readonly manifest: ProductionQualificationManifest;
   readonly memorySemantic: MemorySemanticEvidence;
@@ -202,6 +254,87 @@ export const qualifyProduction = (
     ...cost.findings,
     ...memorySemantic.findings,
   ];
+  const { artifactChecksum: executionChecksum, ...executionContent } = evidence.execution;
+  if (
+    evidence.execution.artifactId.length === 0 ||
+    evidence.execution.planChecksum.length === 0 ||
+    evidence.execution.runReceipts.length === 0
+  ) {
+    findings.push(
+      finding(
+        "executionEvidenceMissing",
+        "Qualification evidence omits its retained execution-plan binding",
+        evidence.manifest.acceptanceLevel,
+        "MISSING",
+      ),
+    );
+  } else if (
+    executionChecksum !== qualificationChecksum(executionContent) ||
+    evidence.execution.manifestChecksum !== evidence.manifest.manifestChecksum ||
+    evidence.execution.sourceVersion !== evidence.manifest.sourceVersion ||
+    evidence.execution.topologyVersion !== evidence.manifest.topologyVersion
+  ) {
+    findings.push(
+      finding(
+        "executionEvidenceConflict",
+        "Qualification evidence is not bound to its manifest, source, topology, and plan",
+        evidence.execution.artifactId,
+        "FAIL",
+      ),
+    );
+  } else {
+    const runIds = new Set<string>();
+    for (const receipt of evidence.execution.runReceipts) {
+      const { artifactChecksum, ...receiptContent } = receipt;
+      if (
+        artifactChecksum !== qualificationChecksum(receiptContent) ||
+        receipt.planChecksum !== evidence.execution.planChecksum ||
+        receipt.artifactId.length === 0 ||
+        receipt.arrivalArtifactChecksum.length === 0 ||
+        receipt.runDescriptorChecksum.length === 0 ||
+        receipt.windowsChecksum.length === 0 ||
+        receipt.arrivalCount <= 0 ||
+        receipt.endedAtEpochMs <= receipt.startedAtEpochMs
+      ) {
+        findings.push(
+          finding(
+            "executionRunReceiptInvalid",
+            `${receipt.runId} has an invalid or conflicting retained execution receipt`,
+            receipt.artifactId,
+            "FAIL",
+          ),
+        );
+      }
+      if (runIds.has(receipt.runId)) {
+        findings.push(
+          finding(
+            "executionRunReceiptDuplicate",
+            `${receipt.runId} has more than one retained execution receipt`,
+            receipt.runId,
+            "FAIL",
+          ),
+        );
+      }
+      runIds.add(receipt.runId);
+    }
+  }
+  for (const run of evidence.runs.challengeRuns) {
+    const receipt = run.faultControllerReceipt;
+    if (
+      evidence.execution.planChecksum.length > 0 &&
+      receipt !== null &&
+      receipt.planChecksum !== evidence.execution.planChecksum
+    ) {
+      findings.push(
+        finding(
+          "faultControllerPlanConflict",
+          `${run.challenge}:${run.region} fault injection is not bound to the executed plan`,
+          receipt.artifactId,
+          "FAIL",
+        ),
+      );
+    }
+  }
   if (evidence.memorySemantic.sourceVersion !== evidence.manifest.sourceVersion) {
     findings.push(
       finding(
@@ -603,7 +736,8 @@ export const qualifyProduction = (
         );
         if (
           laneRun === undefined ||
-          run.runArtifactChecksum !== qualificationChecksum(laneRun.acceptedRootIds)
+          run.runArtifactChecksum !== qualificationChecksum(laneRun.acceptedRootIds) ||
+          run.evidence.authorityArtifact?.runArtifactChecksum !== run.runArtifactChecksum
         ) {
           findings.push(
             finding(
@@ -611,6 +745,55 @@ export const qualifyProduction = (
               `${subject} is not bound to its retained run identity set`,
               subject,
               "MISSING",
+            ),
+          );
+        }
+        const recoveryAuthority = run.evidence.authorityArtifact;
+        if (laneRun !== undefined && recoveryAuthority !== undefined) {
+          const acceptedRoots = new Set(laneRun.acceptedRootIds);
+          const backlogRoots = new Set(
+            recoveryAuthority.stateObservations[0]?.backlogRootIds ?? [],
+          );
+          const recoverableRoots = new Set([...acceptedRoots, ...backlogRoots]);
+          const acceptedAuthorityRoots = recoveryAuthority.throughputWindows.flatMap(
+            ({ acceptedRootIds }) => acceptedRootIds,
+          );
+          const terminalAuthorityRoots = [
+            ...recoveryAuthority.throughputWindows.flatMap(
+              ({ completedRootIds }) => completedRootIds,
+            ),
+            ...recoveryAuthority.stateObservations.flatMap(
+              ({ backlogRootIds, durablyWaitingRootIds, lostAcceptedRootIds }) => [
+                ...backlogRootIds,
+                ...durablyWaitingRootIds,
+                ...lostAcceptedRootIds,
+              ],
+            ),
+          ];
+          if (
+            acceptedAuthorityRoots.some((rootId) => !acceptedRoots.has(rootId)) ||
+            terminalAuthorityRoots.some((rootId) => !recoverableRoots.has(rootId))
+          ) {
+            findings.push(
+              finding(
+                "recoveryAuthorityRunConflict",
+                `${subject} raw recovery facts name roots outside the accepted run`,
+                recoveryAuthority.artifactId,
+                "FAIL",
+              ),
+            );
+          }
+        }
+        if (
+          run.evidence.authorityArtifact !== undefined &&
+          run.evidence.authorityArtifact.sourceVersion !== evidence.manifest.sourceVersion
+        ) {
+          findings.push(
+            finding(
+              "recoveryAuthorityVersionConflict",
+              `${subject} recovery authority is not bound to the frozen source version`,
+              run.evidence.authorityArtifact.artifactId,
+              "FAIL",
             ),
           );
         }
@@ -648,6 +831,34 @@ export const qualifyProduction = (
           "MISSING",
         ),
       );
+      continue;
+    }
+    const authority = measurement.authorityArtifact;
+    if (authority !== undefined) {
+      const acceptedRoots = new Set(laneRun.acceptedRootIds);
+      const observedRoots = new Set(authority.records.map(({ rootId }) => rootId));
+      const startedAt = Date.parse(laneRun.actualArrivals.windowStartedAtUtc);
+      const endedAt = Date.parse(laneRun.actualArrivals.windowEndedAtUtc);
+      if (
+        authority.runArtifactChecksum !== measurement.runArtifactChecksum ||
+        observedRoots.size !== acceptedRoots.size ||
+        [...acceptedRoots].some((rootId) => !observedRoots.has(rootId)) ||
+        authority.records.some(
+          (record) =>
+            !acceptedRoots.has(record.rootId) ||
+            Date.parse(record.observedAtUtc) < startedAt ||
+            Date.parse(record.observedAtUtc) > endedAt,
+        )
+      ) {
+        findings.push(
+          finding(
+            "resourceAuthorityRunConflict",
+            `${subject} raw resource facts fall outside the accepted roots or run window`,
+            authority.artifactId,
+            "FAIL",
+          ),
+        );
+      }
     }
   }
 

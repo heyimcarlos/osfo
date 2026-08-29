@@ -50,6 +50,53 @@ describe("Qualification runs", () => {
     });
   });
 
+  it("requires authority snapshots for the retained acceptance corpus", () => {
+    const manifest = compactManifest();
+    const evidence = completeRunEvidence(manifest);
+    const { checksum: _checksum, ...withoutSnapshotChecksum } = {
+      ...evidence.corpus,
+      sourceSnapshots: [],
+    };
+    expect(
+      assessQualificationRuns(manifest, {
+        ...evidence,
+        corpus: {
+          ...withoutSnapshotChecksum,
+          checksum: qualificationChecksum(withoutSnapshotChecksum),
+        },
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "acceptanceCorpusAuthorityMissing", verdict: "MISSING" }),
+      ]),
+      verdict: "MISSING",
+    });
+
+    const sourceSnapshots = evidence.corpus.sourceSnapshots.map((snapshot) => {
+      if (snapshot.kind !== "registeredUsers") return snapshot;
+      const { artifactChecksum: _artifactChecksum, ...content } = { ...snapshot, count: 1 };
+      return { ...content, artifactChecksum: qualificationChecksum(content) };
+    });
+    const { checksum: _originalChecksum, ...conflictingContent } = {
+      ...evidence.corpus,
+      sourceSnapshots,
+    };
+    expect(
+      assessQualificationRuns(manifest, {
+        ...evidence,
+        corpus: {
+          ...conflictingContent,
+          checksum: qualificationChecksum(conflictingContent),
+        },
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "acceptanceCorpusAuthorityConflict", verdict: "FAIL" }),
+      ]),
+      verdict: "FAIL",
+    });
+  });
+
   it("requires isolated rare-journey and all-Adventurer lanes before the cascade", () => {
     const manifest = compactManifest();
     const evidence = completeRunEvidence(manifest);
@@ -394,6 +441,29 @@ describe("Qualification runs", () => {
     });
   });
 
+  it("does not accept a self-reported invariant when fault-controller authority is absent", () => {
+    const manifest = compactManifest();
+    const evidence = completeRunEvidence(manifest);
+    const faultRun = evidence.challengeRuns.find((run) => run.faultInjection !== null);
+    expect(faultRun).toBeDefined();
+    if (faultRun === undefined) return;
+
+    expect(
+      assessQualificationRuns(manifest, {
+        ...evidence,
+        challengeRuns: evidence.challengeRuns.map((run) =>
+          run === faultRun ? Object.assign({}, run, { faultControllerReceipt: null }) : run,
+        ),
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "faultControllerReceiptMissing", verdict: "MISSING" }),
+        expect.objectContaining({ code: "faultInvariantEvidenceMissing", verdict: "MISSING" }),
+      ]),
+      verdict: "FAIL",
+    });
+  });
+
   it("rejects impossible dispositions, unbound outcomes, and replayed fault observations", () => {
     const manifest = compactManifest();
     const evidence = completeRunEvidence(manifest);
@@ -512,6 +582,95 @@ describe("Qualification runs", () => {
           code: "growthCorpusCharacterizationMissing",
           verdict: "MISSING",
         }),
+      ]),
+      verdict: "FAIL",
+    });
+  }, 30_000);
+
+  it("does not accept claimed Growth Corpus counts without authority snapshots", () => {
+    const manifest = compactPublicManifest();
+    const evidence = completeRunEvidence(manifest);
+    const growth = evidence.growthCorpusRuns[0];
+    expect(growth).toBeDefined();
+    if (growth === undefined) return;
+    const records = growth.corpusArtifact.records.map((record) => ({
+      ...record,
+      sourceSnapshotChecksum: qualificationChecksum({
+        allowancePeriods: record.allowancePeriods,
+        kind: growth.kind,
+        measuredAtUtc: record.measuredAtUtc,
+        queryVersion: record.queryVersion,
+        registeredUsers: record.registeredUsers,
+        retainedRegisteredMessages: record.retainedRegisteredMessages,
+        sourceSnapshots: [],
+      }),
+      sourceSnapshots: [],
+    }));
+
+    expect(
+      assessQualificationRuns(manifest, {
+        ...evidence,
+        growthCorpusRuns: evidence.growthCorpusRuns.map((run) =>
+          run === growth
+            ? Object.assign({}, run, {
+                corpusArtifact: {
+                  ...run.corpusArtifact,
+                  checksum: qualificationChecksum(records),
+                  records,
+                },
+                corpusChecksum: qualificationChecksum(records),
+              })
+            : run,
+        ),
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({
+          code: "growthCorpusCharacterizationMissing",
+          verdict: "MISSING",
+        }),
+      ]),
+      verdict: "MISSING",
+    });
+  }, 30_000);
+
+  it("rejects repeated accepted roots across the 28-day promotion corpus", () => {
+    const manifest = compactPublicManifest();
+    const evidence = completeRunEvidence(manifest);
+    const continued = evidence.continuedBeta;
+    expect(continued).not.toBeNull();
+    if (continued === null) return;
+    const firstDayRoots = continued.dailyEvidence.records[0]?.acceptedRootIds ?? [];
+    const records = continued.dailyEvidence.records.map((day) => {
+      const acceptedRootIds = firstDayRoots.slice(0, day.acceptedRegisteredMessages);
+      return {
+        ...day,
+        acceptedRootIds,
+        authorityArtifactChecksum: qualificationChecksum({
+          acceptedRootIds,
+          artifactId: day.authorityArtifactId,
+          goodRootIds: acceptedRootIds,
+          sourceVersion: day.sourceVersion,
+        }),
+        goodRootIds: acceptedRootIds,
+      };
+    });
+
+    expect(
+      assessQualificationRuns(manifest, {
+        ...evidence,
+        continuedBeta: {
+          ...continued,
+          dailyEvidence: {
+            ...continued.dailyEvidence,
+            checksum: qualificationChecksum(records),
+            records,
+          },
+        },
+      }),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "continuedBetaDailyEvidenceInvalid", verdict: "FAIL" }),
       ]),
       verdict: "FAIL",
     });

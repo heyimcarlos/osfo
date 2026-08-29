@@ -8,7 +8,10 @@ import { qualificationChecksum } from "./qualification-checksum";
 import { assessRecovery } from "./recovery-evidence";
 import { assessResourceHeadroom } from "./resource-headroom";
 import { generateOpenArrivals } from "./workload-generation";
-import { manifestVersions } from "../../test/support/qualification-fixtures";
+import {
+  completeProductionEvidence,
+  manifestVersions,
+} from "../../test/support/qualification-fixtures";
 
 describe("Production qualification harness", () => {
   it("freezes exact versions, corpora, mixes, windows, and Challenge Lanes", () => {
@@ -117,14 +120,7 @@ describe("Production qualification harness", () => {
 
   it("requires measured 30 percent headroom and rejects duplicate evidence", () => {
     const manifest = createBoundedBetaManifest(manifestVersions);
-    const measurements = Array.from({ length: 3 }, (_, repetition) => ({
-      limitName: "sqlQueries",
-      maximumObserved: 700,
-      region: "americas" as const,
-      repetition: repetition + 1,
-      runArtifactChecksum: qualificationChecksum({ repetition: repetition + 1 }),
-      unit: "queries",
-    }));
+    const measurements = completeProductionEvidence().resourceUse;
     const firstMeasurement = measurements[0] ?? {
       limitName: "sqlQueries",
       maximumObserved: 700,
@@ -147,6 +143,19 @@ describe("Production qualification harness", () => {
       verdict: "PASS",
     });
     expect(
+      assessResourceHeadroom(
+        manifest,
+        measurements.map(
+          ({ authorityArtifact: _authorityArtifact, ...measurement }) => measurement,
+        ),
+      ),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "resourceAuthorityEvidenceMissing", verdict: "MISSING" }),
+      ]),
+      verdict: "MISSING",
+    });
+    expect(
       assessResourceHeadroom(manifest, [
         ...measurements,
         Object.assign({}, firstMeasurement, { maximumObserved: 1 }),
@@ -158,16 +167,28 @@ describe("Production qualification harness", () => {
   });
 
   it("measures Recovery Reserve and rejects invalid measurements", () => {
-    expect(
-      assessRecovery({
-        acceptedDemandPerSecond: 5,
-        backlogSlopeBecameNegativeAfterSeconds: 240,
-        interruptedAgentSettledAfterSeconds: 45,
-        lostAcceptedRoots: 0,
-        recoverableBacklogSettledAfterSeconds: 1_100,
-        recoveryGoodputPerSecond: 7,
-      }),
-    ).toEqual({ findings: [], recoveryReservePerSecond: 2, verdict: "PASS" });
+    const evidence = completeProductionEvidence().recoveryRuns[0]?.evidence;
+    expect(evidence).toBeDefined();
+    if (evidence === undefined) return;
+    expect(assessRecovery(evidence)).toEqual({
+      findings: [],
+      recoveryReservePerSecond: 2,
+      verdict: "PASS",
+    });
+    const { authorityArtifact: _authorityArtifact, ...selfReported } = evidence;
+    expect(assessRecovery(selfReported)).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "recoveryAuthorityEvidenceMissing", verdict: "MISSING" }),
+      ]),
+      recoveryReservePerSecond: null,
+      verdict: "MISSING",
+    });
+    expect(assessRecovery({ ...evidence, recoveryGoodputPerSecond: 99 })).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "recoveryAuthorityMeasurementConflict" }),
+      ]),
+      verdict: "FAIL",
+    });
     expect(
       assessRecovery({
         acceptedDemandPerSecond: -1,

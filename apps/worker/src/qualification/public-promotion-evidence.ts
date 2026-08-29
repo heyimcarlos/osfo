@@ -19,7 +19,18 @@ const GrowthCorpusRecordBoundary = Schema.Struct({
   queryVersion: QualificationId,
   registeredUsers: EvidenceCount,
   retainedRegisteredMessages: EvidenceCount,
+  sourceSnapshots: Schema.Array(
+    Schema.Struct({
+      artifactChecksum: ArtifactChecksum,
+      artifactId: QualificationId,
+      count: EvidenceCount,
+      identityDigest: ArtifactChecksum,
+      kind: Schema.Literals(["registeredUsers", "retainedRegisteredMessages"]),
+      store: Schema.Literals(["AgentSQLite", "PostgreSQL"]),
+    }),
+  ),
   sourceSnapshotChecksum: ArtifactChecksum,
+  sourceVersion: QualificationId,
 });
 const GrowthCharacterizationResultBoundary = Schema.Struct({
   correctnessViolations: Schema.Array(
@@ -44,6 +55,7 @@ const GrowthCharacterizationResultBoundary = Schema.Struct({
 const DailyBetaRecordBoundary = Schema.Struct({
   acceptedRegisteredMessages: EvidenceCount,
   acceptedRootIds: Schema.Array(QualificationId),
+  authorityArtifactChecksum: ArtifactChecksum,
   authorityArtifactId: QualificationId,
   correctnessViolations: Schema.Array(QualificationId),
   dayStartedAtUtc: QualificationUtcInstant,
@@ -216,6 +228,24 @@ export const assessPublicPromotionEvidence = (
               findings,
             );
       const resultRecord = characterizationResult?.records[0];
+      const sourceSnapshots = new Map(
+        corpusRecord?.sourceSnapshots.map((snapshot) => [snapshot.kind, snapshot]),
+      );
+      const usersSnapshot = sourceSnapshots.get("registeredUsers");
+      const messagesSnapshot = sourceSnapshots.get("retainedRegisteredMessages");
+      const sourceSnapshotsInvalid =
+        corpusRecord !== undefined &&
+        (corpusRecord.sourceSnapshots.length !== 2 ||
+          usersSnapshot === undefined ||
+          messagesSnapshot === undefined ||
+          usersSnapshot.store !== "PostgreSQL" ||
+          messagesSnapshot.store !== "AgentSQLite" ||
+          usersSnapshot.count !== corpusRecord.registeredUsers ||
+          messagesSnapshot.count !== corpusRecord.retainedRegisteredMessages ||
+          corpusRecord.sourceSnapshots.some((snapshot) => {
+            const { artifactChecksum, ...content } = snapshot;
+            return artifactChecksum !== qualificationChecksum(content);
+          }));
       if (
         run === undefined ||
         corpusArtifact === undefined ||
@@ -244,8 +274,12 @@ export const assessPublicPromotionEvidence = (
             queryVersion: corpusRecord.queryVersion,
             registeredUsers: corpusRecord.registeredUsers,
             retainedRegisteredMessages: corpusRecord.retainedRegisteredMessages,
+            sourceSnapshots: corpusRecord.sourceSnapshots,
+            sourceVersion: corpusRecord.sourceVersion,
           }) ||
+        sourceSnapshotsInvalid ||
         !validUtc(corpusRecord.measuredAtUtc) ||
+        corpusRecord.sourceVersion !== manifest.sourceVersion ||
         corpusRecord.registeredUsers !== corpus.registeredUsers ||
         corpusRecord.retainedRegisteredMessages !== corpus.retainedRegisteredMessages ||
         corpusRecord.allowancePeriods !== (corpus.allowancePeriods ?? null)
@@ -385,6 +419,9 @@ export const assessPublicPromotionEvidence = (
         (total, day) => total + day.acceptedRegisteredMessages,
         0,
       );
+      const allAcceptedRootIds = days.flatMap((day) => day.acceptedRootIds);
+      const globallyUniqueAcceptedRoots =
+        new Set(allAcceptedRootIds).size === allAcceptedRootIds.length;
       const invalidDailyEvidence = days.some((day, index) => {
         const rolling = days.slice(Math.max(0, index - 6), index + 1);
         const eligible = rolling.reduce(
@@ -403,6 +440,13 @@ export const assessPublicPromotionEvidence = (
           new Set(day.goodRootIds).size !== day.goodRootIds.length ||
           day.goodRootIds.some((rootId) => !day.acceptedRootIds.includes(rootId)) ||
           day.authorityArtifactId.length === 0 ||
+          day.authorityArtifactChecksum !==
+            qualificationChecksum({
+              acceptedRootIds: day.acceptedRootIds,
+              artifactId: day.authorityArtifactId,
+              goodRootIds: day.goodRootIds,
+              sourceVersion: day.sourceVersion,
+            }) ||
           day.sourceVersion !== manifest.sourceVersion ||
           day.goodRootOutcomes > day.acceptedRegisteredMessages ||
           day.acceptedRegisteredMessages < 1 ||
@@ -417,6 +461,7 @@ export const assessPublicPromotionEvidence = (
       if (
         days.length < 28 ||
         !consecutive ||
+        !globallyUniqueAcceptedRoots ||
         invalidDailyEvidence ||
         continued.productionDays !== days.length ||
         continued.acceptedRegisteredMessages !== derivedAcceptedMessages ||
