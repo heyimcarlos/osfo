@@ -139,6 +139,7 @@ export interface Record {
   readonly acceptedAt: Date | null;
   readonly waitingAt: Date | null;
   readonly sendStartedAt: Date | null;
+  readonly sendClaimGeneration: number;
   readonly sendOutcomeAt: Date | null;
   readonly sendAccountedAt: Date | null;
   readonly cancelRequestedAt: Date | null;
@@ -224,6 +225,11 @@ export type SendClaim =
   | { readonly _tag: "Acquired"; readonly email: Record }
   | { readonly _tag: "Existing"; readonly email: Record };
 
+export type RetrySendClaim =
+  | { readonly _tag: "Acquired"; readonly email: Record }
+  | { readonly _tag: "Canceled"; readonly email: Record }
+  | { readonly _tag: "Existing"; readonly email: Record };
+
 export interface PortInterface {
   readonly currentAuthorization: (
     email: Record,
@@ -272,6 +278,12 @@ export interface PortInterface {
       inputDigest: InputDigest,
       startedAt: Date,
     ) => Effect.Effect<SendClaim, Conflict | NotFound | Unavailable>;
+    readonly retrySend: (
+      workflowId: WorkflowId,
+      inputDigest: InputDigest,
+      expectedClaimGeneration: number,
+      claimedAt: Date,
+    ) => Effect.Effect<RetrySendClaim, Conflict | NotFound | Unavailable>;
     readonly finishApplied: (
       workflowId: WorkflowId,
       inputDigest: InputDigest,
@@ -643,10 +655,15 @@ export const make = Effect.gen(function* () {
     const reconciliation = yield* ports.reconcileSend(email);
     const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
     if (reconciliation._tag === "NotStarted") {
-      if (email.cancelRequestedAt !== null) {
-        return yield* finishCanceled(email, "cancel-requested", outcomeAt);
-      }
-      return retryNotStarted ? yield* executeClaimedSend(email) : email;
+      if (!retryNotStarted) return email;
+      const claim = yield* ports.persistence.retrySend(
+        email.workflowId,
+        email.inputDigest,
+        email.sendClaimGeneration,
+        outcomeAt,
+      );
+      if (claim._tag === "Canceled") return yield* settleTerminal(claim.email);
+      return claim._tag === "Acquired" ? yield* executeClaimedSend(claim.email) : claim.email;
     }
     if (reconciliation._tag === "Applied") {
       const completed = yield* ports.persistence.finishApplied(
@@ -891,6 +908,7 @@ export const make = Effect.gen(function* () {
       acceptedAt: null,
       waitingAt: null,
       sendStartedAt: null,
+      sendClaimGeneration: 0,
       sendOutcomeAt: null,
       sendAccountedAt: null,
       cancelRequestedAt: null,

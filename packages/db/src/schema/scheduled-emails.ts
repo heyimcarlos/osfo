@@ -3,6 +3,7 @@ import {
   check,
   foreignKey,
   index,
+  integer,
   pgTable,
   text,
   timestamp,
@@ -60,6 +61,7 @@ export const scheduledEmails = pgTable(
     accepted_at: timestamp({ withTimezone: true }),
     waiting_at: timestamp({ withTimezone: true }),
     send_started_at: timestamp({ withTimezone: true }),
+    send_claim_generation: integer().default(0).notNull(),
     send_outcome_at: timestamp({ withTimezone: true }),
     send_accounted_at: timestamp({ withTimezone: true }),
     cancel_requested_at: timestamp({ withTimezone: true }),
@@ -87,7 +89,8 @@ export const scheduledEmails = pgTable(
         and length(btrim(${table.session_id})) > 0
         and ${table.input_digest} ~ '^[0-9a-f]{64}$'
         and length(btrim(${table.cloudflare_instance_id})) > 0
-        and length(${table.approval_presentation}) > 0`,
+        and length(${table.approval_presentation}) > 0
+        and ${table.send_claim_generation} >= 0`,
     ),
     check(
       "scheduled_emails_policy_check",

@@ -132,6 +132,44 @@ it.effect("elects exactly one send claimant under concurrent due work", () =>
   ),
 );
 
+it.effect("atomically elects exactly one NotStarted retry claimant", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "send-retry-claim-race");
+      const email = record(seeded, "send-retry-claim-race");
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      const initial = yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      const retryAt = new Date(sendAt.getTime() + 1_000);
+
+      const claims = yield* Effect.all(
+        [
+          persistence.retrySend(
+            email.workflowId,
+            email.inputDigest,
+            initial.email.sendClaimGeneration,
+            retryAt,
+          ),
+          persistence.retrySend(
+            email.workflowId,
+            email.inputDigest,
+            initial.email.sendClaimGeneration,
+            retryAt,
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      expect(new Set(claims.map((claim) => claim._tag))).toEqual(new Set(["Acquired", "Existing"]));
+      expect(claims.every((claim) => claim.email.sendClaimGeneration === 2)).toBe(true);
+      expect(
+        claims.every((claim) => claim.email.sendStartedAt?.getTime() === retryAt.getTime()),
+      ).toBe(true);
+    }),
+  ),
+);
+
 it.effect(
   "allows only the acquired claimant to invoke Gmail when the first send is NotApplied",
   () =>

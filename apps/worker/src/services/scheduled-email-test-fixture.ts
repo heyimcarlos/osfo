@@ -56,6 +56,7 @@ export const makeRecord = (
   sendAccountingBasis: null,
   sendOutcomeAt: null,
   sendAccountedAt: null,
+  sendClaimGeneration: 0,
   sendStartedAt: null,
   sessionId: SessionId.make("scheduled-email-session"),
   state: "accepted",

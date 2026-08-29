@@ -69,6 +69,13 @@ type SendClaimOutcome =
   | { readonly _tag: "Existing"; readonly row: Row }
   | { readonly _tag: "Missing" };
 
+type RetrySendClaimOutcome =
+  | { readonly _tag: "Acquired"; readonly row: Row }
+  | { readonly _tag: "Canceled"; readonly row: Row }
+  | { readonly _tag: "Conflict" }
+  | { readonly _tag: "Existing"; readonly row: Row }
+  | { readonly _tag: "Missing" };
+
 const EncodedRecord = Schema.Struct({
   acceptedAt: Schema.NullOr(Schema.Date),
   actionId: ActionId,
@@ -97,6 +104,7 @@ const EncodedRecord = Schema.Struct({
   sendAccountingBasis: Schema.NullOr(Schema.Literals(["conservative", "observed"])),
   sendOutcomeAt: Schema.NullOr(Schema.Date),
   sendAccountedAt: Schema.NullOr(Schema.Date),
+  sendClaimGeneration: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   sendStartedAt: Schema.NullOr(Schema.Date),
   sessionId: SessionId,
   state: ScheduledEmail.State,
@@ -173,12 +181,67 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
         }
         const [updated] = await transaction
           .update(scheduledEmails)
-          .set({ send_started_at: startedAt, state: "sending", updated_at: sql`clock_timestamp()` })
+          .set({
+            send_claim_generation: row.send_claim_generation + 1,
+            send_started_at: startedAt,
+            state: "sending",
+            updated_at: sql`clock_timestamp()`,
+          })
           .where(eq(scheduledEmails.workflow_id, workflowId))
           .returning();
         return updated === undefined ? { _tag: "Conflict" } : { _tag: "Acquired", row: updated };
       }),
     ).pipe(Effect.flatMap((outcome) => decodeSendClaim(workflowId, outcome))),
+  retrySend: (workflowId, inputDigest, expectedClaimGeneration, claimedAt) =>
+    attempt("retrySend", () =>
+      database.transaction(async (transaction): Promise<RetrySendClaimOutcome> => {
+        const [identity] = await transaction
+          .select({ userId: scheduledEmails.user_id })
+          .from(scheduledEmails)
+          .where(eq(scheduledEmails.workflow_id, workflowId))
+          .limit(1);
+        if (identity === undefined) return { _tag: "Missing" };
+        if (!(await lockWorkflowUser(transaction, UserId.make(identity.userId)))) {
+          return { _tag: "Missing" };
+        }
+        const [row] = await transaction
+          .select()
+          .from(scheduledEmails)
+          .where(eq(scheduledEmails.workflow_id, workflowId))
+          .for("update")
+          .limit(1);
+        if (row === undefined) return { _tag: "Missing" };
+        if (row.input_digest !== inputDigest) return { _tag: "Conflict" };
+        if (row.state !== "sending" || row.send_claim_generation !== expectedClaimGeneration) {
+          return { _tag: "Existing", row };
+        }
+        if (row.cancel_requested_at !== null) {
+          const [canceled] = await transaction
+            .update(scheduledEmails)
+            .set({
+              safe_failure_code: "cancel-requested",
+              state: "canceled",
+              terminal_at: claimedAt,
+              updated_at: sql`clock_timestamp()`,
+            })
+            .where(eq(scheduledEmails.workflow_id, workflowId))
+            .returning();
+          return canceled === undefined
+            ? { _tag: "Conflict" }
+            : { _tag: "Canceled", row: canceled };
+        }
+        const [updated] = await transaction
+          .update(scheduledEmails)
+          .set({
+            send_claim_generation: row.send_claim_generation + 1,
+            send_started_at: claimedAt,
+            updated_at: sql`clock_timestamp()`,
+          })
+          .where(eq(scheduledEmails.workflow_id, workflowId))
+          .returning();
+        return updated === undefined ? { _tag: "Conflict" } : { _tag: "Acquired", row: updated };
+      }),
+    ).pipe(Effect.flatMap((outcome) => decodeRetrySendClaim(workflowId, outcome))),
   finishApplied: (workflowId, inputDigest, result, outcomeAt) =>
     transition(database, workflowId, inputDigest, "finishApplied", async (transaction, row) => {
       if (row.state === "success") return found(row);
@@ -793,6 +856,24 @@ const decodeSendClaim = (
   );
 };
 
+const decodeRetrySendClaim = (
+  workflowId: ScheduledEmail.WorkflowId,
+  outcome: RetrySendClaimOutcome,
+): Effect.Effect<
+  ScheduledEmail.RetrySendClaim,
+  ScheduledEmail.Conflict | ScheduledEmail.NotFound | ScheduledEmail.Unavailable
+> => {
+  if (outcome._tag === "Missing") {
+    return Effect.fail(new ScheduledEmail.NotFound({ workflowId }));
+  }
+  if (outcome._tag === "Conflict") {
+    return Effect.fail(conflict(workflowId, "retrySend lost to changed lifecycle truth"));
+  }
+  return decodeRow(outcome.row).pipe(
+    Effect.map((email): ScheduledEmail.RetrySendClaim => ({ _tag: outcome._tag, email })),
+  );
+};
+
 const decodeTransition = (
   workflowId: ScheduledEmail.WorkflowId,
   operation: string,
@@ -851,6 +932,7 @@ const decodeRow = (row: Row): Effect.Effect<ScheduledEmail.Record, ScheduledEmai
     sendAccountingBasis: row.send_accounting_basis,
     sendOutcomeAt: row.send_outcome_at,
     sendAccountedAt: row.send_accounted_at,
+    sendClaimGeneration: row.send_claim_generation,
     sendStartedAt: row.send_started_at,
     sessionId: row.session_id,
     state: row.state,
@@ -896,6 +978,7 @@ const encodeInsert = (record: ScheduledEmail.Record): typeof scheduledEmails.$in
   send_accounting_basis: record.sendAccountingBasis,
   send_outcome_at: record.sendOutcomeAt,
   send_accounted_at: record.sendAccountedAt,
+  send_claim_generation: record.sendClaimGeneration,
   send_started_at: record.sendStartedAt,
   session_id: record.sessionId,
   state: record.state,

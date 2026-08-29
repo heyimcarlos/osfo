@@ -2,7 +2,7 @@
 /* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect -- Fixed authority fixtures prove exact schedule behavior. */
 /* oxlint-disable effecttsgo/strict-effect-provide -- Each it.effect owns its isolated service Layer. */
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Deferred, Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
 
 import {
@@ -552,6 +552,59 @@ describe("ScheduledEmail", () => {
     }).pipe(Effect.provide(layer(fixture.port)));
   });
 
+  it.effect("does not retry when cancellation commits during NotStarted reconciliation", () => {
+    const fixture = makeFixture({ cancelDuringReconciliation: true, sendOutcome: "ambiguous" });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const emails = yield* ScheduledEmail.Service;
+      const started = yield* emails.start(startInput());
+      const payload = payloadFor(started.email);
+      yield* emails.beginWaiting(payload);
+      yield* TestClock.setTime(scheduledAt.getTime());
+      yield* emails.sendDue(payload);
+      fixture.reconciliation = { _tag: "NotStarted" };
+
+      expect(yield* emails.recoverClaimed(payload)).toMatchObject({
+        safeFailureCode: "cancel-requested",
+        state: "canceled",
+      });
+      expect(fixture.sendAttempts).toBe(1);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  });
+
+  it.effect("allows only one NotStarted recoverer to retry the provider effect", () =>
+    Effect.gen(function* () {
+      const reconciliationBarrier = yield* Deferred.make<void>();
+      const fixture = makeFixture({
+        reconciliationBarrier,
+        sendOutcome: "ambiguous",
+      });
+      yield* TestClock.setTime(now.getTime());
+      const program = Effect.gen(function* () {
+        const emails = yield* ScheduledEmail.Service;
+        const started = yield* emails.start(startInput());
+        const payload = payloadFor(started.email);
+        yield* emails.beginWaiting(payload);
+        yield* TestClock.setTime(scheduledAt.getTime());
+        yield* emails.sendDue(payload);
+        fixture.reconciliation = { _tag: "NotStarted" };
+        fixture.sendOutcome = "applied";
+
+        const recovered = yield* Effect.all(
+          [emails.recoverClaimed(payload), emails.recoverClaimed(payload)],
+          { concurrency: "unbounded" },
+        );
+
+        expect(recovered).toEqual([
+          expect.objectContaining({ sendOutcome: "applied", state: "success" }),
+          expect.objectContaining({ sendOutcome: "applied", state: "success" }),
+        ]);
+        expect(fixture.sendAttempts).toBe(2);
+      });
+      yield* program.pipe(Effect.provide(layer(fixture.port)));
+    }),
+  );
+
   it.effect("drains workflow-start accounting after acceptance committed before an outage", () => {
     const fixture = makeFixture();
     fixture.failWorkflowAccounting = true;
@@ -874,6 +927,8 @@ const applied: IntegrationEffectCompleted = {
 
 const makeFixture = (
   options: {
+    readonly cancelDuringReconciliation?: boolean;
+    readonly reconciliationBarrier?: Deferred.Deferred<void>;
     readonly sendOutcome?: "ambiguous" | "applied" | "notApplied" | "unavailable";
   } = {},
 ) => {
@@ -976,8 +1031,35 @@ const makeFixture = (
             }
             stored = {
               ...email,
+              sendClaimGeneration: email.sendClaimGeneration + 1,
               sendStartedAt: email.sendStartedAt ?? startedAt,
               state: "sending",
+            };
+            return { _tag: "Acquired" as const, email: stored };
+          }),
+        ),
+      retrySend: (workflowId, digest, expectedClaimGeneration, claimedAt) =>
+        requireStored(workflowId, digest).pipe(
+          Effect.map((email) => {
+            if (
+              email.state !== "sending" ||
+              email.sendClaimGeneration !== expectedClaimGeneration
+            ) {
+              return { _tag: "Existing" as const, email };
+            }
+            if (email.cancelRequestedAt !== null) {
+              stored = {
+                ...email,
+                safeFailureCode: "cancel-requested",
+                state: "canceled",
+                terminalAt: claimedAt,
+              };
+              return { _tag: "Canceled" as const, email: stored };
+            }
+            stored = {
+              ...email,
+              sendClaimGeneration: email.sendClaimGeneration + 1,
+              sendStartedAt: claimedAt,
             };
             return { _tag: "Acquired" as const, email: stored };
           }),
@@ -1146,8 +1228,17 @@ const makeFixture = (
             }
           }),
     reconcileSend: () =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         reconciliationAttempts += 1;
+        if (options.cancelDuringReconciliation && stored !== null) {
+          stored = { ...stored, cancelRequestedAt: scheduledAt };
+        }
+        if (options.reconciliationBarrier !== undefined) {
+          if (reconciliationAttempts === 2) {
+            yield* Deferred.succeed(options.reconciliationBarrier, undefined);
+          }
+          yield* Deferred.await(options.reconciliationBarrier);
+        }
         return reconciliation;
       }),
     send: (_email, authorize) => authorize.pipe(Effect.andThen(Effect.suspend(sendResult))),
