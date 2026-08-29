@@ -12,7 +12,9 @@ for required in \
   'Choose text file' \
   'Keep the original authenticated Agent dashboard tab mounted' \
   'Open a second Chrome tab in the same Chrome session' \
-  'After the paid state is visible' \
+  'complete the browser-owned Adventurer upgrade' \
+  'After the Adventurer paid state is visible' \
+  'close or leave the billing tab' \
   'Return to the original dashboard tab' \
   'require the same `Ready. File ID:` value to remain visible' \
   'Start `document-build` evidence there' \

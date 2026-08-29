@@ -38,8 +38,13 @@ for required in \
   fi
 done
 
-if ! grep -F -q 'Keep each run in one Chrome session' "$skill" || \
-  ! grep -F -q "Follow the selected feature's tab sequence" "$feature_map"; then
+if ! grep -F -q 'Use the same authenticated dashboard tab for registration and channel linking' \
+  "$skill" || \
+  ! grep -F -q 'temporary provider or billing tabs' "$skill" || \
+  ! grep -F -q 'Complete registration and channel linking in the same authenticated dashboard tab' \
+    "$feature_map" || \
+  ! grep -F -q 'Preserve tabs the selected feature explicitly marks mounted' "$feature_map" || \
+  ! grep -F -q 'close or leave tabs it marks temporary' "$feature_map"; then
   printf 'Shared browser guidance conflicts with the Document Build tab sequence\n' >&2
   exit 1
 fi
@@ -50,12 +55,30 @@ printf '%s\n' \
   'Start `document-build` evidence there' \
   'require the same `Ready. File ID:` value to remain visible' \
   'Return to the original dashboard tab' \
-  'After the paid state is visible' \
+  'close or leave the billing tab' \
+  'After the Adventurer paid state is visible' \
+  'complete the browser-owned Adventurer upgrade' \
   'Open a second Chrome tab in the same Chrome session' \
   'Keep the original authenticated Agent dashboard tab mounted' \
   'Choose text file' >"$fixture_dir/reversed-tab-sequence.md"
 if "$tab_sequence_assertion" "$fixture_dir/reversed-tab-sequence.md" 2>/dev/null; then
   printf 'A reversed Document Build browser tab sequence falsely qualified\n' >&2
+  exit 1
+fi
+printf '%s\n' \
+  'Choose text file' \
+  'Keep the original authenticated Agent dashboard tab mounted' \
+  'Open a second Chrome tab in the same Chrome session' \
+  'After the Adventurer paid state is visible' \
+  'close or leave the billing tab' \
+  'Return to the original dashboard tab' \
+  'require the same `Ready. File ID:` value to remain visible' \
+  'Start `document-build` evidence there' \
+  'capture that ready File ID as `action.png`' \
+  'complete the browser-owned Adventurer upgrade' \
+  >"$fixture_dir/late-adventurer-upgrade.md"
+if "$tab_sequence_assertion" "$fixture_dir/late-adventurer-upgrade.md" 2>/dev/null; then
+  printf 'A late Adventurer upgrade falsely qualified before the paid action screenshot\n' >&2
   exit 1
 fi
 

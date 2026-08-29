@@ -30,7 +30,7 @@ The run is ready when all of these hold:
 - PostgreSQL answers `pg_isready` inside the run-labeled container;
 - `doctor` reports the same launch commit as the current checkout.
 
-Two runs may coexist because their ports, container, Worker storage, User identity, Telegram address, and evidence directory differ. Keep each run in one Chrome session. A feature may require more than one tab in that session to preserve visible state; follow its tab sequence. Never drive another run's URL in any tab.
+Two runs may coexist because their ports, container, Worker storage, User identity, Telegram address, and evidence directory differ. Keep each run in one Chrome session. Use the same authenticated dashboard tab for registration and channel linking. Preserve a tab when the selected feature explicitly marks it mounted. A feature may direct temporary provider or billing tabs; close or leave those tabs when directed. Never drive another run's URL in any tab.
 
 ## Doctor
 
@@ -52,7 +52,7 @@ do not insert Channel Links, Reminders, occurrences, or Wake-up rows.
 
 ## Drive in Chrome
 
-Use Chrome browser control, not `curl`, Playwright from the shell, a Better Auth test helper, or a database write. Keep the same Chrome tab for registration and channel linking so the verified session remains present.
+Use Chrome browser control, not `curl`, Playwright from the shell, a Better Auth test helper, or a database write. Continue in the run's Chrome session and follow the selected feature's tab sequence.
 
 Open the selected feature file for its only authoritative drive and completion criterion:
 
