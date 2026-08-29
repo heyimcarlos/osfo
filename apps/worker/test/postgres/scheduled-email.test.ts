@@ -636,6 +636,13 @@ it.effect("finalizes old deletion-fenced ambiguity after the recovery envelope",
       expect(providerInspections).toBe(0);
       expect(recordedSends).toBe(1);
       expect(
+        (yield* ScheduledEmailPostgres.reconciliationBatch(
+          database,
+          new Date(recoveryAt.getTime() + 1),
+          20,
+        )).some(({ workflowId }) => workflowId === email.workflowId),
+      ).toBe(false);
+      expect(
         yield* ScheduledEmailPostgres.quiesceForAccountDeletion(database, email.userId, recoveryAt),
       ).toMatchObject({ _tag: "Ready" });
     }),

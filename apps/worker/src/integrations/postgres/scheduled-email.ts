@@ -856,6 +856,7 @@ export const reconciliationBatch = (database: Database, now: Date, limit: number
             and(
               eq(scheduledEmails.state, "failure"),
               eq(scheduledEmails.send_outcome, "ambiguous"),
+              isNull(scheduledEmails.send_accounting_basis),
               isNotNull(scheduledEmails.send_started_at),
               or(
                 sql`${scheduledEmails.send_started_at} + interval '5 minutes' >= ${now.toISOString()}::timestamptz`,
