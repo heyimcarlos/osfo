@@ -1466,7 +1466,7 @@ const makeHarness = (): IntegrationProvider &
       Effect.sync(() => {
         harness.disconnected.push(connectedAccountId);
       }),
-    execute: (providerTool, input, connectedAccountId, constraints) => {
+    execute: (providerTool, input, connectedAccountId, constraints, _correlation) => {
       if (constraints === undefined) {
         harness.executed.push({ connectedAccountId, input, providerTool });
       } else {
@@ -1505,6 +1505,15 @@ const makeHarness = (): IntegrationProvider &
     retainAction: (actionId: ActionId, value: PersistedIntegrationAction) =>
       Effect.sync(() => {
         actions.set(actionId, value);
+      }),
+    settleAction: (
+      actionId: ActionId,
+      _providerRequestId: string,
+      value: PersistedIntegrationAction,
+    ) =>
+      Effect.sync(() => {
+        actions.set(actionId, value);
+        return value;
       }),
     retainSession: (mappedUserId: UserId, providerSessionId: string) =>
       Effect.sync(() => {

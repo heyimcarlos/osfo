@@ -62,6 +62,7 @@ describe("Composio Provider", () => {
       const executed: Array<{
         connectedAccountId: string;
         input: ProviderInput;
+        providerRequestId: string | undefined;
         providerSessionId: string;
         providerTool: string;
       }> = [];
@@ -72,8 +73,21 @@ describe("Composio Provider", () => {
       const provider = makeFromClient({
         createSession: async () => session,
         disconnect: async () => undefined,
-        executeOnce: async (providerSessionId, providerTool, input, connectedAccountId) => {
-          executed.push({ connectedAccountId, input, providerSessionId, providerTool });
+        executeOnce: async (
+          providerSessionId,
+          providerTool,
+          input,
+          connectedAccountId,
+          _timeoutMillis,
+          providerRequestId,
+        ) => {
+          executed.push({
+            connectedAccountId,
+            input,
+            providerRequestId,
+            providerSessionId,
+            providerTool,
+          });
           return { data: {}, error: null, logId: "composio-log-1" };
         },
         listConnectedAccounts: async () => ({
@@ -112,7 +126,19 @@ describe("Composio Provider", () => {
         user_id: "me",
       } as const;
       expect(
-        yield* created.session.execute("GMAIL_SEND_EMAIL", providerInput, "private-account"),
+        yield* created.session.execute(
+          "GMAIL_SEND_EMAIL",
+          providerInput,
+          "private-account",
+          undefined,
+          {
+            connectedAccountId: "private-account",
+            providerRequestId: "attempt-request-1",
+            providerSessionId: "provider-session-1",
+            providerTool: "GMAIL_SEND_EMAIL",
+            startedAt: 1_000_000,
+          },
+        ),
       ).toEqual({
         data: {},
         error: null,
@@ -122,6 +148,7 @@ describe("Composio Provider", () => {
         {
           connectedAccountId: "private-account",
           input: providerInput,
+          providerRequestId: "attempt-request-1",
           providerSessionId: "provider-session-1",
           providerTool: "GMAIL_SEND_EMAIL",
         },
@@ -129,7 +156,7 @@ describe("Composio Provider", () => {
     }),
   );
 
-  it.effect("matches bounded exact execution logs and keeps absence or duplicates unknown", () =>
+  it.effect("binds identical logs to the originating request identity", () =>
     Effect.gen(function* () {
       const input = {
         body: "bounded",
@@ -144,6 +171,7 @@ describe("Composio Provider", () => {
       let listFailure = false;
       let listCalls = 0;
       let laterPage = false;
+      let requestEvidenceMode: "legacy" | "missing" | "official" = "legacy";
       let retrieveFailure = false;
       const session = {
         authorize: async () => ({ redirectUrl: "https://connect.composio.dev/link" }),
@@ -173,8 +201,16 @@ describe("Composio Provider", () => {
         },
         retrieveToolLog: async (id) => {
           if (retrieveFailure) throw new Error("retrieve unavailable");
+          const requestId = id === "later-action-log" ? "attempt-request-2" : "attempt-request-1";
+          const requestEvidence =
+            requestEvidenceMode === "official"
+              ? { context: { request_id: requestId } }
+              : requestEvidenceMode === "legacy"
+                ? { executionMetadata: { requestId } }
+                : {};
           return {
             connection: { id: "private-account" },
+            ...requestEvidence,
             payloadReceived: {
               arguments: id === "wrong-payload" ? { ...input, body: "changed" } : input,
             },
@@ -199,6 +235,7 @@ describe("Composio Provider", () => {
       );
       const correlation = {
         connectedAccountId: "private-account",
+        providerRequestId: "attempt-request-1",
         providerSessionId: "provider-session-1",
         providerTool: "GMAIL_SEND_EMAIL",
         startedAt: 1_000_000,
@@ -209,9 +246,25 @@ describe("Composio Provider", () => {
       expect(yield* inspectExecution({ ...correlation, providerSessionId: null }, input)).toEqual({
         _tag: "Unknown",
       });
+      expect(yield* inspectExecution({ ...correlation, providerRequestId: null }, input)).toEqual({
+        _tag: "Unknown",
+      });
       expect(yield* inspectExecution(correlation, input)).toMatchObject({
         _tag: "Applied",
         execution: { logId: "log-1" },
+      });
+      requestEvidenceMode = "official";
+      expect(yield* inspectExecution(correlation, input)).toMatchObject({ _tag: "Applied" });
+      requestEvidenceMode = "missing";
+      expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
+      requestEvidenceMode = "legacy";
+      listed = [exactToolLog("later-action-log")];
+      expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });
+      expect(
+        yield* inspectExecution({ ...correlation, providerRequestId: "attempt-request-2" }, input),
+      ).toMatchObject({
+        _tag: "Applied",
+        execution: { logId: "later-action-log" },
       });
       listed = [exactToolLog("other-session")];
       expect(yield* inspectExecution(correlation, input)).toEqual({ _tag: "Unknown" });

@@ -63,6 +63,8 @@ const ToolLogList = Schema.Struct({
 
 const ToolLogDetail = Schema.Struct({
   connection: Schema.Struct({ id: Schema.String }),
+  context: Schema.optionalKey(Schema.JsonObject),
+  executionMetadata: Schema.optionalKey(Schema.JsonObject),
   payloadReceived: Schema.JsonObject,
   response: Schema.JsonObject,
   session: Schema.JsonObject,
@@ -104,6 +106,7 @@ interface ComposioClientPort {
     input: ProviderInput,
     connectedAccountId: string,
     timeoutMillis?: number,
+    providerRequestId?: string,
   ) => Promise<ProviderExecutionResult>;
   readonly disconnect: (connectedAccountId: string) => Promise<void>;
   readonly listConnectedAccounts: (
@@ -202,7 +205,14 @@ export const make = (apiKey: Redacted.Redacted): IntegrationProvider => {
   });
   return makeFromClient({
     createSession: (userId, config) => composio.sessions.create(userId, config),
-    executeOnce: (sessionId, providerTool, input, connectedAccountId, timeoutMillis) =>
+    executeOnce: (
+      sessionId,
+      providerTool,
+      input,
+      connectedAccountId,
+      timeoutMillis,
+      providerRequestId,
+    ) =>
       executeOnce(
         value,
         sessionId,
@@ -210,6 +220,7 @@ export const make = (apiKey: Redacted.Redacted): IntegrationProvider => {
         input,
         connectedAccountId,
         timeoutMillis ?? requestTimeoutMillis,
+        providerRequestId,
       ),
     disconnect: (connectedAccountId) =>
       composio.connectedAccounts.delete(connectedAccountId).then(() => undefined),
@@ -272,7 +283,7 @@ const adaptSession = (
           : Effect.fail(providerFailure("authorize"));
       }),
     ),
-  execute: (providerTool, input, connectedAccountId, constraints) => {
+  execute: (providerTool, input, connectedAccountId, constraints, correlation) => {
     if (providerTool === "GOOGLEDRIVE_DOWNLOAD_FILE" && "fileId" in input && "mime_type" in input) {
       return executeDriveDownload(
         client,
@@ -283,7 +294,14 @@ const adaptSession = (
       );
     }
     return providerCall("execute", () =>
-      client.executeOnce(session.sessionId, providerTool, input, connectedAccountId),
+      client.executeOnce(
+        session.sessionId,
+        providerTool,
+        input,
+        connectedAccountId,
+        undefined,
+        correlation?.providerRequestId ?? undefined,
+      ),
     );
   },
   disconnect: (connectedAccountId) =>
@@ -313,6 +331,9 @@ const inspectExecution = (
   input: ProviderInput,
 ) => {
   if (correlation.providerSessionId === null) {
+    return Effect.succeed({ _tag: "Unknown" as const });
+  }
+  if (correlation.providerRequestId === null) {
     return Effect.succeed({ _tag: "Unknown" as const });
   }
   if (client.listToolLogs === undefined || client.retrieveToolLog === undefined) {
@@ -356,6 +377,7 @@ const inspectExecution = (
                 : detail.payloadReceived;
             return detail.connection.id === correlation.connectedAccountId &&
               providerSessionIdFrom(detail.session) === correlation.providerSessionId &&
+              providerRequestIdFrom(detail) === correlation.providerRequestId &&
               sameJson(received, expectedInput)
               ? {
                   id: candidate.id,
@@ -425,6 +447,17 @@ const providerSessionIdFrom = (session: Schema.JsonObject): string | null => {
   for (const key of ["id", "sessionId", "session_id"] as const) {
     const decoded = Schema.decodeUnknownOption(Schema.String)(session[key]);
     if (Option.isSome(decoded)) return decoded.value;
+  }
+  return null;
+};
+
+const providerRequestIdFrom = (detail: typeof ToolLogDetail.Type): string | null => {
+  for (const source of [detail.context, detail.executionMetadata]) {
+    if (source === undefined) continue;
+    for (const key of ["request_id", "requestId"] as const) {
+      const decoded = Schema.decodeUnknownOption(Schema.String)(source[key]);
+      if (Option.isSome(decoded)) return decoded.value;
+    }
   }
   return null;
 };
@@ -672,8 +705,11 @@ const executeOnce = async (
   input: ProviderInput,
   connectedAccountId: string,
   timeoutMillis: number,
+  providerRequestId?: string,
 ): Promise<ProviderExecutionResult> => {
   // Osfo owns Action retry policy; this host adapter performs one request because the current session SDK may retry writes.
+  const headers = new Headers({ "content-type": "application/json", "x-api-key": apiKey });
+  if (providerRequestId !== undefined) headers.set("x-request-id", providerRequestId);
   // oxlint-disable-next-line osfo/no-raw-fetch, effecttsgo/global-fetch -- This is the Composio host adapter and must preserve one execution attempt.
   const response = await fetch(
     `${composioApiBaseUrl}/api/v3.1/tool_router/session/${encodeURIComponent(sessionId)}/execute`,
@@ -683,7 +719,7 @@ const executeOnce = async (
         arguments: input,
         tool_slug: providerTool,
       }),
-      headers: { "content-type": "application/json", "x-api-key": apiKey },
+      headers,
       method: "POST",
       signal: AbortSignal.timeout(timeoutMillis),
     },

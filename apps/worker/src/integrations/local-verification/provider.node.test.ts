@@ -84,6 +84,13 @@ it.effect("connects and sends through one deterministic local Gmail provider bou
       const accountId = evidence[0]?.connectedAccount?.id;
       expect(accountId).toBeDefined();
       if (accountId === undefined) return;
+      const correlation = {
+        connectedAccountId: accountId,
+        providerRequestId: "local-attempt-request-1",
+        providerSessionId: created.providerSessionId,
+        providerTool: "GMAIL_SEND_EMAIL",
+        startedAt: 0,
+      } as const;
       const result = yield* created.session.execute(
         "GMAIL_SEND_EMAIL",
         {
@@ -94,6 +101,8 @@ it.effect("connects and sends through one deterministic local Gmail provider bou
           user_id: "me",
         },
         accountId,
+        undefined,
+        correlation,
       );
       expect(result).toMatchObject({
         data: { id: "local-gmail-message-1" },
@@ -103,21 +112,13 @@ it.effect("connects and sends through one deterministic local Gmail provider bou
       const inspectExecution = created.session.inspectExecution;
       if (inspectExecution === undefined) throw new Error("provider inspection is missing");
       expect(
-        yield* inspectExecution(
-          {
-            connectedAccountId: accountId,
-            providerSessionId: created.providerSessionId,
-            providerTool: "GMAIL_SEND_EMAIL",
-            startedAt: 0,
-          },
-          {
-            body: "Scheduled Email local provider boundary proof.",
-            is_html: false,
-            recipient_email: "recipient@example.test",
-            subject: "Scheduled Email verification",
-            user_id: "me",
-          },
-        ),
+        yield* inspectExecution(correlation, {
+          body: "Scheduled Email local provider boundary proof.",
+          is_html: false,
+          recipient_email: "recipient@example.test",
+          subject: "Scheduled Email verification",
+          user_id: "me",
+        }),
       ).toMatchObject({ _tag: "Applied", execution: { logId: "local-gmail-log-1" } });
       const ledger = yield* Effect.promise(() =>
         fetch(new URL("/_test/integrations/ledger", emulator.origin)).then((response) =>
@@ -127,6 +128,7 @@ it.effect("connects and sends through one deterministic local Gmail provider bou
       expect(ledger).toMatchObject([
         {
           providerSessionId: created.providerSessionId,
+          providerRequestId: "local-attempt-request-1",
           providerTool: "GMAIL_SEND_EMAIL",
           resourceId: "local-gmail-message-1",
           userId,
