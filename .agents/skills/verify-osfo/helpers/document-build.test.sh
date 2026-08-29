@@ -203,6 +203,9 @@ for required in \
   'run-owned local provider inbox' \
   'Adventurer Plan' \
   'Choose text file' \
+  'Keep the original authenticated Agent dashboard tab mounted' \
+  'second Chrome tab' \
+  'Return to the original dashboard tab' \
   'telegram-reply' \
   'Download PDF' \
   'Do not seed a FileRecord'; do
