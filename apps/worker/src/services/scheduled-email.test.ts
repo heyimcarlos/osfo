@@ -2,7 +2,7 @@
 /* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect -- Fixed authority fixtures prove exact schedule behavior. */
 /* oxlint-disable effecttsgo/strict-effect-provide -- Each it.effect owns its isolated service Layer. */
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Layer } from "effect";
+import { Deferred, Effect, Layer, Predicate } from "effect";
 import { TestClock } from "effect/testing";
 
 import {
@@ -308,10 +308,6 @@ describe("ScheduledEmail", () => {
       expect(fixture.followUps).toBe(1);
 
       yield* TestClock.setTime(scheduledAt.getTime() + 300_000);
-      expect(yield* emails.recoverClaimed(payload)).toMatchObject({ sendAccountedAt: null });
-      expect(fixture.gmailSendFacts).toBe(0);
-
-      yield* TestClock.setTime(scheduledAt.getTime() + 300_001);
       const finalized = yield* emails.recoverClaimed(payload);
       expect(finalized.sendAccountedAt).not.toBeNull();
       expect(fixture.gmailSendBases).toEqual(["conservative"]);
@@ -1212,6 +1208,87 @@ const makeFixture = (
                 return stored;
               }),
             ),
+      claimTerminalReconciliation: (workflowId, digest, claimedAt, leaseExpiresAt) =>
+        requireStored(workflowId, digest).pipe(
+          Effect.map((email): ScheduledEmail.TerminalReconciliationClaim => {
+            if (
+              email.state !== "failure" ||
+              email.sendOutcome !== "ambiguous" ||
+              email.sendAccountingBasis !== null ||
+              email.sendStartedAt === null ||
+              claimedAt.getTime() - email.sendStartedAt.getTime() >=
+                ScheduledEmail.providerEvidenceHorizonMilliseconds ||
+              (email.sendReconciliationLeaseExpiresAt !== null &&
+                email.sendReconciliationLeaseExpiresAt.getTime() > claimedAt.getTime())
+            ) {
+              return { _tag: "Existing", email };
+            }
+            stored = {
+              ...email,
+              sendReconciliationClaimedAt: claimedAt,
+              sendReconciliationLeaseExpiresAt: leaseExpiresAt,
+            };
+            return { _tag: "Acquired", claimedAt, email: stored };
+          }),
+        ),
+      completeTerminalReconciliation: (
+        workflowId,
+        digest,
+        claimedAt,
+        completedReconciliation,
+        outcomeAt,
+      ) =>
+        requireStored(workflowId, digest).pipe(
+          Effect.map((email) => {
+            if (
+              email.state !== "failure" ||
+              email.sendOutcome !== "ambiguous" ||
+              email.sendAccountingBasis !== null ||
+              email.sendStartedAt === null ||
+              email.sendReconciliationClaimedAt?.getTime() !== claimedAt.getTime()
+            ) {
+              return email;
+            }
+            const released = {
+              ...email,
+              sendReconciliationClaimedAt: null,
+              sendReconciliationLeaseExpiresAt: null,
+            };
+            if (
+              outcomeAt.getTime() - email.sendStartedAt.getTime() >
+              ScheduledEmail.providerEvidenceHorizonMilliseconds
+            ) {
+              stored = released;
+              return stored;
+            }
+            if (Predicate.isTagged(completedReconciliation, "NotApplied")) {
+              stored = {
+                ...released,
+                providerLogId: completedReconciliation.providerLogId,
+                safeFailureCode: "send-not-applied",
+                sendOutcome: "notApplied",
+                sendOutcomeAt: outcomeAt,
+              };
+              return stored;
+            }
+            if (Predicate.isTagged(completedReconciliation, "Applied")) {
+              stored = {
+                ...released,
+                providerLogId: completedReconciliation.result.evidence.providerLogId,
+                providerResourceId: completedReconciliation.result.evidence.providerResourceId,
+                safeFailureCode: null,
+                sendAccountingBasis: "observed",
+                sendOutcome: "applied",
+                sendOutcomeAt: outcomeAt,
+                state: "success",
+                terminalAt: outcomeAt,
+              };
+              return stored;
+            }
+            stored = released;
+            return stored;
+          }),
+        ),
       finalizeAmbiguousAccounting: (workflowId, digest, finalizedAt) =>
         requireStored(workflowId, digest).pipe(
           Effect.map((email) => {
@@ -1219,12 +1296,19 @@ const makeFixture = (
               email.state !== "failure" ||
               email.sendOutcome !== "ambiguous" ||
               email.sendStartedAt === null ||
-              finalizedAt.getTime() - email.sendStartedAt.getTime() <=
+              (email.sendReconciliationLeaseExpiresAt !== null &&
+                email.sendReconciliationLeaseExpiresAt.getTime() > finalizedAt.getTime()) ||
+              finalizedAt.getTime() - email.sendStartedAt.getTime() <
                 ScheduledEmail.providerEvidenceHorizonMilliseconds
             ) {
               return email;
             }
-            stored = { ...email, sendAccountingBasis: "conservative" };
+            stored = {
+              ...email,
+              sendAccountingBasis: "conservative",
+              sendReconciliationClaimedAt: null,
+              sendReconciliationLeaseExpiresAt: null,
+            };
             return stored;
           }),
         ),

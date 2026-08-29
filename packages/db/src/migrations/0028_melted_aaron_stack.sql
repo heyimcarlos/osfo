@@ -1,5 +1,14 @@
 ALTER TABLE "scheduled_emails" DROP CONSTRAINT "scheduled_emails_outcome_check";--> statement-breakpoint
 ALTER TABLE "scheduled_emails" DROP CONSTRAINT "scheduled_emails_lifecycle_check";--> statement-breakpoint
+-- One-time repair for the historical false fact; runtime Allowance usage remains immutable.
+DELETE FROM "allowance_usage"
+USING "scheduled_emails"
+WHERE "scheduled_emails"."send_outcome" = 'notApplied'
+  AND "scheduled_emails"."send_accounting_basis" = 'conservative'
+  AND "allowance_usage"."allowance_period_id" = "scheduled_emails"."allowance_period_id"
+  AND "allowance_usage"."allowance_kind" = 'gmailSends'
+  AND "allowance_usage"."source_type" = 'integrationAction'
+  AND "allowance_usage"."source_id" = "scheduled_emails"."action_id";--> statement-breakpoint
 UPDATE "scheduled_emails"
 SET "send_accounting_basis" = null
 WHERE "send_accounting_basis" = 'conservative'

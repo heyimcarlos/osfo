@@ -107,6 +107,7 @@ export type State = typeof State.Type;
 
 export const terminalStates = new Set<State>(["success", "failure", "canceled"]);
 export const providerEvidenceHorizonMilliseconds = 300_000;
+export const providerReconciliationLeaseMilliseconds = 60_000;
 
 export interface Record {
   readonly workflowId: WorkflowId;
@@ -143,6 +144,8 @@ export interface Record {
   readonly sendOutcomeAt: Date | null;
   /** Accounting is resolved. Proven NotApplied truth sets this without an Allowance fact. */
   readonly sendAccountedAt: Date | null;
+  readonly sendReconciliationClaimedAt: Date | null;
+  readonly sendReconciliationLeaseExpiresAt: Date | null;
   readonly cancelRequestedAt: Date | null;
   readonly terminalAt: Date | null;
   readonly workflowStartAccountedAt: Date | null;
@@ -231,6 +234,10 @@ export type RetrySendClaim =
   | { readonly _tag: "Canceled"; readonly email: Record }
   | { readonly _tag: "Existing"; readonly email: Record };
 
+export type TerminalReconciliationClaim =
+  | { readonly _tag: "Acquired"; readonly email: Record; readonly claimedAt: Date }
+  | { readonly _tag: "Existing"; readonly email: Record };
+
 export interface PortInterface {
   readonly currentAuthorization: (
     email: Record,
@@ -272,6 +279,19 @@ export interface PortInterface {
       workflowId: WorkflowId,
       inputDigest: InputDigest,
       finalizedAt: Date,
+    ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
+    readonly claimTerminalReconciliation: (
+      workflowId: WorkflowId,
+      inputDigest: InputDigest,
+      claimedAt: Date,
+      leaseExpiresAt: Date,
+    ) => Effect.Effect<TerminalReconciliationClaim, Conflict | NotFound | Unavailable>;
+    readonly completeTerminalReconciliation: (
+      workflowId: WorkflowId,
+      inputDigest: InputDigest,
+      claimedAt: Date,
+      reconciliation: SendReconciliation,
+      outcomeAt: Date,
     ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
     readonly markWorkflowStartAccounted: (
       workflowId: WorkflowId,
@@ -390,7 +410,7 @@ export const make = Effect.gen(function* () {
         email.sendOutcome !== "ambiguous" ||
         email.sendAccountingBasis !== null ||
         email.sendStartedAt === null ||
-        finalizedAt.getTime() - email.sendStartedAt.getTime() <= providerEvidenceHorizonMilliseconds
+        finalizedAt.getTime() - email.sendStartedAt.getTime() < providerEvidenceHorizonMilliseconds
       ) {
         return email;
       }
@@ -728,28 +748,26 @@ export const make = Effect.gen(function* () {
   const refineTerminalAmbiguity = Effect.fn("ScheduledEmail.refineTerminalAmbiguity")(function* (
     email: Record,
   ) {
-    const reconciliation = yield* ports.reconcileSend(email);
-    const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-    if (
-      email.sendStartedAt === null ||
-      outcomeAt.getTime() - email.sendStartedAt.getTime() > providerEvidenceHorizonMilliseconds
-    ) {
-      return yield* settleTerminal(email);
-    }
-    if (reconciliation._tag === "NotApplied") {
-      const completed = yield* ports.persistence.refineNotApplied(
-        email.workflowId,
-        email.inputDigest,
-        reconciliation.providerLogId,
-        outcomeAt,
-      );
-      return yield* settleTerminal(completed);
-    }
-    if (reconciliation._tag !== "Applied") return yield* settleTerminal(email);
-    const completed = yield* ports.persistence.finishApplied(
+    const claimedAtDateTime = yield* DateTime.now;
+    const claimedAt = DateTime.toDateUtc(claimedAtDateTime);
+    const claim = yield* ports.persistence.claimTerminalReconciliation(
       email.workflowId,
       email.inputDigest,
-      reconciliation.result,
+      claimedAt,
+      DateTime.toDateUtc(
+        DateTime.add(claimedAtDateTime, {
+          milliseconds: providerReconciliationLeaseMilliseconds,
+        }),
+      ),
+    );
+    if (claim._tag === "Existing") return yield* settleTerminal(claim.email);
+    const reconciliation = yield* ports.reconcileSend(claim.email);
+    const outcomeAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    const completed = yield* ports.persistence.completeTerminalReconciliation(
+      email.workflowId,
+      email.inputDigest,
+      claim.claimedAt,
+      reconciliation,
       outcomeAt,
     );
     return yield* settleTerminal(completed);
@@ -792,7 +810,7 @@ export const make = Effect.gen(function* () {
       email.sendOutcome === "ambiguous" &&
       email.sendAccountingBasis === null &&
       email.sendStartedAt !== null &&
-      now.getTime() - email.sendStartedAt.getTime() <= providerEvidenceHorizonMilliseconds
+      now.getTime() - email.sendStartedAt.getTime() < providerEvidenceHorizonMilliseconds
     ) {
       return yield* refineTerminalAmbiguity(email);
     }
@@ -941,6 +959,8 @@ export const make = Effect.gen(function* () {
       sendClaimGeneration: 0,
       sendOutcomeAt: null,
       sendAccountedAt: null,
+      sendReconciliationClaimedAt: null,
+      sendReconciliationLeaseExpiresAt: null,
       cancelRequestedAt: null,
       terminalAt: null,
       workflowStartAccountedAt: null,

@@ -382,11 +382,11 @@ it.effect("expires terminal ambiguity inspection after the provider evidence hor
       expect(
         (yield* ScheduledEmailPostgres.reconciliationBatch(
           database,
-          new Date(sendAt.getTime() + 300_001),
+          new Date(sendAt.getTime() + 300_000),
           20,
         )).some(({ workflowId }) => workflowId === email.workflowId),
       ).toBe(true);
-      const finalizedAt = new Date(sendAt.getTime() + 300_001);
+      const finalizedAt = new Date(sendAt.getTime() + 300_000);
       yield* persistence.finalizeAmbiguousAccounting(
         email.workflowId,
         email.inputDigest,
@@ -481,6 +481,117 @@ it.effect("marks direct NotApplied accounting resolved without a Gmail fact or r
             .where(eq(allowanceUsage.source_id, email.actionId)),
         ),
       ).toEqual([]);
+    }),
+  ),
+);
+
+it.effect("lets an in-horizon reconciliation claim beat exact-horizon finalization", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "reconciliation-finalization-race");
+      const email = record(seeded, "reconciliation-finalization-race");
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        new Date(sendAt.getTime() + 120_000),
+      );
+      const claimedAt = new Date(sendAt.getTime() + 299_000);
+      const claim = yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        claimedAt,
+        new Date(sendAt.getTime() + 359_000),
+      );
+      expect(claim).toMatchObject({ _tag: "Acquired", claimedAt });
+
+      yield* Effect.all(
+        [
+          persistence.completeTerminalReconciliation(
+            email.workflowId,
+            email.inputDigest,
+            claimedAt,
+            { _tag: "NotApplied", providerLogId: "authoritative-not-applied" },
+            new Date(sendAt.getTime() + 299_999),
+          ),
+          persistence.finalizeAmbiguousAccounting(
+            email.workflowId,
+            email.inputDigest,
+            new Date(sendAt.getTime() + 300_000),
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      expect(yield* persistence.inspect(email.workflowId)).toMatchObject({
+        providerLogId: "authoritative-not-applied",
+        sendAccountingBasis: null,
+        sendOutcome: "notApplied",
+      });
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select()
+            .from(allowanceUsage)
+            .where(eq(allowanceUsage.source_id, email.actionId)),
+        ),
+      ).toEqual([]);
+    }),
+  ),
+);
+
+it.effect("expires a crashed reconciliation claim before conservative finalization", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "expired-reconciliation-claim");
+      const email = record(seeded, "expired-reconciliation-claim");
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        new Date(sendAt.getTime() + 120_000),
+      );
+      const claimedAt = new Date(sendAt.getTime() + 299_000);
+      const leaseExpiresAt = new Date(sendAt.getTime() + 301_000);
+      yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        claimedAt,
+        leaseExpiresAt,
+      );
+
+      expect(
+        yield* persistence.finalizeAmbiguousAccounting(
+          email.workflowId,
+          email.inputDigest,
+          new Date(sendAt.getTime() + 300_000),
+        ),
+      ).toMatchObject({ sendAccountingBasis: null });
+      expect(
+        yield* persistence.finalizeAmbiguousAccounting(
+          email.workflowId,
+          email.inputDigest,
+          leaseExpiresAt,
+        ),
+      ).toMatchObject({
+        sendAccountingBasis: "conservative",
+        sendReconciliationClaimedAt: null,
+        sendReconciliationLeaseExpiresAt: null,
+      });
     }),
   ),
 );

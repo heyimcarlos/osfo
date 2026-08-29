@@ -76,6 +76,12 @@ type RetrySendClaimOutcome =
   | { readonly _tag: "Existing"; readonly row: Row }
   | { readonly _tag: "Missing" };
 
+type TerminalReconciliationClaimOutcome =
+  | { readonly _tag: "Acquired"; readonly claimedAt: Date; readonly row: Row }
+  | { readonly _tag: "Conflict" }
+  | { readonly _tag: "Existing"; readonly row: Row }
+  | { readonly _tag: "Missing" };
+
 const EncodedRecord = Schema.Struct({
   acceptedAt: Schema.NullOr(Schema.Date),
   actionId: ActionId,
@@ -104,6 +110,8 @@ const EncodedRecord = Schema.Struct({
   sendAccountingBasis: Schema.NullOr(Schema.Literals(["conservative", "observed"])),
   sendOutcomeAt: Schema.NullOr(Schema.Date),
   sendAccountedAt: Schema.NullOr(Schema.Date),
+  sendReconciliationClaimedAt: Schema.NullOr(Schema.Date),
+  sendReconciliationLeaseExpiresAt: Schema.NullOr(Schema.Date),
   sendClaimGeneration: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   sendStartedAt: Schema.NullOr(Schema.Date),
   sessionId: SessionId,
@@ -399,6 +407,120 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
         .returning();
       return updated === undefined ? changed() : found(updated);
     }),
+  claimTerminalReconciliation: (workflowId, inputDigest, claimedAt, leaseExpiresAt) =>
+    attempt("claimTerminalReconciliation", () =>
+      database.transaction(async (transaction): Promise<TerminalReconciliationClaimOutcome> => {
+        const [identity] = await transaction
+          .select({ inputDigest: scheduledEmails.input_digest, userId: scheduledEmails.user_id })
+          .from(scheduledEmails)
+          .where(eq(scheduledEmails.workflow_id, workflowId))
+          .limit(1);
+        if (identity === undefined || !(await lockWorkflowUser(transaction, identity.userId))) {
+          return { _tag: "Missing" };
+        }
+        if (identity.inputDigest !== inputDigest) return { _tag: "Conflict" };
+        const [row] = await transaction
+          .select()
+          .from(scheduledEmails)
+          .where(eq(scheduledEmails.workflow_id, workflowId))
+          .for("update")
+          .limit(1);
+        if (row === undefined) return { _tag: "Missing" };
+        if (row.input_digest !== inputDigest) return { _tag: "Conflict" };
+        if (
+          row.state !== "failure" ||
+          row.send_outcome !== "ambiguous" ||
+          row.send_accounting_basis !== null ||
+          row.send_started_at === null ||
+          claimedAt.getTime() - row.send_started_at.getTime() >=
+            ScheduledEmail.providerEvidenceHorizonMilliseconds ||
+          (row.send_reconciliation_lease_expires_at !== null &&
+            row.send_reconciliation_lease_expires_at.getTime() > claimedAt.getTime())
+        ) {
+          return { _tag: "Existing", row };
+        }
+        const [updated] = await transaction
+          .update(scheduledEmails)
+          .set({
+            send_reconciliation_claimed_at: claimedAt,
+            send_reconciliation_lease_expires_at: leaseExpiresAt,
+            updated_at: sql`clock_timestamp()`,
+          })
+          .where(eq(scheduledEmails.workflow_id, workflowId))
+          .returning();
+        return updated === undefined
+          ? { _tag: "Conflict" }
+          : { _tag: "Acquired", claimedAt, row: updated };
+      }),
+    ).pipe(Effect.flatMap((outcome) => decodeTerminalReconciliationClaim(workflowId, outcome))),
+  completeTerminalReconciliation: (workflowId, inputDigest, claimedAt, reconciliation, outcomeAt) =>
+    transition(
+      database,
+      workflowId,
+      inputDigest,
+      "completeTerminalReconciliation",
+      async (transaction, row) => {
+        if (
+          row.state !== "failure" ||
+          row.send_outcome !== "ambiguous" ||
+          row.send_accounting_basis !== null ||
+          row.send_started_at === null ||
+          row.send_reconciliation_claimed_at?.getTime() !== claimedAt.getTime()
+        ) {
+          return found(row);
+        }
+        const withinEvidenceHorizon =
+          outcomeAt.getTime() - row.send_started_at.getTime() <=
+          ScheduledEmail.providerEvidenceHorizonMilliseconds;
+        if (withinEvidenceHorizon && reconciliation._tag === "Applied") {
+          const [updated] = await transaction
+            .update(scheduledEmails)
+            .set({
+              provider_log_id: reconciliation.result.evidence.providerLogId,
+              provider_resource_id: reconciliation.result.evidence.providerResourceId,
+              safe_failure_code: null,
+              send_accounting_basis: "observed",
+              send_outcome: "applied",
+              send_outcome_at: outcomeAt,
+              send_reconciliation_claimed_at: null,
+              send_reconciliation_lease_expires_at: null,
+              state: "success",
+              terminal_at: outcomeAt,
+              updated_at: sql`clock_timestamp()`,
+            })
+            .where(eq(scheduledEmails.workflow_id, workflowId))
+            .returning();
+          return updated === undefined ? changed() : found(updated);
+        }
+        if (withinEvidenceHorizon && reconciliation._tag === "NotApplied") {
+          const [updated] = await transaction
+            .update(scheduledEmails)
+            .set({
+              provider_log_id: reconciliation.providerLogId,
+              safe_failure_code: "send-not-applied",
+              send_accounting_basis: null,
+              send_outcome: "notApplied",
+              send_outcome_at: outcomeAt,
+              send_reconciliation_claimed_at: null,
+              send_reconciliation_lease_expires_at: null,
+              updated_at: sql`clock_timestamp()`,
+            })
+            .where(eq(scheduledEmails.workflow_id, workflowId))
+            .returning();
+          return updated === undefined ? changed() : found(updated);
+        }
+        const [released] = await transaction
+          .update(scheduledEmails)
+          .set({
+            send_reconciliation_claimed_at: null,
+            send_reconciliation_lease_expires_at: null,
+            updated_at: sql`clock_timestamp()`,
+          })
+          .where(eq(scheduledEmails.workflow_id, workflowId))
+          .returning();
+        return released === undefined ? changed() : found(released);
+      },
+    ),
   finalizeAmbiguousAccounting: (workflowId, inputDigest, finalizedAt) =>
     transition(
       database,
@@ -414,15 +536,19 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
           row.send_outcome !== "ambiguous" ||
           row.send_accounting_basis !== null ||
           row.send_started_at === null ||
-          finalizedAt.getTime() - row.send_started_at.getTime() <=
+          (row.send_reconciliation_lease_expires_at !== null &&
+            row.send_reconciliation_lease_expires_at.getTime() > finalizedAt.getTime()) ||
+          finalizedAt.getTime() - row.send_started_at.getTime() <
             ScheduledEmail.providerEvidenceHorizonMilliseconds
         ) {
-          return changed();
+          return found(row);
         }
         const [updated] = await transaction
           .update(scheduledEmails)
           .set({
             send_accounting_basis: "conservative",
+            send_reconciliation_claimed_at: null,
+            send_reconciliation_lease_expires_at: null,
             updated_at: sql`clock_timestamp()`,
           })
           .where(eq(scheduledEmails.workflow_id, workflowId))
@@ -892,6 +1018,30 @@ const decodeRetrySendClaim = (
   );
 };
 
+const decodeTerminalReconciliationClaim = (
+  workflowId: ScheduledEmail.WorkflowId,
+  outcome: TerminalReconciliationClaimOutcome,
+): Effect.Effect<
+  ScheduledEmail.TerminalReconciliationClaim,
+  ScheduledEmail.Conflict | ScheduledEmail.NotFound | ScheduledEmail.Unavailable
+> => {
+  if (outcome._tag === "Missing") {
+    return Effect.fail(new ScheduledEmail.NotFound({ workflowId }));
+  }
+  if (outcome._tag === "Conflict") {
+    return Effect.fail(
+      conflict(workflowId, "claimTerminalReconciliation lost to changed lifecycle truth"),
+    );
+  }
+  return decodeRow(outcome.row).pipe(
+    Effect.map((email): ScheduledEmail.TerminalReconciliationClaim =>
+      outcome._tag === "Acquired"
+        ? { _tag: "Acquired", claimedAt: outcome.claimedAt, email }
+        : { _tag: "Existing", email },
+    ),
+  );
+};
+
 const decodeTransition = (
   workflowId: ScheduledEmail.WorkflowId,
   operation: string,
@@ -950,6 +1100,8 @@ const decodeRow = (row: Row): Effect.Effect<ScheduledEmail.Record, ScheduledEmai
     sendAccountingBasis: row.send_accounting_basis,
     sendOutcomeAt: row.send_outcome_at,
     sendAccountedAt: row.send_accounted_at,
+    sendReconciliationClaimedAt: row.send_reconciliation_claimed_at,
+    sendReconciliationLeaseExpiresAt: row.send_reconciliation_lease_expires_at,
     sendClaimGeneration: row.send_claim_generation,
     sendStartedAt: row.send_started_at,
     sessionId: row.session_id,
@@ -996,6 +1148,8 @@ const encodeInsert = (record: ScheduledEmail.Record): typeof scheduledEmails.$in
   send_accounting_basis: record.sendAccountingBasis,
   send_outcome_at: record.sendOutcomeAt,
   send_accounted_at: record.sendAccountedAt,
+  send_reconciliation_claimed_at: record.sendReconciliationClaimedAt,
+  send_reconciliation_lease_expires_at: record.sendReconciliationLeaseExpiresAt,
   send_claim_generation: record.sendClaimGeneration,
   send_started_at: record.sendStartedAt,
   session_id: record.sessionId,
