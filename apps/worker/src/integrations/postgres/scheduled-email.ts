@@ -112,6 +112,7 @@ const EncodedRecord = Schema.Struct({
   sendAccountedAt: Schema.NullOr(Schema.Date),
   sendReconciliationClaimedAt: Schema.NullOr(Schema.Date),
   sendReconciliationLeaseExpiresAt: Schema.NullOr(Schema.Date),
+  sendReconciliationRecoveryUsed: Schema.Boolean,
   sendClaimGeneration: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   sendStartedAt: Schema.NullOr(Schema.Date),
   sessionId: SessionId,
@@ -253,15 +254,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
   finishApplied: (workflowId, inputDigest, result, outcomeAt) =>
     transition(database, workflowId, inputDigest, "finishApplied", async (transaction, row) => {
       if (row.state === "success") return found(row);
-      const canRefineUnaccountedAmbiguity =
-        row.state === "failure" &&
-        row.send_outcome === "ambiguous" &&
-        row.send_accounting_basis === null;
-      if (
-        row.state !== "sending" &&
-        row.state !== "send_pending_reconciliation" &&
-        !canRefineUnaccountedAmbiguity
-      ) {
+      if (row.state !== "sending" && row.state !== "send_pending_reconciliation") {
         return changed();
       }
       const [updated] = await transaction
@@ -307,37 +300,6 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
           provider_log_id: providerLogId ?? row.provider_log_id,
           state,
           terminal_at: terminalAt,
-          updated_at: sql`clock_timestamp()`,
-        })
-        .where(eq(scheduledEmails.workflow_id, workflowId))
-        .returning();
-      return updated === undefined ? changed() : found(updated);
-    }),
-  refineNotApplied: (workflowId, inputDigest, providerLogId, outcomeAt) =>
-    transition(database, workflowId, inputDigest, "refineNotApplied", async (transaction, row) => {
-      if (
-        row.state === "failure" &&
-        row.send_outcome === "notApplied" &&
-        row.send_accounting_basis === null &&
-        row.safe_failure_code === "send-not-applied"
-      ) {
-        return found(row);
-      }
-      if (
-        row.state !== "failure" ||
-        row.send_outcome !== "ambiguous" ||
-        row.send_accounting_basis !== null
-      ) {
-        return changed();
-      }
-      const [updated] = await transaction
-        .update(scheduledEmails)
-        .set({
-          provider_log_id: providerLogId,
-          safe_failure_code: "send-not-applied",
-          send_accounting_basis: null,
-          send_outcome: "notApplied",
-          send_outcome_at: outcomeAt,
           updated_at: sql`clock_timestamp()`,
         })
         .where(eq(scheduledEmails.workflow_id, workflowId))
@@ -439,6 +401,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
           row.send_started_at,
           row.send_reconciliation_claimed_at,
           row.send_reconciliation_lease_expires_at,
+          row.send_reconciliation_recovery_used,
           claimedAt,
         );
         if (lease === null) return { _tag: "Existing", row };
@@ -447,6 +410,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
           .set({
             send_reconciliation_claimed_at: lease.claimedAt,
             send_reconciliation_lease_expires_at: lease.leaseExpiresAt,
+            send_reconciliation_recovery_used: lease.recoveryUsed,
             updated_at: sql`clock_timestamp()`,
           })
           .where(eq(scheduledEmails.workflow_id, workflowId))
@@ -473,8 +437,6 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
           return found(row);
         }
         const claimCanComplete = ScheduledEmail.terminalReconciliationCanComplete(
-          row.send_started_at,
-          claimedAt,
           row.send_reconciliation_lease_expires_at,
           outcomeAt,
         );
@@ -490,6 +452,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
               send_outcome_at: outcomeAt,
               send_reconciliation_claimed_at: null,
               send_reconciliation_lease_expires_at: null,
+              send_reconciliation_recovery_used: false,
               state: "success",
               terminal_at: outcomeAt,
               updated_at: sql`clock_timestamp()`,
@@ -509,12 +472,14 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
               send_outcome_at: outcomeAt,
               send_reconciliation_claimed_at: null,
               send_reconciliation_lease_expires_at: null,
+              send_reconciliation_recovery_used: false,
               updated_at: sql`clock_timestamp()`,
             })
             .where(eq(scheduledEmails.workflow_id, workflowId))
             .returning();
           return updated === undefined ? changed() : found(updated);
         }
+        if (!claimCanComplete) return found(row);
         const [released] = await transaction
           .update(scheduledEmails)
           .set({
@@ -546,6 +511,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
             row.send_started_at,
             row.send_reconciliation_claimed_at,
             row.send_reconciliation_lease_expires_at,
+            row.send_reconciliation_recovery_used,
             finalizedAt,
           )
         ) {
@@ -557,6 +523,7 @@ export const make = (database: Database): ScheduledEmail.PortInterface["persiste
             send_accounting_basis: "conservative",
             send_reconciliation_claimed_at: null,
             send_reconciliation_lease_expires_at: null,
+            send_reconciliation_recovery_used: false,
             updated_at: sql`clock_timestamp()`,
           })
           .where(eq(scheduledEmails.workflow_id, workflowId))
@@ -867,7 +834,9 @@ export const reconciliationBatch = (database: Database, now: Date, limit: number
                 and(
                   isNotNull(scheduledEmails.send_reconciliation_claimed_at),
                   isNotNull(scheduledEmails.send_reconciliation_lease_expires_at),
+                  eq(scheduledEmails.send_reconciliation_recovery_used, false),
                   sql`${scheduledEmails.send_reconciliation_claimed_at} <= ${scheduledEmails.send_started_at} + interval '5 minutes'`,
+                  sql`${scheduledEmails.send_reconciliation_lease_expires_at} <= ${now.toISOString()}::timestamptz`,
                   sql`${scheduledEmails.send_reconciliation_lease_expires_at} + interval '1 minute' > ${now.toISOString()}::timestamptz`,
                 ),
               ),
@@ -1118,6 +1087,7 @@ const decodeRow = (row: Row): Effect.Effect<ScheduledEmail.Record, ScheduledEmai
     sendAccountedAt: row.send_accounted_at,
     sendReconciliationClaimedAt: row.send_reconciliation_claimed_at,
     sendReconciliationLeaseExpiresAt: row.send_reconciliation_lease_expires_at,
+    sendReconciliationRecoveryUsed: row.send_reconciliation_recovery_used,
     sendClaimGeneration: row.send_claim_generation,
     sendStartedAt: row.send_started_at,
     sessionId: row.session_id,
@@ -1166,6 +1136,7 @@ const encodeInsert = (record: ScheduledEmail.Record): typeof scheduledEmails.$in
   send_accounted_at: record.sendAccountedAt,
   send_reconciliation_claimed_at: record.sendReconciliationClaimedAt,
   send_reconciliation_lease_expires_at: record.sendReconciliationLeaseExpiresAt,
+  send_reconciliation_recovery_used: record.sendReconciliationRecoveryUsed,
   send_claim_generation: record.sendClaimGeneration,
   send_started_at: record.sendStartedAt,
   session_id: record.sessionId,

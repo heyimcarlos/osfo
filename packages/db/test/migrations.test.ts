@@ -183,9 +183,10 @@ describe("Postgres migrations", () => {
               readonly send_accounting_basis: string | null;
               readonly send_reconciliation_claimed_at: Date | null;
               readonly send_reconciliation_lease_expires_at: Date | null;
+              readonly send_reconciliation_recovery_used: boolean;
             }>(`
               SELECT action_id, send_accounting_basis, send_reconciliation_claimed_at,
-                     send_reconciliation_lease_expires_at
+                     send_reconciliation_lease_expires_at, send_reconciliation_recovery_used
               FROM scheduled_emails
               ORDER BY action_id
             `),
@@ -205,18 +206,21 @@ describe("Postgres migrations", () => {
               send_accounting_basis: "conservative",
               send_reconciliation_claimed_at: null,
               send_reconciliation_lease_expires_at: null,
+              send_reconciliation_recovery_used: false,
             },
             {
               action_id: "not-applied-action",
               send_accounting_basis: null,
               send_reconciliation_claimed_at: null,
               send_reconciliation_lease_expires_at: null,
+              send_reconciliation_recovery_used: false,
             },
             {
               action_id: "observed-not-applied-action",
               send_accounting_basis: "conservative",
               send_reconciliation_claimed_at: null,
               send_reconciliation_lease_expires_at: null,
+              send_reconciliation_recovery_used: false,
             },
           ]);
           expect(usage.rows).toEqual([
@@ -248,6 +252,34 @@ describe("Postgres migrations", () => {
             catch: (cause) => new MigrationConstraintRejected({ cause }),
           }).pipe(Effect.exit);
           expect(Exit.isFailure(oversizedLease)).toBe(true);
+          const mismatchedRecoveryState = yield* Effect.tryPromise({
+            try: () =>
+              client.exec(`
+                UPDATE scheduled_emails
+                SET send_accounting_basis = null,
+                    send_accounted_at = null,
+                    send_reconciliation_claimed_at = '2026-08-03T00:04:59Z',
+                    send_reconciliation_lease_expires_at = '2026-08-03T00:05:59Z',
+                    send_reconciliation_recovery_used = true
+                WHERE workflow_id = 'ambiguous-workflow'
+              `),
+            catch: (cause) => new MigrationConstraintRejected({ cause }),
+          }).pipe(Effect.exit);
+          expect(Exit.isFailure(mismatchedRecoveryState)).toBe(true);
+          const preSendLease = yield* Effect.tryPromise({
+            try: () =>
+              client.exec(`
+                UPDATE scheduled_emails
+                SET send_accounting_basis = null,
+                    send_accounted_at = null,
+                    send_reconciliation_claimed_at = '2026-08-03T00:00:59Z',
+                    send_reconciliation_lease_expires_at = '2026-08-03T00:01:00Z',
+                    send_reconciliation_recovery_used = false
+                WHERE workflow_id = 'ambiguous-workflow'
+              `),
+            catch: (cause) => new MigrationConstraintRejected({ cause }),
+          }).pipe(Effect.exit);
+          expect(Exit.isFailure(preSendLease)).toBe(true);
           return undefined;
         }),
       closeTestDatabase,

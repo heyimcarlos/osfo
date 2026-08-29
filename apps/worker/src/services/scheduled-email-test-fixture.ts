@@ -58,6 +58,7 @@ export const makeRecord = (
   sendAccountedAt: null,
   sendReconciliationClaimedAt: null,
   sendReconciliationLeaseExpiresAt: null,
+  sendReconciliationRecoveryUsed: false,
   sendClaimGeneration: 0,
   sendStartedAt: null,
   sessionId: SessionId.make("scheduled-email-session"),

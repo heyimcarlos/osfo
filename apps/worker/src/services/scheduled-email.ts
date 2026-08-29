@@ -114,14 +114,14 @@ export const nextTerminalReconciliationLease = (
   sendStartedAt: Date,
   existingClaimedAt: Date | null,
   existingLeaseExpiresAt: Date | null,
+  recoveryUsed: boolean,
   claimedAt: Date,
 ) => {
   const claimedAtMilliseconds = claimedAt.getTime();
+  if (claimedAtMilliseconds < sendStartedAt.getTime()) return null;
+  if (recoveryUsed) return null;
   const evidenceDeadline = sendStartedAt.getTime() + providerEvidenceHorizonMilliseconds;
-  if (
-    existingLeaseExpiresAt !== null &&
-    existingLeaseExpiresAt.getTime() >= claimedAtMilliseconds
-  ) {
+  if (existingLeaseExpiresAt !== null && existingLeaseExpiresAt.getTime() > claimedAtMilliseconds) {
     return null;
   }
   if (claimedAtMilliseconds <= evidenceDeadline) {
@@ -132,6 +132,7 @@ export const nextTerminalReconciliationLease = (
           milliseconds: providerReconciliationLeaseMilliseconds,
         }),
       ),
+      recoveryUsed: false,
     };
   }
   if (
@@ -151,38 +152,31 @@ export const nextTerminalReconciliationLease = (
             milliseconds: providerReconciliationRecoveryMilliseconds,
           }),
         ),
+        recoveryUsed: true,
       }
     : null;
 };
 
-export const terminalReconciliationCanComplete = (
-  sendStartedAt: Date,
-  claimedAt: Date,
-  leaseExpiresAt: Date | null,
-  outcomeAt: Date,
-) => {
-  if (leaseExpiresAt === null) return false;
-  const evidenceDeadline = sendStartedAt.getTime() + providerEvidenceHorizonMilliseconds;
-  const recoveryAllowance =
-    claimedAt.getTime() <= evidenceDeadline ? providerReconciliationRecoveryMilliseconds : 0;
-  return outcomeAt.getTime() <= leaseExpiresAt.getTime() + recoveryAllowance;
-};
+export const terminalReconciliationCanComplete = (leaseExpiresAt: Date | null, outcomeAt: Date) =>
+  leaseExpiresAt !== null && outcomeAt.getTime() < leaseExpiresAt.getTime();
 
 export const terminalReconciliationBlocksFinalization = (
   sendStartedAt: Date,
   claimedAt: Date | null,
   leaseExpiresAt: Date | null,
+  recoveryUsed: boolean,
   finalizedAt: Date,
 ) => {
   const finalizedAtMilliseconds = finalizedAt.getTime();
   const evidenceDeadline = sendStartedAt.getTime() + providerEvidenceHorizonMilliseconds;
   if (finalizedAtMilliseconds <= evidenceDeadline) return true;
-  if (leaseExpiresAt !== null && leaseExpiresAt.getTime() >= finalizedAtMilliseconds) return true;
+  if (leaseExpiresAt !== null && leaseExpiresAt.getTime() > finalizedAtMilliseconds) return true;
   return (
+    !recoveryUsed &&
     claimedAt !== null &&
     claimedAt.getTime() <= evidenceDeadline &&
     leaseExpiresAt !== null &&
-    finalizedAtMilliseconds <= leaseExpiresAt.getTime() + providerReconciliationRecoveryMilliseconds
+    finalizedAtMilliseconds < leaseExpiresAt.getTime() + providerReconciliationRecoveryMilliseconds
   );
 };
 
@@ -194,6 +188,8 @@ export const terminalReconciliationCanRun = (email: Record, now: Date) => {
     email.sendReconciliationClaimedAt !== null &&
     email.sendReconciliationClaimedAt.getTime() <= evidenceDeadline &&
     email.sendReconciliationLeaseExpiresAt !== null &&
+    !email.sendReconciliationRecoveryUsed &&
+    now.getTime() >= email.sendReconciliationLeaseExpiresAt.getTime() &&
     now.getTime() <
       email.sendReconciliationLeaseExpiresAt.getTime() + providerReconciliationRecoveryMilliseconds
   );
@@ -236,6 +232,7 @@ export interface Record {
   readonly sendAccountedAt: Date | null;
   readonly sendReconciliationClaimedAt: Date | null;
   readonly sendReconciliationLeaseExpiresAt: Date | null;
+  readonly sendReconciliationRecoveryUsed: boolean;
   readonly cancelRequestedAt: Date | null;
   readonly terminalAt: Date | null;
   readonly workflowStartAccountedAt: Date | null;
@@ -418,12 +415,6 @@ export interface PortInterface {
       safeFailureCode: string,
       terminalAt: Date,
     ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
-    readonly refineNotApplied: (
-      workflowId: WorkflowId,
-      inputDigest: InputDigest,
-      providerLogId: string | null,
-      outcomeAt: Date,
-    ) => Effect.Effect<Record, Conflict | NotFound | Unavailable>;
     readonly requestCancel: (
       workflowId: WorkflowId,
       userId: UserId,
@@ -503,6 +494,7 @@ export const make = Effect.gen(function* () {
           email.sendStartedAt,
           email.sendReconciliationClaimedAt,
           email.sendReconciliationLeaseExpiresAt,
+          email.sendReconciliationRecoveryUsed,
           finalizedAt,
         )
       ) {
@@ -1048,6 +1040,7 @@ export const make = Effect.gen(function* () {
       sendAccountedAt: null,
       sendReconciliationClaimedAt: null,
       sendReconciliationLeaseExpiresAt: null,
+      sendReconciliationRecoveryUsed: false,
       cancelRequestedAt: null,
       terminalAt: null,
       workflowStartAccountedAt: null,

@@ -590,6 +590,7 @@ it.effect("recovers a crashed in-horizon reconciliation before conservative fina
         claimedAt: recoveredAt,
         email: {
           sendReconciliationLeaseExpiresAt: new Date(leaseExpiresAt.getTime() + 60_000),
+          sendReconciliationRecoveryUsed: true,
         },
       });
       expect(
@@ -604,6 +605,138 @@ it.effect("recovers a crashed in-horizon reconciliation before conservative fina
         providerLogId: "recovered-not-applied",
         sendAccountingBasis: null,
         sendOutcome: "notApplied",
+      });
+    }),
+  ),
+);
+
+it.effect("lets the explicit recovery claim beat a stale completion at the 6-minute boundary", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "reconciliation-recovery-boundary");
+      const email = record(seeded, "reconciliation-recovery-boundary");
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        new Date(sendAt.getTime() + 120_000),
+      );
+      const initialClaimedAt = new Date(sendAt.getTime() + 300_000);
+      const initialLeaseExpiresAt = new Date(sendAt.getTime() + 360_000);
+      yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        initialClaimedAt,
+      );
+
+      yield* Effect.all(
+        [
+          persistence.completeTerminalReconciliation(
+            email.workflowId,
+            email.inputDigest,
+            initialClaimedAt,
+            { _tag: "NotApplied", providerLogId: "stale-not-applied" },
+            initialLeaseExpiresAt,
+          ),
+          persistence.claimTerminalReconciliation(
+            email.workflowId,
+            email.inputDigest,
+            initialLeaseExpiresAt,
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      expect(yield* persistence.inspect(email.workflowId)).toMatchObject({
+        providerLogId: null,
+        sendAccountingBasis: null,
+        sendOutcome: "ambiguous",
+        sendReconciliationClaimedAt: initialLeaseExpiresAt,
+        sendReconciliationLeaseExpiresAt: new Date(sendAt.getTime() + 420_000),
+        sendReconciliationRecoveryUsed: true,
+      });
+      expect(
+        yield* persistence.completeTerminalReconciliation(
+          email.workflowId,
+          email.inputDigest,
+          initialLeaseExpiresAt,
+          { _tag: "NotApplied", providerLogId: "recovered-not-applied" },
+          new Date(sendAt.getTime() + 419_999),
+        ),
+      ).toMatchObject({
+        providerLogId: "recovered-not-applied",
+        sendAccountingBasis: null,
+        sendOutcome: "notApplied",
+        sendReconciliationRecoveryUsed: false,
+      });
+    }),
+  ),
+);
+
+it.effect("lets conservative finalization beat a stale recovery completion at 7 minutes", () =>
+  withDatabase((database) =>
+    Effect.gen(function* () {
+      const seeded = yield* seedUser(database, "reconciliation-final-boundary");
+      const email = record(seeded, "reconciliation-final-boundary");
+      const persistence = ScheduledEmailPostgres.make(database);
+      yield* persistence.admit(email, 5n);
+      yield* persistence.markWaiting(email.workflowId, email.inputDigest, admittedAt);
+      yield* persistence.beginSend(email.workflowId, email.inputDigest, sendAt);
+      yield* persistence.finishTerminal(
+        email.workflowId,
+        email.inputDigest,
+        "failure",
+        "ambiguous",
+        null,
+        "send-outcome-unknown",
+        new Date(sendAt.getTime() + 120_000),
+      );
+      const initialClaimedAt = new Date(sendAt.getTime() + 300_000);
+      const recoveryClaimedAt = new Date(sendAt.getTime() + 360_000);
+      const finalDeadline = new Date(sendAt.getTime() + 420_000);
+      yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        initialClaimedAt,
+      );
+      yield* persistence.claimTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        recoveryClaimedAt,
+      );
+
+      yield* Effect.all(
+        [
+          persistence.completeTerminalReconciliation(
+            email.workflowId,
+            email.inputDigest,
+            recoveryClaimedAt,
+            { _tag: "NotApplied", providerLogId: "too-late-not-applied" },
+            finalDeadline,
+          ),
+          persistence.finalizeAmbiguousAccounting(
+            email.workflowId,
+            email.inputDigest,
+            finalDeadline,
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      expect(yield* persistence.inspect(email.workflowId)).toMatchObject({
+        providerLogId: null,
+        sendAccountingBasis: "conservative",
+        sendOutcome: "ambiguous",
+        sendReconciliationClaimedAt: null,
+        sendReconciliationLeaseExpiresAt: null,
+        sendReconciliationRecoveryUsed: false,
       });
     }),
   ),
@@ -648,7 +781,12 @@ it.effect("finalizes ambiguity after the bounded reconciliation recovery lease e
           email.inputDigest,
           recoveryDeadline,
         ),
-      ).toMatchObject({ sendAccountingBasis: null });
+      ).toMatchObject({
+        sendAccountingBasis: "conservative",
+        sendReconciliationClaimedAt: null,
+        sendReconciliationLeaseExpiresAt: null,
+        sendReconciliationRecoveryUsed: false,
+      });
       expect(
         yield* persistence.finalizeAmbiguousAccounting(
           email.workflowId,
@@ -659,6 +797,7 @@ it.effect("finalizes ambiguity after the bounded reconciliation recovery lease e
         sendAccountingBasis: "conservative",
         sendReconciliationClaimedAt: null,
         sendReconciliationLeaseExpiresAt: null,
+        sendReconciliationRecoveryUsed: false,
       });
     }),
   ),
@@ -768,6 +907,30 @@ it.effect("rejects NULL-hole pending and success lifecycle rows", () =>
             .where(eq(scheduledEmails.workflow_id, email.workflowId)),
         ).pipe(Effect.result),
       ).toMatchObject({ failure: expect.anything() });
+      expect(
+        yield* Effect.tryPromise(() =>
+          database
+            .update(scheduledEmails)
+            .set({
+              send_reconciliation_claimed_at: new Date(sendAt.getTime() + 300_000),
+              send_reconciliation_lease_expires_at: new Date(sendAt.getTime() + 360_000),
+              send_reconciliation_recovery_used: true,
+            })
+            .where(eq(scheduledEmails.workflow_id, email.workflowId)),
+        ).pipe(Effect.result),
+      ).toMatchObject({ failure: expect.anything() });
+      expect(
+        yield* Effect.tryPromise(() =>
+          database
+            .update(scheduledEmails)
+            .set({
+              send_reconciliation_claimed_at: new Date(sendAt.getTime() - 2_000),
+              send_reconciliation_lease_expires_at: new Date(sendAt.getTime() - 1_000),
+              send_reconciliation_recovery_used: false,
+            })
+            .where(eq(scheduledEmails.workflow_id, email.workflowId)),
+        ).pipe(Effect.result),
+      ).toMatchObject({ failure: expect.anything() });
     }),
   ),
 );
@@ -810,10 +973,28 @@ it.effect(
           new Date("2026-08-28T12:00:01.000Z"),
         );
 
-        const refined = yield* persistence.finishApplied(
+        expect(
+          yield* persistence
+            .finishApplied(
+              email.workflowId,
+              email.inputDigest,
+              applied,
+              new Date("2026-08-28T12:00:01.250Z"),
+            )
+            .pipe(Effect.result),
+        ).toMatchObject({ failure: { _tag: "ScheduledEmailConflict" } });
+        const claimedAt = new Date("2026-08-28T12:00:01.500Z");
+        const claim = yield* persistence.claimTerminalReconciliation(
           email.workflowId,
           email.inputDigest,
-          applied,
+          claimedAt,
+        );
+        expect(claim).toMatchObject({ _tag: "Acquired", claimedAt });
+        const refined = yield* persistence.completeTerminalReconciliation(
+          email.workflowId,
+          email.inputDigest,
+          claimedAt,
+          { _tag: "Applied", result: applied },
           new Date("2026-08-28T12:00:02.000Z"),
         );
         expect(refined).toMatchObject({
@@ -897,11 +1078,19 @@ it.effect("resolves late NotApplied accounting without an immutable Gmail fact",
         sendAt,
       );
 
-      const refined = yield* persistence.refineNotApplied(
+      const claimedAt = new Date(sendAt.getTime() + 240_000);
+      const claim = yield* persistence.claimTerminalReconciliation(
         email.workflowId,
         email.inputDigest,
-        "proved-not-applied-late",
-        new Date(sendAt.getTime() + 240_000),
+        claimedAt,
+      );
+      expect(claim).toMatchObject({ _tag: "Acquired", claimedAt });
+      const refined = yield* persistence.completeTerminalReconciliation(
+        email.workflowId,
+        email.inputDigest,
+        claimedAt,
+        { _tag: "NotApplied", providerLogId: "proved-not-applied-late" },
+        new Date(sendAt.getTime() + 240_001),
       );
       expect(refined).toMatchObject({
         providerLogId: "proved-not-applied-late",

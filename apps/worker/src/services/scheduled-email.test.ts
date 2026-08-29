@@ -51,6 +51,103 @@ const presentation = ApprovalPresentation.make(
 );
 
 describe("ScheduledEmail", () => {
+  it("uses half-open leases and one explicit recovery claim at the 5m/6m/7m boundaries", () => {
+    const sendStartedAt = new Date("2026-08-28T12:00:00.000Z");
+    const horizon = new Date(sendStartedAt.getTime() + 300_000);
+    expect(
+      ScheduledEmail.nextTerminalReconciliationLease(
+        sendStartedAt,
+        null,
+        null,
+        false,
+        new Date(sendStartedAt.getTime() - 1),
+      ),
+    ).toBeNull();
+    const initial = ScheduledEmail.nextTerminalReconciliationLease(
+      sendStartedAt,
+      null,
+      null,
+      false,
+      horizon,
+    );
+    expect(initial).toEqual({
+      claimedAt: horizon,
+      leaseExpiresAt: new Date(sendStartedAt.getTime() + 360_000),
+      recoveryUsed: false,
+    });
+    if (initial === null) return;
+
+    expect(
+      ScheduledEmail.terminalReconciliationCanComplete(
+        initial.leaseExpiresAt,
+        new Date(initial.leaseExpiresAt.getTime() - 1),
+      ),
+    ).toBe(true);
+    expect(
+      ScheduledEmail.terminalReconciliationCanComplete(
+        initial.leaseExpiresAt,
+        initial.leaseExpiresAt,
+      ),
+    ).toBe(false);
+    expect(
+      ScheduledEmail.terminalReconciliationBlocksFinalization(
+        sendStartedAt,
+        initial.claimedAt,
+        initial.leaseExpiresAt,
+        initial.recoveryUsed,
+        initial.leaseExpiresAt,
+      ),
+    ).toBe(true);
+
+    const recovery = ScheduledEmail.nextTerminalReconciliationLease(
+      sendStartedAt,
+      initial.claimedAt,
+      initial.leaseExpiresAt,
+      initial.recoveryUsed,
+      initial.leaseExpiresAt,
+    );
+    expect(recovery).toEqual({
+      claimedAt: initial.leaseExpiresAt,
+      leaseExpiresAt: new Date(sendStartedAt.getTime() + 420_000),
+      recoveryUsed: true,
+    });
+    if (recovery === null) return;
+
+    expect(
+      ScheduledEmail.nextTerminalReconciliationLease(
+        sendStartedAt,
+        recovery.claimedAt,
+        recovery.leaseExpiresAt,
+        recovery.recoveryUsed,
+        new Date(sendStartedAt.getTime() + 240_000),
+      ),
+    ).toBeNull();
+    expect(
+      ScheduledEmail.nextTerminalReconciliationLease(
+        sendStartedAt,
+        recovery.claimedAt,
+        recovery.leaseExpiresAt,
+        recovery.recoveryUsed,
+        recovery.leaseExpiresAt,
+      ),
+    ).toBeNull();
+    expect(
+      ScheduledEmail.terminalReconciliationCanComplete(
+        recovery.leaseExpiresAt,
+        recovery.leaseExpiresAt,
+      ),
+    ).toBe(false);
+    expect(
+      ScheduledEmail.terminalReconciliationBlocksFinalization(
+        sendStartedAt,
+        recovery.claimedAt,
+        recovery.leaseExpiresAt,
+        recovery.recoveryUsed,
+        recovery.leaseExpiresAt,
+      ),
+    ).toBe(false);
+  });
+
   it.effect("binds stable Workflow identity to exact content, Gmail resource, and schedule", () =>
     Effect.gen(function* () {
       const first = yield* ScheduledEmail.workflowIdFor(userId, actionId);
@@ -456,6 +553,7 @@ describe("ScheduledEmail", () => {
           sendOutcome: "ambiguous",
           sendReconciliationClaimedAt: new Date(scheduledAt.getTime() + 241_000),
           sendReconciliationLeaseExpiresAt: new Date(scheduledAt.getTime() + 301_000),
+          sendReconciliationRecoveryUsed: false,
         });
 
         fixture.failTerminalReconciliationCompletion = false;
@@ -465,6 +563,7 @@ describe("ScheduledEmail", () => {
           sendAccountingBasis: null,
           sendAccountedAt: expect.any(Date),
           sendOutcome: "notApplied",
+          sendReconciliationRecoveryUsed: false,
         });
         expect(fixture.reconciliationAttempts).toBe(3);
         expect(fixture.gmailSendFacts).toBe(0);
@@ -1237,26 +1336,6 @@ const makeFixture = (
             return stored;
           }),
         ),
-      refineNotApplied: (workflowId, digest, providerLogId, outcomeAt) =>
-        requireStored(workflowId, digest).pipe(
-          Effect.map((email) => {
-            if (
-              email.state !== "failure" ||
-              email.sendOutcome !== "ambiguous" ||
-              email.sendAccountingBasis !== null
-            ) {
-              return email;
-            }
-            stored = {
-              ...email,
-              providerLogId,
-              safeFailureCode: "send-not-applied",
-              sendOutcome: "notApplied",
-              sendOutcomeAt: outcomeAt,
-            };
-            return stored;
-          }),
-        ),
       inspect: () => Effect.succeed(stored),
       markAccepted: (workflowId, digest, acceptedAt) =>
         requireStored(workflowId, digest).pipe(
@@ -1304,6 +1383,7 @@ const makeFixture = (
               email.sendStartedAt,
               email.sendReconciliationClaimedAt,
               email.sendReconciliationLeaseExpiresAt,
+              email.sendReconciliationRecoveryUsed,
               claimedAt,
             );
             if (lease === null) return { _tag: "Existing", email };
@@ -1311,6 +1391,7 @@ const makeFixture = (
               ...email,
               sendReconciliationClaimedAt: lease.claimedAt,
               sendReconciliationLeaseExpiresAt: lease.leaseExpiresAt,
+              sendReconciliationRecoveryUsed: lease.recoveryUsed,
             };
             return { _tag: "Acquired", claimedAt: lease.claimedAt, email: stored };
           }),
@@ -1342,14 +1423,11 @@ const makeFixture = (
                 };
                 if (
                   !ScheduledEmail.terminalReconciliationCanComplete(
-                    email.sendStartedAt,
-                    claimedAt,
                     email.sendReconciliationLeaseExpiresAt,
                     outcomeAt,
                   )
                 ) {
-                  stored = released;
-                  return stored;
+                  return email;
                 }
                 if (Predicate.isTagged(completedReconciliation, "NotApplied")) {
                   stored = {
@@ -1358,6 +1436,7 @@ const makeFixture = (
                     safeFailureCode: "send-not-applied",
                     sendOutcome: "notApplied",
                     sendOutcomeAt: outcomeAt,
+                    sendReconciliationRecoveryUsed: false,
                   };
                   return stored;
                 }
@@ -1370,6 +1449,7 @@ const makeFixture = (
                     sendAccountingBasis: "observed",
                     sendOutcome: "applied",
                     sendOutcomeAt: outcomeAt,
+                    sendReconciliationRecoveryUsed: false,
                     state: "success",
                     terminalAt: outcomeAt,
                   };
@@ -1390,6 +1470,7 @@ const makeFixture = (
                 email.sendStartedAt,
                 email.sendReconciliationClaimedAt,
                 email.sendReconciliationLeaseExpiresAt,
+                email.sendReconciliationRecoveryUsed,
                 finalizedAt,
               )
             ) {
@@ -1400,6 +1481,7 @@ const makeFixture = (
               sendAccountingBasis: "conservative",
               sendReconciliationClaimedAt: null,
               sendReconciliationLeaseExpiresAt: null,
+              sendReconciliationRecoveryUsed: false,
             };
             return stored;
           }),
