@@ -23,8 +23,8 @@ export const qualificationDimensionParentPollCount =
 export const qualificationDimensionLaunchPageSize = 50;
 export const qualificationDimensionRootOwnerSubrequestBudget =
   2 * qualificationDimensionParentPollCount + 40;
-/** Five default durable-step attempts across report, envelope, and response reconciliation. */
-export const qualificationDistributedEvaluationReportMaximumSubrequests = 30;
+/** Five attempts including immutable response conflict and lost conflict-marker reconciliation. */
+export const qualificationDistributedEvaluationReportMaximumSubrequests = 40;
 
 export interface QualificationPartitionChunk {
   readonly chunkIndex: number;
@@ -83,6 +83,15 @@ export const qualificationOwnerCorrectnessLevelCounts = (
     inputCount = outputCount;
   } while (inputCount > 1);
   return levels;
+};
+
+export const qualificationCorrectnessRootReceiptArtifactId = (
+  executionId: string,
+  partitionCount: number,
+) => {
+  const levels = qualificationOwnerCorrectnessLevelCounts(partitionCount);
+  if (levels.at(-1) !== 1) throw new Error("Qualification correctness root topology conflicts");
+  return `qualification/executions/${encodeURIComponent(executionId)}/evaluation-correctness/level-${String(levels.length).padStart(8, "0")}/nodes/00000000/receipt.json`;
 };
 
 /** Worst-case owner cost for joins, creation, status polling, and receipt authentication. */

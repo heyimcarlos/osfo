@@ -1,4 +1,4 @@
-/* oxlint-disable vitest/no-standalone-expect -- Effect Vitest assertions execute inside generators. */
+/* oxlint-disable effecttsgo/async-function, vitest/no-standalone-expect -- Promise fakes model Worker boundaries; Effect Vitest assertions execute inside generators. */
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
@@ -7,6 +7,12 @@ import {
   qualificationChecksum,
 } from "./qualification/qualification-checksum";
 import owner from "./qualification-owner-worker";
+import { qualificationDistributedEvaluationConflictArtifactId } from "./workflows/qualification-owner-report";
+
+const sha256Hex = async (encoded: string) => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
 
 const completedResponseFixture = (tamper: "contentType" | "metadata" | null) => {
   const executionId = "completed-response-execution";
@@ -168,6 +174,108 @@ it.effect("rejects a retained v2 response with conflicting metadata", () =>
 
 it.effect("rejects a retained v2 response with conflicting content type", () =>
   rejectsV2ResponseTamper("contentType"),
+);
+
+it.each([null, 2, { injected: true }, "qualification-owner-response-v3"])(
+  "rejects a legacy-shaped retained response with a declared version: %j",
+  async (version) => {
+    const fixture = completedResponseFixture(null);
+    const encoded = canonicalQualificationJson({
+      body: {
+        error: "qualificationAuthorityMaterialMissing",
+        executionId: fixture.executionId,
+        manifestChecksum: "sha256:manifest",
+        missingSources: ["provider_delivery_receipts"],
+        planChecksum: "sha256:plan",
+        verdict: "MISSING",
+        version,
+      },
+      status: 424,
+    });
+    const response = await owner.fetch(
+      new Request("https://qualification-owner.internal/v1/executions", {
+        body: fixture.invocation,
+        method: "POST",
+      }),
+      {
+        ARTIFACTS: {
+          get: (key) =>
+            Promise.resolve(
+              key.endsWith("owner-request.json")
+                ? { text: () => Promise.resolve(fixture.request) }
+                : key.endsWith("owner-response.json")
+                  ? { text: () => Promise.resolve(encoded) }
+                  : null,
+            ),
+        },
+        QUALIFICATION_OWNER_WORKFLOW: {
+          create: () => Promise.resolve({ status: () => Promise.resolve({ status: "running" }) }),
+          get: () => Promise.resolve({ status: () => Promise.resolve({ status: "running" }) }),
+        },
+      },
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "qualificationOwnerResponseConflict" });
+  },
+);
+
+it.each([
+  [true, 409, "qualificationOwnerWorkflowConflict"],
+  [false, 500, "qualificationOwnerWorkflowFailed"],
+] as const)(
+  "distinguishes an authenticated immutable collision marker from transient failure: %s",
+  async (withMarker, expectedStatus, expectedError) => {
+    const fixture = completedResponseFixture(null);
+    const markerArtifactId = qualificationDistributedEvaluationConflictArtifactId(
+      fixture.executionId,
+    );
+    const markerContent = {
+      artifactId: markerArtifactId,
+      conflictingArtifactId: `qualification/executions/${fixture.executionId}/owner-response.json`,
+      executionId: fixture.executionId,
+      manifestChecksum: "sha256:manifest",
+      planChecksum: "sha256:plan",
+      version: "qualification-distributed-evaluation-conflict-v1" as const,
+    };
+    const marker = { ...markerContent, checksum: qualificationChecksum(markerContent) };
+    const encodedMarker = canonicalQualificationJson(marker);
+    const response = await owner.fetch(
+      new Request("https://qualification-owner.internal/v1/executions", {
+        body: fixture.invocation,
+        method: "POST",
+      }),
+      {
+        ARTIFACTS: {
+          get: async (key) =>
+            key.endsWith("owner-request.json")
+              ? { text: () => Promise.resolve(fixture.request) }
+              : withMarker && key === markerArtifactId
+                ? {
+                    customMetadata: {
+                      "osfo-artifact-checksum": marker.checksum,
+                      "osfo-body-sha256": await sha256Hex(encodedMarker),
+                      "osfo-conflicting-artifact-id": marker.conflictingArtifactId,
+                      "osfo-execution-id": marker.executionId,
+                      "osfo-kind": marker.version,
+                      "osfo-manifest-checksum": marker.manifestChecksum,
+                      "osfo-plan-checksum": marker.planChecksum,
+                    },
+                    httpMetadata: { contentType: "application/json" },
+                    text: () => Promise.resolve(encodedMarker),
+                  }
+                : null,
+        },
+        QUALIFICATION_OWNER_WORKFLOW: {
+          create: () => Promise.resolve({ status: () => Promise.resolve({ status: "errored" }) }),
+          get: () => Promise.resolve({ status: () => Promise.resolve({ status: "errored" }) }),
+        },
+      },
+    );
+
+    expect(response.status).toBe(expectedStatus);
+    expect(await response.json()).toEqual({ error: expectedError });
+  },
 );
 
 it.effect("continues to serve an exact legacy v1 terminal response", () =>

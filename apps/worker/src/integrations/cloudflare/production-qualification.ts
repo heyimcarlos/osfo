@@ -218,9 +218,18 @@ const EncodedOwnerLegacyTerminalResponse = Schema.fromJsonString(OwnerLegacyTerm
 const EncodedOwnerDistributedEvaluationResponse = Schema.fromJsonString(
   OwnerDistributedEvaluationResponse,
 );
-const decodeOwnerTerminalVersion = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
+const decodeOwnerWorkflowConflict = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({ error: Schema.Literal("qualificationOwnerWorkflowConflict") }),
+  ),
 );
+const decodeOwnerTerminalJson = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ version: Schema.optionalKey(Schema.Unknown) })),
+);
+const declaresOwnerTerminalVersion = (encoded: string): boolean => {
+  const decoded = decodeOwnerTerminalJson(encoded);
+  return Option.isSome(decoded) && "version" in decoded.value;
+};
 const EncodedOwnerReport = Schema.fromJsonString(OwnerReport);
 
 type OwnerBundleDescriptor = typeof OwnerBundleDescriptor.Type;
@@ -533,6 +542,10 @@ export const runProductionQualification = (
     }
     const requestArtifact = ownerRequest(manifest, plan, cohort);
     const expectedRootCount = plan.runs.reduce((total, run) => total + run.arrivalCount, 0);
+    const partitionCount = plan.runs.reduce(
+      (total, run) => total + Math.ceil(run.arrivalCount / 256),
+      0,
+    );
     const expectedDimensionCount =
       qualificationOwnerDimensionCoordinatorBudget(plan).dimensionCount;
     const requestArtifactId = `qualification/executions/${encodeURIComponent(plan.executionId)}/owner-request.json`;
@@ -564,8 +577,10 @@ export const runProductionQualification = (
         catch: (cause) => ownerUnavailable("Qualification owner terminal body failed", cause),
         try: () => response.text(),
       });
-      const declaredVersion = decodeOwnerTerminalVersion(encodedTerminal);
-      const terminal = Option.isSome(declaredVersion)
+      if (response.status === 409 && Option.isSome(decodeOwnerWorkflowConflict(encodedTerminal))) {
+        return yield* ownerConflict("Qualification owner retained an immutable conflict");
+      }
+      const terminal = declaresOwnerTerminalVersion(encodedTerminal)
         ? yield* decode(EncodedOwnerDistributedEvaluationResponse, encodedTerminal)
         : yield* decode(EncodedOwnerLegacyTerminalResponse, encodedTerminal);
       if ("failureCodes" in terminal) {
@@ -667,6 +682,7 @@ export const runProductionQualification = (
               executionId: plan.executionId,
               expectedAcceptedCount: correctnessReference.acceptedCount,
               expectedRootCount: correctnessReference.rootCount,
+              partitionCount,
               planChecksum: plan.planChecksum,
               verdict: correctnessFamily.verdict,
             }),

@@ -1,5 +1,5 @@
 /* oxlint-disable effecttsgo/async-function -- R2 is a Promise-native Worker boundary. */
-import { Schema } from "effect";
+import { Data, Schema } from "effect";
 
 import {
   canonicalQualificationJson,
@@ -20,8 +20,10 @@ import {
 import type { QualificationOwnerWorkflowPayload } from "../workflow-contracts";
 import {
   QualificationDimensionCoordinatorCompletion,
+  qualificationDimensionCoordinatorCompletionArtifactId,
   qualificationDimensionPageSize,
 } from "./qualification-owner-dimensions";
+import { qualificationCorrectnessRootReceiptArtifactId } from "../qualification/owner-partitions";
 
 interface QualificationOwnerReportReadBucket {
   readonly get: (key: string) => Promise<{
@@ -55,6 +57,23 @@ const exactMetadata = (
   actual !== undefined &&
   Object.keys(actual).length === Object.keys(expected).length &&
   Object.entries(expected).every(([key, value]) => actual[key] === value);
+
+export const qualificationDistributedEvaluationConflictArtifactId = (executionId: string) =>
+  `qualification/executions/${encodeURIComponent(executionId)}/distributed-report/pre-teardown-v1/conflict.json`;
+
+const QualificationDistributedEvaluationConflict = Schema.Struct({
+  artifactId: Schema.String,
+  checksum: Schema.String,
+  conflictingArtifactId: Schema.String,
+  executionId: Schema.String,
+  manifestChecksum: Schema.String,
+  planChecksum: Schema.String,
+  version: Schema.Literal("qualification-distributed-evaluation-conflict-v1"),
+});
+
+class DistributedEvaluationRetentionConflict extends Data.TaggedError(
+  "DistributedEvaluationRetentionConflict",
+)<{ readonly artifactId: string; readonly message: string }> {}
 
 const familyStructureExact = (
   family: QualificationDistributedEvaluationReport["families"][number],
@@ -126,7 +145,87 @@ const retainImmutable = async (input: {
     existing.httpMetadata?.contentType !== "application/json" ||
     !exactMetadata(existing.customMetadata, input.metadata)
   ) {
-    throw new Error("Retained qualification distributed report artifact conflicts");
+    throw new DistributedEvaluationRetentionConflict({
+      artifactId: input.artifactId,
+      message: "Retained qualification distributed report artifact conflicts",
+    });
+  }
+};
+
+const retainConflictMarker = async (
+  bucket: QualificationOwnerResponseBucket,
+  payload: QualificationOwnerWorkflowPayload,
+  conflictingArtifactId: string,
+) => {
+  const artifactId = qualificationDistributedEvaluationConflictArtifactId(payload.executionId);
+  const content = {
+    artifactId,
+    conflictingArtifactId,
+    executionId: payload.executionId,
+    manifestChecksum: payload.manifestChecksum,
+    planChecksum: payload.planChecksum,
+    version: "qualification-distributed-evaluation-conflict-v1" as const,
+  };
+  const marker = { ...content, checksum: qualificationChecksum(content) };
+  const encoded = canonicalQualificationJson(marker);
+  await retainImmutable({
+    artifactId,
+    bucket,
+    encoded,
+    metadata: {
+      "osfo-artifact-checksum": marker.checksum,
+      "osfo-body-sha256": await sha256Hex(encoded),
+      "osfo-conflicting-artifact-id": conflictingArtifactId,
+      "osfo-execution-id": payload.executionId,
+      "osfo-kind": "qualification-distributed-evaluation-conflict-v1",
+      "osfo-manifest-checksum": payload.manifestChecksum,
+      "osfo-plan-checksum": payload.planChecksum,
+    },
+  });
+};
+
+export const authenticateQualificationDistributedEvaluationConflict = async (input: {
+  readonly bucket: QualificationOwnerReportReadBucket;
+  readonly executionId: string;
+  readonly manifestChecksum: string;
+  readonly planChecksum: string;
+}): Promise<"ABSENT" | "CONFLICT"> => {
+  const artifactId = qualificationDistributedEvaluationConflictArtifactId(input.executionId);
+  const retained = await input.bucket.get(artifactId);
+  if (retained === null) return "ABSENT";
+  const encoded = await retained.text();
+  try {
+    const marker = Schema.decodeSync(
+      Schema.fromJsonString(QualificationDistributedEvaluationConflict),
+    )(encoded);
+    const { checksum, ...content } = marker;
+    const canonicalConflicts = new Set([
+      qualificationDistributedEvaluationReportArtifactId(input.executionId),
+      qualificationDistributedEvaluationReportCompletionArtifactId(input.executionId),
+      responseArtifactId(input.executionId),
+    ]);
+    if (
+      marker.artifactId !== artifactId ||
+      marker.checksum !== qualificationChecksum(content) ||
+      marker.executionId !== input.executionId ||
+      marker.manifestChecksum !== input.manifestChecksum ||
+      marker.planChecksum !== input.planChecksum ||
+      !canonicalConflicts.has(marker.conflictingArtifactId) ||
+      retained.httpMetadata?.contentType !== "application/json" ||
+      !exactMetadata(retained.customMetadata, {
+        "osfo-artifact-checksum": checksum,
+        "osfo-body-sha256": await sha256Hex(encoded),
+        "osfo-conflicting-artifact-id": marker.conflictingArtifactId,
+        "osfo-execution-id": marker.executionId,
+        "osfo-kind": "qualification-distributed-evaluation-conflict-v1",
+        "osfo-manifest-checksum": marker.manifestChecksum,
+        "osfo-plan-checksum": marker.planChecksum,
+      })
+    )
+      return "CONFLICT";
+    return "CONFLICT";
+  } catch {
+    return "CONFLICT";
   }
 };
 
@@ -256,9 +355,16 @@ export const authenticateQualificationDistributedCorrectnessReference = async (i
   readonly executionId: string;
   readonly expectedAcceptedCount: number;
   readonly expectedRootCount: number;
+  readonly partitionCount: number;
   readonly planChecksum: string;
   readonly verdict: "FAIL" | "MISSING" | "PASS";
 }): Promise<QualificationDistributedEvaluationReferenceMaterial> => {
+  if (
+    input.artifactId !==
+    qualificationCorrectnessRootReceiptArtifactId(input.executionId, input.partitionCount)
+  ) {
+    return { status: "FAIL" };
+  }
   const retained = await input.bucket.get(input.artifactId);
   if (retained === null) return { status: "MISSING" };
   const encoded = await retained.text();
@@ -309,6 +415,11 @@ export const authenticateQualificationDistributedDimensionReference = async (inp
   readonly planChecksum: string;
   readonly verdict: "FAIL" | "MISSING" | "PASS";
 }): Promise<QualificationDistributedEvaluationReferenceMaterial> => {
+  if (
+    input.artifactId !== qualificationDimensionCoordinatorCompletionArtifactId(input.executionId)
+  ) {
+    return { status: "FAIL" };
+  }
   const retained = await input.bucket.get(input.artifactId);
   if (retained === null) return { status: "MISSING" };
   const encoded = await retained.text();
@@ -403,7 +514,7 @@ const responseArtifactId = (executionId: string) =>
   `qualification/executions/${encodeURIComponent(executionId)}/owner-response.json`;
 
 /** Seal the report and then publish the exact terminal response that names it. */
-export const retainQualificationDistributedEvaluationOwnerResponse = async (
+const retainDistributedEvaluationOwnerResponse = async (
   bucket: QualificationOwnerResponseBucket,
   payload: QualificationOwnerWorkflowPayload,
   input: Omit<
@@ -458,6 +569,23 @@ export const retainQualificationDistributedEvaluationOwnerResponse = async (
     },
   });
   return completion;
+};
+
+export const retainQualificationDistributedEvaluationOwnerResponse = async (
+  bucket: QualificationOwnerResponseBucket,
+  payload: QualificationOwnerWorkflowPayload,
+  input: Omit<
+    QualificationDistributedEvaluationReportInput,
+    "executionId" | "manifestChecksum" | "planChecksum"
+  >,
+): Promise<QualificationDistributedEvaluationReportCompletion> => {
+  try {
+    return await retainDistributedEvaluationOwnerResponse(bucket, payload, input);
+  } catch (cause) {
+    if (!(cause instanceof DistributedEvaluationRetentionConflict)) throw cause;
+    await retainConflictMarker(bucket, payload, cause.artifactId);
+    throw cause;
+  }
 };
 
 /** Retain the exact MISSING outcome while concrete product authority exports are unavailable. */

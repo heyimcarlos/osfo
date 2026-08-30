@@ -23,12 +23,16 @@ import {
   qualificationDistributedEvaluationReportArtifactId,
   qualificationDistributedEvaluationReportCompletionArtifactId,
 } from "../../qualification/distributed-evaluation-report";
-import { qualificationOwnerDimensionCoordinatorBudget } from "../../qualification/owner-partitions";
+import {
+  qualificationCorrectnessRootReceiptArtifactId,
+  qualificationOwnerDimensionCoordinatorBudget,
+} from "../../qualification/owner-partitions";
 import {
   qualificationEvaluationCorrectnessReceipt,
   qualificationEvaluationRootAccumulatorReceipt,
 } from "../../qualification/qualification-evaluation-reducer";
 import { retainQualificationDistributedEvaluationReport } from "../../workflows/qualification-owner-report";
+import { qualificationDimensionCoordinatorCompletionArtifactId } from "../../workflows/qualification-owner-dimensions";
 import type {
   QualificationExecutionListedObject,
   QualificationExecutionListingBucket,
@@ -714,14 +718,49 @@ it("preserves the legacy v1 FAIL response as owner-unavailable MISSING on replay
   }
 });
 
+it("surfaces an authenticated owner immutable-collision marker as FAIL", async () => {
+  const manifest = compactManifest();
+  const plan = createQualificationExecutionPlan(manifest, 0, "owner-conflict-marker");
+  const storage = memoryBucket();
+  retainCohort(storage.retained, manifest, plan);
+  const result = await runProductionQualification(
+    {
+      ARTIFACTS: storage.bucket,
+      QUALIFICATION_OWNER: {
+        fetch: () =>
+          Promise.resolve(
+            Response.json({ error: "qualificationOwnerWorkflowConflict" }, { status: 409 }),
+          ),
+      },
+    },
+    manifest,
+    plan,
+  );
+
+  expect(result).toMatchObject({
+    findings: expect.arrayContaining([
+      expect.objectContaining({ code: "productionQualificationOwnerConflict" }),
+    ]),
+    verdict: "FAIL",
+  });
+});
+
 it.each([
-  ["qualification-owner-response-v2", "productionQualificationOwnerUnavailable", "MISSING"],
-  ["qualification-owner-response-v3", "productionQualificationOwnerConflict", "FAIL"],
+  ["v2", "qualification-owner-response-v2", "productionQualificationOwnerUnavailable", "MISSING"],
+  [
+    "unknown string",
+    "qualification-owner-response-v3",
+    "productionQualificationOwnerConflict",
+    "FAIL",
+  ],
+  ["null", null, "productionQualificationOwnerConflict", "FAIL"],
+  ["number", 2, "productionQualificationOwnerConflict", "FAIL"],
+  ["object", { injected: true }, "productionQualificationOwnerConflict", "FAIL"],
 ] as const)(
   "never downgrades a declared %s response through injected legacy fields",
-  async (version, expectedCode, expectedVerdict) => {
+  async (label, version, expectedCode, expectedVerdict) => {
     const manifest = compactManifest();
-    const plan = createQualificationExecutionPlan(manifest, 0, `declared-${version}`);
+    const plan = createQualificationExecutionPlan(manifest, 0, `declared-${label}`);
     const storage = memoryBucket();
     retainCohort(storage.retained, manifest, plan);
     const result = await runProductionQualification(
@@ -929,7 +968,7 @@ it("rejects a self-authentic completion whose family counts disagree with the re
   expect(storage.listCallCount()).toBe(0);
 });
 
-it.each(["valid", "missing", "metadata", "crossExecution"] as const)(
+it.each(["valid", "missing", "metadata", "crossExecution", "substitutedKey"] as const)(
   "authenticates the compact dimension reference without listing: %s",
   async (scenario) => {
     const manifest = compactManifest();
@@ -937,7 +976,10 @@ it.each(["valid", "missing", "metadata", "crossExecution"] as const)(
     const storage = memoryBucket();
     retainCohort(storage.retained, manifest, plan);
     const inventory = qualificationOwnerDimensionCoordinatorBudget(plan);
-    const artifactId = `qualification/executions/${plan.executionId}/dimensions/completion.json`;
+    const artifactId =
+      scenario === "substitutedKey"
+        ? `${qualificationDimensionCoordinatorCompletionArtifactId(plan.executionId)}.copied`
+        : qualificationDimensionCoordinatorCompletionArtifactId(plan.executionId);
     const dimension = await retainDimensionReference(storage, {
       artifactId,
       dimensionCount: inventory.dimensionCount,
@@ -1028,7 +1070,7 @@ it.each(["valid", "missing", "metadata", "crossExecution"] as const)(
   },
 );
 
-it.each(["valid", "missing", "metadata", "crossExecution"] as const)(
+it.each(["valid", "missing", "metadata", "crossExecution", "substitutedKey"] as const)(
   "authenticates the compact correctness reference without listing: %s",
   async (scenario) => {
     const manifest = compactManifest();
@@ -1039,7 +1081,16 @@ it.each(["valid", "missing", "metadata", "crossExecution"] as const)(
     );
     const storage = memoryBucket();
     retainCohort(storage.retained, manifest, plan);
-    const artifactId = `qualification/executions/${plan.executionId}/correctness/receipt.json`;
+    const partitionCount = plan.runs.reduce(
+      (total, run) => total + Math.ceil(run.arrivalCount / 256),
+      0,
+    );
+    const canonicalArtifactId = qualificationCorrectnessRootReceiptArtifactId(
+      plan.executionId,
+      partitionCount,
+    );
+    const artifactId =
+      scenario === "substitutedKey" ? `${canonicalArtifactId}.copied` : canonicalArtifactId;
     const correctness = await retainCorrectnessReference(storage, {
       artifactId,
       executionId: scenario === "crossExecution" ? "other-execution" : plan.executionId,

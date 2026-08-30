@@ -2,6 +2,7 @@ import { Option, Schema } from "effect";
 
 import { qualificationChecksum } from "./qualification/qualification-checksum";
 import type { QualificationOwnerWorkflowPayload } from "./workflow-contracts";
+import { authenticateQualificationDistributedEvaluationConflict } from "./workflows/qualification-owner-report";
 
 export { QualificationOwnerWorkflow } from "./workflows/qualification-owner";
 export { QualificationOwnerPartitionWorkflow } from "./workflows/qualification-owner-partition";
@@ -65,8 +66,8 @@ const decodeOwnerWorkflowResponse = Schema.decodeUnknownOption(
 const decodeDistributedOwnerWorkflowResponse = Schema.decodeUnknownOption(
   Schema.fromJsonString(DistributedOwnerWorkflowResponse),
 );
-const decodeOwnerResponseVersion = Schema.decodeUnknownOption(
-  Schema.Struct({ version: Schema.String }),
+const decodeOwnerResponseVersionPresence = Schema.decodeUnknownOption(
+  Schema.Struct({ version: Schema.optionalKey(Schema.Unknown) }),
 );
 
 interface QualificationOwnerInstance {
@@ -148,10 +149,10 @@ const completedResponse = async (
   if (Option.isNone(decoded) || decoded.value.status < 200 || decoded.value.status > 599) {
     return Response.json({ error: "qualificationOwnerResponseConflict" }, { status: 409 });
   }
-  const version = decodeOwnerResponseVersion(decoded.value.body);
+  const declaredVersion = decodeOwnerResponseVersionPresence(decoded.value.body);
   if (
     artifact.customMetadata?.["osfo-kind"] === "qualification-owner-response-v2" ||
-    (Option.isSome(version) && version.value.version === "qualification-owner-response-v2")
+    (Option.isSome(declaredVersion) && "version" in declaredVersion.value)
   ) {
     return Response.json({ error: "qualificationOwnerResponseConflict" }, { status: 409 });
   }
@@ -204,11 +205,29 @@ export default {
     }
     const status = await instance.status();
     if (status.status === "errored" || status.status === "terminated") {
+      const conflict = await authenticateQualificationDistributedEvaluationConflict({
+        bucket: env.ARTIFACTS,
+        executionId: invocation.executionId,
+        manifestChecksum: invocation.manifestChecksum,
+        planChecksum: invocation.planChecksum,
+      });
+      if (conflict === "CONFLICT") {
+        return Response.json({ error: "qualificationOwnerWorkflowConflict" }, { status: 409 });
+      }
       return Response.json({ error: "qualificationOwnerWorkflowFailed" }, { status: 500 });
     }
     if (status.status === "complete") {
       const settled = await completedResponse(env, invocation.executionId);
       if (settled !== null) return settled;
+      const conflict = await authenticateQualificationDistributedEvaluationConflict({
+        bucket: env.ARTIFACTS,
+        executionId: invocation.executionId,
+        manifestChecksum: invocation.manifestChecksum,
+        planChecksum: invocation.planChecksum,
+      });
+      if (conflict === "CONFLICT") {
+        return Response.json({ error: "qualificationOwnerWorkflowConflict" }, { status: 409 });
+      }
       return Response.json({ error: "qualificationOwnerResponseMissing" }, { status: 500 });
     }
     return Response.json(

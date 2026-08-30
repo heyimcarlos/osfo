@@ -737,3 +737,5 @@ export const readQualificationDimensionSelectedValue = async (input: {
     ? { status: "COMPLETE", value }
     : { status: "FAIL" };
 };
+export const qualificationDimensionCoordinatorCompletionArtifactId = (executionId: string) =>
+  `${qualificationDimensionCoordinatorArtifactPrefix(executionId)}/completion.json`;

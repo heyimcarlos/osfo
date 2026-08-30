@@ -28,6 +28,7 @@ import {
   qualificationDimensionCoordinatorArtifactPrefix,
   qualificationDimensionEvaluation,
   qualificationDimensionPageSize,
+  qualificationDimensionCoordinatorCompletionArtifactId,
   qualificationDimensionReducerPayload,
   qualificationDimensionReducerWorkflowId,
   qualificationDimensionSelectedIndexes,
@@ -147,8 +148,6 @@ const rootPageArtifactId = (executionId: string, index: number) =>
   `${basePrefix(executionId)}/root-pages/${padded(index)}.json`;
 const evaluationPageArtifactId = (executionId: string, index: number) =>
   `${basePrefix(executionId)}/evaluation-pages/${padded(index)}.json`;
-const coordinatorCompletionArtifactId = (executionId: string) =>
-  `${basePrefix(executionId)}/completion.json`;
 
 const retainImmutable = async (input: {
   readonly artifactId: string;
@@ -1254,7 +1253,7 @@ const retainCoordinatorCompletion = async (input: {
   readonly terminalRootPageChecksum: string;
   readonly verdict: "FAIL" | "MISSING" | "PASS";
 }) => {
-  const artifactId = coordinatorCompletionArtifactId(input.executionId);
+  const artifactId = qualificationDimensionCoordinatorCompletionArtifactId(input.executionId);
   const content = {
     artifactId,
     dimensionCount: input.dimensionCount,

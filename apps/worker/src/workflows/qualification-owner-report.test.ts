@@ -13,8 +13,10 @@ import {
   qualificationEvaluationCorrectnessReceipt,
   qualificationEvaluationRootAccumulatorReceipt,
 } from "../qualification/qualification-evaluation-reducer";
+import { qualificationCorrectnessRootReceiptArtifactId } from "../qualification/owner-partitions";
 import {
   authenticateQualificationDistributedCorrectnessReference,
+  authenticateQualificationDistributedEvaluationConflict,
   authenticateQualificationDistributedEvaluationReportCompletion,
   authenticateQualificationDistributedEvaluationReport,
   retainQualificationDistributedEvaluationReport,
@@ -103,7 +105,7 @@ describe("qualification owner distributed report retention", () => {
     });
     if (root === null) throw new Error("Expected root receipt fixture");
     const receipt = qualificationEvaluationCorrectnessReceipt({
-      artifactId: "correctness.json",
+      artifactId: qualificationCorrectnessRootReceiptArtifactId(report.executionId, 1),
       executionId: report.executionId,
       findingSummary: { exemplars: [], failCount: 0, missingCount: 0 },
       findingSummaryArtifactChecksum: "summary-checksum",
@@ -142,6 +144,7 @@ describe("qualification owner distributed report retention", () => {
       executionId: receipt.executionId,
       expectedAcceptedCount: 0,
       expectedRootCount: 0,
+      partitionCount: 1,
       planChecksum: receipt.planChecksum,
       verdict: "PASS" as const,
     };
@@ -604,4 +607,56 @@ describe("qualification owner distributed report retention", () => {
     await expect(retain()).resolves.toMatchObject({ reportChecksum: report.checksum });
     expect(retained.values.size).toBe(3);
   });
+
+  it.each(["report", "completion", "response"] as const)(
+    "retains an authenticated conflict marker for an immutable %s collision",
+    async (collision) => {
+      const retained = memoryBucket();
+      const payload = {
+        executionId: report.executionId,
+        manifestChecksum: report.manifestChecksum,
+        planChecksum: report.planChecksum,
+        requestArtifactChecksum: "request-checksum",
+        requestArtifactId: "request.json",
+      };
+      const input = {
+        acceptanceLevel: report.acceptanceLevel,
+        correctness: { reason: "correctness_missing", verdict: "MISSING" as const },
+        dimensions: {
+          reason: "correctness_prerequisite_missing",
+          verdict: "MISSING" as const,
+        },
+        expectedDimensionCount: report.expectedDimensionCount,
+        expectedRootCount: report.expectedRootCount,
+        sourceVersion: report.sourceVersion,
+        topologyVersion: report.topologyVersion,
+      };
+      if (collision !== "report") {
+        await retainQualificationDistributedEvaluationReport(retained.bucket, report);
+      }
+      const artifactId =
+        collision === "report"
+          ? report.artifactId
+          : collision === "completion"
+            ? qualificationDistributedEvaluationReportCompletionArtifactId(report.executionId)
+            : `qualification/executions/${report.executionId}/owner-response.json`;
+      retained.values.set(artifactId, {
+        customMetadata: {},
+        encoded: canonicalQualificationJson({ conflict: collision }),
+        httpMetadata: { contentType: "application/json" },
+      });
+
+      await expect(
+        retainQualificationDistributedEvaluationOwnerResponse(retained.bucket, payload, input),
+      ).rejects.toThrow("Retained qualification distributed report artifact conflicts");
+      await expect(
+        authenticateQualificationDistributedEvaluationConflict({
+          bucket: retained.bucket,
+          executionId: report.executionId,
+          manifestChecksum: report.manifestChecksum,
+          planChecksum: report.planChecksum,
+        }),
+      ).resolves.toBe("CONFLICT");
+    },
+  );
 });
