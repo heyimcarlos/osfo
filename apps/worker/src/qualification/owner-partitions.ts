@@ -23,6 +23,8 @@ export const qualificationDimensionParentPollCount =
 export const qualificationDimensionLaunchPageSize = 50;
 export const qualificationDimensionRootOwnerSubrequestBudget =
   2 * qualificationDimensionParentPollCount + 40;
+/** Five default durable-step attempts across report, envelope, and response reconciliation. */
+export const qualificationDistributedEvaluationReportMaximumSubrequests = 28;
 
 export interface QualificationPartitionChunk {
   readonly chunkIndex: number;
@@ -229,7 +231,9 @@ export const qualificationOwnerDimensionCoordinatorBudget = (plan: Qualification
     maximumEvaluationDurationMs: qualificationDimensionMaximumEvaluationDurationMs,
     maximumRootOwnerSubrequests:
       qualificationOwnerCorrectnessForestBudget(partitionCount).maximumCumulativeOwnerSubrequests +
-      qualificationDimensionRootOwnerSubrequestBudget,
+      qualificationDimensionRootOwnerSubrequestBudget +
+      qualificationDistributedEvaluationReportMaximumSubrequests,
+    maximumReportSubrequests: qualificationDistributedEvaluationReportMaximumSubrequests,
     maximumStepSubrequests: 169,
     numericDimensionCount,
     reducerCount,

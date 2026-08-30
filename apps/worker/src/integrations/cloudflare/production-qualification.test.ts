@@ -1,4 +1,4 @@
-/* oxlint-disable vitest/no-standalone-expect -- Effect Vitest assertions execute inside generator-backed tests. */
+/* oxlint-disable effecttsgo/async-function, vitest/no-standalone-expect -- Promise fakes model Cloudflare boundaries; Effect Vitest assertions execute inside generator-backed tests. */
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { hexToBytes } from "@noble/hashes/utils.js";
@@ -18,6 +18,8 @@ import {
   type ProductionQualificationManifest,
 } from "../../qualification/qualification-manifest";
 import { qualificationCohortArtifactId } from "../../qualification/qualification-cohort";
+import { qualificationDistributedEvaluationReport } from "../../qualification/distributed-evaluation-report";
+import { retainQualificationDistributedEvaluationReport } from "../../workflows/qualification-owner-report";
 import type {
   QualificationExecutionListedObject,
   QualificationExecutionListingBucket,
@@ -57,12 +59,24 @@ const authoritySources = [
 ] as const;
 const memoryBucket = () => {
   const retained = new Map<string, string>();
+  let listCallCount = 0;
+  const metadata = new Map<
+    string,
+    {
+      readonly customMetadata: Readonly<Record<string, string>>;
+      readonly httpMetadata: { readonly contentType: string };
+    }
+  >();
   const listed = new Map<string, QualificationExecutionListedObject>();
   const bucket = {
-    get: (key: string) =>
-      Promise.resolve(
-        retained.has(key) ? { text: () => Promise.resolve(retained.get(key) ?? "") } : null,
-      ),
+    get: (key: string) => {
+      if (!retained.has(key)) return Promise.resolve(null);
+      const retainedMetadata = metadata.get(key);
+      const value = { text: () => Promise.resolve(retained.get(key) ?? "") };
+      return Promise.resolve(
+        retainedMetadata === undefined ? value : { ...retainedMetadata, ...value },
+      );
+    },
     list: ({
       cursor,
       limit,
@@ -73,6 +87,7 @@ const memoryBucket = () => {
       limit: number;
       prefix: string;
     }) => {
+      listCallCount += 1;
       const offset = cursor === undefined ? 0 : Number(cursor);
       const matches = [...listed.values()].filter(({ key }) => key.startsWith(prefix));
       const objects = matches.slice(offset, offset + limit);
@@ -83,13 +98,25 @@ const memoryBucket = () => {
           : { objects, truncated: false as const },
       );
     },
-    put: (key: string, value: string) => {
+    put: (
+      key: string,
+      value: string,
+      options: {
+        readonly customMetadata: Readonly<Record<string, string>>;
+        readonly httpMetadata: { readonly contentType: string };
+        readonly onlyIf: { readonly etagDoesNotMatch: string };
+      },
+    ) => {
       if (retained.has(key)) return Promise.resolve(null);
       retained.set(key, value);
+      metadata.set(key, {
+        customMetadata: options.customMetadata,
+        httpMetadata: options.httpMetadata,
+      });
       return Promise.resolve({ etag: qualificationChecksum({ value }) });
     },
   } satisfies QualificationExecutionListingBucket;
-  return { bucket, listed, retained };
+  return { bucket, listCallCount: () => listCallCount, listed, metadata, retained };
 };
 
 const retainCohort = (
@@ -523,3 +550,141 @@ it.effect("preserves an exact completed MISSING authority-source report", () =>
     });
   }),
 );
+
+it.each([false, true] as const)(
+  "authenticates a distributed PRE_TEARDOWN report before returning %s",
+  async (tamperMetadata) => {
+    const manifest = compactManifest();
+    const plan = createQualificationExecutionPlan(
+      manifest,
+      0,
+      tamperMetadata ? "tampered-distributed-report" : "distributed-report",
+    );
+    const { bucket, listCallCount, metadata, retained } = memoryBucket();
+    retainCohort(retained, manifest, plan);
+    const report = qualificationDistributedEvaluationReport({
+      acceptanceLevel: manifest.acceptanceLevel,
+      correctness: { reason: "qualificationCorrectnessMissing", verdict: "MISSING" },
+      dimensions: { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
+      executionId: plan.executionId,
+      manifestChecksum: manifest.manifestChecksum,
+      planChecksum: plan.planChecksum,
+      sourceVersion: manifest.sourceVersion,
+      topologyVersion: manifest.topologyVersion,
+    });
+    const result = await runProductionQualification(
+      {
+        ARTIFACTS: bucket,
+        QUALIFICATION_OWNER: {
+          fetch: async () => {
+            const completion = await retainQualificationDistributedEvaluationReport(bucket, report);
+            if (tamperMetadata) {
+              const current = metadata.get(report.artifactId);
+              if (current === undefined) throw new Error("Expected report metadata fixture");
+              metadata.set(report.artifactId, {
+                ...current,
+                customMetadata: {
+                  ...current.customMetadata,
+                  "osfo-source-version": "substituted",
+                },
+              });
+            }
+            return Response.json(
+              {
+                completionArtifactId: completion.artifactId,
+                completionChecksum: completion.checksum,
+                error: "qualificationAuthorityMaterialMissing",
+                executionId: plan.executionId,
+                failingFamilies: [],
+                manifestChecksum: manifest.manifestChecksum,
+                missingFamilies: report.families
+                  .filter(({ verdict }) => verdict === "MISSING")
+                  .map(({ family }) => family),
+                phase: "PRE_TEARDOWN",
+                planChecksum: plan.planChecksum,
+                reportArtifactId: report.artifactId,
+                reportChecksum: report.checksum,
+                verdict: "MISSING",
+                version: "qualification-owner-response-v2",
+              },
+              { status: 424 },
+            );
+          },
+        },
+      },
+      manifest,
+      plan,
+    );
+
+    expect(result).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({
+          code: tamperMetadata
+            ? "productionQualificationOwnerConflict"
+            : "productionQualificationDistributedReportMissing",
+        }),
+      ]),
+      verdict: tamperMetadata ? "FAIL" : "MISSING",
+    });
+    expect(listCallCount()).toBe(0);
+  },
+);
+
+it("returns an authenticated distributed FAIL ahead of missing report families", async () => {
+  const manifest = compactManifest();
+  const plan = createQualificationExecutionPlan(manifest, 0, "distributed-fail-report");
+  const { bucket, retained } = memoryBucket();
+  retainCohort(retained, manifest, plan);
+  const report = qualificationDistributedEvaluationReport({
+    acceptanceLevel: manifest.acceptanceLevel,
+    correctness: { reason: "correctness_conflict", verdict: "FAIL" },
+    dimensions: { reason: "correctness_prerequisite_failed", verdict: "MISSING" },
+    executionId: plan.executionId,
+    manifestChecksum: manifest.manifestChecksum,
+    planChecksum: plan.planChecksum,
+    sourceVersion: manifest.sourceVersion,
+    topologyVersion: manifest.topologyVersion,
+  });
+  const result = await runProductionQualification(
+    {
+      ARTIFACTS: bucket,
+      QUALIFICATION_OWNER: {
+        fetch: async () => {
+          const completion = await retainQualificationDistributedEvaluationReport(bucket, report);
+          return Response.json(
+            {
+              completionArtifactId: completion.artifactId,
+              completionChecksum: completion.checksum,
+              error: "qualificationAuthorityConflict",
+              executionId: plan.executionId,
+              failingFamilies: ["forest_correctness"],
+              manifestChecksum: manifest.manifestChecksum,
+              missingFamilies: report.families
+                .filter(({ verdict }) => verdict === "MISSING")
+                .map(({ family }) => family),
+              phase: "PRE_TEARDOWN",
+              planChecksum: plan.planChecksum,
+              reportArtifactId: report.artifactId,
+              reportChecksum: report.checksum,
+              verdict: "FAIL",
+              version: "qualification-owner-response-v2",
+            },
+            { status: 409 },
+          );
+        },
+      },
+    },
+    manifest,
+    plan,
+  );
+
+  expect(result).toMatchObject({
+    findings: expect.arrayContaining([
+      expect.objectContaining({
+        code: "productionQualificationDistributedReportFailed",
+        detail: expect.stringContaining("forest_correctness"),
+      }),
+    ]),
+    verdict: "FAIL",
+  });
+});

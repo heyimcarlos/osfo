@@ -58,7 +58,11 @@ const runtime = async (
     cohortArtifactChecksum: "cohort-checksum",
     cohortArtifactId: "qualification/cohort.json",
     executionId,
-    manifest: { sourceVersion: "source-version" },
+    manifest: {
+      acceptanceLevel: "BoundedBeta" as const,
+      sourceVersion: "source-version",
+      topologyVersion: "topology-version",
+    },
     manifestChecksum,
     plan: { startsAtEpochMs },
     planChecksum,
@@ -318,7 +322,12 @@ it("preserves an authenticated correctness MISSING verdict before dimension fano
   expect(result.result).toEqual({ status: "MISSING" });
   expect(
     result.retained.get(`qualification/executions/${executionId}/owner-response.json`)?.value,
-  ).toContain('"missingSources":["qualificationCorrectnessMissing"]');
+  ).toContain('"missingFamilies":["forest_correctness"');
+  expect(
+    result.retained.get(
+      `qualification/executions/${executionId}/distributed-report/pre-teardown-v1/report.json`,
+    )?.value,
+  ).toContain('"verdict":"MISSING"');
 });
 
 it("reports absent leaf completion material distinctly from the unbuilt reducer", async () => {
@@ -334,7 +343,12 @@ it("preserves an authenticated correctness FAIL verdict before dimension fanout"
   expect(result.result).toEqual({ status: "COMPLETE", verdict: "FAIL" });
   expect(
     result.retained.get(`qualification/executions/${executionId}/owner-response.json`)?.value,
-  ).toContain('"failureCodes":["qualificationCorrectnessFailed"]');
+  ).toContain('"failingFamilies":["forest_correctness"]');
+  expect(
+    result.retained.get(
+      `qualification/executions/${executionId}/distributed-report/pre-teardown-v1/report.json`,
+    )?.value,
+  ).toContain('"verdict":"FAIL"');
 });
 
 it.each(["partial", "wrong"] as const)(

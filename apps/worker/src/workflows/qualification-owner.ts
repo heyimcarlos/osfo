@@ -16,6 +16,7 @@ import {
   canonicalQualificationJson,
   qualificationChecksum,
 } from "../qualification/qualification-checksum";
+import { qualificationDistributedEvaluationDimensionTerminalEvidence } from "../qualification/distributed-evaluation-report";
 import type {
   QualificationEvaluationCorrectnessReducerWorkflowPayload,
   QualificationEvaluationLeafWorkflowPayload,
@@ -30,6 +31,7 @@ import {
 } from "../qualification/owner-partitions";
 import {
   retainFailedQualificationReport,
+  retainQualificationDistributedEvaluationOwnerResponse,
   retainMissingQualificationReport,
 } from "./qualification-owner-report";
 import {
@@ -183,7 +185,11 @@ type QualificationSourceCollectionStepResult = typeof QualificationSourceCollect
 const decodeSourceStepResult = Schema.decodePromise(QualificationSourceCollectionStepResult);
 
 const maximumSourceCollectionPolls = 100;
-const RetainedManifestIdentity = Schema.Struct({ sourceVersion: Schema.String });
+const RetainedManifestIdentity = Schema.Struct({
+  acceptanceLevel: Schema.Literals(["BoundedBeta", "ScaleQualifiedPublic"]),
+  sourceVersion: Schema.String,
+  topologyVersion: Schema.String,
+});
 const RetainedPlanIdentity = Schema.Struct({ startsAtEpochMs: Schema.Int });
 const PartitionCompletion = Schema.Struct({
   arrivalArtifactChecksum: Schema.NullOr(Schema.String),
@@ -819,9 +825,11 @@ export const runQualificationOwnerWorkflow = async (input: {
       throw new Error("Frozen qualification request conflicts with the Workflow identity");
     }
     return {
+      acceptanceLevel: manifestIdentity.acceptanceLevel,
       authoritySources: [...decoded.authoritySources],
       sourceVersion: manifestIdentity.sourceVersion,
       startsAtEpochMs: planIdentity.startsAtEpochMs,
+      topologyVersion: manifestIdentity.topologyVersion,
     };
   });
   const preflight = await input.step.do("attempt product authority sources", async () => {
@@ -980,43 +988,89 @@ export const runQualificationOwnerWorkflow = async (input: {
     payload: input.payload,
     step: input.step,
   });
-  if (correctness.status === "FAIL") {
-    await input.step.do("retain failed qualification correctness forest", async () => {
-      await retainFailedQualificationReport(input.env.ARTIFACTS, input.payload, [correctness.code]);
-      return { retained: true };
+  const retainDistributedReport = (
+    name: string,
+    correctnessEvidence: Parameters<
+      typeof retainQualificationDistributedEvaluationOwnerResponse
+    >[2]["correctness"],
+    dimensionEvidence: Parameters<
+      typeof retainQualificationDistributedEvaluationOwnerResponse
+    >[2]["dimensions"],
+  ) =>
+    input.step.do(name, async () => {
+      const reportCompletion = await retainQualificationDistributedEvaluationOwnerResponse(
+        input.env.ARTIFACTS,
+        input.payload,
+        {
+          acceptanceLevel: request.acceptanceLevel,
+          correctness: correctnessEvidence,
+          dimensions: dimensionEvidence,
+          sourceVersion: request.sourceVersion,
+          topologyVersion: request.topologyVersion,
+        },
+      );
+      return { checksum: reportCompletion.checksum, verdict: reportCompletion.verdict };
     });
+  if (correctness.status === "FAIL") {
+    await retainDistributedReport(
+      "retain failed qualification correctness forest report",
+      { reason: correctness.code, verdict: "FAIL" },
+      { reason: "correctness_prerequisite_failed", verdict: "MISSING" },
+    );
     return { status: "COMPLETE", verdict: "FAIL" };
   }
   if (correctness.status === "MISSING") {
-    await input.step.do("retain missing qualification correctness forest", async () => {
-      await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
-        correctness.code,
-      ]);
-      return { retained: true };
-    });
+    await retainDistributedReport(
+      "retain missing qualification correctness forest report",
+      { reason: correctness.code, verdict: "MISSING" },
+      { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
+    );
     return { status: "MISSING" };
   }
   if (!("verdict" in correctness)) {
     throw new Error("Qualification correctness outcome conflicts");
   }
   if (correctness.verdict === "FAIL") {
-    await input.step.do("retain failed qualification correctness verdict", async () => {
-      await retainFailedQualificationReport(input.env.ARTIFACTS, input.payload, [
-        "qualificationCorrectnessFailed",
-      ]);
-      return { retained: true };
-    });
+    await retainDistributedReport(
+      "retain failed qualification correctness verdict report",
+      {
+        acceptedCount: correctness.acceptedCount,
+        artifactId: correctness.artifactId,
+        checksum: correctness.checksum,
+        failCount: 1,
+        missingCount: 0,
+        rootCount: correctness.rootCount,
+        verdict: "FAIL",
+      },
+      { reason: "correctness_prerequisite_failed", verdict: "MISSING" },
+    );
     return { status: "COMPLETE", verdict: "FAIL" };
   }
   if (correctness.verdict === "MISSING") {
-    await input.step.do("retain missing qualification correctness verdict", async () => {
-      await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
-        "qualificationCorrectnessMissing",
-      ]);
-      return { retained: true };
-    });
+    await retainDistributedReport(
+      "retain missing qualification correctness verdict report",
+      {
+        acceptedCount: correctness.acceptedCount,
+        artifactId: correctness.artifactId,
+        checksum: correctness.checksum,
+        failCount: 0,
+        missingCount: 1,
+        rootCount: correctness.rootCount,
+        verdict: "MISSING",
+      },
+      { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
+    );
     return { status: "MISSING" };
   }
+  const passedCorrectness = {
+    acceptedCount: correctness.acceptedCount,
+    artifactId: correctness.artifactId,
+    checksum: correctness.checksum,
+    failCount: 0,
+    missingCount: 0,
+    rootCount: correctness.rootCount,
+    verdict: "PASS" as const,
+  };
   const dimensionPayload: QualificationOwnerDimensionWorkflowPayload = {
     ...input.payload,
     correctnessArtifactId: correctness.artifactId,
@@ -1061,50 +1115,63 @@ export const runQualificationOwnerWorkflow = async (input: {
     workflowId: dimensionWorkflowId,
   });
   if (dimension.status === "FAIL") {
-    await input.step.do("retain failed qualification dimension reducer", async () => {
-      await retainFailedQualificationReport(input.env.ARTIFACTS, input.payload, [
-        "qualificationDimensionReducerFailed",
-      ]);
-      return { retained: true };
-    });
+    await retainDistributedReport(
+      "retain failed qualification dimension reducer report",
+      passedCorrectness,
+      qualificationDistributedEvaluationDimensionTerminalEvidence({ kind: "reducerFailed" }),
+    );
     return { status: "COMPLETE", verdict: "FAIL" };
   }
   if (dimension.status === "MISSING") {
-    await input.step.do("retain missing qualification dimension reducer", async () => {
-      await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
-        "bounded_qualification_reducer",
-      ]);
-      return { retained: true };
-    });
+    await retainDistributedReport(
+      "retain missing qualification dimension reducer report",
+      passedCorrectness,
+      qualificationDistributedEvaluationDimensionTerminalEvidence({ kind: "reducerMissing" }),
+    );
     return { status: "MISSING" };
   }
   if (dimension.status !== "COMPLETE") {
     throw new Error("Qualification dimension outcome conflicts");
   }
   if (dimension.completion.verdict === "MISSING") {
-    await input.step.do("retain missing qualification dimension evidence", async () => {
-      await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
-        "bounded_qualification_reducer",
-      ]);
-      return { retained: true };
-    });
+    await retainDistributedReport(
+      "retain missing qualification dimension evidence report",
+      passedCorrectness,
+      qualificationDistributedEvaluationDimensionTerminalEvidence({
+        artifactId: dimension.completion.artifactId,
+        checksum: dimension.completion.checksum,
+        dimensionCount: dimension.completion.dimensionCount,
+        kind: "authenticated",
+        verdict: "MISSING",
+      }),
+    );
     return { status: "MISSING" };
   }
   if (dimension.completion.verdict === "FAIL") {
-    await input.step.do("retain failed qualification dimension SLOs", async () => {
-      await retainFailedQualificationReport(input.env.ARTIFACTS, input.payload, [
-        "qualificationDimensionSloFailed",
-      ]);
-      return { retained: true };
-    });
+    await retainDistributedReport(
+      "retain failed qualification dimension SLO report",
+      passedCorrectness,
+      qualificationDistributedEvaluationDimensionTerminalEvidence({
+        artifactId: dimension.completion.artifactId,
+        checksum: dimension.completion.checksum,
+        dimensionCount: dimension.completion.dimensionCount,
+        kind: "authenticated",
+        verdict: "FAIL",
+      }),
+    );
     return { status: "COMPLETE", verdict: "FAIL" };
   }
-  await input.step.do("retain missing distributed qualification report", async () => {
-    await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
-      "distributed_qualification_report",
-    ]);
-    return { retained: true };
-  });
+  await retainDistributedReport(
+    "retain pre-teardown distributed qualification report",
+    passedCorrectness,
+    qualificationDistributedEvaluationDimensionTerminalEvidence({
+      artifactId: dimension.completion.artifactId,
+      checksum: dimension.completion.checksum,
+      dimensionCount: dimension.completion.dimensionCount,
+      kind: "authenticated",
+      verdict: "PASS",
+    }),
+  );
   return { status: "MISSING" };
 };
 

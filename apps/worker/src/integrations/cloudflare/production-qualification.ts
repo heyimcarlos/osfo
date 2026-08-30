@@ -26,6 +26,10 @@ import {
   type QualificationExecutionArtifactUnavailable,
   type QualificationExecutionListingBucket,
 } from "./qualification-execution-artifacts";
+import {
+  authenticateQualificationDistributedEvaluationReport,
+  authenticateQualificationDistributedEvaluationReportCompletion,
+} from "../../workflows/qualification-owner-report";
 
 const authorityStreamComponents = [
   "arrivals",
@@ -123,6 +127,28 @@ const OwnerMissingResponse = Schema.Struct({
   planChecksum: Schema.String,
   verdict: Schema.Literal("MISSING"),
 });
+const OwnerDistributedEvaluationResponse = Schema.Struct({
+  completionArtifactId: Schema.String,
+  completionChecksum: Schema.String,
+  error: Schema.Literals([
+    "qualificationAuthorityConflict",
+    "qualificationAuthorityMaterialMissing",
+  ]),
+  executionId: Schema.String,
+  failingFamilies: Schema.Array(Schema.String),
+  manifestChecksum: Schema.String,
+  missingFamilies: Schema.Array(Schema.String),
+  phase: Schema.Literal("PRE_TEARDOWN"),
+  planChecksum: Schema.String,
+  reportArtifactId: Schema.String,
+  reportChecksum: Schema.String,
+  verdict: Schema.Literals(["FAIL", "MISSING"]),
+  version: Schema.Literal("qualification-owner-response-v2"),
+});
+const OwnerTerminalResponse = Schema.Union([
+  OwnerMissingResponse,
+  OwnerDistributedEvaluationResponse,
+]);
 const OwnerReport = Schema.Struct({
   adventurerContributionMargin: Schema.NullOr(Schema.Finite),
   costSummaries: Schema.Array(
@@ -180,7 +206,7 @@ const AuthorityShardMetadata = Schema.Struct({
 });
 const EncodedOwnerBundleDescriptor = Schema.fromJsonString(OwnerBundleDescriptor);
 const EncodedOwnerResponse = Schema.fromJsonString(OwnerResponse);
-const EncodedOwnerMissingResponse = Schema.fromJsonString(OwnerMissingResponse);
+const EncodedOwnerTerminalResponse = Schema.fromJsonString(OwnerTerminalResponse);
 const EncodedOwnerReport = Schema.fromJsonString(OwnerReport);
 
 type OwnerBundleDescriptor = typeof OwnerBundleDescriptor.Type;
@@ -516,25 +542,108 @@ export const runProductionQualification = (
     if (response.status === 202) {
       return yield* ownerUnavailable("Qualification owner execution remains in progress");
     }
-    if (response.status === 424) {
-      const encodedMissing = yield* Effect.tryPromise({
-        catch: (cause) => ownerUnavailable("Qualification owner MISSING body failed", cause),
+    if (response.status === 424 || response.status === 409) {
+      const encodedTerminal = yield* Effect.tryPromise({
+        catch: (cause) => ownerUnavailable("Qualification owner terminal body failed", cause),
         try: () => response.text(),
       });
-      const missing = yield* decode(EncodedOwnerMissingResponse, encodedMissing);
+      const terminal = yield* decode(EncodedOwnerTerminalResponse, encodedTerminal);
       if (
-        missing.executionId !== plan.executionId ||
-        missing.manifestChecksum !== manifest.manifestChecksum ||
-        missing.planChecksum !== plan.planChecksum ||
-        missing.missingSources.length === 0
+        terminal.executionId !== plan.executionId ||
+        terminal.manifestChecksum !== manifest.manifestChecksum ||
+        terminal.planChecksum !== plan.planChecksum
       ) {
-        return yield* ownerConflict("Qualification owner MISSING report conflicts with the plan");
+        return yield* ownerConflict("Qualification owner terminal report conflicts with the plan");
+      }
+      if (!("version" in terminal)) {
+        if (response.status !== 424 || terminal.missingSources.length === 0) {
+          return yield* ownerConflict("Qualification owner MISSING report conflicts with the plan");
+        }
+        return unavailableProductionQualificationReport(
+          manifest,
+          "productionQualificationAuthorityMissing",
+          `Missing product authority sources: ${terminal.missingSources.join(", ")}`,
+          "MISSING",
+        );
+      }
+      const material = yield* Effect.tryPromise({
+        catch: (cause) =>
+          ownerUnavailable("Distributed qualification report readback failed", cause),
+        try: () =>
+          authenticateQualificationDistributedEvaluationReport({
+            acceptanceLevel: manifest.acceptanceLevel,
+            artifactId: terminal.reportArtifactId,
+            bucket: env.ARTIFACTS,
+            checksum: terminal.reportChecksum,
+            executionId: plan.executionId,
+            manifestChecksum: manifest.manifestChecksum,
+            planChecksum: plan.planChecksum,
+            sourceVersion: manifest.sourceVersion,
+            topologyVersion: manifest.topologyVersion,
+          }),
+      });
+      if (material.status !== "COMPLETE") {
+        return yield* material.status === "FAIL"
+          ? ownerConflict("Distributed qualification report conflicts with its response")
+          : ownerUnavailable("Distributed qualification report is missing");
+      }
+      const completion = yield* Effect.tryPromise({
+        catch: (cause) =>
+          ownerUnavailable("Distributed qualification report completion readback failed", cause),
+        try: () =>
+          authenticateQualificationDistributedEvaluationReportCompletion({
+            artifactId: terminal.completionArtifactId,
+            bucket: env.ARTIFACTS,
+            checksum: terminal.completionChecksum,
+            executionId: plan.executionId,
+            manifestChecksum: manifest.manifestChecksum,
+            planChecksum: plan.planChecksum,
+            reportArtifactId: terminal.reportArtifactId,
+            reportChecksum: terminal.reportChecksum,
+          }),
+      });
+      if (completion.status !== "COMPLETE") {
+        return yield* completion.status === "FAIL"
+          ? ownerConflict("Distributed qualification report completion conflicts with its response")
+          : ownerUnavailable("Distributed qualification report completion is missing");
+      }
+      if (completion.completion.verdict !== terminal.verdict) {
+        return yield* ownerConflict(
+          "Distributed qualification report completion verdict conflicts",
+        );
+      }
+      const failingFamilies = material.report.families
+        .filter(({ verdict }) => verdict === "FAIL")
+        .map(({ family }) => family);
+      const missingFamilies = material.report.families
+        .filter(({ verdict }) => verdict === "MISSING")
+        .map(({ family }) => family);
+      if (
+        material.report.sourceVersion !== manifest.sourceVersion ||
+        material.report.topologyVersion !== manifest.topologyVersion ||
+        material.report.acceptanceLevel !== manifest.acceptanceLevel ||
+        material.report.verdict !== terminal.verdict ||
+        terminal.error !==
+          (terminal.verdict === "FAIL"
+            ? "qualificationAuthorityConflict"
+            : "qualificationAuthorityMaterialMissing") ||
+        canonicalQualificationJson(failingFamilies) !==
+          canonicalQualificationJson(terminal.failingFamilies) ||
+        canonicalQualificationJson(missingFamilies) !==
+          canonicalQualificationJson(terminal.missingFamilies) ||
+        response.status !== (terminal.verdict === "FAIL" ? 409 : 424)
+      ) {
+        return yield* ownerConflict("Distributed qualification report identity conflicts");
       }
       return unavailableProductionQualificationReport(
         manifest,
-        "productionQualificationAuthorityMissing",
-        `Missing product authority sources: ${missing.missingSources.join(", ")}`,
-        "MISSING",
+        terminal.verdict === "FAIL"
+          ? "productionQualificationDistributedReportFailed"
+          : "productionQualificationDistributedReportMissing",
+        terminal.verdict === "FAIL"
+          ? `Failed qualification families: ${failingFamilies.join(", ")}`
+          : `Missing qualification families: ${missingFamilies.join(", ")}`,
+        terminal.verdict,
       );
     }
     if (!response.ok)

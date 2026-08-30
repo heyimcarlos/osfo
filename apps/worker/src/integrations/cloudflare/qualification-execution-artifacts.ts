@@ -16,7 +16,11 @@ const request = <A>(operation: string, attempt: () => Promise<A>) =>
   });
 
 export interface QualificationExecutionBucket {
-  readonly get: (key: string) => Promise<{ readonly text: () => Promise<string> } | null>;
+  readonly get: (key: string) => Promise<{
+    readonly customMetadata?: Readonly<Record<string, string>>;
+    readonly httpMetadata?: { readonly contentType?: string };
+    readonly text: () => Promise<string>;
+  } | null>;
   readonly put: (
     key: string,
     value: string,
