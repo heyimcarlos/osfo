@@ -489,7 +489,7 @@ describe("Semantic evidence", () => {
   it("derives R2 evidence only from committed object metadata", () => {
     expect(
       r2ObjectEvidence({
-        checksums: { toJSON: () => ({ sha256: "sha256:object-1" }) },
+        checksums: { sha256: Uint8Array.from({ length: 32 }, () => 1).buffer },
         customMetadata: { osfoObjectId: "object-1", osfoRootId: "message-1" },
         etag: "etag-1",
         key: "qualification/message-1",
@@ -497,7 +497,7 @@ describe("Semantic evidence", () => {
         version: "version-1",
       }),
     ).toEqual({
-      checksum: "sha256:object-1",
+      checksum: "01".repeat(32),
       etag: "etag-1",
       objectId: "object-1",
       objectKey: "qualification/message-1",
@@ -507,7 +507,7 @@ describe("Semantic evidence", () => {
     });
     expect(
       r2ObjectEvidence({
-        checksums: { toJSON: () => ({ sha256: "sha256:object-1" }) },
+        checksums: { sha256: Uint8Array.from({ length: 32 }, () => 1).buffer },
         etag: "etag-1",
         key: "qualification/message-1",
         uploaded: { toISOString: () => "2026-08-17T12:00:00.000Z" },

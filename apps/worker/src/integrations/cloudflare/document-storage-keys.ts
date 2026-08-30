@@ -1,5 +1,5 @@
 import type { UserId } from "../../domain";
-import type { ContentId } from "../../domain/client-content";
+import { ContentId } from "../../domain/client-content";
 
 const encodedKeyPart = (value: string) =>
   Array.from(new TextEncoder().encode(value), (byte) => byte.toString(16).padStart(2, "0")).join(
@@ -13,6 +13,8 @@ export const documentContentPrefix = "client-content/";
 
 /** Namespace for durable document-attempt evidence. */
 export const documentAttemptPrefix = "document-attempts/";
+/** Namespace for immutable producer-owned qualification indexes over actual document objects. */
+export const documentQualificationReceiptPrefix = "document-qualification-receipts/";
 /** Namespace for presentation, image, and diagram attempt evidence. */
 export const artifactAttemptPrefix = "artifact-attempts/";
 /** Namespace for immutable incurred-cost evidence from non-document artifact providers. */
@@ -33,9 +35,29 @@ export const ownerKeyFor = (userId: UserId, contentId: ContentId) =>
 export const contentKeyFor = (contentId: ContentId) =>
   `${documentContentPrefix}${encodedContentId(contentId)}`;
 
+/** Recover the exact Content identity from one canonical retained-body key. */
+export const contentIdForContentKey = (contentKey: string): ContentId | undefined => {
+  if (!contentKey.startsWith(documentContentPrefix)) return undefined;
+  const encodedId = contentKey.slice(documentContentPrefix.length);
+  if (!/^(?:[0-9a-f]{2})+$/u.test(encodedId)) return undefined;
+  const decoded = decodeContentId(encodedId);
+  return decoded === undefined ? undefined : ContentId.make(decoded);
+};
+
 /** R2 key for durable execution and incurred-cost identity evidence. */
 export const attemptKeyFor = (contentId: ContentId) =>
   `${documentAttemptPrefix}${encodedContentId(contentId)}`;
+
+/** Run-scoped qualification index prefix for bounded collector inventory. */
+export const qualificationReceiptRunPrefix = (executionId: string, runId: string) =>
+  `${documentQualificationReceiptPrefix}${encodedKeyPart(executionId)}/${encodedKeyPart(runId)}/`;
+
+/** Exact qualification index for one retained generated-document object. */
+export const qualificationReceiptKeyFor = (
+  executionId: string,
+  runId: string,
+  contentId: ContentId,
+) => `${qualificationReceiptRunPrefix(executionId, runId)}${encodedContentId(contentId)}.json`;
 
 /** R2 key for non-document artifact execution and incurred-cost evidence. */
 export const artifactAttemptKeyFor = (contentId: ContentId) =>

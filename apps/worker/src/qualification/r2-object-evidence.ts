@@ -1,15 +1,11 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
+
 import type { R2ObjectEvidence } from "./semantic-evidence";
 
 /** R2 object fields that prove one atomically committed object and its metadata. */
 export interface QualificationR2Object {
   readonly checksums: {
-    readonly toJSON: () => {
-      readonly md5?: string;
-      readonly sha1?: string;
-      readonly sha256?: string;
-      readonly sha384?: string;
-      readonly sha512?: string;
-    };
+    readonly sha256?: ArrayBuffer | undefined;
   };
   readonly customMetadata?: Record<string, string>;
   readonly etag: string;
@@ -22,9 +18,8 @@ export interface QualificationR2Object {
 export const r2ObjectEvidence = (object: QualificationR2Object): R2ObjectEvidence | null => {
   const rootId = object.customMetadata?.osfoRootId;
   const objectId = object.customMetadata?.osfoObjectId;
-  const checksums = object.checksums.toJSON();
-  const checksum =
-    checksums.sha256 ?? checksums.sha1 ?? checksums.md5 ?? checksums.sha384 ?? checksums.sha512;
+  const sha256 = object.checksums.sha256;
+  const checksum = sha256 === undefined ? undefined : bytesToHex(new Uint8Array(sha256));
   return rootId === undefined || objectId === undefined || checksum === undefined
     ? null
     : {

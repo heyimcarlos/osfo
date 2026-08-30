@@ -123,6 +123,13 @@ export const qualificationAuthorityAdapterRegistry = [
     source: "provider_delivery_receipts",
   },
   {
+    component: "R2",
+    journeys: ["documentBuild"],
+    mode: "documentR2ObjectReadback",
+    requirements: ["artifactBucket", "attemptIndexTable", "postgresBinding"],
+    source: "r2_object_metadata",
+  },
+  {
     component: "TaskCompute",
     journeys: ["scheduledEmail"],
     mode: "agentPostgresCollector",
@@ -157,7 +164,11 @@ export const qualificationAuthorityAdapterRegistry = [
   >;
   readonly faultKinds?: ReadonlyArray<FaultInjection["kind"]>;
   readonly journeys: ReadonlyArray<ReferenceJourney>;
-  readonly mode: "agentPostgresCollector" | "arrivalReadback" | "controlledAgentFaultReadback";
+  readonly mode:
+    | "agentPostgresCollector"
+    | "arrivalReadback"
+    | "controlledAgentFaultReadback"
+    | "documentR2ObjectReadback";
   readonly requirements: ReadonlyArray<QualificationAuthorityAdapterRequirement>;
   readonly source: QualificationAuthoritySource;
 }>;
@@ -175,6 +186,10 @@ export type QualificationArrivalReadbackAuthoritySource = Extract<
 export type QualificationControlledAgentFaultAuthoritySource = Extract<
   QualificationAuthorityAdapter,
   { readonly mode: "controlledAgentFaultReadback" }
+>["source"];
+export type QualificationDocumentR2ObjectAuthoritySource = Extract<
+  QualificationAuthorityAdapter,
+  { readonly mode: "documentR2ObjectReadback" }
 >["source"];
 
 export const qualificationAgentPostgresAuthoritySources = qualificationAuthorityAdapterRegistry
@@ -209,6 +224,13 @@ export const isQualificationControlledAgentFaultAuthoritySource = (
 ): source is QualificationControlledAgentFaultAuthoritySource =>
   qualificationAuthorityAdapterRegistry.some(
     (adapter) => adapter.source === source && adapter.mode === "controlledAgentFaultReadback",
+  );
+
+export const isQualificationDocumentR2ObjectAuthoritySource = (
+  source: QualificationAuthoritySource,
+): source is QualificationDocumentR2ObjectAuthoritySource =>
+  qualificationAuthorityAdapterRegistry.some(
+    (adapter) => adapter.source === source && adapter.mode === "documentR2ObjectReadback",
   );
 
 export const qualificationAuthorityAdapterFor = (source: QualificationAuthoritySource) =>

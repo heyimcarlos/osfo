@@ -1,23 +1,36 @@
 import { Array, Effect, Schema } from "effect";
 
 import { AllowancePeriodId, UserId } from "../../domain";
+import { QualificationContext } from "../../domain/qualification-context";
 import { AccountDeletion } from "../../services/account-deletion";
+import { DocumentQualificationAuthority } from "./document-qualification-authority";
+import { qualificationChecksum } from "../../qualification/qualification-checksum";
 import {
   attemptKeyForContentKey,
   artifactAttemptPrefix,
   artifactCostPrefix,
   contentKeyForAttemptKey,
+  contentIdForContentKey,
   documentKeysForOwnerKey,
   documentAttemptPrefix,
   documentContentPrefix,
   ownerKeyFor,
   ownerPrefixFor,
+  qualificationReceiptKeyFor,
 } from "./document-storage-keys";
 import { DocumentOwnershipIndex } from "./document-ownership-index";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Decoded Result values use the _tag discriminator. */
 
-const ArtifactMetadata = Schema.fromJsonString(Schema.Struct({ userId: UserId }));
+const ArtifactMetadata = Schema.fromJsonString(
+  Schema.Struct({
+    qualificationContext: Schema.optionalKey(QualificationContext),
+    userId: UserId,
+  }),
+);
+const decodeQualificationReceipt = Schema.decodeUnknownOption(
+  Schema.fromJsonString(DocumentQualificationAuthority.QualificationDocumentObjectReceipt),
+);
 const AttemptMetadata = Schema.fromJsonString(
   Schema.Struct({
     cost: Schema.Union([
@@ -206,17 +219,42 @@ const planArtifactDeletion: (
       decodeOwnerMarker(object, userId).pipe(Effect.asVoid),
     ),
   );
-  const contentKeys = yield* Effect.forEach([...targetContentKeys], (contentKey) =>
-    verifyConcreteObject(bucket, contentKey, authorizeDelete, (object) =>
-      decodeArtifactMetadata(object).pipe(
-        Effect.flatMap((metadata) =>
-          metadata.userId === userId
-            ? Effect.void
-            : Effect.fail(
+  const verifiedContent = yield* Effect.forEach([...targetContentKeys], (contentKey) =>
+    authorizeDelete.pipe(
+      Effect.andThen(attempt("removeObjects", () => bucket.head(contentKey))),
+      Effect.flatMap((object) => {
+        if (object === null) return Effect.succeed({ contentKeys: [], receiptKeys: [] });
+        return decodeArtifactMetadata(object).pipe(
+          Effect.flatMap((metadata) => {
+            if (metadata.userId !== userId) {
+              return Effect.fail(
                 ambiguousObjectOwnership(contentKey, "artifact ownership changed before deletion"),
-              ),
-        ),
-      ),
+              );
+            }
+            const context = metadata.qualificationContext;
+            if (context === undefined) {
+              return Effect.succeed({ contentKeys: [contentKey], receiptKeys: [] });
+            }
+            const contentId = contentIdForContentKey(contentKey);
+            if (contentId === undefined) {
+              return Effect.fail(ambiguousObjectOwnership(contentKey, "malformed artifact key"));
+            }
+            const receiptKey = qualificationReceiptKeyFor(
+              context.executionId,
+              context.runId,
+              contentId,
+            );
+            return verifyQualificationReceipt(
+              bucket,
+              receiptKey,
+              contentId,
+              context,
+              object.customMetadata?.osfo ?? "",
+              authorizeDelete,
+            ).pipe(Effect.as({ contentKeys: [contentKey], receiptKeys: [receiptKey] }));
+          }),
+        );
+      }),
     ),
   );
   const attemptKeys = yield* Effect.forEach([...targetAttemptKeys], (key) =>
@@ -259,8 +297,70 @@ const planArtifactDeletion: (
       ),
     ),
   );
-  return [...ownerKeys.flat(), ...contentKeys.flat(), ...attemptKeys.flat(), ...costKeys.flat()];
+  return [
+    ...ownerKeys.flat(),
+    ...verifiedContent.flatMap(({ contentKeys }) => contentKeys),
+    ...attemptKeys.flat(),
+    ...costKeys.flat(),
+    ...verifiedContent.flatMap(({ receiptKeys }) => receiptKeys),
+  ];
 });
+
+const verifyQualificationReceipt = Effect.fn(
+  "AccountDeletionCloudflare.verifyQualificationReceipt",
+)(function* (
+  bucket: R2Bucket,
+  key: string,
+  contentId: string,
+  context: QualificationContext,
+  encodedArtifactMetadata: string,
+  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
+) {
+  yield* authorizeDelete;
+  const object = yield* attempt("removeObjects", () => bucket.get(key));
+  if (object === null) return yield* Effect.void;
+  const encoded = yield* attempt("removeObjects", () => object.text());
+  const decoded = decodeQualificationReceipt(encoded);
+  if (decoded._tag === "None") {
+    return yield* ambiguousObjectOwnership(key, "malformed qualification receipt");
+  }
+  const receipt = decoded.value;
+  const { artifactChecksum, ...content } = receipt;
+  const metadata = object.customMetadata;
+  const bodySha256 = yield* sha256Hex(encoded);
+  const accountedMetadataSha256 = yield* sha256Hex(encodedArtifactMetadata);
+  if (
+    receipt.artifactId !== key ||
+    receipt.attemptId !== context.attemptId ||
+    receipt.executionId !== context.executionId ||
+    receipt.objectId !== contentId ||
+    receipt.planChecksum !== context.planChecksum ||
+    receipt.rootId !== context.rootId ||
+    receipt.runId !== context.runId ||
+    receipt.accountedMetadataSha256 !== accountedMetadataSha256 ||
+    artifactChecksum !== qualificationChecksum(content) ||
+    metadata?.["osfo-artifact-checksum"] !== artifactChecksum ||
+    metadata["osfo-body-sha256"] !== bodySha256 ||
+    metadata["osfo-execution-id"] !== context.executionId ||
+    metadata["osfo-kind"] !== "qualification-document-object-receipt-v1" ||
+    metadata["osfo-object-id"] !== contentId ||
+    metadata["osfo-plan-checksum"] !== context.planChecksum ||
+    metadata["osfo-root-id"] !== context.rootId ||
+    metadata["osfo-run-id"] !== context.runId
+  ) {
+    return yield* ambiguousObjectOwnership(key, "foreign qualification receipt");
+  }
+  return yield* Effect.void;
+});
+
+const sha256Hex = (value: string) =>
+  Effect.promise(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))).pipe(
+    Effect.map((digest) =>
+      globalThis.Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join(""),
+    ),
+  );
 
 const deleteObjectKeys = Effect.fn("AccountDeletionCloudflare.deleteObjectKeys")(function* (
   bucket: R2Bucket,

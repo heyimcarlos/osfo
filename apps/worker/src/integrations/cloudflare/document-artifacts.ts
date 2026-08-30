@@ -16,7 +16,12 @@ import {
   type StoredArtifact,
   type StoredArtifactMetadata,
 } from "../../services/document-generation";
-import { attemptKeyFor, contentKeyFor, ownerKeyFor } from "./document-storage-keys";
+import {
+  attemptKeyFor,
+  contentKeyFor,
+  ownerKeyFor,
+  qualificationReceiptKeyFor,
+} from "./document-storage-keys";
 import { DocumentOwnershipIndex } from "./document-ownership-index";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Persisted unions use the _tag discriminator. */
@@ -42,6 +47,11 @@ const Metadata = Schema.fromJsonString(
     userId: UserId,
   }),
 );
+
+type DocumentArtifactMetadataObject = Pick<
+  R2Object,
+  "checksums" | "customMetadata" | "etag" | "key" | "size" | "storageClass" | "uploaded" | "version"
+>;
 
 /** Construct immutable generated-document storage over one R2 bucket binding. */
 export const make = (bucket: R2Bucket): ArtifactStore => ({
@@ -111,6 +121,15 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
         contentKeyFor(metadata.artifact.content.contentId),
         attemptKeyFor(metadata.artifact.content.contentId),
         ownerKeyFor(metadata.userId, metadata.artifact.content.contentId),
+        ...(metadata.qualificationContext === undefined
+          ? []
+          : [
+              qualificationReceiptKeyFor(
+                metadata.qualificationContext.executionId,
+                metadata.qualificationContext.runId,
+                metadata.artifact.content.contentId,
+              ),
+            ]),
       ]),
     ).pipe(Effect.asVoid),
   inspect: (contentId) =>
@@ -158,7 +177,7 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
 export const deletePendingBytes = (bucket: R2Bucket, contentId: ContentId) =>
   attempt("delete", () => bucket.delete(contentKeyFor(contentId))).pipe(Effect.asVoid);
 
-const decodeMetadata = (object: R2Object, contentId: ContentId) =>
+const decodeMetadata = (object: DocumentArtifactMetadataObject, contentId: ContentId) =>
   Effect.gen(function* () {
     const encoded = object.customMetadata?.osfo;
     if (encoded === undefined) {
@@ -191,6 +210,9 @@ const decodeMetadata = (object: R2Object, contentId: ContentId) =>
     }
     return metadata satisfies StoredArtifactMetadata;
   });
+
+/** Decode and verify metadata from the actual retained object without reading private bytes. */
+export const decodeStoredArtifactMetadata = decodeMetadata;
 
 const readBytes = (bucket: R2Bucket, metadata: StoredArtifactMetadata) =>
   Effect.gen(function* () {
@@ -314,7 +336,10 @@ const qualificationContextFields = (
   qualificationContext: StoredArtifactMetadata["qualificationContext"],
 ) => (qualificationContext === undefined ? {} : { qualificationContext });
 
-const qualificationObjectMatches = (object: R2Object, stored: StoredArtifactMetadata) => {
+const qualificationObjectMatches = (
+  object: DocumentArtifactMetadataObject,
+  stored: StoredArtifactMetadata,
+) => {
   const context = stored.qualificationContext;
   if (context === undefined) return true;
   const metadata = object.customMetadata;

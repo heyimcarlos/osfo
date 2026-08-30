@@ -700,6 +700,46 @@ export const make = (database: Database): DocumentBuild.PortInterface["persisten
     ),
 });
 
+export type QualificationDocumentBuildAuthority =
+  | { readonly _tag: "Conflict" | "Missing"; readonly rootId: string }
+  | { readonly _tag: "Ready"; readonly records: ReadonlyArray<DocumentBuild.Record> };
+
+/** Read exact Document Build product rows by their transactionally retained qualification roots. */
+export const readQualificationDocumentBuildAuthority = (
+  database: Database,
+  executionId: string,
+  rootIds: ReadonlyArray<string>,
+): Effect.Effect<QualificationDocumentBuildAuthority, DocumentBuild.Unavailable> => {
+  if (rootIds.length === 0) return Effect.succeed({ _tag: "Ready", records: [] });
+  const executionIdentity = sql<string>`${documentBuilds.qualification_context_json}::jsonb ->> 'executionId'`;
+  const rootIdentity = sql<string>`${documentBuilds.qualification_context_json}::jsonb ->> 'rootId'`;
+  return attempt("qualificationAuthority", () =>
+    database
+      .select(rowSelection)
+      .from(documentBuilds)
+      .where(and(eq(executionIdentity, executionId), inArray(rootIdentity, rootIds)))
+      .limit(rootIds.length + 1),
+  ).pipe(
+    Effect.flatMap((rows) => Effect.forEach(rows, decodeRow)),
+    Effect.map((records): QualificationDocumentBuildAuthority => {
+      for (const rootId of rootIds) {
+        const matches = records.filter((record) => record.qualificationContext?.rootId === rootId);
+        if (matches.length === 0) return { _tag: "Missing", rootId };
+        if (
+          matches.length !== 1 ||
+          matches[0]?.qualificationContext?.executionId !== executionId ||
+          matches[0]?.qualificationContext?.journey !== "documentBuild"
+        ) {
+          return { _tag: "Conflict", rootId };
+        }
+      }
+      return records.length === rootIds.length
+        ? { _tag: "Ready", records }
+        : { _tag: "Conflict", rootId: rootIds[0] ?? executionId };
+    }),
+  );
+};
+
 /** Rebuild mutable User and acting-authority facts before resumed work. */
 export const makeCurrentAuthorization = (
   database: Database,

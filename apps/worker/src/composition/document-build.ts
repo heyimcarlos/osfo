@@ -9,6 +9,7 @@ import { DocumentArtifact } from "../domain/document-artifact";
 import { retainedCatalog } from "../domain/plan-policy";
 import { DocumentArtifactValidation } from "../integrations/cloudflare/document-artifact-validation";
 import { DocumentArtifacts } from "../integrations/cloudflare/document-artifacts";
+import { DocumentQualificationAuthority } from "../integrations/cloudflare/document-qualification-authority";
 import { DocumentBuildPostgres } from "../integrations/postgres/document-build";
 import { DocumentBuildFollowUpPostgres } from "../integrations/postgres/document-build-follow-up";
 import { Allowances } from "../services/allowances";
@@ -58,6 +59,22 @@ export const bindingsFromEnv = (env: Env): Bindings => ({
   DOCUMENT_SANDBOX: env.DOCUMENT_SANDBOX,
   OSFO_DIRECTORY: env.OSFO_DIRECTORY,
 });
+
+/** Attempt qualification R2 observation before terminal truth without failing product work. */
+export const retainQualificationObjectAuthority = (
+  bucket: Pick<R2Bucket, "get" | "head" | "put">,
+  build: Pick<
+    DocumentBuild.Record,
+    "artifactContentId" | "qualificationContext" | "request" | "state" | "workflowId"
+  >,
+  contentId: ContentId,
+) => DocumentQualificationAuthority.retain(bucket, build, contentId).pipe(Effect.ignore);
+
+/** Keep terminal success behind the completed best-effort observation attempt. */
+export const finishAfterQualificationObjectObservation = <Value, Failure, Requirements>(
+  observe: Effect.Effect<void>,
+  finish: Effect.Effect<Value, Failure, Requirements>,
+) => observe.pipe(Effect.andThen(finish));
 
 /** Give the timer deadline ownership before the main instance can begin provider work. */
 export const makeWorkflowPort = (
@@ -154,7 +171,10 @@ export const executionEffect = <Value, Failure>(
                     maximumDocumentBuildComputeUsdMicros,
                   ),
                   finishSuccess: (build, contentId) =>
-                    builds.finishSuccess(payloadFor(build), contentId),
+                    finishAfterQualificationObjectObservation(
+                      retainQualificationObjectAuthority(env.ARTIFACTS, build, contentId),
+                      builds.finishSuccess(payloadFor(build), contentId),
+                    ),
                   markPreviewStored: (build, contentId) =>
                     builds.markPreviewStored(payloadFor(build), contentId),
                   maximumComputeUsdMicros: maximumDocumentBuildComputeUsdMicros,

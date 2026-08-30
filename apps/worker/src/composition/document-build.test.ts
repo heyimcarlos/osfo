@@ -1,4 +1,4 @@
-/* oxlint-disable vitest/no-standalone-expect, unicorn/consistent-function-scoping -- Assertions execute inside Effects; local binding factories keep each race fixture visible beside its expectations. */
+/* oxlint-disable vitest/no-standalone-expect, unicorn/consistent-function-scoping, effecttsgo/global-date -- Assertions execute inside Effects; local binding factories and fixed timestamps keep each race fixture visible beside its expectations. */
 import { expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 
@@ -49,6 +49,59 @@ it.effect("reconciles ambiguous acceptance for both stable Workflow instances", 
       `main:get:${mainId}`,
     ]);
   });
+});
+
+it.effect("does not turn a pre-terminal qualification sidecar outage into product failure", () => {
+  const workflowId = DocumentBuild.WorkflowId.make("document-build:sidecar-outage");
+  const contentId = ContentId.make(`document:workflow:${workflowId}`);
+  const completed = {
+    artifactContentId: contentId,
+    qualificationContext: {
+      attemptId: "sidecar-outage-attempt",
+      executionId: "sidecar-outage-execution",
+      journey: "documentBuild" as const,
+      offeredAtEpochMs: 1_788_000_000_000,
+      planChecksum: "sidecar-outage-plan",
+      region: "americas" as const,
+      rootId: "sidecar-outage-root",
+      runId: "sidecar-outage-run",
+    },
+    request: DocumentBuild.StoredRequest.make({
+      fileSnapshots: [
+        {
+          byteLength: 1n,
+          fileId: FileId.make("sidecar-outage-file"),
+          mediaType: "text/plain",
+          sha256: FileDigest.make(`sha256:${"c".repeat(64)}`),
+        },
+      ],
+      format: "pdf",
+      source: { pages: [{ lines: ["qualification"], title: "Qualification" }] },
+    }),
+    state: "publication_committed" as const,
+    workflowId,
+  };
+  const bucket = {
+    get: () => Promise.reject(new Error("Unexpected get after HEAD outage")),
+    head: () => Promise.reject(new Error("R2 unavailable after PostgreSQL success")),
+    put: () => Promise.reject(new Error("Unexpected put after HEAD outage")),
+  };
+  return DocumentBuildComposition.retainQualificationObjectAuthority(
+    bucket,
+    completed,
+    contentId,
+  ).pipe(
+    Effect.as(completed),
+    Effect.tap((result) => Effect.sync(() => expect(result).toBe(completed))),
+  );
+});
+
+it.effect("settles the observation attempt before committing terminal success", () => {
+  const events = new Array<string>();
+  return DocumentBuildComposition.finishAfterQualificationObjectObservation(
+    Effect.sync(() => events.push("observe")).pipe(Effect.asVoid),
+    Effect.sync(() => events.push("finish")).pipe(Effect.asVoid),
+  ).pipe(Effect.tap(() => Effect.sync(() => expect(events).toEqual(["observe", "finish"]))));
 });
 
 it.effect("retains timer ownership when main creation fails", () => {

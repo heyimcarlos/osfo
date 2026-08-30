@@ -111,6 +111,21 @@ describe("qualification authority adapter coverage", () => {
     ).toBe(false);
     expect(
       gaps.some(
+        ({ journey, source }) => source === "r2_object_metadata" && journey === "documentBuild",
+      ),
+    ).toBe(false);
+    expect(gaps).toContainEqual({
+      component: "R2",
+      journey: "fileAnalysis",
+      source: "r2_object_metadata",
+    });
+    expect(gaps).toContainEqual({
+      component: "R2",
+      journey: "researchReport",
+      source: "r2_object_metadata",
+    });
+    expect(
+      gaps.some(
         ({ source }) =>
           source === "worker_admission_receipts" || source === "think_submission_receipts",
       ),

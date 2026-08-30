@@ -8,11 +8,20 @@ import type { OsfoDirectory } from "./agents/osfo/directory";
 import { QualificationActivationReceipt } from "./agents/osfo/db/qualification-activations";
 import { BillingDb } from "./db/billing";
 import { AgentId, AllowancePeriodId, ThinkSubmissionId, UserId } from "./domain";
-import { QualificationContext } from "./domain/qualification-context";
+import { ContentId } from "./domain/client-content";
+import { DocumentArtifacts } from "./integrations/cloudflare/document-artifacts";
+import { QualificationContext, sameQualificationContext } from "./domain/qualification-context";
+import { DocumentQualificationAuthority } from "./integrations/cloudflare/document-qualification-authority";
+import {
+  contentKeyFor,
+  qualificationReceiptKeyFor,
+} from "./integrations/cloudflare/document-storage-keys";
+import { readQualificationDocumentBuildAuthority } from "./integrations/postgres/document-build";
 import { makeQualificationCohortAuthority } from "./integrations/postgres/qualification-cohort";
 import { makeQualificationAttemptIndex } from "./integrations/postgres/qualification-attempt-index";
 import { readQualificationScheduledEmailAuthority } from "./integrations/postgres/scheduled-email";
 import { project } from "./services/authorization-context";
+import type { DocumentBuild } from "./services/document-build";
 import { ScheduledEmail } from "./services/scheduled-email";
 import {
   scheduledEmailWorkflowEvidenceArtifactId,
@@ -22,6 +31,7 @@ import {
   isQualificationAgentPostgresAuthoritySource,
   isQualificationArrivalReadbackAuthoritySource,
   isQualificationControlledAgentFaultAuthoritySource,
+  isQualificationDocumentR2ObjectAuthoritySource,
   qualificationAuthorityCoverageGaps,
   qualificationAuthoritySourcesRequiring,
   qualificationAuthoritySources,
@@ -77,6 +87,7 @@ import {
   QualificationScheduledEmailApprovalConflict,
 } from "./qualification/scheduled-email-journey";
 import { ProductAuthorityExportBoundary } from "./qualification/semantic-evidence";
+import { r2ObjectEvidence } from "./qualification/r2-object-evidence";
 import { FaultControllerReceiptBoundary } from "./qualification/qualification-runs";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect and qualification contracts use _tag as their closed-union discriminator. */
@@ -166,6 +177,9 @@ const QualificationCohortInventoryReceipt = Schema.Struct({
 const decodeInventoryReceipt = Schema.decodeUnknownOption(
   Schema.fromJsonString(QualificationCohortInventoryReceipt),
 );
+const decodeDocumentObjectReceipt = Schema.decodeUnknownOption(
+  Schema.fromJsonString(DocumentQualificationAuthority.QualificationDocumentObjectReceipt),
+);
 
 interface FrozenExecution {
   readonly cohortArtifactChecksum: string;
@@ -182,6 +196,7 @@ export interface QualificationProductAuthorityEnv {
 }
 
 export interface QualificationProductAuthorityArtifactBucket {
+  readonly head?: (key: string) => Promise<QualificationProductAuthorityHeadObject | null>;
   readonly get: (key: string) => Promise<{
     readonly customMetadata?: Readonly<Record<string, string>> | undefined;
     readonly text: () => Promise<string>;
@@ -211,9 +226,57 @@ export interface QualificationProductAuthorityArtifactBucket {
   ) => Promise<object | null>;
 }
 
+interface QualificationProductAuthorityHeadObject {
+  readonly checksums: {
+    readonly sha256?: ArrayBuffer;
+    readonly toJSON: () => { readonly sha256?: string };
+  };
+  readonly customMetadata?: Record<string, string>;
+  readonly etag: string;
+  readonly key: string;
+  readonly size: number;
+  readonly storageClass: string;
+  readonly uploaded: Date;
+  readonly version: string;
+}
+
 interface MissingSource {
   readonly detail: string;
   readonly source: (typeof qualificationAuthoritySources)[number];
+}
+
+type QualificationDocumentR2AuthorityOutcome =
+  | { readonly _tag: "Conflict" }
+  | { readonly _tag: "Missing"; readonly rootId: string }
+  | { readonly _tag: "Pending" }
+  | { readonly _tag: "Ready"; readonly records: ReadonlyArray<QualificationAuthorityRecord> };
+
+type QualificationDocumentR2Build = Pick<
+  DocumentBuild.Record,
+  | "artifactAccountedAt"
+  | "artifactContentId"
+  | "qualificationContext"
+  | "request"
+  | "state"
+  | "workflowId"
+>;
+
+interface QualificationDocumentAttemptIdentity {
+  readonly admissionDecision: string | null;
+  readonly admissionFactId: string | null;
+  readonly agentId: string;
+  readonly allowancePeriodId: string;
+  readonly attemptId: string;
+  readonly executionId: string;
+  readonly journey: string;
+  readonly offeredAt: Date;
+  readonly planChecksum: string;
+  readonly rootId: string;
+  readonly runId: string;
+  readonly sessionId: string;
+  readonly state: string;
+  readonly submissionId: string;
+  readonly userId: string;
 }
 
 const cohortInventoryReceiptArtifactId = (executionId: string): string =>
@@ -2789,6 +2852,394 @@ const collectArrivalReadbackSourceChunk = async (
       });
 };
 
+const collectDocumentR2ObjectSourceChunk = async (
+  env: QualificationProductAuthorityEnv,
+  frozen: FrozenExecution,
+  runId: string,
+  chunkIndex: number,
+): Promise<Response> => {
+  const run = frozen.plan.runs.find((candidate) => candidate.runId === runId);
+  const runDescriptor = streamRuns(frozen.plan, frozen.manifest).find(
+    (candidate) => candidate.runId === runId,
+  );
+  if (run === undefined || runDescriptor === undefined || chunkIndex >= runDescriptor.chunkCount) {
+    return Response.json({ error: "qualificationSourceChunkNotFound" }, { status: 409 });
+  }
+  if (env.ARTIFACTS.head === undefined) {
+    return missingDocumentR2Source("The actual-object R2 HEAD adapter is unavailable");
+  }
+  const streamChunkIndex = runDescriptor.firstStreamChunkIndex + chunkIndex;
+  const retainedArrival = await env.ARTIFACTS.get(
+    authorityArrivalStreamArtifactId(frozen.plan.executionId, streamChunkIndex),
+  );
+  if (retainedArrival === null) return missingDocumentR2Source("The arrival shard is absent");
+  const encodedArrival = await retainedArrival.text();
+  const arrivalShard = decodeAuthorityArrivalShard(encodedArrival);
+  if (
+    Option.isNone(arrivalShard) ||
+    arrivalShard.value.executionId !== frozen.plan.executionId ||
+    arrivalShard.value.planChecksum !== frozen.plan.planChecksum ||
+    arrivalShard.value.runId !== runId ||
+    arrivalShard.value.chunkIndex !== chunkIndex ||
+    arrivalShard.value.streamChunkIndex !== streamChunkIndex ||
+    (await authorityShardDescriptor(frozen, encodedArrival, arrivalShard.value)) === null
+  ) {
+    return Response.json({ error: "qualificationArrivalChunkConflict" }, { status: 409 });
+  }
+  const client = postgres(env.DB.connectionString, { fetch_types: false, max: 2, prepare: true });
+  try {
+    const database = createDb(client);
+    const index = makeQualificationAttemptIndex(database);
+    const identities = await Effect.runPromise(
+      index.readRoots({
+        executionId: frozen.plan.executionId,
+        rootIds: arrivalShard.value.records.map(({ rootId }) => rootId),
+      }),
+    );
+    if (
+      !qualificationDocumentAttemptAuthorityExact({
+        arrivalIndexOffset: chunkIndex * 256,
+        executionId: frozen.plan.executionId,
+        identities,
+        manifest: frozen.manifest,
+        planChecksum: frozen.plan.planChecksum,
+        records: arrivalShard.value.records,
+        run,
+      })
+    ) {
+      return Response.json({ error: "qualificationAttemptIndexConflict" }, { status: 409 });
+    }
+    const required = identities.filter(
+      ({ admissionDecision, journey }) =>
+        admissionDecision === "accepted" && journey === "documentBuild",
+    );
+    const unsupported = identities.find(({ admissionDecision, journey }) => {
+      if (admissionDecision !== "accepted") return false;
+      const decoded = decodeQualificationJourney(journey);
+      return (
+        Option.isNone(decoded) ||
+        (decoded.value !== "documentBuild" &&
+          frozen.manifest.semanticRequirements[decoded.value].requiredComponents.includes("R2"))
+      );
+    });
+    if (unsupported !== undefined) {
+      return missingDocumentR2Source(
+        `R2 has no installed ${unsupported.journey} producer for ${unsupported.rootId}`,
+      );
+    }
+    const authority = await Effect.runPromise(
+      readQualificationDocumentBuildAuthority(
+        database,
+        frozen.plan.executionId,
+        required.map(({ rootId }) => rootId),
+      ),
+    );
+    if (authority._tag !== "Ready") {
+      return authority._tag === "Conflict"
+        ? Response.json({ error: "qualificationDocumentBuildAuthorityConflict" }, { status: 409 })
+        : missingDocumentR2Source(`Document Build authority is absent for ${authority.rootId}`);
+    }
+    if (
+      !qualificationDocumentBuildAuthorityExact(
+        authority.records,
+        required,
+        frozen.plan.planChecksum,
+        runId,
+      )
+    ) {
+      return Response.json(
+        { error: "qualificationDocumentBuildAuthorityConflict" },
+        { status: 409 },
+      );
+    }
+    const inspected = await qualificationDocumentR2AuthorityRecords(
+      env.ARTIFACTS,
+      authority.records,
+    );
+    if (inspected._tag === "Pending") {
+      return Response.json(
+        {
+          retryAtEpochMs: Date.now() + 5_000,
+          source: "r2_object_metadata",
+          status: "PENDING",
+        },
+        { headers: { "retry-after": "5" }, status: 202 },
+      );
+    }
+    if (inspected._tag === "Conflict") {
+      return Response.json(
+        { error: "qualificationDocumentObjectAuthorityConflict" },
+        { status: 409 },
+      );
+    }
+    if (inspected._tag === "Missing") {
+      return missingDocumentR2Source(`Document object receipt is absent for ${inspected.rootId}`);
+    }
+    return (await retainProductAuthorityShard(
+      env,
+      frozen,
+      "r2_object_metadata",
+      streamChunkIndex,
+      inspected.records,
+    ))
+      ? Response.json({
+          recordCount: inspected.records.length,
+          source: "r2_object_metadata",
+          status: "COMPLETE",
+          streamChunkIndex,
+        })
+      : Response.json({ error: "qualificationAuthorityShardConflict" }, { status: 409 });
+  } finally {
+    await client.end();
+  }
+};
+
+/** Prove every retained arrival against the frozen run and exact attempt-index identity. */
+export const qualificationDocumentAttemptAuthorityExact = (input: {
+  readonly arrivalIndexOffset: number;
+  readonly executionId: string;
+  readonly identities: ReadonlyArray<QualificationDocumentAttemptIdentity>;
+  readonly manifest: ProductionQualificationManifest;
+  readonly planChecksum: string;
+  readonly records: ReadonlyArray<typeof AuthorityArrivalRecord.Type>;
+  readonly run: QualificationExecutionRun;
+}): boolean =>
+  input.identities.length === input.records.length &&
+  input.records.every(
+    ({ admissionReceipt, arrival, attemptId, authorityFactId, executionId, rootId }, offset) => {
+      const expected = qualificationRunArrivalAt(
+        input.manifest,
+        input.run,
+        input.arrivalIndexOffset + offset,
+      );
+      const identity = input.identities.find((candidate) => candidate.rootId === rootId);
+      const journey =
+        expected !== undefined && "journey" in expected ? expected.journey : "ordinaryConversation";
+      return (
+        expected !== undefined &&
+        Predicate.isObject(arrival) &&
+        qualificationChecksum(arrival) === qualificationChecksum(expected) &&
+        identity !== undefined &&
+        identity.admissionDecision === admissionReceipt.admissionDecision &&
+        identity.admissionFactId === admissionReceipt.productFactId &&
+        authorityFactId === admissionReceipt.productFactId &&
+        identity.agentId === admissionReceipt.agentId &&
+        identity.attemptId === attemptId &&
+        identity.attemptId === admissionReceipt.attemptId &&
+        identity.executionId === executionId &&
+        identity.executionId === admissionReceipt.executionId &&
+        identity.executionId === input.executionId &&
+        identity.journey === journey &&
+        identity.offeredAt.getTime() === expected.offeredAtEpochMs &&
+        identity.planChecksum === input.planChecksum &&
+        identity.planChecksum === admissionReceipt.planChecksum &&
+        identity.rootId === expected.rootId &&
+        identity.rootId === admissionReceipt.rootId &&
+        identity.runId === input.run.runId &&
+        identity.runId === admissionReceipt.runId &&
+        identity.state === "DECIDED" &&
+        identity.submissionId === admissionReceipt.thinkSubmissionId
+      );
+    },
+  );
+
+/** Prove each Document Build product row against its exact server-owned attempt allocation. */
+export const qualificationDocumentBuildAuthorityExact = (
+  builds: ReadonlyArray<
+    Pick<
+      DocumentBuild.Record,
+      "agentId" | "allowancePeriodId" | "qualificationContext" | "sessionId" | "userId"
+    >
+  >,
+  identities: ReadonlyArray<QualificationDocumentAttemptIdentity>,
+  planChecksum: string,
+  runId: string,
+): boolean =>
+  builds.length === identities.length &&
+  builds.every((build) => {
+    const context = build.qualificationContext;
+    const identity = identities.find((candidate) => candidate.rootId === context?.rootId);
+    return (
+      context !== undefined &&
+      identity !== undefined &&
+      context.attemptId === identity.attemptId &&
+      context.executionId === identity.executionId &&
+      context.journey === "documentBuild" &&
+      context.journey === identity.journey &&
+      context.offeredAtEpochMs === identity.offeredAt.getTime() &&
+      context.planChecksum === planChecksum &&
+      context.planChecksum === identity.planChecksum &&
+      context.rootId === identity.rootId &&
+      context.runId === runId &&
+      context.runId === identity.runId &&
+      build.agentId === identity.agentId &&
+      build.allowancePeriodId === identity.allowancePeriodId &&
+      build.sessionId === identity.sessionId &&
+      build.userId === identity.userId
+    );
+  });
+
+const DocumentBuildTerminalStates = new Set(["success", "failure", "canceled"]);
+
+/** Authenticate Document Build R2 authority from producer rows, immutable indexes, and actual HEADs. */
+export const qualificationDocumentR2AuthorityRecords = async (
+  bucket: QualificationProductAuthorityArtifactBucket,
+  builds: ReadonlyArray<QualificationDocumentR2Build>,
+): Promise<QualificationDocumentR2AuthorityOutcome> => {
+  if (builds.some(({ state }) => !DocumentBuildTerminalStates.has(state))) {
+    return { _tag: "Pending" };
+  }
+  if (bucket.head === undefined) return { _tag: "Missing", rootId: "r2-head-adapter" };
+  const terminalWithoutObjects = builds.filter(({ state }) => state !== "success");
+  const absentTerminalObjects = await mapQualificationAuthorityConnections(
+    terminalWithoutObjects,
+    async (build) => {
+      const context = build.qualificationContext;
+      if (context === undefined || build.artifactContentId !== null) return false;
+      const canonicalContentId = ContentId.make(`document:workflow:${build.workflowId}`);
+      const receipt = await bucket.head?.(
+        qualificationReceiptKeyFor(context.executionId, context.runId, canonicalContentId),
+      );
+      const object = await bucket.head?.(contentKeyFor(canonicalContentId));
+      return receipt === null && object === null;
+    },
+  );
+  if (absentTerminalObjects.some((absent) => !absent)) return { _tag: "Conflict" };
+  const successful = builds.filter(({ state }) => state === "success");
+  const successfulContexts = successful.flatMap((build) =>
+    build.qualificationContext === undefined ? [] : [build.qualificationContext],
+  );
+  if (
+    successfulContexts.length !== successful.length ||
+    new Set(successfulContexts.map(({ executionId, runId }) => `${executionId}\u0000${runId}`))
+      .size > 1
+  ) {
+    return { _tag: "Conflict" };
+  }
+  const expectedReceipts = new Map(
+    successful.map((build) => {
+      const context = build.qualificationContext;
+      const contentId = build.artifactContentId;
+      if (
+        context === undefined ||
+        contentId === null ||
+        contentId !== `document:workflow:${build.workflowId}`
+      ) {
+        return ["", context?.rootId ?? ""] as const;
+      }
+      return [
+        qualificationReceiptKeyFor(context.executionId, context.runId, ContentId.make(contentId)),
+        context.rootId,
+      ] as const;
+    }),
+  );
+  if (expectedReceipts.has("") || expectedReceipts.size !== successful.length) {
+    return { _tag: "Conflict" };
+  }
+  const inspected = await mapQualificationAuthorityConnections(successful, async (build) => {
+    const context = build.qualificationContext;
+    const contentId = build.artifactContentId;
+    if (context === undefined || contentId === null || build.artifactAccountedAt === null) {
+      return { _tag: "Conflict" as const };
+    }
+    const artifactId = qualificationReceiptKeyFor(
+      context.executionId,
+      context.runId,
+      ContentId.make(contentId),
+    );
+    const indexed = await bucket.get(artifactId);
+    if (indexed === null) return { _tag: "Missing" as const, rootId: context.rootId };
+    const encoded = await indexed.text();
+    const decoded = decodeDocumentObjectReceipt(encoded);
+    if (Option.isNone(decoded)) return { _tag: "Conflict" as const };
+    const receipt = decoded.value;
+    const { artifactChecksum, ...content } = receipt;
+    const metadata = indexed.customMetadata;
+    if (
+      artifactChecksum !== qualificationChecksum(content) ||
+      receipt.artifactId !== artifactId ||
+      receipt.attemptId !== context.attemptId ||
+      receipt.executionId !== context.executionId ||
+      receipt.objectId !== contentId ||
+      receipt.planChecksum !== context.planChecksum ||
+      receipt.rootId !== context.rootId ||
+      receipt.runId !== context.runId ||
+      receipt.workflowId !== build.workflowId ||
+      metadata?.["osfo-artifact-checksum"] !== artifactChecksum ||
+      metadata["osfo-body-sha256"] !== (await sha256Hex(encoded)) ||
+      metadata["osfo-execution-id"] !== context.executionId ||
+      metadata["osfo-kind"] !== "qualification-document-object-receipt-v1" ||
+      metadata["osfo-object-id"] !== contentId ||
+      metadata["osfo-plan-checksum"] !== context.planChecksum ||
+      metadata["osfo-root-id"] !== context.rootId ||
+      metadata["osfo-run-id"] !== context.runId
+    ) {
+      return { _tag: "Conflict" as const };
+    }
+    const object = await bucket.head?.(receipt.objectKey);
+    if (object === null || object === undefined) return { _tag: "Conflict" as const };
+    const evidence = r2ObjectEvidence(object);
+    const objectMetadata = object.customMetadata;
+    const decodedStored = await Effect.runPromiseExit(
+      DocumentArtifacts.decodeStoredArtifactMetadata(object, ContentId.make(contentId)),
+    );
+    if (
+      evidence === null ||
+      Exit.isFailure(decodedStored) ||
+      object.size !== receipt.byteLength ||
+      object.storageClass !== receipt.storageClass ||
+      evidence.checksum !== receipt.contentSha256 ||
+      evidence.etag !== receipt.etag ||
+      evidence.objectId !== receipt.objectId ||
+      evidence.objectKey !== receipt.objectKey ||
+      evidence.rootId !== receipt.rootId ||
+      evidence.uploadedAt !== receipt.uploadedAtUtc ||
+      evidence.version !== receipt.objectVersion ||
+      objectMetadata?.osfoAttemptId !== context.attemptId ||
+      objectMetadata.osfoExecutionId !== context.executionId ||
+      objectMetadata.osfoPlanChecksum !== context.planChecksum ||
+      objectMetadata.osfoRunId !== context.runId ||
+      objectMetadata["osfo-sha256"] !== receipt.contentSha256 ||
+      (await sha256Hex(objectMetadata.osfo ?? "")) !== receipt.accountedMetadataSha256
+    ) {
+      return { _tag: "Conflict" as const };
+    }
+    const stored = decodedStored.value;
+    const storedContext = stored.qualificationContext;
+    if (
+      stored.retention !== "accounted" ||
+      stored.artifact.content.contentId !== contentId ||
+      stored.artifact.content.byteLength !== receipt.byteLength ||
+      stored.artifact.content.mediaType !== receipt.mediaType ||
+      receipt.mediaType !==
+        (build.request.format === "pdf"
+          ? "application/pdf"
+          : "application/vnd.openxmlformats-officedocument.wordprocessingml.document") ||
+      stored.artifact.content.sha256 !== receipt.contentSha256 ||
+      stored.owner._tag !== "Workflow" ||
+      stored.owner.workflowId !== build.workflowId ||
+      !sameQualificationContext(storedContext, context)
+    ) {
+      return { _tag: "Conflict" as const };
+    }
+    return { _tag: "Ready" as const, evidence };
+  });
+  const conflict = inspected.find(({ _tag }) => _tag === "Conflict");
+  if (conflict !== undefined) return { _tag: "Conflict" };
+  const missing = inspected.find(({ _tag }) => _tag === "Missing");
+  if (missing !== undefined && missing._tag === "Missing") return missing;
+  return {
+    _tag: "Ready",
+    records: inspected.flatMap((entry) => (entry._tag === "Ready" ? [entry.evidence] : [])),
+  };
+};
+
+const missingDocumentR2Source = (detail: string) =>
+  Response.json(
+    { missingSources: [{ detail, source: "r2_object_metadata" }], status: "MISSING" },
+    { status: 424 },
+  );
+
 const collectControlledAgentFaultSourceChunk = async (
   env: QualificationProductAuthorityEnv,
   frozen: FrozenExecution,
@@ -3005,6 +3456,9 @@ const collectSourceChunk = (
   }
   if (isQualificationControlledAgentFaultAuthoritySource(source)) {
     return collectControlledAgentFaultSourceChunk(env, frozen, runId, chunkIndex);
+  }
+  if (isQualificationDocumentR2ObjectAuthoritySource(source)) {
+    return collectDocumentR2ObjectSourceChunk(env, frozen, runId, chunkIndex);
   }
   return Promise.resolve(
     Response.json(

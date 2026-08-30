@@ -5,6 +5,10 @@ import { Effect, Result } from "effect";
 import { AllowancePeriodId, UserId } from "../../domain";
 import { ContentId } from "../../domain/client-content";
 import { AccountDeletion } from "../../services/account-deletion";
+import {
+  canonicalQualificationJson,
+  qualificationChecksum,
+} from "../../qualification/qualification-checksum";
 import { make } from "./account-deletion";
 import {
   artifactCostKeyFor,
@@ -16,6 +20,7 @@ import {
   documentContentPrefix,
   ownerKeyFor,
   ownerPrefixFor,
+  qualificationReceiptKeyFor,
 } from "./document-storage-keys";
 
 const deletionEvidence = (
@@ -325,6 +330,112 @@ it.effect("removes a canonical target-owned document body and attempt sidecar", 
     );
 });
 
+it.effect("removes an exact qualification receipt with its owned Document Build object", () =>
+  Effect.gen(function* () {
+    const deleted = new Array<string>();
+    const userId = UserId.make("qualified-document-user");
+    const workflowId = "document-build:qualified-deletion";
+    const contentId = ContentId.make(`document:workflow:${workflowId}`);
+    const contentKey = contentKeyFor(contentId);
+    const context = {
+      attemptId: "qualified-deletion-attempt",
+      executionId: "qualified-deletion-execution",
+      journey: "documentBuild" as const,
+      offeredAtEpochMs: 1_788_000_000_000,
+      planChecksum: "qualified-deletion-plan",
+      region: "americas" as const,
+      rootId: "qualified-deletion-root",
+      runId: "qualified-deletion-run",
+    };
+    const encodedArtifactMetadata = canonicalQualificationJson({
+      qualificationContext: context,
+      userId,
+    });
+    const receiptKey = qualificationReceiptKeyFor(context.executionId, context.runId, contentId);
+    const receiptContent = {
+      accountedMetadataSha256: yield* testSha256Hex(encodedArtifactMetadata),
+      artifactId: receiptKey,
+      attemptId: context.attemptId,
+      byteLength: 3,
+      contentSha256: "ab".repeat(32),
+      etag: "qualified-deletion-etag",
+      executionId: context.executionId,
+      mediaType: "application/pdf",
+      objectId: contentId,
+      objectKey: contentKey,
+      objectVersion: "qualified-deletion-version",
+      planChecksum: context.planChecksum,
+      rootId: context.rootId,
+      runId: context.runId,
+      storageClass: "Standard",
+      uploadedAtUtc: "2026-08-30T12:00:00.000Z",
+      workflowId,
+    };
+    const receipt = {
+      ...receiptContent,
+      artifactChecksum: qualificationChecksum(receiptContent),
+    };
+    const encodedReceipt = canonicalQualificationJson(receipt);
+    const receiptObject = {
+      customMetadata: {
+        "osfo-artifact-checksum": receipt.artifactChecksum,
+        "osfo-body-sha256": yield* testSha256Hex(encodedReceipt),
+        "osfo-execution-id": context.executionId,
+        "osfo-kind": "qualification-document-object-receipt-v1",
+        "osfo-object-id": contentId,
+        "osfo-plan-checksum": context.planChecksum,
+        "osfo-root-id": context.rootId,
+        "osfo-run-id": context.runId,
+      },
+      key: receiptKey,
+    };
+    const files = bucketStub({ deleted });
+    const artifacts = bucketStub({
+      bodiesByKey: { [receiptKey]: encodedReceipt },
+      deleted,
+      objectsByPrefix: {
+        [documentContentPrefix]: [
+          { customMetadata: { osfo: encodedArtifactMetadata }, key: contentKey },
+        ],
+        qualification: [receiptObject],
+      },
+    });
+
+    yield* make(files, artifacts, () => deletionEvidence()).remove(userId, Effect.void);
+    expect(deleted).toEqual([contentKey, receiptKey]);
+
+    deleted.length = 0;
+    const missingReceipt = bucketStub({
+      deleted,
+      objectsByPrefix: {
+        [documentContentPrefix]: [
+          { customMetadata: { osfo: encodedArtifactMetadata }, key: contentKey },
+        ],
+      },
+    });
+    yield* make(files, missingReceipt, () => deletionEvidence()).remove(userId, Effect.void);
+    expect(deleted).toEqual([contentKey, receiptKey]);
+
+    deleted.length = 0;
+    const foreignReceipt = canonicalQualificationJson({ ...receipt, rootId: "foreign-root" });
+    const foreign = bucketStub({
+      bodiesByKey: { [receiptKey]: foreignReceipt },
+      deleted,
+      objectsByPrefix: {
+        [documentContentPrefix]: [
+          { customMetadata: { osfo: encodedArtifactMetadata }, key: contentKey },
+        ],
+        qualification: [receiptObject],
+      },
+    });
+    const result = yield* make(files, foreign, () => deletionEvidence())
+      .remove(userId, Effect.void)
+      .pipe(Effect.result);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(deleted).toEqual([]);
+  }),
+);
+
 it.effect("preserves a target document pair when its attempt metadata is malformed", () => {
   const contentId = ContentId.make("malformed-attempt-content");
   return expectPairedOwnershipFailure({
@@ -565,6 +676,7 @@ it.effect("rechecks authority after R2 discovery and before delete", () => {
 });
 
 const bucketStub = (options: {
+  readonly bodiesByKey?: Readonly<Record<string, string>>;
   readonly deleted: Array<string>;
   readonly objectsByPrefix?: Readonly<Record<string, ReadonlyArray<Partial<R2Object>>>>;
 }) => {
@@ -579,6 +691,17 @@ const bucketStub = (options: {
           .flat()
           .find((object) => object.key === key) ?? null,
       ),
+    get: (key: string) => {
+      const object = Object.values(options.objectsByPrefix ?? {})
+        .flat()
+        .find((candidate) => candidate.key === key);
+      const body = options.bodiesByKey?.[key];
+      return Promise.resolve(
+        object === undefined || body === undefined
+          ? null
+          : { ...object, text: () => Promise.resolve(body) },
+      );
+    },
     list: ({ prefix }: R2ListOptions) =>
       Promise.resolve({
         delimitedPrefixes: [],
@@ -586,10 +709,19 @@ const bucketStub = (options: {
         truncated: false as const,
       }),
   };
-  // SAFETY: Account deletion uses only the head, list, and delete methods supplied above.
+  // SAFETY: Account deletion uses only the get, head, list, and delete methods supplied above.
   // oxlint-disable-next-line osfo/no-chained-type-assertions, typescript/no-unsafe-type-assertion -- The fake intentionally implements this test's narrow R2 seam only.
   return bucket as unknown as R2Bucket;
 };
+
+const testSha256Hex = (value: string) =>
+  Effect.promise(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))).pipe(
+    Effect.map((digest) =>
+      globalThis.Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join(""),
+    ),
+  );
 
 const expectOwnershipFailure = (input: {
   readonly contentId: ContentId;

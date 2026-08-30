@@ -26,3 +26,19 @@ export const QualificationContext = Schema.Struct({
 
 /** Server-owned root identity propagated through a production qualification journey. */
 export type QualificationContext = typeof QualificationContext.Type;
+
+/** Compare the complete server-owned qualification identity without partial-field drift. */
+export const sameQualificationContext = (
+  left: QualificationContext | undefined,
+  right: QualificationContext | undefined,
+): boolean =>
+  left !== undefined &&
+  right !== undefined &&
+  left.attemptId === right.attemptId &&
+  left.executionId === right.executionId &&
+  left.journey === right.journey &&
+  left.offeredAtEpochMs === right.offeredAtEpochMs &&
+  left.planChecksum === right.planChecksum &&
+  left.region === right.region &&
+  left.rootId === right.rootId &&
+  left.runId === right.runId;
