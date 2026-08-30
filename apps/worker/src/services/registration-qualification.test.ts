@@ -27,6 +27,7 @@ const expiresAt = new Date("2099-08-30T17:00:00.000Z");
 
 const cohort = (): QualificationCohortManifest => {
   const content = {
+    artifactAuthorityProtocol: "qualification-cohort-artifacts-v1" as const,
     cohortId: "registration-cohort",
     createdAtUtc: "2026-08-29T12:00:00.000Z",
     executionId: "registration-execution",

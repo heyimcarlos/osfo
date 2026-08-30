@@ -48,10 +48,15 @@
     "bindings": [
       { "name": "OSFO_AGENT_TEST", "class_name": "OsfoAgent" },
       { "name": "OSFO_DIRECTORY_TEST", "class_name": "OsfoDirectory" },
+      {
+        "name": "QUALIFICATION_COHORT_ARTIFACT_AUTHORITY_TEST",
+        "class_name": "QualificationCohortArtifactAuthority",
+      },
     ],
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["OsfoAgent"] },
     { "tag": "v2", "new_sqlite_classes": ["OsfoDirectory"] },
+    { "tag": "v3", "new_sqlite_classes": ["QualificationCohortArtifactAuthority"] },
   ],
 }

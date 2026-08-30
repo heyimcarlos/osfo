@@ -10,8 +10,10 @@ import {
   qualificationDocumentBuildMessage,
   qualificationParticipantGrantArtifactId,
 } from "./qualification-cohort";
+import { qualificationCohortArtifactProtocol } from "./cohort-artifact-authority-contract";
 
 const manifestContent = {
+  artifactAuthorityProtocol: qualificationCohortArtifactProtocol,
   cohortId: "cohort-1",
   createdAtUtc: "2026-08-29T16:59:00.000Z",
   executionId: "execution-1",

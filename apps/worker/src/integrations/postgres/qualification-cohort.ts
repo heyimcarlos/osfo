@@ -18,6 +18,7 @@ import {
   type QualificationParticipantGrant,
 } from "../../qualification/qualification-cohort";
 import { qualificationChecksum } from "../../qualification/qualification-checksum";
+import { qualificationCohortArtifactProtocol } from "../../qualification/cohort-artifact-authority-contract";
 import { QualificationCohortAuthorityUnavailable } from "./qualification-cohort-error";
 import { makeQualificationCohortScrubAuthority } from "./qualification-cohort-scrub";
 
@@ -64,6 +65,7 @@ interface FinalizationPageInput {
 
 const qualificationCohortManifestFor = (row: typeof qualificationCohorts.$inferSelect) => {
   const content = {
+    artifactAuthorityProtocol: qualificationCohortArtifactProtocol,
     cohortId: row.cohort_id,
     createdAtUtc: row.created_at.toISOString(),
     executionId: row.execution_id,
@@ -173,6 +175,7 @@ export const makeQualificationCohortAuthority = (database: Database) => {
           if (existing !== undefined) {
             const manifest = qualificationCohortManifestFor(existing);
             const exact =
+              existing.artifact_authority_protocol === qualificationCohortArtifactProtocol &&
               existing.artifact_checksum === manifest.artifactChecksum &&
               existing.cohort_id === input.cohortId &&
               existing.created_for_qualification &&
@@ -192,6 +195,7 @@ export const makeQualificationCohortAuthority = (database: Database) => {
           const [inserted] = await transaction
             .insert(qualificationCohorts)
             .values({
+              artifact_authority_protocol: qualificationCohortArtifactProtocol,
               artifact_checksum: "pending-transaction-checksum",
               artifact_id: `qualification/executions/${encodeURIComponent(input.executionId)}/cohort/manifest.json`,
               cohort_id: input.cohortId,
@@ -230,6 +234,7 @@ export const makeQualificationCohortAuthority = (database: Database) => {
             .limit(1);
           if (existing !== undefined) {
             return existing.artifact_checksum === manifest.artifactChecksum &&
+              existing.artifact_authority_protocol === qualificationCohortArtifactProtocol &&
               existing.cohort_id === manifest.cohortId &&
               existing.created_at.toISOString() === manifest.createdAtUtc &&
               existing.created_for_qualification &&
@@ -246,6 +251,7 @@ export const makeQualificationCohortAuthority = (database: Database) => {
               : ("CONFLICT" as const);
           }
           await transaction.insert(qualificationCohorts).values({
+            artifact_authority_protocol: qualificationCohortArtifactProtocol,
             artifact_checksum: manifest.artifactChecksum,
             artifact_id: `qualification/executions/${encodeURIComponent(manifest.executionId)}/cohort/manifest.json`,
             cohort_id: manifest.cohortId,
@@ -649,6 +655,7 @@ export const makeQualificationCohortAuthority = (database: Database) => {
           .limit(1);
         if (cohort === undefined) return { _tag: "Missing" } as const;
         const exactCohort =
+          cohort.artifact_authority_protocol === qualificationCohortArtifactProtocol &&
           cohort.artifact_checksum === manifest.artifactChecksum &&
           cohort.cohort_id === manifest.cohortId &&
           cohort.created_at.toISOString() === manifest.createdAtUtc &&

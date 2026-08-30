@@ -11,6 +11,15 @@ import { AgentId, UserId } from "./domain";
 import { ActionId } from "./domain/action-execution";
 import { AuthSessionId } from "./domain/auth-session";
 import { makeQualificationCohortAuthority } from "./integrations/postgres/qualification-cohort";
+import {
+  type QualificationCohortArtifactAuthorityNamespace,
+  retainQualificationCohortArtifact,
+} from "./integrations/cloudflare/qualification-cohort-artifacts";
+import type { QualificationCohortArtifactAuthority } from "./qualification-cohort-artifact-authority";
+import type {
+  QualificationCohortArtifactFamily,
+  QualificationCohortArtifactRetainOutcome,
+} from "./qualification/cohort-artifact-authority-contract";
 import { qualificationEnrollmentDigest } from "./qualification/qualification-enrollment";
 import {
   canonicalQualificationJson,
@@ -71,21 +80,13 @@ const decodeInvocation = Schema.decodeUnknownOption(Schema.fromJsonString(Invoca
 
 interface QualificationCohortProvisionerBucket {
   readonly get: (key: string) => Promise<{ readonly text: () => Promise<string> } | null>;
-  readonly put: (
-    key: string,
-    value: string,
-    options: {
-      readonly customMetadata: Record<string, string>;
-      readonly httpMetadata: { readonly contentType: string };
-      readonly onlyIf: { readonly etagDoesNotMatch: "*" };
-    },
-  ) => Promise<object | null>;
 }
 
 export interface QualificationCohortProvisionerEnv {
   readonly ARTIFACTS: QualificationCohortProvisionerBucket;
   readonly DB: Pick<Hyperdrive, "connectionString">;
   readonly OSFO_DIRECTORY?: DurableObjectNamespace<OsfoDirectory>;
+  readonly QUALIFICATION_COHORT_ARTIFACT_AUTHORITY?: DurableObjectNamespace<QualificationCohortArtifactAuthority>;
   readonly QUALIFICATION_EMAIL_RECIPIENT?: string;
 }
 
@@ -188,24 +189,47 @@ const frozenQualification = (
   };
 };
 
-const sha256Hex = async (encoded: string): Promise<string> => {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-};
-
 export const retainExactQualificationArtifact = async (
-  bucket: QualificationCohortProvisionerBucket,
+  namespace: QualificationCohortArtifactAuthorityNamespace,
+  executionId: string,
+  family: QualificationCohortArtifactFamily,
   key: string,
   encoded: string,
   metadata: Record<string, string>,
-): Promise<boolean> => {
-  await bucket.put(key, encoded, {
-    customMetadata: { ...metadata, "osfo-body-sha256": await sha256Hex(encoded) },
-    httpMetadata: { contentType: "application/json" },
-    onlyIf: { etagDoesNotMatch: "*" },
-  });
-  const existing = await bucket.get(key);
-  return existing !== null && (await existing.text()) === encoded;
+): Promise<QualificationCohortArtifactRetainOutcome | { readonly _tag: "Unavailable" }> =>
+  Effect.runPromise(
+    retainQualificationCohortArtifact(namespace, {
+      body: encoded,
+      executionId,
+      family,
+      key,
+      metadata,
+    }).pipe(
+      Effect.match({
+        onFailure: () => ({ _tag: "Unavailable" as const }),
+        onSuccess: (outcome) => outcome,
+      }),
+    ),
+  );
+
+export const qualificationCohortArtifactRetentionFailureResponse = (
+  outcome: Awaited<ReturnType<typeof retainExactQualificationArtifact>>,
+  conflictError: string,
+): Response | null => {
+  if (outcome._tag === "Complete") return null;
+  if (outcome._tag === "Busy") {
+    return Response.json(
+      { error: "qualificationCohortArtifactAuthorityBusy" },
+      { headers: { "Retry-After": "1" }, status: 503 },
+    );
+  }
+  if (outcome._tag === "Unavailable") {
+    return Response.json(
+      { error: "qualificationCohortArtifactAuthorityUnavailable" },
+      { status: 503 },
+    );
+  }
+  return Response.json({ error: conflictError }, { status: 409 });
 };
 
 const exactParticipantPage = (
@@ -241,6 +265,13 @@ const begin = async (
   sourceVersion: string,
   env: QualificationCohortProvisionerEnv,
 ): Promise<Response> => {
+  const artifactAuthority = env.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY;
+  if (artifactAuthority === undefined) {
+    return Response.json(
+      { error: "qualificationCohortArtifactAuthorityUnavailable" },
+      { status: 503 },
+    );
+  }
   const { manifest, plan } = frozenQualification(invocation, sourceVersion);
   if (invocation.startsAtEpochMs <= Date.now()) {
     return Response.json({ error: "qualificationCohortWindowInvalid" }, { status: 409 });
@@ -275,15 +306,23 @@ const begin = async (
     const cohort = begun.manifest;
     const encodedCohort = canonicalQualificationJson(cohort);
     const cohortArtifactId = qualificationCohortArtifactId(plan.executionId);
-    if (
-      !(await retainExactQualificationArtifact(env.ARTIFACTS, cohortArtifactId, encodedCohort, {
+    const retainedManifest = await retainExactQualificationArtifact(
+      artifactAuthority,
+      plan.executionId,
+      "manifest",
+      cohortArtifactId,
+      encodedCohort,
+      {
         "osfo-cohort-id": cohort.cohortId,
         "osfo-execution-id": plan.executionId,
         "osfo-kind": "qualification-cohort-v1",
-      }))
-    ) {
-      return Response.json({ error: "qualificationCohortArtifactConflict" }, { status: 409 });
-    }
+      },
+    );
+    const manifestFailure = qualificationCohortArtifactRetentionFailureResponse(
+      retainedManifest,
+      "qualificationCohortArtifactConflict",
+    );
+    if (manifestFailure !== null) return manifestFailure;
     return Response.json({
       cohortArtifactChecksum: cohort.artifactChecksum,
       cohortArtifactId,
@@ -315,6 +354,13 @@ const provisionPage = async (
   secret: Redacted.Redacted,
   env: QualificationCohortProvisionerEnv,
 ): Promise<Response> => {
+  const artifactAuthority = env.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY;
+  if (artifactAuthority === undefined) {
+    return Response.json(
+      { error: "qualificationCohortArtifactAuthorityUnavailable" },
+      { status: 503 },
+    );
+  }
   const cohort = await readCohort(invocation.executionId, env);
   if (
     cohort === null ||
@@ -375,8 +421,10 @@ const provisionPage = async (
       artifactChecksum: qualificationChecksum(pageContent),
     };
     const artifactId = `qualification/executions/${encodeURIComponent(cohort.executionId)}/cohort/provision-pages/${invocation.pageIndex.toString().padStart(8, "0")}.json`;
-    return (await retainExactQualificationArtifact(
-      env.ARTIFACTS,
+    const retainedPage = await retainExactQualificationArtifact(
+      artifactAuthority,
+      cohort.executionId,
+      "provisionPage",
       artifactId,
       canonicalQualificationJson(pageReceipt),
       {
@@ -385,9 +433,15 @@ const provisionPage = async (
         "osfo-kind": "qualification-cohort-provision-page-v1",
         "osfo-page-index": String(invocation.pageIndex),
       },
-    ))
-      ? Response.json({ artifactId, pageIndex: invocation.pageIndex, status: "RETAINED" })
-      : Response.json({ error: "qualificationParticipantPageConflict" }, { status: 409 });
+    );
+    const pageFailure = qualificationCohortArtifactRetentionFailureResponse(
+      retainedPage,
+      "qualificationParticipantPageConflict",
+    );
+    return (
+      pageFailure ??
+      Response.json({ artifactId, pageIndex: invocation.pageIndex, status: "RETAINED" })
+    );
   } finally {
     await client.end();
   }
@@ -397,6 +451,13 @@ const finalizePage = async (
   invocation: typeof FinalizePage.Type,
   env: QualificationCohortProvisionerEnv,
 ): Promise<Response> => {
+  const artifactAuthority = env.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY;
+  if (artifactAuthority === undefined) {
+    return Response.json(
+      { error: "qualificationCohortArtifactAuthorityUnavailable" },
+      { status: 503 },
+    );
+  }
   const executionId = invocation.executionId;
   const cohortArtifactId = qualificationCohortArtifactId(executionId);
   const retainedCohort = await env.ARTIFACTS.get(cohortArtifactId);
@@ -547,29 +608,32 @@ const finalizePage = async (
         return Response.json({ error: "qualificationParticipantConflict" }, { status: 409 });
       }
       const artifactId = qualificationParticipantGrantArtifactId(cohort, plan, provision.index);
-      if (
-        // oxlint-disable-next-line eslint/no-await-in-loop -- Immutable grant retention is checked before advancing the page.
-        !(await retainExactQualificationArtifact(
-          env.ARTIFACTS,
-          artifactId,
-          canonicalQualificationJson(grant),
-          {
-            "osfo-agent-id": provision.agentId,
-            "osfo-cohort-id": cohort.cohortId,
-            "osfo-execution-id": executionId,
-            "osfo-grant-checksum": grant.artifactChecksum,
-            "osfo-index": String(provision.index),
-            "osfo-kind": "qualification-participant-grant-v1",
-            "osfo-plan": plan,
-            "osfo-provision-checksum": provision.provisionChecksum,
-            "osfo-provision-id": provision.provisionId,
-            "osfo-session-id": agent.currentSessionId,
-            "osfo-user-id": provision.userId,
-          },
-        ))
-      ) {
-        return Response.json({ error: "qualificationParticipantGrantConflict" }, { status: 409 });
-      }
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Immutable grant retention is checked before advancing the page.
+      const retainedGrant = await retainExactQualificationArtifact(
+        artifactAuthority,
+        executionId,
+        "participantGrant",
+        artifactId,
+        canonicalQualificationJson(grant),
+        {
+          "osfo-agent-id": provision.agentId,
+          "osfo-cohort-id": cohort.cohortId,
+          "osfo-execution-id": executionId,
+          "osfo-grant-checksum": grant.artifactChecksum,
+          "osfo-index": String(provision.index),
+          "osfo-kind": "qualification-participant-grant-v1",
+          "osfo-plan": plan,
+          "osfo-provision-checksum": provision.provisionChecksum,
+          "osfo-provision-id": provision.provisionId,
+          "osfo-session-id": agent.currentSessionId,
+          "osfo-user-id": provision.userId,
+        },
+      );
+      const grantFailure = qualificationCohortArtifactRetentionFailureResponse(
+        retainedGrant,
+        "qualificationParticipantGrantConflict",
+      );
+      if (grantFailure !== null) return grantFailure;
       retainedGrants.push({
         artifactChecksum: grant.artifactChecksum,
         artifactId,
@@ -586,7 +650,9 @@ const finalizePage = async (
     const pageReceipt = { ...pageContent, artifactChecksum: qualificationChecksum(pageContent) };
     const artifactId = `qualification/executions/${encodeURIComponent(executionId)}/cohort/finalize-pages/${plan}/${invocation.pageIndex.toString().padStart(8, "0")}.json`;
     const retainedPage = await retainExactQualificationArtifact(
-      env.ARTIFACTS,
+      artifactAuthority,
+      executionId,
+      "finalizePage",
       artifactId,
       canonicalQualificationJson(pageReceipt),
       {
@@ -597,9 +663,11 @@ const finalizePage = async (
         "osfo-plan": plan,
       },
     );
-    if (!retainedPage) {
-      return Response.json({ error: "qualificationFinalizePageConflict" }, { status: 409 });
-    }
+    const finalizeFailure = qualificationCohortArtifactRetentionFailureResponse(
+      retainedPage,
+      "qualificationFinalizePageConflict",
+    );
+    if (finalizeFailure !== null) return finalizeFailure;
     const confirmed = await Effect.runPromise(
       authority.confirmFinalizationPage({
         cohortId: cohort.cohortId,

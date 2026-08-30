@@ -309,6 +309,13 @@
       "when": 1788078210829,
       "tag": "0043_mean_gorilla_man",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1788080502498,
+      "tag": "0044_lyrical_stryfe",
+      "breakpoints": true
     }
   ]
 }

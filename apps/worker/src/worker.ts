@@ -25,6 +25,7 @@ import { runQualificationCohortProvisioner } from "./qualification-cohort-provis
 export { OsfoAgent } from "./agents/osfo/agent";
 export { CompanyAgent } from "./agents/osfo/company-agent";
 export { OsfoDirectory } from "./agents/osfo/directory";
+export { QualificationCohortArtifactAuthority } from "./qualification-cohort-artifact-authority";
 export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 export { ExecutionUnitWorkflow } from "./workflows/runtime";
 export { DocumentBuildWorkflow } from "./workflows/document-build";
@@ -106,10 +107,17 @@ const worker = {
         env.QUALIFICATION_EMAIL_RECIPIENT === undefined
           ? {}
           : { QUALIFICATION_EMAIL_RECIPIENT: env.QUALIFICATION_EMAIL_RECIPIENT };
+      const qualificationArtifactAuthorityFields =
+        env.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY === undefined
+          ? {}
+          : {
+              QUALIFICATION_COHORT_ARTIFACT_AUTHORITY: env.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY,
+            };
       return runQualificationCohortProvisioner(request, version.id, config.auth.secret, {
         ARTIFACTS: env.ARTIFACTS,
         DB: env.DB,
         OSFO_DIRECTORY: env.OSFO_DIRECTORY,
+        ...qualificationArtifactAuthorityFields,
         ...qualificationEmailFields,
       });
     }

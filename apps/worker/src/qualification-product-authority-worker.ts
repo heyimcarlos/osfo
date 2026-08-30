@@ -2,8 +2,10 @@ import { getAgentByName } from "agents";
 import { createDb } from "@osfo/db";
 import postgres from "postgres";
 import { Clock, Data, Duration, Effect, Exit, Option, Predicate, Schema } from "effect";
+import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/directory";
+import type { QualificationCohortArtifactAuthority } from "./qualification-cohort-artifact-authority";
 import type { OsfoDirectory } from "./agents/osfo/directory";
 import type { DocumentBuildFileResolution } from "./agents/osfo/document-build-file-resolution";
 import { QualificationActivationReceipt } from "./agents/osfo/db/qualification-activations";
@@ -20,6 +22,7 @@ import {
 } from "./integrations/cloudflare/document-storage-keys";
 import { readQualificationDocumentBuildAuthority } from "./integrations/postgres/document-build";
 import { makeQualificationCohortAuthority } from "./integrations/postgres/qualification-cohort";
+import { retainQualificationCohortArtifact } from "./integrations/cloudflare/qualification-cohort-artifacts";
 import { makeQualificationAttemptIndex } from "./integrations/postgres/qualification-attempt-index";
 import { readQualificationScheduledEmailAuthority } from "./integrations/postgres/scheduled-email";
 import { project } from "./services/authorization-context";
@@ -199,6 +202,7 @@ export interface QualificationProductAuthorityEnv {
   readonly ARTIFACTS: QualificationProductAuthorityArtifactBucket;
   readonly DB: Pick<Hyperdrive, "connectionString">;
   readonly OSFO_DIRECTORY?: DurableObjectNamespace<OsfoDirectory>;
+  readonly QUALIFICATION_COHORT_ARTIFACT_AUTHORITY?: DurableObjectNamespace<QualificationCohortArtifactAuthority>;
 }
 
 export interface QualificationProductAuthorityArtifactBucket {
@@ -215,7 +219,10 @@ export interface QualificationProductAuthorityArtifactBucket {
   }) => Promise<{
     readonly cursor?: string | undefined;
     readonly objects: ReadonlyArray<{
-      readonly checksums: { readonly toJSON: () => { readonly sha256?: string | undefined } };
+      readonly checksums: {
+        readonly sha256?: ArrayBuffer | undefined;
+        readonly toJSON: () => { readonly sha256?: string | undefined };
+      };
       readonly customMetadata?: Readonly<Record<string, string>> | undefined;
       readonly key: string;
     }>;
@@ -703,7 +710,9 @@ const verifyCohortInventory = async (
           if (allocation === undefined) return null;
           const expectedIndex = verifiedCount + offset;
           const metadata = object.customMetadata;
-          const sha256 = object.checksums.toJSON().sha256;
+          const nativeSha256 = object.checksums.sha256;
+          const sha256 =
+            nativeSha256 === undefined ? undefined : bytesToHex(new Uint8Array(nativeSha256));
           const exact =
             allocation.index === expectedIndex &&
             allocation.grantId === object.key &&
@@ -758,18 +767,28 @@ const verifyCohortInventory = async (
     };
     const receipt = { ...content, artifactChecksum: qualificationChecksum(content) };
     const encoded = canonicalQualificationJson(receipt);
-    const retained = await env.ARTIFACTS.put(artifactId, encoded, {
-      customMetadata: {
-        "osfo-execution-id": frozen.plan.executionId,
-        "osfo-inventory-checksum": inventoryChecksum,
-        "osfo-kind": "qualification-cohort-inventory-v1",
-      },
-      httpMetadata: { contentType: "application/json" },
-      onlyIf: { etagDoesNotMatch: "*" },
-    });
-    if (retained !== null) return "READY";
-    const existing = await env.ARTIFACTS.get(artifactId);
-    return existing !== null && (await existing.text()) === encoded ? "READY" : "CONFLICT";
+    const artifactAuthority = env.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY;
+    if (artifactAuthority === undefined) return "MISSING";
+    const retained = await Effect.runPromise(
+      retainQualificationCohortArtifact(artifactAuthority, {
+        body: encoded,
+        executionId: frozen.plan.executionId,
+        family: "inventoryReceipt",
+        key: artifactId,
+        metadata: {
+          "osfo-execution-id": frozen.plan.executionId,
+          "osfo-inventory-checksum": inventoryChecksum,
+          "osfo-kind": "qualification-cohort-inventory-v1",
+        },
+      }).pipe(
+        Effect.match({
+          onFailure: () => ({ _tag: "Unavailable" as const }),
+          onSuccess: (outcome) => outcome,
+        }),
+      ),
+    );
+    if (retained._tag === "Complete") return "READY";
+    return retained._tag === "Busy" || retained._tag === "Unavailable" ? "MISSING" : "CONFLICT";
   } finally {
     await client.end();
   }

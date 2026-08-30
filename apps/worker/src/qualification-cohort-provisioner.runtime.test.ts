@@ -1,4 +1,4 @@
-/* oxlint-disable effecttsgo/async-function -- Runtime tests drive the Promise-native Worker HTTP boundary. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date -- Runtime tests drive the Promise-native Worker HTTP boundary with a future host timestamp. */
 import { Redacted } from "effect";
 import { expect, it } from "vitest";
 
@@ -12,7 +12,6 @@ import {
 } from "./qualification/qualification-cohort";
 import {
   prepareQualificationDocumentBuildFixture,
-  retainExactQualificationArtifact,
   runQualificationCohortProvisioner,
 } from "./qualification-cohort-provisioner";
 
@@ -42,10 +41,6 @@ it("rejects unbounded provisioning pages before touching product authority", asy
           authorityTouched = true;
           return Promise.resolve(null);
         },
-        put: () => {
-          authorityTouched = true;
-          return Promise.resolve(null);
-        },
       },
       DB: {
         get connectionString() {
@@ -58,6 +53,38 @@ it("rejects unbounded provisioning pages before touching product authority", asy
 
   expect(response.status).toBe(400);
   expect(authorityTouched).toBe(false);
+});
+
+it("fails a valid begin request retryably before PostgreSQL when writer authority is unavailable", async () => {
+  let databaseTouched = false;
+  const response = await runQualificationCohortProvisioner(
+    new Request("https://api.osfo.test/internal/qualification-cohorts", {
+      body: canonicalQualificationJson({
+        acceptanceLevel: "BoundedBeta",
+        action: "begin",
+        executionId: "missing-writer-authority",
+        startsAtEpochMs: Date.now() + 3_600_000,
+      }),
+      method: "POST",
+    }),
+    "bounded-provisioning-source",
+    Redacted.make("qualification-enrollment-secret"),
+    {
+      ARTIFACTS: { get: () => Promise.resolve(null) },
+      DB: {
+        get connectionString() {
+          databaseTouched = true;
+          return "postgres://missing-authority-must-not-connect.invalid/osfo";
+        },
+      },
+    },
+  );
+
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({
+    error: "qualificationCohortArtifactAuthorityUnavailable",
+  });
+  expect(databaseTouched).toBe(false);
 });
 
 it("provisions and authenticates the deterministic fixture through the normal File port", async () => {
@@ -109,30 +136,4 @@ it("provisions and authenticates the deterministic fixture through the normal Fi
 
   snapshotDigest = FileDigest.make(`sha256:${"a".repeat(64)}`);
   expect(await prepareQualificationDocumentBuildFixture(port, input)).toEqual({ _tag: "Conflict" });
-});
-
-it("reconciles an ambiguous immutable artifact write by exact readback", async () => {
-  const retained = new Map<string, string>();
-  const bucket = {
-    get: (key: string) =>
-      Promise.resolve(
-        retained.has(key) ? { text: () => Promise.resolve(retained.get(key) ?? "") } : null,
-      ),
-    put: (key: string, value: string) => {
-      if (!retained.has(key)) retained.set(key, value);
-      return Promise.resolve(null);
-    },
-  };
-
-  expect(
-    await retainExactQualificationArtifact(bucket, "qualification/page-0", "exact-page", {
-      "osfo-kind": "qualification-test",
-    }),
-  ).toBe(true);
-  retained.set("qualification/page-1", "conflicting-page");
-  expect(
-    await retainExactQualificationArtifact(bucket, "qualification/page-1", "expected-page", {
-      "osfo-kind": "qualification-test",
-    }),
-  ).toBe(false);
 });

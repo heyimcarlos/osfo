@@ -31,17 +31,21 @@ const seedCohort = (
     readonly adventurer: number;
     readonly free: number;
     readonly active?: ReadonlyArray<string>;
+    readonly artifactAuthorityProtocol?: string | null;
   },
 ) =>
   Effect.promise(async () => {
     await fixture.client.query(
       `insert into qualification_cohorts (
-        artifact_checksum, artifact_id, activated_at, cohort_id, created_at,
+        artifact_authority_protocol, artifact_checksum, artifact_id, activated_at, cohort_id, created_at,
         created_for_qualification, execution_id, expected_adventurer_participants,
         expected_free_participants, expires_at, manifest_checksum, not_before,
         plan_checksum, source_version, state, teardown_policy
-      ) values ($1, $2, $3, $4, $5, true, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'permanentAccountDeletion')`,
+      ) values ($1, $2, $3, $4, $5, $6, true, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'permanentAccountDeletion')`,
       [
+        input.artifactAuthorityProtocol === undefined
+          ? "qualification-cohort-artifacts-v1"
+          : input.artifactAuthorityProtocol,
         "cohort-checksum",
         `qualification/executions/${executionId}/cohort/manifest.json`,
         activatedAt,
@@ -148,6 +152,37 @@ it.effect("does not expose scrub work before every product deletion is proven", 
       productDeletion: { deleted: 2, expected: 3, state: "PENDING" },
       scrub: { state: "NOT_STARTED" },
     });
+  }),
+);
+
+it.effect("keeps legacy cohorts without exclusive artifact authority fail-closed", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedCohort(fixture, {
+      adventurer: 1,
+      artifactAuthorityProtocol: null,
+      free: 1,
+    });
+    const authority = makeQualificationCohortAuthority(fixture.database);
+
+    expect(
+      yield* authority.claimScrubPage({
+        claimToken: "legacy-page",
+        cohortId,
+        executionId,
+        pageIndex: 0,
+        plan: "free",
+      }),
+    ).toEqual({ _tag: "Pending", reason: "artifactAuthorityUnavailable" });
+    expect(
+      yield* authority.claimScrubRoot({
+        claimToken: "legacy-root",
+        cohortId,
+        executionId,
+      }),
+    ).toEqual({ _tag: "Pending", reason: "artifactAuthorityUnavailable" });
   }),
 );
 

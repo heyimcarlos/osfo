@@ -87,6 +87,7 @@ it.effect("forwards one authorized retained execution to the private owner", () 
     });
     const plan = createQualificationExecutionPlan(manifest, 0, invocation.executionId);
     const cohortContent = {
+      artifactAuthorityProtocol: "qualification-cohort-artifacts-v1" as const,
       cohortId: "qualification-trigger-cohort",
       createdAtUtc: "2026-08-29T16:59:00.000Z",
       executionId: invocation.executionId,

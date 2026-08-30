@@ -1,0 +1,1 @@
+ALTER TABLE "qualification_cohorts" ADD COLUMN "artifact_authority_protocol" text;

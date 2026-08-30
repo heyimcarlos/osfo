@@ -64,6 +64,7 @@ const sha256Hex = async (encoded: string) => {
 
 it("preflights the exact frozen disposable Document Build File before arrival execution", async () => {
   const cohortContent = {
+    artifactAuthorityProtocol: "qualification-cohort-artifacts-v1" as const,
     cohortId: "document-fixture-cohort",
     createdAtUtc: "2026-08-30T10:00:00.000Z",
     documentBuildFixturePolicy: qualificationDocumentBuildFixturePolicy,

@@ -11,6 +11,7 @@ import { Effect } from "effect";
 
 import type { Database } from "@osfo/db";
 import { qualificationChecksum } from "../../qualification/qualification-checksum";
+import { qualificationCohortArtifactProtocol } from "../../qualification/cohort-artifact-authority-contract";
 import { QualificationCohortAuthorityUnavailable } from "./qualification-cohort-error";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle owns these transaction Promise boundaries. */
@@ -85,7 +86,10 @@ export type QualificationScrubPageClaim =
   | { readonly _tag: "Conflict" }
   | {
       readonly _tag: "Pending";
-      readonly reason: "previousPageIncomplete" | "productDeletionIncomplete";
+      readonly reason:
+        | "artifactAuthorityUnavailable"
+        | "previousPageIncomplete"
+        | "productDeletionIncomplete";
     };
 
 export type QualificationScrubPageCompletion =
@@ -105,7 +109,10 @@ export type QualificationScrubRootClaim =
     >)
   | { readonly _tag: "Busy"; readonly leaseExpiresAt: Date }
   | { readonly _tag: "Conflict" }
-  | { readonly _tag: "Pending"; readonly reason: "scrubPagesIncomplete" };
+  | {
+      readonly _tag: "Pending";
+      readonly reason: "artifactAuthorityUnavailable" | "scrubPagesIncomplete";
+    };
 
 export type QualificationScrubRootCompletion =
   | { readonly _tag: "Completed"; readonly completedAt: Date; readonly rootChecksum: string }
@@ -143,6 +150,9 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
             .limit(1)
             .for("update");
           if (cohort === undefined) return conflict;
+          if (cohort.artifact_authority_protocol !== qualificationCohortArtifactProtocol) {
+            return { _tag: "Pending", reason: "artifactAuthorityUnavailable" };
+          }
           const counts = cohortCounts(cohort);
           const expectedPageCount = pagesFor(counts[input.plan]);
           if (input.pageIndex >= expectedPageCount) return conflict;
@@ -400,6 +410,9 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
             .limit(1)
             .for("update");
           if (cohort === undefined || !productDeletionComplete(cohort.state)) return conflict;
+          if (cohort.artifact_authority_protocol !== qualificationCohortArtifactProtocol) {
+            return { _tag: "Pending", reason: "artifactAuthorityUnavailable" };
+          }
           const counts = cohortCounts(cohort);
           const expectedPageCount = pagesFor(counts.free) + pagesFor(counts.adventurer);
           const expectedParticipantCount = counts.free + counts.adventurer;

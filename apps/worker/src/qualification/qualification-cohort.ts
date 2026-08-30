@@ -5,6 +5,7 @@ import { AgentId, ConversationRouteId, Plan, SessionId, UserId } from "../domain
 import { FileDigest, type FileMediaType } from "../domain/file-content";
 import { FileId, FileName, FileUploadId } from "../domain/file";
 import { qualificationChecksum } from "./qualification-checksum";
+import { qualificationCohortArtifactProtocol } from "./cohort-artifact-authority-contract";
 
 const identity = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500));
 const count = Schema.Int.check(Schema.isGreaterThan(0));
@@ -98,6 +99,7 @@ export const qualificationDocumentBuildFixtureMatches = (
 
 /** Compact frozen descriptor for an isolated disposable production qualification cohort. */
 export const QualificationCohortManifest = Schema.Struct({
+  artifactAuthorityProtocol: Schema.Literal(qualificationCohortArtifactProtocol),
   artifactChecksum: identity,
   cohortId: identity,
   createdAtUtc: Schema.String,

@@ -12,6 +12,7 @@ import { ScheduledEmailWorkflow } from "./ScheduledEmailWorkflow";
 import { Files } from "./Files";
 import { Artifacts } from "./Artifacts";
 import { QualificationOwnerLayer } from "./QualificationOwner";
+import { QualificationCohortArtifactAuthority } from "./QualificationCohortArtifactAuthority";
 import { OsfoDirectory } from "./OsfoDirectory";
 import { ApiWorker, QualificationOwnerWorker } from "./WorkerBindings";
 
@@ -62,6 +63,7 @@ const apiLayer = ApiWorker.make(
         QUALIFICATION_EMAIL_RECIPIENT: Config.string("QUALIFICATION_EMAIL_RECIPIENT").pipe(
           Config.withDefault(""),
         ),
+        QUALIFICATION_COHORT_ARTIFACT_AUTHORITY: QualificationCohortArtifactAuthority,
         QUALIFICATION_OWNER: QualificationOwnerWorker,
         QUALIFICATION_TRIGGER_TOKEN: Config.redacted("QUALIFICATION_TRIGGER_TOKEN").pipe(
           Config.withDefault(Redacted.make("")),

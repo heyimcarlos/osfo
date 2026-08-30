@@ -28,6 +28,7 @@ const attemptStateValues = ["OFFERED", "DECIDED"] as const;
 export const qualificationCohorts = pgTable(
   "qualification_cohorts",
   {
+    artifact_authority_protocol: text(),
     artifact_checksum: text().notNull(),
     artifact_id: text().notNull(),
     activated_at: timestamp({ mode: "date", withTimezone: true }),

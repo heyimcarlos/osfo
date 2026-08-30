@@ -98,6 +98,7 @@ const retainCohort = (
   plan: QualificationExecutionPlan,
 ) => {
   const content = {
+    artifactAuthorityProtocol: "qualification-cohort-artifacts-v1" as const,
     cohortId: `${plan.executionId}-cohort`,
     createdAtUtc: "2026-08-29T16:59:00.000Z",
     executionId: plan.executionId,
