@@ -44,6 +44,7 @@ export type QualificationAuthorityAdapterRequirement =
   | "artifactBucket"
   | "attemptIndexTable"
   | "directoryBinding"
+  | "documentBuildTable"
   | "postgresBinding"
   | "scheduledEmailTable";
 
@@ -126,14 +127,20 @@ export const qualificationAuthorityAdapterRegistry = [
     component: "R2",
     journeys: ["documentBuild"],
     mode: "documentR2ObjectReadback",
-    requirements: ["artifactBucket", "attemptIndexTable", "postgresBinding"],
+    requirements: ["artifactBucket", "attemptIndexTable", "documentBuildTable", "postgresBinding"],
     source: "r2_object_metadata",
   },
   {
     component: "TaskCompute",
-    journeys: ["scheduledEmail"],
+    journeys: ["documentBuild", "scheduledEmail"],
     mode: "agentPostgresCollector",
-    requirements: ["artifactBucket", "attemptIndexTable", "postgresBinding", "scheduledEmailTable"],
+    requirements: [
+      "artifactBucket",
+      "attemptIndexTable",
+      "documentBuildTable",
+      "postgresBinding",
+      "scheduledEmailTable",
+    ],
     source: "task_compute_receipts",
   },
   {

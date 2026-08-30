@@ -1,14 +1,16 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, eslint/no-underscore-dangle -- Runtime tests drive Promise-native Worker handlers and assert closed _tag outcomes with fixed timestamps. */
 import { expect, it } from "vitest";
 import { hexToBytes } from "@noble/hashes/utils.js";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { AgentId, AllowancePeriodId, SessionId, UserId } from "./domain";
 import { ContentId } from "./domain/client-content";
 import { FileDigest } from "./domain/file-content";
 import { FileId } from "./domain/file";
 import { DocumentBuild } from "./services/document-build";
+import { DocumentBuildDocument } from "./services/document-build-document";
 import {
+  attemptKeyFor,
   contentKeyFor,
   qualificationReceiptKeyFor,
 } from "./integrations/cloudflare/document-storage-keys";
@@ -35,11 +37,13 @@ import {
   handleQualificationProductAuthority,
   mapQualificationAuthorityConnections,
   qualificationActivationAuthorityRecords,
+  qualificationAuthorityTableMissingSources,
   qualificationAuthorityConnectionLimit,
   qualificationMemoryAuthorityRecords,
   qualificationDocumentAttemptAuthorityExact,
   qualificationDocumentBuildAuthorityExact,
   qualificationDocumentR2AuthorityRecords,
+  qualificationDocumentTaskComputeAuthorityRecords,
   qualificationScheduledEmailAuthorityRecords,
   retainQualificationProductAuthorityShard,
 } from "./qualification-product-authority-worker";
@@ -50,6 +54,188 @@ const sha256Hex = async (encoded: string) => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 };
+
+const documentTaskRequestFor = (index: number) =>
+  DocumentBuild.StoredRequest.make({
+    fileSnapshots: [
+      {
+        byteLength: 1n,
+        fileId: FileId.make(`document-task-file-${index}`),
+        mediaType: "text/plain",
+        sha256: FileDigest.make(`sha256:${"ef".repeat(32)}`),
+      },
+    ],
+    format: "pdf",
+    source: { pages: [{ lines: ["qualification"], title: "Qualification" }] },
+  });
+
+const documentTaskComputeFixture = async (count: number) => {
+  const encodedByKey = new Map<string, string>();
+  const intentDigest = await Effect.runPromise(
+    DocumentBuildDocument.qualificationDocumentIntentDigest({ request: documentTaskRequestFor(0) }),
+  );
+  const builds = Array.from({ length: count }, (_, index) => {
+    const workflowId = DocumentBuild.WorkflowId.make(`document-build:task-compute-${index}`);
+    const contentId = ContentId.make(`document:workflow:${workflowId}`);
+    const context = {
+      attemptId: `document-task-attempt-${index}`,
+      executionId: "document-task-execution",
+      journey: "documentBuild" as const,
+      offeredAtEpochMs: 1_788_000_000_000 + index,
+      planChecksum: "document-task-plan",
+      region: "americas" as const,
+      rootId: `document-task-root-${index}`,
+      runId: "document-task-run",
+    };
+    const taskExecutionId = `document-compute:${contentId}`;
+    const qualificationContent = {
+      claimedAtEpochMs: context.offeredAtEpochMs + 10,
+      completedAtEpochMs: context.offeredAtEpochMs + 30,
+      contentId,
+      context,
+      evidenceVersion: "document-compute-attempt-v2" as const,
+      failedAtEpochMs: null,
+      startedAtEpochMs: context.offeredAtEpochMs + 20,
+      taskExecutionId,
+      taskOutcomeId: `${taskExecutionId}:completed`,
+      workflowId,
+    };
+    const evidenceForChecksum = {
+      cost: {
+        _tag: "Incurred" as const,
+        allowancePeriodId: "document-task-period",
+        basis: "conservative" as const,
+        providerOperationId: `document-task-provider-${index}`,
+        usdMicros: 50_000n,
+      },
+      executionLeaseExpiresAt: context.offeredAtEpochMs + 600_000,
+      intentDigest,
+      qualification: qualificationContent,
+      renderedPageCount: 1,
+      status: "completed" as const,
+      userId: "document-task-user",
+    };
+    encodedByKey.set(
+      attemptKeyFor(contentId),
+      canonicalQualificationJson({
+        ...evidenceForChecksum,
+        cost: { ...evidenceForChecksum.cost, usdMicros: "50000" },
+        qualification: {
+          ...qualificationContent,
+          artifactChecksum: qualificationChecksum(evidenceForChecksum),
+        },
+      }),
+    );
+    return {
+      allowancePeriodId: AllowancePeriodId.make("document-task-period"),
+      qualificationContext: context,
+      request: documentTaskRequestFor(index),
+      state: "success" as const,
+      terminalAt: new Date(context.offeredAtEpochMs + 40),
+      userId: UserId.make("document-task-user"),
+      workflowId,
+    };
+  });
+  let active = 0;
+  let calls = 0;
+  let maximumActive = 0;
+  const bucket = {
+    get: () => Promise.resolve(null),
+    head: async (key: string) => {
+      calls += 1;
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await Promise.resolve();
+      active -= 1;
+      const encoded = encodedByKey.get(key);
+      if (encoded === undefined) return null;
+      return {
+        checksums: { toJSON: () => ({}) },
+        customMetadata: { osfo: encoded },
+        etag: `etag:${key}`,
+        key,
+        size: 0,
+        storageClass: "Standard",
+        uploaded: new Date(1_788_000_000_000),
+        version: `version:${key}`,
+      };
+    },
+    list: () => Promise.resolve({ objects: [], truncated: false as const }),
+    put: () => Promise.resolve({}),
+  } satisfies QualificationProductAuthorityArtifactBucket;
+  return {
+    bucket,
+    builds,
+    calls: () => calls,
+    encodedByKey,
+    maximumActive: () => maximumActive,
+  };
+};
+
+it("collects a 256-root Document Compute corpus with at most five active R2 calls", async () => {
+  const fixture = await documentTaskComputeFixture(256);
+  const outcome = await qualificationDocumentTaskComputeAuthorityRecords(
+    fixture.bucket,
+    fixture.builds,
+  );
+  expect(outcome).toMatchObject({ _tag: "Ready", records: { length: 256 } });
+  if (outcome._tag !== "Ready") throw new Error("Expected Document Compute authority");
+  expect(outcome.records.map((record) => ("rootId" in record ? record.rootId : null))).toEqual(
+    fixture.builds.map(({ qualificationContext }) => qualificationContext?.rootId),
+  );
+  expect(fixture.calls()).toBe(256);
+  expect(fixture.maximumActive()).toBe(5);
+});
+
+it("reports Document Build table absence only for installed Document-owned adapters", () => {
+  const missing = qualificationAuthorityTableMissingSources({
+    allowanceUsage: true,
+    allowanceZeroUsageEvidence: true,
+    documentBuilds: false,
+    qualificationRootAttempts: true,
+    scheduledEmails: true,
+  });
+  expect(missing).toEqual([
+    {
+      detail: "The Document Build PostgreSQL authority table is unavailable",
+      source: "r2_object_metadata",
+    },
+    {
+      detail: "The Document Build PostgreSQL authority table is unavailable",
+      source: "task_compute_receipts",
+    },
+  ]);
+});
+
+it("distinguishes absent Document Compute evidence from malformed and duplicate authority", async () => {
+  const fixture = await documentTaskComputeFixture(2);
+  const first = fixture.builds[0];
+  const second = fixture.builds[1];
+  if (first === undefined || second === undefined) throw new Error("Expected Document Build facts");
+  fixture.encodedByKey.delete(
+    attemptKeyFor(ContentId.make(`document:workflow:${first.workflowId}`)),
+  );
+  await expect(
+    qualificationDocumentTaskComputeAuthorityRecords(fixture.bucket, fixture.builds),
+  ).resolves.toEqual({ _tag: "Missing" });
+
+  const malformed = await documentTaskComputeFixture(1);
+  const malformedBuild = malformed.builds[0];
+  if (malformedBuild === undefined) throw new Error("Expected Document Build fact");
+  malformed.encodedByKey.set(
+    attemptKeyFor(ContentId.make(`document:workflow:${malformedBuild.workflowId}`)),
+    "malformed",
+  );
+  await expect(
+    qualificationDocumentTaskComputeAuthorityRecords(malformed.bucket, malformed.builds),
+  ).resolves.toEqual({ _tag: "Conflict" });
+  await expect(
+    qualificationDocumentTaskComputeAuthorityRecords(malformed.bucket, [
+      malformedBuild,
+      malformedBuild,
+    ]),
+  ).resolves.toEqual({ _tag: "Conflict" });
+});
 
 const documentR2ChunkFixture = async (count: number) => {
   const executionId = "document-r2-bounded-execution";

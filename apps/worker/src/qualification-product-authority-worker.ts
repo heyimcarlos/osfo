@@ -13,6 +13,7 @@ import { DocumentArtifacts } from "./integrations/cloudflare/document-artifacts"
 import { QualificationContext, sameQualificationContext } from "./domain/qualification-context";
 import { DocumentQualificationAuthority } from "./integrations/cloudflare/document-qualification-authority";
 import {
+  attemptKeyFor,
   contentKeyFor,
   qualificationReceiptKeyFor,
 } from "./integrations/cloudflare/document-storage-keys";
@@ -22,6 +23,7 @@ import { makeQualificationAttemptIndex } from "./integrations/postgres/qualifica
 import { readQualificationScheduledEmailAuthority } from "./integrations/postgres/scheduled-email";
 import { project } from "./services/authorization-context";
 import type { DocumentBuild } from "./services/document-build";
+import { DocumentBuildDocument } from "./services/document-build-document";
 import { ScheduledEmail } from "./services/scheduled-email";
 import {
   scheduledEmailWorkflowEvidenceArtifactId,
@@ -804,6 +806,54 @@ const readFrozenExecution = async (
   return frozen === null ? null : { ...frozen, invocation };
 };
 
+interface QualificationAuthorityTableAvailability {
+  readonly allowanceUsage: boolean;
+  readonly allowanceZeroUsageEvidence: boolean;
+  readonly documentBuilds: boolean;
+  readonly qualificationRootAttempts: boolean;
+  readonly scheduledEmails: boolean;
+}
+
+/** Project exact missing source adapters from product-owned PostgreSQL table availability. */
+export const qualificationAuthorityTableMissingSources = (
+  tables: QualificationAuthorityTableAvailability | undefined,
+): ReadonlyArray<MissingSource> => {
+  const missing = new Array<MissingSource>();
+  if (tables?.qualificationRootAttempts !== true) {
+    for (const source of qualificationAuthoritySourcesRequiring("attemptIndexTable")) {
+      missing.push({
+        detail: "The qualification_root_attempts correlation authority is unavailable",
+        source,
+      });
+    }
+  }
+  if (!tables?.allowanceUsage || !tables.allowanceZeroUsageEvidence) {
+    for (const source of qualificationAuthoritySourcesRequiring("allowanceTables")) {
+      missing.push({
+        detail: "The shared Allowance usage and zero-use authority tables are unavailable",
+        source,
+      });
+    }
+  }
+  if (tables?.documentBuilds !== true) {
+    for (const source of qualificationAuthoritySourcesRequiring("documentBuildTable")) {
+      missing.push({
+        detail: "The Document Build PostgreSQL authority table is unavailable",
+        source,
+      });
+    }
+  }
+  if (tables?.scheduledEmails !== true) {
+    for (const source of qualificationAuthoritySourcesRequiring("scheduledEmailTable")) {
+      missing.push({
+        detail: "The Scheduled Email PostgreSQL authority table is unavailable",
+        source,
+      });
+    }
+  }
+  return missing;
+};
+
 const attemptOwnedSources = async (
   env: QualificationProductAuthorityEnv,
   executionId: string,
@@ -811,44 +861,15 @@ const attemptOwnedSources = async (
   const missing: Array<MissingSource> = [];
   const sql = postgres(env.DB.connectionString, { fetch_types: false, max: 1, prepare: true });
   try {
-    const [tables] = await sql<
-      ReadonlyArray<{
-        readonly allowanceUsage: boolean;
-        readonly allowanceZeroUsageEvidence: boolean;
-        readonly qualificationRootAttempts: boolean;
-        readonly scheduledEmails: boolean;
-      }>
-    >`
+    const [tables] = await sql<ReadonlyArray<QualificationAuthorityTableAvailability>>`
       select
         to_regclass('public.allowance_usage') is not null as "allowanceUsage",
         to_regclass('public.allowance_zero_usage_evidence') is not null as "allowanceZeroUsageEvidence",
+        to_regclass('public.document_builds') is not null as "documentBuilds",
         to_regclass('public.qualification_root_attempts') is not null as "qualificationRootAttempts",
         to_regclass('public.scheduled_emails') is not null as "scheduledEmails"
     `;
-    if (tables?.qualificationRootAttempts !== true) {
-      for (const source of qualificationAuthoritySourcesRequiring("attemptIndexTable")) {
-        missing.push({
-          detail: "The qualification_root_attempts correlation authority is unavailable",
-          source,
-        });
-      }
-    }
-    if (!tables?.allowanceUsage || !tables.allowanceZeroUsageEvidence) {
-      for (const source of qualificationAuthoritySourcesRequiring("allowanceTables")) {
-        missing.push({
-          detail: "The shared Allowance usage and zero-use authority tables are unavailable",
-          source,
-        });
-      }
-    }
-    if (tables?.scheduledEmails !== true) {
-      for (const source of qualificationAuthoritySourcesRequiring("scheduledEmailTable")) {
-        missing.push({
-          detail: "The Scheduled Email PostgreSQL authority table is unavailable",
-          source,
-        });
-      }
-    }
+    missing.push(...qualificationAuthorityTableMissingSources(tables));
   } catch {
     for (const source of qualificationAuthoritySourcesRequiring("postgresBinding")) {
       missing.push({
@@ -2243,17 +2264,81 @@ const canonicalUtcEpochMilliseconds = (value: string): number | null => {
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? parsed : null;
 };
 
+type QualificationDocumentTaskComputeOutcome =
+  | { readonly _tag: "Conflict" }
+  | { readonly _tag: "Missing" }
+  | { readonly _tag: "Pending" }
+  | { readonly _tag: "Ready"; readonly records: ReadonlyArray<QualificationAuthorityRecord> };
+
+type QualificationDocumentTaskBuild = Pick<
+  DocumentBuild.Record,
+  | "allowancePeriodId"
+  | "qualificationContext"
+  | "request"
+  | "state"
+  | "terminalAt"
+  | "userId"
+  | "workflowId"
+>;
+
+/** Read producer-owned Document Compute CAS evidence without running product work. */
+export const qualificationDocumentTaskComputeAuthorityRecords = async (
+  bucket: QualificationProductAuthorityArtifactBucket,
+  builds: ReadonlyArray<QualificationDocumentTaskBuild>,
+): Promise<QualificationDocumentTaskComputeOutcome> => {
+  const head = bucket.head;
+  if (head === undefined) return { _tag: "Missing" };
+  const roots = builds.flatMap(({ qualificationContext }) =>
+    qualificationContext === undefined ? [] : [qualificationContext.rootId],
+  );
+  if (
+    roots.length !== builds.length ||
+    new Set(roots).size !== roots.length ||
+    new Set(builds.map(({ workflowId }) => workflowId)).size !== builds.length
+  ) {
+    return { _tag: "Conflict" };
+  }
+  const { qualificationTaskComputeAuthorityRecord } =
+    await import("./integrations/cloudflare/document-compute");
+  const intentDigests = await Effect.runPromise(
+    Effect.forEach(builds, DocumentBuildDocument.qualificationDocumentIntentDigest),
+  );
+  const outcomes = await mapQualificationAuthorityConnections(builds, async (build, index) => {
+    const intentDigest = intentDigests[index];
+    if (intentDigest === undefined) return { _tag: "Conflict" as const };
+    const contentId = ContentId.make(`document:workflow:${build.workflowId}`);
+    const retained = await head(attemptKeyFor(contentId));
+    if (retained !== null && retained.customMetadata?.osfo === undefined) {
+      return { _tag: "Conflict" as const };
+    }
+    return qualificationTaskComputeAuthorityRecord({
+      build,
+      encodedEvidence: retained?.customMetadata?.osfo,
+      intentDigest,
+    });
+  });
+  if (outcomes.some(({ _tag }) => _tag === "Conflict")) return { _tag: "Conflict" };
+  if (outcomes.some(({ _tag }) => _tag === "Missing")) return { _tag: "Missing" };
+  if (outcomes.some(({ _tag }) => _tag === "Pending")) return { _tag: "Pending" };
+  return {
+    _tag: "Ready",
+    records: outcomes.flatMap((outcome) => (outcome._tag === "Ready" ? [outcome.record] : [])),
+  };
+};
+
 export const qualificationAuthorityConnectionLimit = 5;
 
 export const mapQualificationAuthorityConnections = async <A, B>(
   inputs: ReadonlyArray<A>,
-  operation: (input: A) => Promise<B>,
+  operation: (input: A, index: number) => Promise<B>,
 ): Promise<ReadonlyArray<B>> => {
   const output = new Array<B>();
   for (let offset = 0; offset < inputs.length; offset += qualificationAuthorityConnectionLimit) {
     const batch = inputs.slice(offset, offset + qualificationAuthorityConnectionLimit);
     // oxlint-disable-next-line eslint/no-await-in-loop -- Each batch enforces the Workers six-connection host limit with one slot reserved.
-    const results = await Promise.all(batch.map((input) => operation(input)));
+    const results = await Promise.all(
+      batch.map((input, batchIndex) => operation(input, offset + batchIndex)),
+    );
     output.push(...results);
   }
   return output;
@@ -2352,7 +2437,11 @@ const collectAgentSourceChunk = async (
               frozen.manifest.semanticRequirements[journey].requiredComponents.includes(component),
           }),
       );
-      const unsupported = required.find(({ journey }) => journey !== "scheduledEmail");
+      const unsupported = required.find(
+        ({ journey }) =>
+          journey !== "scheduledEmail" &&
+          !(source === "task_compute_receipts" && journey === "documentBuild"),
+      );
       if (unsupported !== undefined) {
         return Response.json(
           {
@@ -2367,11 +2456,30 @@ const collectAgentSourceChunk = async (
           { status: 424 },
         );
       }
+      const scheduledRequired = required.filter(({ journey }) => journey === "scheduledEmail");
+      const documentRequired = required.filter(({ journey }) => journey === "documentBuild");
+      if (documentRequired.length > 0) {
+        const run = frozen.plan.runs.find((candidate) => candidate.runId === runId);
+        if (
+          run === undefined ||
+          !qualificationDocumentAttemptAuthorityExact({
+            arrivalIndexOffset: chunkIndex * 256,
+            executionId: frozen.plan.executionId,
+            identities,
+            manifest: frozen.manifest,
+            planChecksum: frozen.plan.planChecksum,
+            records: arrivalShard.value.records,
+            run,
+          })
+        ) {
+          return Response.json({ error: "qualificationAttemptIndexConflict" }, { status: 409 });
+        }
+      }
       const authority = await Effect.runPromise(
         readQualificationScheduledEmailAuthority(
           database,
           frozen.plan.executionId,
-          required.map(({ rootId }) => rootId),
+          scheduledRequired.map(({ rootId }) => rootId),
         ),
       );
       if (authority._tag !== "Ready") {
@@ -2451,9 +2559,99 @@ const collectAgentSourceChunk = async (
           { status: 424 },
         );
       }
-      const records = mapped.flatMap((entry) =>
+      const scheduledRecords = mapped.flatMap((entry) =>
         entry._tag === "Ready" ? entry.records[source] : [],
       );
+      let documentRecords: ReadonlyArray<QualificationAuthorityRecord> = [];
+      if (source === "task_compute_receipts" && documentRequired.length > 0) {
+        const documentAuthority = await Effect.runPromise(
+          readQualificationDocumentBuildAuthority(
+            database,
+            frozen.plan.executionId,
+            documentRequired.map(({ rootId }) => rootId),
+          ),
+        );
+        if (documentAuthority._tag !== "Ready") {
+          return documentAuthority._tag === "Conflict"
+            ? Response.json(
+                { error: "qualificationDocumentBuildAuthorityConflict" },
+                { status: 409 },
+              )
+            : Response.json(
+                {
+                  missingSources: [
+                    {
+                      detail: `Document Build authority is incomplete for ${documentAuthority.rootId}`,
+                      source,
+                    },
+                  ],
+                  status: "MISSING",
+                },
+                { status: 424 },
+              );
+        }
+        if (
+          !qualificationDocumentBuildAuthorityExact(
+            documentAuthority.records,
+            documentRequired,
+            frozen.plan.planChecksum,
+            runId,
+          )
+        ) {
+          return Response.json(
+            { error: "qualificationDocumentBuildAuthorityConflict" },
+            { status: 409 },
+          );
+        }
+        const documentTaskAuthority = await qualificationDocumentTaskComputeAuthorityRecords(
+          env.ARTIFACTS,
+          documentAuthority.records,
+        );
+        if (documentTaskAuthority._tag === "Conflict") {
+          return Response.json(
+            { error: "qualificationDocumentTaskComputeAuthorityConflict" },
+            { status: 409 },
+          );
+        }
+        if (documentTaskAuthority._tag === "Missing") {
+          return Response.json(
+            {
+              missingSources: [
+                {
+                  detail: "Document Compute terminal authority is absent",
+                  source,
+                },
+              ],
+              status: "MISSING",
+            },
+            { status: 424 },
+          );
+        }
+        if (documentTaskAuthority._tag === "Pending") {
+          return Response.json(
+            {
+              retryAtEpochMs: Date.now() + 5_000,
+              source,
+              status: "PENDING",
+            },
+            { headers: { "retry-after": "5" }, status: 202 },
+          );
+        }
+        documentRecords = documentTaskAuthority.records;
+      }
+      const unorderedRecords = [...scheduledRecords, ...documentRecords];
+      const records = required.flatMap(({ rootId }) => {
+        const matches = unorderedRecords.filter(
+          (record) => "rootId" in record && record.rootId === rootId,
+        );
+        return matches.length === 1 ? matches : [];
+      });
+      if (records.length !== required.length) {
+        return Response.json(
+          { error: "qualificationTaskComputeAuthorityConflict" },
+          { status: 409 },
+        );
+      }
       return (await retainProductAuthorityShard(env, frozen, source, streamChunkIndex, records))
         ? Response.json({
             recordCount: records.length,

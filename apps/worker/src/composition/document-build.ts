@@ -1,4 +1,4 @@
-import { Clock, DateTime, Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
@@ -421,7 +421,17 @@ const makePendingArtifactDiscarder = (
         ? undefined
         : yield* DocumentBuildDocument.qualificationDocumentIntentDigest(build);
     const qualificationSettledAtEpochMs =
-      build.qualificationContext === undefined ? undefined : yield* Clock.currentTimeMillis;
+      build.qualificationContext === undefined ? undefined : build.terminalAt?.getTime();
+    if (
+      build.qualificationContext !== undefined &&
+      (qualificationSettledAtEpochMs === undefined ||
+        !Number.isSafeInteger(qualificationSettledAtEpochMs))
+    ) {
+      return yield* documentBuildUnavailable(
+        "artifact.discard.attempt",
+        new Error("Qualification terminal cleanup requires its committed terminal timestamp"),
+      );
+    }
     const { DocumentCompute } = yield* Effect.promise(
       () => import("../integrations/cloudflare/document-compute"),
     );
@@ -440,8 +450,8 @@ const makePendingArtifactDiscarder = (
             qualificationSettledAtEpochMs === undefined
             ? undefined
             : {
-                claimedAtEpochMs: qualificationSettledAtEpochMs,
                 context: build.qualificationContext,
+                decidedAtEpochMs: qualificationSettledAtEpochMs,
                 intentDigest: qualificationIntentDigest,
                 workflowId: build.workflowId,
               },

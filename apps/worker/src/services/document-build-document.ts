@@ -515,7 +515,7 @@ const qualificationContextFields = (
 ) => (qualificationContext === undefined ? {} : { qualificationContext });
 
 /** Canonical immutable input identity shared with the qualification compute authority. */
-export const qualificationDocumentIntentDigest = (build: DocumentBuild.Record) =>
+export const qualificationDocumentIntentDigest = (build: Pick<DocumentBuild.Record, "request">) =>
   Schema.encodeEffect(
     Schema.fromJsonString(
       Schema.Struct({

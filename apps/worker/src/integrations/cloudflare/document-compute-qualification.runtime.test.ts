@@ -1,4 +1,4 @@
-/* oxlint-disable vitest/no-standalone-expect, eslint/no-underscore-dangle -- Assertions execute inside Effect tests against real workerd R2; retained outcomes use _tag. */
+/* oxlint-disable vitest/no-standalone-expect, eslint/no-underscore-dangle, effecttsgo/global-date-in-effect -- Assertions execute inside Effect tests against real workerd R2 with fixed UTC fixtures; retained outcomes use _tag. */
 import { expect, it } from "@effect/vitest";
 import { env } from "cloudflare:workers";
 import { Effect } from "effect";
@@ -10,6 +10,7 @@ import { DocumentIntentDigest, DocumentSource } from "../../services/document-ge
 import {
   makeAttemptEvidenceStore,
   makeWithSandbox,
+  qualificationTaskComputeAuthorityRecord,
   settleAttemptEvidenceForTerminalCleanup,
   transitionQualificationAttemptEvidence,
 } from "./document-compute";
@@ -104,6 +105,69 @@ it.effect(
         ?.customMetadata?.osfo;
       expect(encoded).toBeDefined();
       expect(encoded).toContain(completedEvidence.qualification?.artifactChecksum);
+      const build = {
+        allowancePeriodId: cost.allowancePeriodId,
+        qualificationContext: context,
+        state: "success" as const,
+        terminalAt: new Date(1_788_000_000_300),
+        userId,
+        workflowId,
+      };
+      expect(
+        qualificationTaskComputeAuthorityRecord({ build, encodedEvidence: encoded, intentDigest }),
+      ).toMatchObject({
+        _tag: "Ready",
+        record: {
+          executionStatus: "completed",
+          rootId: context.rootId,
+          taskExecutionId: `document-compute:${contentId}`,
+          taskKind: "directDocumentBuild",
+          taskOutcomeId: `document-compute:${contentId}:completed`,
+          workflowId,
+        },
+      });
+      expect(
+        qualificationTaskComputeAuthorityRecord({
+          build: { ...build, state: "failure" },
+          encodedEvidence: encoded,
+          intentDigest,
+        }),
+      ).toMatchObject({ _tag: "Ready", record: { executionStatus: "completed" } });
+      expect(
+        qualificationTaskComputeAuthorityRecord({
+          build: { ...build, terminalAt: new Date(1_788_000_000_199) },
+          encodedEvidence: encoded,
+          intentDigest,
+        }),
+      ).toEqual({ _tag: "Conflict" });
+      expect(
+        qualificationTaskComputeAuthorityRecord({
+          build,
+          encodedEvidence: undefined,
+          intentDigest,
+        }),
+      ).toEqual({ _tag: "Missing" });
+      expect(
+        qualificationTaskComputeAuthorityRecord({
+          build: { ...build, state: "running", terminalAt: null },
+          encodedEvidence: undefined,
+          intentDigest,
+        }),
+      ).toEqual({ _tag: "Pending" });
+      expect(
+        qualificationTaskComputeAuthorityRecord({
+          build,
+          encodedEvidence: encoded,
+          intentDigest: DocumentIntentDigest.make("e".repeat(64)),
+        }),
+      ).toEqual({ _tag: "Conflict" });
+      expect(
+        qualificationTaskComputeAuthorityRecord({
+          build,
+          encodedEvidence: encoded?.replace(context.rootId, "substituted-root"),
+          intentDigest,
+        }),
+      ).toEqual({ _tag: "Conflict" });
     }),
 );
 
@@ -153,6 +217,78 @@ it.effect("rejects qualification substitution and malformed retained checksums",
   }),
 );
 
+it.effect(
+  "rejects producer-authenticated chronology outside the frozen offer and stage order",
+  () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() =>
+        env.ARTIFACTS.delete([attemptKeyFor(contentId), ownerKeyFor(userId, contentId)]),
+      );
+      const store = makeAttemptEvidenceStore(env.ARTIFACTS);
+      const early = yield* Effect.promise(() =>
+        store.claim(contentId, intentDigest, cost, 1_788_000_600_000, userId, {
+          claimedAtEpochMs: context.offeredAtEpochMs - 1,
+          context,
+          workflowId,
+        }),
+      );
+      if (early._tag !== "Claimed") throw new Error("Expected qualification attempt claim");
+      const earlyEncoded = (yield* Effect.promise(() =>
+        env.ARTIFACTS.head(attemptKeyFor(contentId)),
+      ))?.customMetadata?.osfo;
+      expect(
+        qualificationTaskComputeAuthorityRecord({
+          build: {
+            allowancePeriodId: cost.allowancePeriodId,
+            qualificationContext: context,
+            state: "running",
+            terminalAt: null,
+            userId,
+            workflowId,
+          },
+          encodedEvidence: earlyEncoded,
+          intentDigest,
+        }),
+      ).toEqual({ _tag: "Conflict" });
+
+      yield* Effect.promise(() =>
+        env.ARTIFACTS.delete([attemptKeyFor(contentId), ownerKeyFor(userId, contentId)]),
+      );
+      const claimed = yield* Effect.promise(() =>
+        store.claim(contentId, intentDigest, cost, 1_788_000_600_000, userId, {
+          claimedAtEpochMs: context.offeredAtEpochMs + 10,
+          context,
+          workflowId,
+        }),
+      );
+      if (claimed._tag !== "Claimed") throw new Error("Expected qualification attempt claim");
+      const invalidStarted = transitionQualificationAttemptEvidence(
+        { ...claimed.evidence, status: "started" },
+        { startedAtEpochMs: context.offeredAtEpochMs + 9 },
+      );
+      expect(
+        yield* Effect.promise(() => store.start(contentId, invalidStarted, claimed.revision)),
+      ).not.toBeNull();
+      const startedEncoded = (yield* Effect.promise(() =>
+        env.ARTIFACTS.head(attemptKeyFor(contentId)),
+      ))?.customMetadata?.osfo;
+      expect(
+        qualificationTaskComputeAuthorityRecord({
+          build: {
+            allowancePeriodId: cost.allowancePeriodId,
+            qualificationContext: context,
+            state: "running",
+            terminalAt: null,
+            userId,
+            workflowId,
+          },
+          encodedEvidence: startedEncoded,
+          intentDigest,
+        }),
+      ).toEqual({ _tag: "Conflict" });
+    }),
+);
+
 it.effect("retains a producer-owned terminal compute failure without repeating work", () =>
   Effect.gen(function* () {
     yield* Effect.promise(() =>
@@ -192,6 +328,29 @@ it.effect("retains a producer-owned terminal compute failure without repeating w
         }),
       ),
     ).toEqual({ _tag: "Terminal", evidence: failedEvidence });
+    const encoded = (yield* Effect.promise(() => env.ARTIFACTS.head(attemptKeyFor(contentId))))
+      ?.customMetadata?.osfo;
+    expect(
+      qualificationTaskComputeAuthorityRecord({
+        build: {
+          allowancePeriodId: cost.allowancePeriodId,
+          qualificationContext: context,
+          state: "failure",
+          terminalAt: new Date(1_788_000_000_300),
+          userId,
+          workflowId,
+        },
+        encodedEvidence: encoded,
+        intentDigest,
+      }),
+    ).toMatchObject({
+      _tag: "Ready",
+      record: {
+        executionStatus: "failed",
+        taskExecutionId: `document-compute:${contentId}`,
+        taskOutcomeId: `document-compute:${contentId}:failed`,
+      },
+    });
   }),
 );
 
@@ -244,8 +403,8 @@ it.effect("retains an explicit no-compute obligation instead of inferring it fro
     );
     expect(
       yield* settleAttemptEvidenceForTerminalCleanup(env.ARTIFACTS, contentId, userId, {
-        claimedAtEpochMs: 1_788_000_000_010,
         context,
+        decidedAtEpochMs: 1_788_000_000_100,
         intentDigest,
         workflowId,
       }),
@@ -257,6 +416,7 @@ it.effect("retains an explicit no-compute obligation instead of inferring it fro
       intentDigest,
       qualification: {
         context,
+        decidedAtEpochMs: 1_788_000_000_100,
         taskExecutionId: `document-compute:${contentId}`,
         taskOutcomeId: `document-compute:${contentId}:not-required`,
         workflowId,
@@ -264,14 +424,52 @@ it.effect("retains an explicit no-compute obligation instead of inferring it fro
       status: "notRequired",
       userId,
     });
+    const encoded = (yield* Effect.promise(() => env.ARTIFACTS.head(attemptKeyFor(contentId))))
+      ?.customMetadata?.osfo;
+    expect(
+      qualificationTaskComputeAuthorityRecord({
+        build: {
+          allowancePeriodId: cost.allowancePeriodId,
+          qualificationContext: context,
+          state: "canceled",
+          terminalAt: new Date(1_788_000_000_100),
+          userId,
+          workflowId,
+        },
+        encodedEvidence: encoded,
+        intentDigest,
+      }),
+    ).toMatchObject({
+      _tag: "Ready",
+      record: {
+        taskKind: "directDocumentBuild",
+        taskObligation: "notRequired",
+        taskOutcomeId: `document-compute:${contentId}:not-required`,
+        terminalStatus: "aborted",
+      },
+    });
     expect(
       yield* settleAttemptEvidenceForTerminalCleanup(env.ARTIFACTS, contentId, userId, {
-        claimedAtEpochMs: 1_788_000_000_020,
         context,
+        decidedAtEpochMs: 1_788_000_000_100,
         intentDigest,
         workflowId,
       }),
     ).toBe("notRequired");
+    const conflict = yield* settleAttemptEvidenceForTerminalCleanup(
+      env.ARTIFACTS,
+      contentId,
+      userId,
+      {
+        context,
+        decidedAtEpochMs: 1_788_000_000_101,
+        intentDigest,
+        workflowId,
+      },
+    ).pipe(Effect.flip);
+    expect(conflict.message).toBe(
+      "R2 document attempt cleanup could not prove and settle owned evidence",
+    );
     expect(
       yield* Effect.promise(() =>
         makeAttemptEvidenceStore(env.ARTIFACTS).claim(
@@ -303,8 +501,8 @@ it.effect("preserves an existing qualification claim during terminal cleanup", (
     if (claimed._tag !== "Claimed") throw new Error("Expected qualification attempt claim");
     expect(
       yield* settleAttemptEvidenceForTerminalCleanup(env.ARTIFACTS, contentId, userId, {
-        claimedAtEpochMs: 1_788_000_000_200,
         context,
+        decidedAtEpochMs: 1_788_000_000_200,
         intentDigest,
         workflowId,
       }),

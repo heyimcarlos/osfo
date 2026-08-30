@@ -10,6 +10,7 @@ import { QualificationContext, sameQualificationContext } from "../../domain/qua
 import type { QualificationContext as QualificationContextValue } from "../../domain/qualification-context";
 import { qualificationChecksum } from "../../qualification/qualification-checksum";
 import type { Denied } from "../../services/authorization";
+import { DocumentBuild } from "../../services/document-build";
 import {
   DocumentSource,
   DocumentCleanupUnavailable,
@@ -56,8 +57,18 @@ export interface QualificationAttemptInput {
   readonly workflowId: string;
 }
 
-export interface QualificationNoComputeInput extends QualificationAttemptInput {
+export interface QualificationNoComputeInput {
+  readonly context: QualificationContextValue;
+  readonly decidedAtEpochMs: number;
   readonly intentDigest: DocumentIntentDigest;
+  readonly workflowId: string;
+}
+
+export interface QualificationNoComputeEvidence extends Omit<
+  QualificationAttemptEvidence,
+  "claimedAtEpochMs"
+> {
+  readonly decidedAtEpochMs: number;
 }
 
 export interface DiscardedAttemptEvidence {
@@ -69,7 +80,7 @@ export interface DiscardedAttemptEvidence {
 export interface NoComputeAttemptEvidence {
   readonly cost: Extract<CostEvidence, { _tag: "ProvenNoUse" }>;
   readonly intentDigest: DocumentIntentDigest;
-  readonly qualification: QualificationAttemptEvidence & {
+  readonly qualification: QualificationNoComputeEvidence & {
     readonly completedAtEpochMs: null;
     readonly failedAtEpochMs: null;
     readonly startedAtEpochMs: null;
@@ -83,6 +94,170 @@ export type AttemptEvidence =
   | ActiveAttemptEvidence
   | DiscardedAttemptEvidence
   | NoComputeAttemptEvidence;
+
+export type QualificationTaskComputeAuthorityOutcome =
+  | { readonly _tag: "Conflict" | "Missing" | "Pending" }
+  | {
+      readonly _tag: "Ready";
+      readonly record: {
+        readonly effectReceipts: ReadonlyArray<never>;
+        readonly executionStatus?: "completed" | "failed";
+        readonly occurredAt: string;
+        readonly productFactId: string;
+        readonly rootId: string;
+        readonly stageOccurrences: ReadonlyArray<never>;
+        readonly taskExecutionId?: string;
+        readonly taskKind: "directDocumentBuild";
+        readonly taskObligation?: "notRequired";
+        readonly taskOutcomeId: string;
+        readonly terminalStatus?: "aborted" | "error";
+        readonly usageFacts: ReadonlyArray<never>;
+        readonly workflowId: string;
+      };
+    };
+
+/** Authenticate one producer-owned attempt object against its exact PostgreSQL owner. */
+export const qualificationTaskComputeAuthorityRecord = (input: {
+  readonly build: Pick<
+    DocumentBuild.Record,
+    "allowancePeriodId" | "qualificationContext" | "state" | "terminalAt" | "userId" | "workflowId"
+  >;
+  readonly encodedEvidence: string | undefined;
+  readonly intentDigest: DocumentIntentDigest;
+}): QualificationTaskComputeAuthorityOutcome => {
+  const context = input.build.qualificationContext;
+  if (context === undefined || context.journey !== "documentBuild") return { _tag: "Conflict" };
+  if (input.encodedEvidence === undefined) {
+    return DocumentBuild.terminalStates.has(input.build.state)
+      ? { _tag: "Missing" }
+      : { _tag: "Pending" };
+  }
+  let evidence: AttemptEvidence;
+  try {
+    evidence = decodeAttemptEvidence(input.encodedEvidence);
+  } catch {
+    return { _tag: "Conflict" };
+  }
+  if (evidence.status === "discarded" || evidence.qualification === undefined) {
+    return { _tag: "Conflict" };
+  }
+  const qualification = evidence.qualification;
+  const contentId = ContentId.make(`document:workflow:${input.build.workflowId}`);
+  if (
+    evidence.userId !== input.build.userId ||
+    evidence.intentDigest !== input.intentDigest ||
+    qualification.contentId !== contentId ||
+    !sameQualificationContext(qualification.context, context) ||
+    qualification.taskExecutionId !== `document-compute:${contentId}` ||
+    qualification.workflowId !== input.build.workflowId
+  ) {
+    return { _tag: "Conflict" };
+  }
+  const startedAtEpochMs = qualification.startedAtEpochMs;
+  const authorityStartedAtEpochMs =
+    evidence.status === "notRequired"
+      ? evidence.qualification.decidedAtEpochMs
+      : evidence.qualification.claimedAtEpochMs;
+  const terminalAtEpochMs = input.build.terminalAt?.getTime() ?? null;
+  if (
+    authorityStartedAtEpochMs < context.offeredAtEpochMs ||
+    (startedAtEpochMs !== null && startedAtEpochMs < authorityStartedAtEpochMs) ||
+    (qualification.completedAtEpochMs !== null &&
+      (startedAtEpochMs === null || qualification.completedAtEpochMs < startedAtEpochMs)) ||
+    (qualification.failedAtEpochMs !== null &&
+      (startedAtEpochMs === null || qualification.failedAtEpochMs < startedAtEpochMs)) ||
+    (DocumentBuild.terminalStates.has(input.build.state) &&
+      (terminalAtEpochMs === null || !Number.isSafeInteger(terminalAtEpochMs)))
+  ) {
+    return { _tag: "Conflict" };
+  }
+  if (
+    evidence.status !== "notRequired" &&
+    evidence.cost.allowancePeriodId !== input.build.allowancePeriodId
+  ) {
+    return { _tag: "Conflict" };
+  }
+  if (!DocumentBuild.terminalStates.has(input.build.state)) {
+    return evidence.status === "completed" ||
+      evidence.status === "failed" ||
+      evidence.status === "notRequired"
+      ? { _tag: "Conflict" }
+      : { _tag: "Pending" };
+  }
+  if (
+    evidence.status === "claimed" ||
+    evidence.status === "recovery" ||
+    evidence.status === "started"
+  ) {
+    return { _tag: "Missing" };
+  }
+  const occurredAtEpochMs = (() => {
+    if (evidence.status === "notRequired") return evidence.qualification.decidedAtEpochMs;
+    return evidence.status === "completed"
+      ? evidence.qualification.completedAtEpochMs
+      : evidence.qualification.failedAtEpochMs;
+  })();
+  const occurredAt = canonicalEpochUtc(occurredAtEpochMs);
+  if (
+    occurredAt === null ||
+    qualification.taskOutcomeId === null ||
+    (terminalAtEpochMs !== null &&
+      occurredAtEpochMs !== null &&
+      occurredAtEpochMs > terminalAtEpochMs)
+  ) {
+    return { _tag: "Conflict" };
+  }
+  const common = {
+    effectReceipts: [],
+    occurredAt,
+    productFactId: qualification.taskOutcomeId,
+    rootId: context.rootId,
+    stageOccurrences: [],
+    taskKind: "directDocumentBuild" as const,
+    taskOutcomeId: qualification.taskOutcomeId,
+    usageFacts: [],
+    workflowId: input.build.workflowId,
+  };
+  if (evidence.status === "completed") {
+    return {
+      _tag: "Ready",
+      record: {
+        ...common,
+        executionStatus: "completed",
+        taskExecutionId: qualification.taskExecutionId,
+      },
+    };
+  }
+  if (evidence.status === "failed") {
+    return input.build.state === "failure"
+      ? {
+          _tag: "Ready",
+          record: {
+            ...common,
+            executionStatus: "failed",
+            taskExecutionId: qualification.taskExecutionId,
+          },
+        }
+      : { _tag: "Conflict" };
+  }
+  return input.build.state === "failure" || input.build.state === "canceled"
+    ? {
+        _tag: "Ready",
+        record: {
+          ...common,
+          taskObligation: "notRequired",
+          terminalStatus: input.build.state === "canceled" ? "aborted" : "error",
+        },
+      }
+    : { _tag: "Conflict" };
+};
+
+const canonicalEpochUtc = (epochMs: number | null): string | null => {
+  if (epochMs === null || !Number.isSafeInteger(epochMs)) return null;
+  // oxlint-disable-next-line effecttsgo/global-date -- Producer epoch facts cross a JSON UTC boundary here.
+  const timestamp = new Date(epochMs);
+  return Number.isNaN(timestamp.getTime()) ? null : timestamp.toISOString();
+};
 
 /** Expected failure when durable attempt evidence cannot be reconciled. */
 export class DocumentAttemptEvidenceUnavailable extends Schema.TaggedError<DocumentAttemptEvidenceUnavailable>()(
@@ -570,10 +745,10 @@ const AttemptEvidenceMetadata = Schema.fromJsonString(
       intentDigest: DocumentIntentDigest,
       qualification: Schema.Struct({
         artifactChecksum: Schema.String.check(Schema.isPattern(/^sha256:[0-9a-f]{64}$/)),
-        claimedAtEpochMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
         completedAtEpochMs: Schema.Null,
         contentId: ContentId,
         context: QualificationContext,
+        decidedAtEpochMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
         evidenceVersion: Schema.Literal("document-compute-attempt-v2"),
         failedAtEpochMs: Schema.Null,
         startedAtEpochMs: Schema.Null,
@@ -868,8 +1043,8 @@ const sameQualificationAttempt = (
 };
 
 const sameQualificationIdentity = (
-  left: QualificationAttemptEvidence | undefined,
-  right: QualificationAttemptEvidence | undefined,
+  left: QualificationAttemptEvidence | QualificationNoComputeEvidence | undefined,
+  right: QualificationAttemptEvidence | QualificationNoComputeEvidence | undefined,
 ) => {
   if (left === undefined || right === undefined) return left === right;
   return (
@@ -937,10 +1112,10 @@ const qualificationNoComputeEvidence = (
 ): NoComputeAttemptEvidence => {
   const taskExecutionId = `document-compute:${contentId}`;
   const qualification = {
-    claimedAtEpochMs: input.claimedAtEpochMs,
     completedAtEpochMs: null,
     contentId,
     context: input.context,
+    decidedAtEpochMs: input.decidedAtEpochMs,
     evidenceVersion: "document-compute-attempt-v2" as const,
     failedAtEpochMs: null,
     startedAtEpochMs: null,
@@ -1031,6 +1206,7 @@ export const settleAttemptEvidenceForTerminalCleanup = (
           if (
             qualification !== undefined &&
             (!sameQualificationContext(evidence.qualification.context, qualification.context) ||
+              evidence.qualification.decidedAtEpochMs !== qualification.decidedAtEpochMs ||
               evidence.qualification.workflowId !== qualification.workflowId ||
               evidence.intentDigest !== qualification.intentDigest)
           ) {

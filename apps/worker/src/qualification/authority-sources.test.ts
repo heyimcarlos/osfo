@@ -65,6 +65,10 @@ describe("qualification authority adapter coverage", () => {
       "task_compute_receipts",
       "workflow_instance_receipts",
     ]);
+    expect(qualificationAuthoritySourcesRequiring("documentBuildTable")).toEqual([
+      "r2_object_metadata",
+      "task_compute_receipts",
+    ]);
   });
 
   it("reports unsupported source and journey pairs without erasing installed coverage", () => {
@@ -74,11 +78,11 @@ describe("qualification authority adapter coverage", () => {
       journey: "gmail",
       source: "gmail_provider_receipts",
     });
-    expect(gaps).toContainEqual({
-      component: "TaskCompute",
-      journey: "documentBuild",
-      source: "task_compute_receipts",
-    });
+    expect(
+      gaps.some(
+        ({ journey, source }) => source === "task_compute_receipts" && journey === "documentBuild",
+      ),
+    ).toBe(false);
     expect(gaps).toContainEqual({
       component: "Workflow",
       journey: "reminder",
