@@ -15,12 +15,117 @@ import {
 import { createBoundedBetaManifest } from "./qualification/qualification-manifest";
 import { ScheduledEmail } from "./services/scheduled-email";
 import {
+  collectQualificationSourceBundle,
   handleQualificationProductAuthority,
+  mapQualificationAuthorityConnections,
+  qualificationAuthorityConnectionLimit,
   qualificationMemoryAuthorityRecords,
   qualificationScheduledEmailAuthorityRecords,
   retainQualificationProductAuthorityShard,
 } from "./qualification-product-authority-worker";
 import { scheduledEmailWorkflowEvidenceArtifactId } from "./workflows/scheduled-email";
+
+it("bounds product-authority host calls below the Workers connection ceiling", async () => {
+  let active = 0;
+  let maximumActive = 0;
+  const results = await mapQualificationAuthorityConnections(
+    Array.from({ length: 37 }, (_, index) => index),
+    async (index) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await Promise.resolve();
+      active -= 1;
+      return index;
+    },
+  );
+  expect(results).toEqual(Array.from({ length: 37 }, (_, index) => index));
+  expect(maximumActive).toBe(qualificationAuthorityConnectionLimit);
+  expect(maximumActive).toBeLessThan(6);
+});
+
+it("collects source bundles in canonical order and preserves closed and pending outcomes", async () => {
+  const collected = new Array<string>();
+  const pendingSource = "provider_delivery_receipts";
+  const pending = await collectQualificationSourceBundle({
+    collect: (source) => {
+      collected.push(source);
+      return Promise.resolve(
+        source === pendingSource
+          ? Response.json({ retryAtEpochMs: 42_000, source, status: "PENDING" }, { status: 202 })
+          : Response.json({ recordCount: 0, source, status: "COMPLETE", streamChunkIndex: 7 }),
+      );
+    },
+    streamChunkIndex: 7,
+  });
+  expect(pending.status).toBe(202);
+  expect(await pending.json()).toEqual({
+    pendingSources: [pendingSource],
+    retryAtEpochMs: 42_000,
+    status: "PENDING",
+  });
+  expect(collected).toEqual(qualificationAuthoritySources);
+
+  collected.length = 0;
+  const missingSource = "osfo_agent_activation_log";
+  const missing = await collectQualificationSourceBundle({
+    collect: (source) => {
+      collected.push(source);
+      return Promise.resolve(
+        source === missingSource
+          ? Response.json(
+              { missingSources: [{ detail: "not installed", source }], status: "MISSING" },
+              { status: 424 },
+            )
+          : Response.json({ recordCount: 1, source, status: "COMPLETE", streamChunkIndex: 7 }),
+      );
+    },
+    streamChunkIndex: 7,
+  });
+  expect(missing.status).toBe(424);
+  expect(collected).toEqual(
+    qualificationAuthoritySources.slice(
+      0,
+      qualificationAuthoritySources.indexOf(missingSource) + 1,
+    ),
+  );
+
+  const complete = await collectQualificationSourceBundle({
+    collect: (source) =>
+      Promise.resolve(
+        Response.json({
+          recordCount: qualificationAuthoritySources.indexOf(source),
+          source,
+          status: "COMPLETE",
+          streamChunkIndex: 7,
+        }),
+      ),
+    streamChunkIndex: 7,
+  });
+  expect(complete.status).toBe(200);
+  expect(await complete.json()).toEqual({
+    recordCounts: qualificationAuthoritySources.map((source, recordCount) => ({
+      recordCount,
+      source,
+    })),
+    status: "COMPLETE",
+    streamChunkIndex: 7,
+  });
+
+  const substituted = await collectQualificationSourceBundle({
+    collect: (source) =>
+      Promise.resolve(
+        Response.json({
+          recordCount: 0,
+          source:
+            source === qualificationAuthoritySources[0] ? qualificationAuthoritySources[1] : source,
+          status: "COMPLETE",
+          streamChunkIndex: 7,
+        }),
+      ),
+    streamChunkIndex: 7,
+  });
+  expect(substituted.status).toBe(409);
+});
 
 it("distinguishes failed, unsettled, and absent Memory obligations", () => {
   const root = { rootId: "root-1", userMessageId: "message-1" };
@@ -405,7 +510,7 @@ it("retains replay-safe partition-local authority shards and refuses spliced bod
   expect(retained.has(secondKey)).toBe(true);
 });
 
-it("refuses the first arrival until the complete cohort inventory receipt exists", async () => {
+it("refuses the first arrival before cohort access when the manifest has producer gaps", async () => {
   const manifest = createBoundedBetaManifest({
     dependencyVersions: {
       "@cloudflare/think": "0.15.1",
@@ -475,18 +580,17 @@ it("refuses the first arrival until the complete cohort inventory receipt exists
   );
 
   expect(response.status).toBe(424);
-  expect(await response.json()).toMatchObject({
-    missingSources: [
-      expect.objectContaining({
-        detail: expect.stringContaining("complete frozen disposable cohort inventory"),
-      }),
-    ],
-    status: "MISSING",
+  const body = await response.json();
+  expect(body).toMatchObject({ status: "MISSING" });
+  expect(body).toMatchObject({
+    missingSources: expect.arrayContaining([
+      expect.objectContaining({ source: "osfo_agent_activation_log" }),
+    ]),
   });
   expect(databaseRead).toBe(false);
 });
 
-it("resumes an immutable canonical arrival chunk without replaying product effects", async () => {
+it("refuses direct arrival execution when the frozen plan has known producer gaps", async () => {
   const manifest = createBoundedBetaManifest({
     dependencyVersions: {
       "@cloudflare/think": "0.15.1",
@@ -614,36 +718,346 @@ it("resumes an immutable canonical arrival chunk without replaying product effec
     runId: run.runId,
   });
 
-  for (let replay = 0; replay < 2; replay += 1) {
-    // oxlint-disable-next-line eslint/no-await-in-loop -- The second invocation deliberately observes the first immutable replay.
-    const response = await handleQualificationProductAuthority(
-      new Request("https://qualification-product-authority.internal/v1/executions/arrival-chunks", {
-        body: invocation,
-        method: "POST",
-      }),
-      env,
-    );
-    expect(response.status).toBe(200);
-    // oxlint-disable-next-line eslint/no-await-in-loop -- Response inspection is part of the ordered replay assertion.
-    expect(await response.json()).toMatchObject({
-      artifactId: shardArtifactId,
-      chunkIndex: 0,
-      recordCount: arrivals.length,
-      runId: run.runId,
-      status: "COMPLETE",
-      streamChunkIndex: 0,
-    });
-  }
+  const response = await handleQualificationProductAuthority(
+    new Request("https://qualification-product-authority.internal/v1/executions/arrival-chunks", {
+      body: invocation,
+      method: "POST",
+    }),
+    env,
+  );
+  expect(response.status).toBe(424);
+  expect(await response.json()).toMatchObject({
+    missingSources: expect.arrayContaining([
+      expect.objectContaining({ source: "osfo_agent_activation_log" }),
+      expect.objectContaining({ source: "qualification_fault_controller_receipts" }),
+      expect.objectContaining({ source: "whatsapp_delivery_receipts" }),
+    ]),
+    status: "MISSING",
+  });
   expect(productEffectTouched).toBe(false);
-  expect(authorityShardWrites).toBe(4);
+  expect(authorityShardWrites).toBe(0);
   expect(
     retained.has(
       "qualification/executions/resume-test-execution/producer-authority/worker_admission_receipts/partitions/00000000/00000000.json",
     ),
-  ).toBe(true);
+  ).toBe(false);
   expect(
     retained.has(
       "qualification/executions/resume-test-execution/producer-authority/think_submission_receipts/partitions/00000000/00000000.json",
     ),
-  ).toBe(true);
+  ).toBe(false);
+});
+
+it("reads Worker and Think authority only from exact immutable producer shards", async () => {
+  const manifest = createBoundedBetaManifest({
+    dependencyVersions: {
+      "@cloudflare/think": "0.15.1",
+      agents: "0.20.1",
+      effect: "4.0.0-rc.111",
+    },
+    hardLimits: [
+      { maximum: 128, name: "workerMemory", unit: "MiB" },
+      { maximum: 1_000, name: "workerSubrequests", unit: "requests" },
+      { maximum: 250_000, name: "qualificationWorkflowSubrequests", unit: "requests" },
+    ],
+    sourceVersion: "readback-test-sha",
+    topologyVersion: "cloudflare-v1",
+    workloadSeed: 17,
+  });
+  const plan = createQualificationExecutionPlan(manifest, 0, "readback-test-execution");
+  const run = plan.runs[0];
+  if (run === undefined) throw new Error("The bounded plan must contain a run");
+  const requestContent = {
+    authoritySources: qualificationAuthoritySources,
+    cohortArtifactChecksum: "cohort-checksum",
+    cohortArtifactId: "qualification/executions/readback-test-execution/cohort/manifest.json",
+    executionId: plan.executionId,
+    manifest,
+    manifestChecksum: manifest.manifestChecksum,
+    plan,
+    planChecksum: plan.planChecksum,
+    protocolVersion: "qualification-owner-v1" as const,
+    shardRecordLimit: 256 as const,
+  };
+  const requestArtifactChecksum = qualificationChecksum(requestContent);
+  const requestArtifactId = "qualification/executions/readback-test-execution/owner-request.json";
+  const retained = new Map<
+    string,
+    { readonly metadata: Record<string, string>; readonly value: string }
+  >([
+    [
+      requestArtifactId,
+      {
+        metadata: {},
+        value: canonicalQualificationJson({
+          ...requestContent,
+          artifactChecksum: requestArtifactChecksum,
+        }),
+      },
+    ],
+  ]);
+  const bucket = {
+    get: (key: string) => {
+      const object = retained.get(key);
+      return Promise.resolve(
+        object === undefined
+          ? null
+          : {
+              customMetadata: object.metadata,
+              text: () => Promise.resolve(object.value),
+            },
+      );
+    },
+    list: (options: { limit: number; prefix: string }) => {
+      const objects = [...retained.entries()]
+        .filter(([key]) => key.startsWith(options.prefix))
+        .slice(0, options.limit)
+        .map(([key, object]) => ({
+          checksums: { toJSON: () => ({}) },
+          customMetadata: object.metadata,
+          key,
+        }));
+      return Promise.resolve({ objects, truncated: false as const });
+    },
+    put: (
+      key: string,
+      value: string,
+      options: { readonly customMetadata: Record<string, string> },
+    ) => {
+      if (retained.has(key)) return Promise.resolve(null);
+      retained.set(key, { metadata: options.customMetadata, value });
+      return Promise.resolve({});
+    },
+  };
+  const arrivals = Array.from({ length: Math.min(256, run.arrivalCount) }, (_, index) => {
+    const arrival = qualificationRunArrivalAt(manifest, run, index);
+    if (arrival === undefined) throw new Error("Expected canonical arrival");
+    return arrival;
+  });
+  const authorityArrivals = arrivals.map((arrival, index) => {
+    const attemptId = qualificationChecksum({
+      executionId: plan.executionId,
+      planChecksum: plan.planChecksum,
+      rootId: arrival.rootId,
+      runId: run.runId,
+    });
+    const occurredAt = new Date(arrival.offeredAtEpochMs).toISOString();
+    const agentId = AgentId.make("readback-agent");
+    const productFactId = qualificationChecksum({
+      admissionDecision: "accepted",
+      agentId,
+      attemptId,
+      executionId: plan.executionId,
+      planChecksum: plan.planChecksum,
+      rootId: arrival.rootId,
+      runId: run.runId,
+    });
+    const receiptContent = {
+      acceptanceReceiptId: productFactId,
+      admissionDecision: "accepted" as const,
+      agentId,
+      attemptId,
+      executionId: plan.executionId,
+      occurredAt,
+      planChecksum: plan.planChecksum,
+      productFactId,
+      rootId: arrival.rootId,
+      runId: run.runId,
+      thinkSubmissionId: `submission-${index}`,
+      userMessageId: `message-${index}`,
+      userUpdateId: productFactId,
+    };
+    return {
+      admissionReceipt: {
+        ...receiptContent,
+        artifactChecksum: qualificationChecksum(receiptContent),
+      },
+      arrival,
+      attemptId,
+      authorityFactId: receiptContent.productFactId,
+      executedAtUtc: occurredAt,
+      executionId: plan.executionId,
+      rootId: arrival.rootId,
+      submittedAtUtc: occurredAt,
+    };
+  });
+  const arrivalBody = {
+    chunkIndex: 0,
+    executionId: plan.executionId,
+    planChecksum: plan.planChecksum,
+    previousArtifactChecksum: "NONE",
+    records: authorityArrivals,
+    runId: run.runId,
+    streamChunkIndex: 0,
+  };
+  retained.set(
+    "qualification/executions/readback-test-execution/authority-streams/arrivals/partitions/00000000/00000000.json",
+    {
+      metadata: {},
+      value: canonicalQualificationJson({
+        ...arrivalBody,
+        bodyChecksum: qualificationChecksum(arrivalBody),
+      }),
+    },
+  );
+  const workerRecords = authorityArrivals.map(({ admissionReceipt: receipt }) => ({
+    acceptanceReceiptId: receipt.acceptanceReceiptId,
+    admissionDecision: receipt.admissionDecision,
+    effectReceipts: [],
+    occurredAt: receipt.occurredAt,
+    productFactId: receipt.productFactId,
+    rootId: receipt.rootId,
+    stageOccurrences: [
+      {
+        boundary: "durableAcceptanceCommitted" as const,
+        occurredAt: receipt.occurredAt,
+        productFactId: receipt.productFactId,
+      },
+    ],
+    usageFacts: [],
+    userMessageId: receipt.userMessageId,
+    userUpdateId: receipt.userUpdateId,
+  }));
+  const thinkRecords = authorityArrivals.map(({ admissionReceipt: receipt }) => ({
+    acceptanceReceiptId: receipt.acceptanceReceiptId,
+    effectReceipts: [
+      { effectId: receipt.thinkSubmissionId ?? "", kind: "thinkSubmissions" as const },
+    ],
+    occurredAt: receipt.occurredAt,
+    productFactId: qualificationChecksum({
+      acceptanceReceiptId: receipt.acceptanceReceiptId,
+      source: "think_submission_receipts",
+      thinkSubmissionId: receipt.thinkSubmissionId,
+    }),
+    rootId: receipt.rootId,
+    stageOccurrences: [],
+    submissionStatus: "accepted" as const,
+    thinkSubmissionId: receipt.thinkSubmissionId ?? "",
+    usageFacts: [],
+  }));
+  for (const [source, records] of [
+    ["worker_admission_receipts", workerRecords],
+    ["think_submission_receipts", thinkRecords],
+  ] as const) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- The two canonical producer shards are retained in source order.
+    await expect(
+      retainQualificationProductAuthorityShard({
+        bucket,
+        executionId: plan.executionId,
+        planChecksum: plan.planChecksum,
+        records,
+        source,
+        sourceVersion: manifest.sourceVersion,
+        startsAtEpochMs: plan.startsAtEpochMs,
+        streamChunkIndex: 0,
+      }),
+    ).resolves.toBe(true);
+  }
+  const requestFor = (source: "think_submission_receipts" | "worker_admission_receipts") =>
+    new Request("https://qualification-product-authority.internal/v1/executions/source-chunks", {
+      body: canonicalQualificationJson({
+        chunkIndex: 0,
+        executionId: plan.executionId,
+        manifestChecksum: manifest.manifestChecksum,
+        planChecksum: plan.planChecksum,
+        requestArtifactChecksum,
+        requestArtifactId,
+        runId: run.runId,
+        source,
+      }),
+      method: "POST",
+    });
+
+  for (const source of ["worker_admission_receipts", "think_submission_receipts"] as const) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Both readback adapters are asserted independently.
+    const response = await handleQualificationProductAuthority(requestFor(source), {
+      ARTIFACTS: bucket,
+      DB: { connectionString: "postgres://must-not-be-read.invalid/osfo" },
+    });
+    expect(response.status).toBe(200);
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Response identity is checked beside its source request.
+    expect(await response.json()).toEqual({
+      recordCount: arrivals.length,
+      source,
+      status: "COMPLETE",
+      streamChunkIndex: 0,
+    });
+  }
+
+  const workerKey = [...retained.keys()].find((key) =>
+    key.includes("producer-authority/worker_admission_receipts"),
+  );
+  if (workerKey === undefined) throw new Error("Expected retained Worker authority");
+  const worker = retained.get(workerKey);
+  if (worker === undefined) throw new Error("Expected retained Worker authority bytes");
+  retained.delete(workerKey);
+  const missing = await handleQualificationProductAuthority(
+    requestFor("worker_admission_receipts"),
+    { ARTIFACTS: bucket, DB: { connectionString: "postgres://must-not-be-read.invalid/osfo" } },
+  );
+  expect(missing.status).toBe(424);
+  retained.set(workerKey, {
+    ...worker,
+    value: worker.value.replace(
+      '"admissionDecision":"accepted"',
+      '"admissionDecision":"capacityRejected"',
+    ),
+  });
+  const spliced = await handleQualificationProductAuthority(
+    requestFor("worker_admission_receipts"),
+    { ARTIFACTS: bucket, DB: { connectionString: "postgres://must-not-be-read.invalid/osfo" } },
+  );
+  expect(spliced.status).toBe(409);
+  retained.set(workerKey, {
+    ...worker,
+    metadata: { ...worker.metadata, "osfo-plan-checksum": "substituted-plan" },
+  });
+  const tampered = await handleQualificationProductAuthority(
+    requestFor("worker_admission_receipts"),
+    { ARTIFACTS: bucket, DB: { connectionString: "postgres://must-not-be-read.invalid/osfo" } },
+  );
+  expect(tampered.status).toBe(409);
+  retained.set(workerKey, worker);
+  retained.set(`${workerKey}.extra`, worker);
+  const extra = await handleQualificationProductAuthority(requestFor("worker_admission_receipts"), {
+    ARTIFACTS: bucket,
+    DB: { connectionString: "postgres://must-not-be-read.invalid/osfo" },
+  });
+  expect(extra.status).toBe(409);
+  retained.delete(`${workerKey}.extra`);
+  const thinkKey = [...retained.keys()].find((key) =>
+    key.includes("producer-authority/think_submission_receipts"),
+  );
+  if (thinkKey === undefined) throw new Error("Expected retained Think authority");
+  retained.delete(thinkKey);
+  const substitutedThinkRecords = thinkRecords.map((record, index) => {
+    if (index > 0) return record;
+    const thinkSubmissionId = "substituted-submission";
+    return Object.assign({}, record, {
+      effectReceipts: [{ effectId: thinkSubmissionId, kind: "thinkSubmissions" as const }],
+      productFactId: qualificationChecksum({
+        acceptanceReceiptId: record.acceptanceReceiptId,
+        source: "think_submission_receipts",
+        thinkSubmissionId,
+      }),
+      thinkSubmissionId,
+    });
+  });
+  await expect(
+    retainQualificationProductAuthorityShard({
+      bucket,
+      executionId: plan.executionId,
+      planChecksum: plan.planChecksum,
+      records: substitutedThinkRecords,
+      source: "think_submission_receipts",
+      sourceVersion: manifest.sourceVersion,
+      startsAtEpochMs: plan.startsAtEpochMs,
+      streamChunkIndex: 0,
+    }),
+  ).resolves.toBe(true);
+  const substituted = await handleQualificationProductAuthority(
+    requestFor("think_submission_receipts"),
+    { ARTIFACTS: bucket, DB: { connectionString: "postgres://must-not-be-read.invalid/osfo" } },
+  );
+  expect(substituted.status).toBe(409);
 });

@@ -17,7 +17,16 @@ import {
   scheduledEmailWorkflowEvidenceArtifactId,
   ScheduledEmailWorkflowEvidence,
 } from "./workflows/scheduled-email";
-import { qualificationAuthoritySources } from "./qualification/authority-sources";
+import {
+  isQualificationAgentPostgresAuthoritySource,
+  isQualificationArrivalReadbackAuthoritySource,
+  qualificationAuthorityCoverageGaps,
+  qualificationAuthoritySourcesRequiring,
+  qualificationAuthoritySources,
+  type QualificationAgentPostgresAuthoritySource,
+  type QualificationArrivalReadbackAuthoritySource,
+  type QualificationAuthoritySource,
+} from "./qualification/authority-sources";
 import {
   qualificationRunArrivalAt,
   type QualificationExecutionPlan,
@@ -28,7 +37,9 @@ import {
   QualificationProductAuthorityInvocation,
   QualificationProductAuthoritySourceBundleComplete,
   QualificationProductAuthoritySourceBundlePending,
+  QualificationProductAuthoritySourceChunkComplete,
   QualificationProductAuthoritySourceChunkInvocation,
+  QualificationProductAuthoritySourceChunkPending,
 } from "./qualification/product-authority-contract";
 import {
   qualificationAttemptArtifactId,
@@ -56,6 +67,7 @@ import {
   qualificationScheduledEmailMessage,
   QualificationScheduledEmailApprovalConflict,
 } from "./qualification/scheduled-email-journey";
+import { ProductAuthorityExportBoundary } from "./qualification/semantic-evidence";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect and qualification contracts use _tag as their closed-union discriminator. */
 /* oxlint-disable effecttsgo/async-function -- Cloudflare, R2, and postgres.js are Promise-native host boundaries. */
@@ -111,17 +123,6 @@ const decodeExecuteArrivalChunk = Schema.decodeUnknownOption(
 const decodeCollectSourceChunk = Schema.decodeUnknownOption(
   Schema.fromJsonString(QualificationProductAuthoritySourceChunkInvocation),
 );
-const AgentCollectedAuthoritySource = Schema.Literals([
-  "allowance_and_billing_ledger",
-  "gmail_provider_receipts",
-  "memory_commit_receipts",
-  "model_access_receipts",
-  "osfo_committed_turns",
-  "provider_delivery_receipts",
-  "task_compute_receipts",
-  "workflow_instance_receipts",
-]);
-const isAgentCollectedAuthoritySource = Schema.is(AgentCollectedAuthoritySource);
 const decodeQualificationJourney = Schema.decodeUnknownOption(QualificationContext.fields.journey);
 const decodeExecuteArrivalComplete = Schema.decodeUnknownOption(ExecuteArrivalComplete);
 const decodeAuthorityArrivalShard = Schema.decodeUnknownOption(
@@ -157,7 +158,10 @@ export interface QualificationProductAuthorityEnv {
 }
 
 export interface QualificationProductAuthorityArtifactBucket {
-  readonly get: (key: string) => Promise<{ readonly text: () => Promise<string> } | null>;
+  readonly get: (key: string) => Promise<{
+    readonly customMetadata?: Readonly<Record<string, string>> | undefined;
+    readonly text: () => Promise<string>;
+  } | null>;
   readonly list: (options: {
     readonly cursor?: string;
     readonly include?: Array<"customMetadata" | "httpMetadata">;
@@ -208,6 +212,55 @@ const sha256Hex = async (encoded: string): Promise<string> => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 };
+
+const workerAuthorityRecordsFromArrivals = (
+  records: ReadonlyArray<typeof AuthorityArrivalRecord.Type>,
+) =>
+  records.map(({ admissionReceipt: receipt }) => ({
+    acceptanceReceiptId: receipt.acceptanceReceiptId,
+    admissionDecision: receipt.admissionDecision,
+    effectReceipts: [],
+    occurredAt: receipt.occurredAt,
+    productFactId: receipt.productFactId,
+    rootId: receipt.rootId,
+    stageOccurrences: [
+      {
+        boundary: "durableAcceptanceCommitted" as const,
+        occurredAt: receipt.occurredAt,
+        productFactId: receipt.productFactId,
+      },
+    ],
+    usageFacts: [],
+    userMessageId: receipt.userMessageId,
+    userUpdateId: receipt.userUpdateId,
+  }));
+
+const thinkAuthorityRecordsFromArrivals = (
+  records: ReadonlyArray<typeof AuthorityArrivalRecord.Type>,
+) =>
+  records.flatMap(({ admissionReceipt: receipt }) =>
+    receipt.admissionDecision === "accepted" && receipt.thinkSubmissionId !== null
+      ? [
+          {
+            acceptanceReceiptId: receipt.acceptanceReceiptId,
+            effectReceipts: [
+              { effectId: receipt.thinkSubmissionId, kind: "thinkSubmissions" as const },
+            ],
+            occurredAt: receipt.occurredAt,
+            productFactId: qualificationChecksum({
+              acceptanceReceiptId: receipt.acceptanceReceiptId,
+              source: "think_submission_receipts",
+              thinkSubmissionId: receipt.thinkSubmissionId,
+            }),
+            rootId: receipt.rootId,
+            stageOccurrences: [],
+            submissionStatus: "accepted" as const,
+            thinkSubmissionId: receipt.thinkSubmissionId,
+            usageFacts: [],
+          },
+        ]
+      : [],
+  );
 
 export const retainQualificationProductAuthorityShard = async (input: {
   readonly bucket: QualificationProductAuthorityArtifactBucket;
@@ -269,6 +322,178 @@ export const retainQualificationProductAuthorityShard = async (input: {
   }
   const existing = await input.bucket.get(artifactId);
   return existing !== null && (await existing.text()) === encoded;
+};
+
+type RetainedProductAuthorityShard =
+  | { readonly _tag: "Conflict" }
+  | { readonly _tag: "Missing" }
+  | {
+      readonly _tag: "Ready";
+      readonly recordCount: number;
+      readonly records: (typeof ProductAuthorityExportBoundary.Type)["records"];
+    };
+
+const readRetainedProductAuthorityShard = async (input: {
+  readonly env: QualificationProductAuthorityEnv;
+  readonly frozen: FrozenExecution;
+  readonly runId: string;
+  readonly chunkIndex: number;
+  readonly source: QualificationArrivalReadbackAuthoritySource;
+  readonly streamChunkIndex: number;
+}): Promise<RetainedProductAuthorityShard> => {
+  const { env, frozen, source, streamChunkIndex } = input;
+  const artifactId = productAuthorityShardArtifactId(
+    frozen.plan.executionId,
+    source,
+    streamChunkIndex,
+  );
+  const prefix = artifactId.slice(0, artifactId.lastIndexOf("/") + 1);
+  const inventory = await env.ARTIFACTS.list({
+    include: ["customMetadata"],
+    limit: 2,
+    prefix,
+  });
+  if (
+    inventory.truncated ||
+    inventory.objects.length > 1 ||
+    (inventory.objects.length === 1 && inventory.objects[0]?.key !== artifactId)
+  ) {
+    return { _tag: "Conflict" };
+  }
+  if (inventory.objects.length === 0) return { _tag: "Missing" };
+  const object = await env.ARTIFACTS.get(artifactId);
+  if (object === null) return { _tag: "Missing" };
+  const encoded = await object.text();
+  const decoded = Schema.decodeOption(Schema.fromJsonString(ProductAuthorityExportBoundary))(
+    encoded,
+  );
+  if (Option.isNone(decoded)) return { _tag: "Conflict" };
+  const shard = decoded.value;
+  const { checksum, ...content } = shard;
+  const expectedBodySha256 = await sha256Hex(encoded);
+  const metadataMatches = (metadata: Readonly<Record<string, string>> | undefined) =>
+    metadata?.["osfo-artifact-checksum"] === checksum &&
+    metadata["osfo-body-sha256"] === expectedBodySha256 &&
+    metadata["osfo-execution-id"] === frozen.plan.executionId &&
+    metadata["osfo-index"] === "0" &&
+    metadata["osfo-kind"] === "qualification-product-authority-export-v1" &&
+    metadata["osfo-plan-checksum"] === frozen.plan.planChecksum &&
+    metadata["osfo-previous-checksum"] === "NONE" &&
+    metadata["osfo-record-count"] === String(shard.records.length) &&
+    metadata["osfo-source"] === source &&
+    metadata["osfo-source-version"] === frozen.manifest.sourceVersion &&
+    metadata["osfo-stream-chunk-index"] === String(streamChunkIndex);
+  const exact =
+    shard.artifactId === artifactId &&
+    shard.authority === source &&
+    shard.executionId === frozen.plan.executionId &&
+    shard.planChecksum === frozen.plan.planChecksum &&
+    shard.index === 0 &&
+    shard.previousArtifactChecksum === "NONE" &&
+    shard.recordCount === shard.records.length &&
+    shard.sourceVersion === frozen.manifest.sourceVersion &&
+    shard.streamChunkIndex === streamChunkIndex &&
+    checksum === qualificationChecksum(content) &&
+    metadataMatches(object.customMetadata) &&
+    metadataMatches(inventory.objects[0]?.customMetadata);
+  if (!exact) return { _tag: "Conflict" };
+
+  const run = frozen.plan.runs.find(({ runId }) => runId === input.runId);
+  if (run === undefined) return { _tag: "Conflict" };
+  const firstArrivalIndex = input.chunkIndex * 256;
+  const expectedArrivals = Array.from(
+    { length: Math.min(256, run.arrivalCount - firstArrivalIndex) },
+    (_, offset) => qualificationRunArrivalAt(frozen.manifest, run, firstArrivalIndex + offset),
+  );
+  if (expectedArrivals.some((expectedArrival) => expectedArrival === undefined)) {
+    return { _tag: "Conflict" };
+  }
+  const arrivalObject = await env.ARTIFACTS.get(
+    authorityArrivalStreamArtifactId(frozen.plan.executionId, streamChunkIndex),
+  );
+  if (arrivalObject === null) return { _tag: "Missing" };
+  const encodedArrival = await arrivalObject.text();
+  const arrival = decodeAuthorityArrivalShard(encodedArrival);
+  if (
+    Option.isNone(arrival) ||
+    arrival.value.chunkIndex !== input.chunkIndex ||
+    arrival.value.executionId !== frozen.plan.executionId ||
+    arrival.value.planChecksum !== frozen.plan.planChecksum ||
+    arrival.value.runId !== input.runId ||
+    arrival.value.streamChunkIndex !== streamChunkIndex ||
+    arrival.value.records.length !== expectedArrivals.length ||
+    arrival.value.records.some((record, index) => {
+      const expectedArrival = expectedArrivals[index];
+      const receipt = record.admissionReceipt;
+      const { artifactChecksum: _artifactChecksum, ...receiptContent } = receipt;
+      const expectedProductFactId = qualificationChecksum({
+        admissionDecision: receipt.admissionDecision,
+        agentId: receipt.agentId,
+        attemptId: receipt.attemptId,
+        executionId: receipt.executionId,
+        planChecksum: receipt.planChecksum,
+        rootId: receipt.rootId,
+        runId: receipt.runId,
+      });
+      return (
+        expectedArrival === undefined ||
+        !Predicate.isObject(record.arrival) ||
+        qualificationChecksum(record.arrival) !== qualificationChecksum(expectedArrival) ||
+        record.attemptId !==
+          qualificationChecksum({
+            executionId: frozen.plan.executionId,
+            planChecksum: frozen.plan.planChecksum,
+            rootId: expectedArrival.rootId,
+            runId: input.runId,
+          }) ||
+        record.authorityFactId !== receipt.productFactId ||
+        record.executionId !== frozen.plan.executionId ||
+        record.rootId !== expectedArrival.rootId ||
+        receipt.artifactChecksum !== qualificationChecksum(receiptContent) ||
+        receipt.acceptanceReceiptId !== expectedProductFactId ||
+        receipt.attemptId !== record.attemptId ||
+        receipt.executionId !== frozen.plan.executionId ||
+        receipt.planChecksum !== frozen.plan.planChecksum ||
+        receipt.productFactId !== expectedProductFactId ||
+        receipt.rootId !== expectedArrival.rootId ||
+        receipt.runId !== input.runId ||
+        receipt.userUpdateId !== expectedProductFactId ||
+        (receipt.admissionDecision === "accepted") !== (receipt.thinkSubmissionId !== null) ||
+        Date.parse(record.submittedAtUtc) < expectedArrival.offeredAtEpochMs ||
+        Date.parse(record.executedAtUtc) < Date.parse(record.submittedAtUtc)
+      );
+    }) ||
+    (await authorityShardDescriptor(frozen, encodedArrival, arrival.value)) === null
+  ) {
+    return { _tag: "Conflict" };
+  }
+  const expectedRecords =
+    source === "worker_admission_receipts"
+      ? workerAuthorityRecordsFromArrivals(arrival.value.records)
+      : thinkAuthorityRecordsFromArrivals(arrival.value.records);
+  if (
+    expectedRecords.length !== shard.records.length ||
+    expectedRecords.some((record, index) => {
+      const retainedRecord = shard.records[index];
+      return (
+        retainedRecord === undefined ||
+        qualificationChecksum(record) !== qualificationChecksum(retainedRecord)
+      );
+    })
+  ) {
+    return { _tag: "Conflict" };
+  }
+  const expectedRootIds = expectedArrivals.map((expectedArrival) => expectedArrival?.rootId);
+  const actualRootIds = shard.records.map(({ rootId }) => rootId);
+  const rootsAreExact =
+    source === "worker_admission_receipts"
+      ? actualRootIds.length === expectedRootIds.length &&
+        actualRootIds.every((rootId, index) => rootId === expectedRootIds[index])
+      : new Set(actualRootIds).size === actualRootIds.length &&
+        actualRootIds.every((rootId) => expectedRootIds.includes(rootId));
+  return rootsAreExact
+    ? { _tag: "Ready", recordCount: shard.records.length, records: shard.records }
+    : { _tag: "Conflict" };
 };
 
 const retainProductAuthorityShard = (
@@ -499,22 +724,62 @@ const attemptOwnedSources = async (
   const missing: Array<MissingSource> = [];
   const sql = postgres(env.DB.connectionString, { fetch_types: false, max: 1, prepare: true });
   try {
-    const [allowanceTable] = await sql<ReadonlyArray<{ readonly exists: boolean }>>`
-      select to_regclass('public.allowance_usage') is not null as exists
+    const [tables] = await sql<
+      ReadonlyArray<{
+        readonly allowanceUsage: boolean;
+        readonly allowanceZeroUsageEvidence: boolean;
+        readonly qualificationRootAttempts: boolean;
+        readonly scheduledEmails: boolean;
+      }>
+    >`
+      select
+        to_regclass('public.allowance_usage') is not null as "allowanceUsage",
+        to_regclass('public.allowance_zero_usage_evidence') is not null as "allowanceZeroUsageEvidence",
+        to_regclass('public.qualification_root_attempts') is not null as "qualificationRootAttempts",
+        to_regclass('public.scheduled_emails') is not null as "scheduledEmails"
     `;
-    if (allowanceTable?.exists !== true) {
-      missing.push({
-        detail: "The shared allowance_usage authority table is unavailable",
-        source: "allowance_and_billing_ledger",
-      });
+    if (tables?.qualificationRootAttempts !== true) {
+      for (const source of qualificationAuthoritySourcesRequiring("attemptIndexTable")) {
+        missing.push({
+          detail: "The qualification_root_attempts correlation authority is unavailable",
+          source,
+        });
+      }
+    }
+    if (!tables?.allowanceUsage || !tables.allowanceZeroUsageEvidence) {
+      for (const source of qualificationAuthoritySourcesRequiring("allowanceTables")) {
+        missing.push({
+          detail: "The shared Allowance usage and zero-use authority tables are unavailable",
+          source,
+        });
+      }
+    }
+    if (tables?.scheduledEmails !== true) {
+      for (const source of qualificationAuthoritySourcesRequiring("scheduledEmailTable")) {
+        missing.push({
+          detail: "The Scheduled Email PostgreSQL authority table is unavailable",
+          source,
+        });
+      }
     }
   } catch {
-    missing.push({
-      detail: "The shared PostgreSQL allowance authority could not be read",
-      source: "allowance_and_billing_ledger",
-    });
+    for (const source of qualificationAuthoritySourcesRequiring("postgresBinding")) {
+      missing.push({
+        detail: "The PostgreSQL qualification authority could not be read",
+        source,
+      });
+    }
   } finally {
     await sql.end();
+  }
+
+  if (env.OSFO_DIRECTORY === undefined) {
+    for (const source of qualificationAuthoritySourcesRequiring("directoryBinding")) {
+      missing.push({
+        detail: "The Agent Directory qualification authority binding is unavailable",
+        source,
+      });
+    }
   }
 
   try {
@@ -523,21 +788,51 @@ const attemptOwnedSources = async (
       prefix: `qualification/executions/${encodeURIComponent(executionId)}/`,
     });
   } catch {
-    missing.push({
-      detail: "The immutable R2 object authority could not be listed",
-      source: "r2_object_metadata",
-    });
-  }
-
-  const implemented = new Set<string>(["allowance_and_billing_ledger", "r2_object_metadata"]);
-  for (const source of qualificationAuthoritySources) {
-    if (implemented.has(source)) continue;
-    missing.push({
-      detail: `No production-owned ${source} qualification export adapter is installed`,
-      source,
-    });
+    for (const source of qualificationAuthoritySourcesRequiring("artifactBucket")) {
+      missing.push({
+        detail: "The immutable qualification artifact transport could not be listed",
+        source,
+      });
+    }
   }
   return missing;
+};
+
+const coverageMissingSources = (
+  manifest: ProductionQualificationManifest,
+): ReadonlyArray<MissingSource> =>
+  qualificationAuthorityCoverageGaps(manifest).map(({ component, journey, source }) => ({
+    detail:
+      journey === null
+        ? `No production-owned ${source} adapter covers the frozen ${component} authority`
+        : `No production-owned ${source} adapter covers ${journey}/${component}`,
+    source,
+  }));
+
+const canonicalMissingSources = (
+  missing: ReadonlyArray<MissingSource>,
+): ReadonlyArray<MissingSource> => {
+  const seen = new Set<string>();
+  return qualificationAuthoritySources
+    .flatMap((source) => missing.filter((candidate) => candidate.source === source))
+    .filter(({ detail, source }) => {
+      const identity = `${source}\u0000${detail}`;
+      if (seen.has(identity)) return false;
+      seen.add(identity);
+      return true;
+    });
+};
+
+const unsupportedExecutionResponse = (
+  manifest: ProductionQualificationManifest,
+): Response | null => {
+  const missingSources = coverageMissingSources(manifest);
+  return missingSources.length === 0
+    ? null
+    : Response.json(
+        { missingSources: canonicalMissingSources(missingSources), status: "MISSING" },
+        { status: 424 },
+      );
 };
 
 const messageForJourney = (journey: QualificationContext["journey"]): string => {
@@ -1144,47 +1439,8 @@ const retainArrivalDerivedAuthority = async (
   streamChunkIndex: number,
   records: ReadonlyArray<typeof AuthorityArrivalRecord.Type>,
 ): Promise<boolean> => {
-  const workerRecords = records.map(({ admissionReceipt: receipt }) => ({
-    acceptanceReceiptId: receipt.acceptanceReceiptId,
-    admissionDecision: receipt.admissionDecision,
-    effectReceipts: [],
-    occurredAt: receipt.occurredAt,
-    productFactId: receipt.productFactId,
-    rootId: receipt.rootId,
-    stageOccurrences: [
-      {
-        boundary: "durableAcceptanceCommitted" as const,
-        occurredAt: receipt.occurredAt,
-        productFactId: receipt.productFactId,
-      },
-    ],
-    usageFacts: [],
-    userMessageId: receipt.userMessageId,
-    userUpdateId: receipt.userUpdateId,
-  }));
-  const thinkRecords = records.flatMap(({ admissionReceipt: receipt }) =>
-    receipt.admissionDecision === "accepted" && receipt.thinkSubmissionId !== null
-      ? [
-          {
-            acceptanceReceiptId: receipt.acceptanceReceiptId,
-            effectReceipts: [
-              { effectId: receipt.thinkSubmissionId, kind: "thinkSubmissions" as const },
-            ],
-            occurredAt: receipt.occurredAt,
-            productFactId: qualificationChecksum({
-              acceptanceReceiptId: receipt.acceptanceReceiptId,
-              source: "think_submission_receipts",
-              thinkSubmissionId: receipt.thinkSubmissionId,
-            }),
-            rootId: receipt.rootId,
-            stageOccurrences: [],
-            submissionStatus: "accepted" as const,
-            thinkSubmissionId: receipt.thinkSubmissionId,
-            usageFacts: [],
-          },
-        ]
-      : [],
-  );
+  const workerRecords = workerAuthorityRecordsFromArrivals(records);
+  const thinkRecords = thinkAuthorityRecordsFromArrivals(records);
   const [workerRetained, thinkRetained] = await Promise.all([
     retainProductAuthorityShard(
       env,
@@ -1577,20 +1833,28 @@ const canonicalUtcEpochMilliseconds = (value: string): number | null => {
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? parsed : null;
 };
 
+export const qualificationAuthorityConnectionLimit = 5;
+
+export const mapQualificationAuthorityConnections = async <A, B>(
+  inputs: ReadonlyArray<A>,
+  operation: (input: A) => Promise<B>,
+): Promise<ReadonlyArray<B>> => {
+  const output = new Array<B>();
+  for (let offset = 0; offset < inputs.length; offset += qualificationAuthorityConnectionLimit) {
+    const batch = inputs.slice(offset, offset + qualificationAuthorityConnectionLimit);
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Each batch enforces the Workers six-connection host limit with one slot reserved.
+    const results = await Promise.all(batch.map((input) => operation(input)));
+    output.push(...results);
+  }
+  return output;
+};
+
 const collectAgentSourceChunk = async (
   env: QualificationProductAuthorityEnv,
   frozen: FrozenExecution,
   runId: string,
   chunkIndex: number,
-  source:
-    | "allowance_and_billing_ledger"
-    | "gmail_provider_receipts"
-    | "memory_commit_receipts"
-    | "model_access_receipts"
-    | "osfo_committed_turns"
-    | "provider_delivery_receipts"
-    | "task_compute_receipts"
-    | "workflow_instance_receipts",
+  source: QualificationAgentPostgresAuthoritySource,
 ): Promise<Response> => {
   const runDescriptor = streamRuns(frozen.plan, frozen.manifest).find(
     (candidate) => candidate.runId === runId,
@@ -1719,8 +1983,9 @@ const collectAgentSourceChunk = async (
               { status: 424 },
             );
       }
-      const retainedWorkflowEvidence = await Promise.all(
-        authority.records.map(async (email) => {
+      const retainedWorkflowEvidence = await mapQualificationAuthorityConnections(
+        authority.records,
+        async (email) => {
           const artifact = await env.ARTIFACTS.get(
             scheduledEmailWorkflowEvidenceArtifactId(email.cloudflareInstanceId),
           );
@@ -1731,7 +1996,7 @@ const collectAgentSourceChunk = async (
           return Option.isSome(decoded)
             ? { email, evidence: decoded.value, invalid: false as const }
             : { email, evidence: null, invalid: true as const };
-        }),
+        },
       );
       if (retainedWorkflowEvidence.some(({ invalid }) => invalid)) {
         return Response.json(
@@ -1804,10 +2069,9 @@ const collectAgentSourceChunk = async (
     }
     const directory = await getAgentByName(env.OSFO_DIRECTORY, OSFO_DIRECTORY_NAME);
     const roots = (
-      await Promise.all(
-        [
-          ...new Set(identities.map(({ agentId, sessionId }) => `${agentId}\u0000${sessionId}`)),
-        ].map(async (identity) => {
+      await mapQualificationAuthorityConnections(
+        [...new Set(identities.map(({ agentId, sessionId }) => `${agentId}\u0000${sessionId}`))],
+        async (identity) => {
           const [agentId, sessionId] = identity.split("\u0000");
           if (agentId === undefined || sessionId === undefined) return [];
           const result = await directory.readQualificationTurnAuthority(
@@ -1816,7 +2080,7 @@ const collectAgentSourceChunk = async (
             sessionId,
           );
           return result._tag === "QualificationTurnAuthority" ? result.roots : [];
-        }),
+        },
       )
     ).flat();
     const correlated = acceptedRecords.map(({ admissionReceipt }) => {
@@ -2007,6 +2271,184 @@ const collectAgentSourceChunk = async (
   } finally {
     await client.end();
   }
+};
+
+const collectArrivalReadbackSourceChunk = async (
+  env: QualificationProductAuthorityEnv,
+  frozen: FrozenExecution,
+  runId: string,
+  chunkIndex: number,
+  source: QualificationArrivalReadbackAuthoritySource,
+): Promise<Response> => {
+  const runDescriptor = streamRuns(frozen.plan, frozen.manifest).find(
+    (candidate) => candidate.runId === runId,
+  );
+  if (runDescriptor === undefined || chunkIndex >= runDescriptor.chunkCount) {
+    return Response.json({ error: "qualificationSourceChunkNotFound" }, { status: 409 });
+  }
+  const streamChunkIndex = runDescriptor.firstStreamChunkIndex + chunkIndex;
+  const retained = await readRetainedProductAuthorityShard({
+    chunkIndex,
+    env,
+    frozen,
+    runId,
+    source,
+    streamChunkIndex,
+  });
+  if (retained._tag === "Missing") {
+    return Response.json(
+      {
+        missingSources: [
+          {
+            detail: `The immutable ${source} shard is absent for arrival chunk ${streamChunkIndex}`,
+            source,
+          },
+        ],
+        status: "MISSING",
+      },
+      { status: 424 },
+    );
+  }
+  if (retained._tag === "Ready" && source === "think_submission_receipts") {
+    const worker = await readRetainedProductAuthorityShard({
+      chunkIndex,
+      env,
+      frozen,
+      runId,
+      source: "worker_admission_receipts",
+      streamChunkIndex,
+    });
+    if (worker._tag === "Missing") {
+      return Response.json(
+        {
+          missingSources: [
+            {
+              detail: `The Worker admission dependency is absent for arrival chunk ${streamChunkIndex}`,
+              source: "worker_admission_receipts",
+            },
+          ],
+          status: "MISSING",
+        },
+        { status: 424 },
+      );
+    }
+    if (worker._tag === "Conflict") {
+      return Response.json({ error: "qualificationAuthorityShardConflict" }, { status: 409 });
+    }
+    const acceptedRootIds = worker.records.flatMap((record) =>
+      "admissionDecision" in record && record.admissionDecision === "accepted"
+        ? [record.rootId]
+        : [],
+    );
+    const thinkRootIds = retained.records.map(({ rootId }) => rootId);
+    if (
+      acceptedRootIds.length !== thinkRootIds.length ||
+      acceptedRootIds.some((rootId, index) => thinkRootIds[index] !== rootId)
+    ) {
+      return Response.json({ error: "qualificationAuthorityShardConflict" }, { status: 409 });
+    }
+  }
+  return retained._tag === "Conflict"
+    ? Response.json({ error: "qualificationAuthorityShardConflict" }, { status: 409 })
+    : Response.json({
+        recordCount: retained.recordCount,
+        source,
+        status: "COMPLETE",
+        streamChunkIndex,
+      });
+};
+
+const collectSourceChunk = (
+  env: QualificationProductAuthorityEnv,
+  frozen: FrozenExecution,
+  runId: string,
+  chunkIndex: number,
+  source: QualificationAuthoritySource,
+): Promise<Response> => {
+  if (isQualificationArrivalReadbackAuthoritySource(source)) {
+    return collectArrivalReadbackSourceChunk(env, frozen, runId, chunkIndex, source);
+  }
+  if (isQualificationAgentPostgresAuthoritySource(source)) {
+    return collectAgentSourceChunk(env, frozen, runId, chunkIndex, source);
+  }
+  return Promise.resolve(
+    Response.json(
+      {
+        missingSources: [
+          {
+            detail: `No production-owned ${source} qualification export adapter is installed`,
+            source,
+          },
+        ],
+        status: "MISSING",
+      },
+      { status: 424 },
+    ),
+  );
+};
+
+export const collectQualificationSourceBundle = async (input: {
+  readonly collect: (source: QualificationAuthoritySource) => Promise<Response>;
+  readonly streamChunkIndex: number;
+}): Promise<Response> => {
+  const recordCounts = new Array<{
+    readonly recordCount: number;
+    readonly source: QualificationAuthoritySource;
+  }>();
+  const pendingSources = new Array<QualificationAuthoritySource>();
+  let retryAtEpochMs = 0;
+  for (const source of qualificationAuthoritySources) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- The ordered bundle stops at the first closed missing/conflict outcome.
+    const response = await input.collect(source);
+    if (response.status === 424 || response.status === 409) return response;
+    // oxlint-disable-next-line eslint/no-await-in-loop -- One response body is consumed before advancing canonical source order.
+    const encoded: unknown = await response.json();
+    if (response.status === 202) {
+      const pending = Schema.decodeUnknownOption(QualificationProductAuthoritySourceChunkPending)(
+        encoded,
+      );
+      if (Option.isNone(pending) || pending.value.source !== source) {
+        return Response.json(
+          { error: "qualificationAuthoritySourceOutcomeConflict" },
+          { status: 409 },
+        );
+      }
+      pendingSources.push(source);
+      retryAtEpochMs = Math.max(retryAtEpochMs, pending.value.retryAtEpochMs);
+      continue;
+    }
+    const complete = Schema.decodeUnknownOption(QualificationProductAuthoritySourceChunkComplete)(
+      encoded,
+    );
+    if (
+      response.status !== 200 ||
+      Option.isNone(complete) ||
+      complete.value.source !== source ||
+      complete.value.streamChunkIndex !== input.streamChunkIndex
+    ) {
+      return Response.json(
+        { error: "qualificationAuthoritySourceOutcomeConflict" },
+        { status: 409 },
+      );
+    }
+    recordCounts.push({ recordCount: complete.value.recordCount, source });
+  }
+  return pendingSources.length > 0
+    ? Response.json(
+        QualificationProductAuthoritySourceBundlePending.make({
+          pendingSources,
+          retryAtEpochMs,
+          status: "PENDING",
+        }),
+        { status: 202 },
+      )
+    : Response.json(
+        QualificationProductAuthoritySourceBundleComplete.make({
+          recordCounts,
+          status: "COMPLETE",
+          streamChunkIndex: input.streamChunkIndex,
+        }),
+      );
 };
 
 const executeArrivalChunk = async (
@@ -2225,21 +2667,7 @@ export const handleQualificationProductAuthority = async (
     if (frozen === null) {
       return Response.json({ error: "qualificationProductAuthorityConflict" }, { status: 409 });
     }
-    if (!isAgentCollectedAuthoritySource(decoded.value.source)) {
-      return Response.json(
-        {
-          missingSources: [
-            {
-              detail: `No production-owned ${decoded.value.source} qualification export adapter is installed`,
-              source: decoded.value.source,
-            },
-          ],
-          status: "MISSING",
-        },
-        { status: 424 },
-      );
-    }
-    return collectAgentSourceChunk(
+    return collectSourceChunk(
       env,
       frozen,
       decoded.value.runId,
@@ -2256,74 +2684,18 @@ export const handleQualificationProductAuthority = async (
     if (frozen === null) {
       return Response.json({ error: "qualificationProductAuthorityConflict" }, { status: 409 });
     }
-    const recordCounts = new Array<{
-      readonly recordCount: number;
-      readonly source: (typeof qualificationAuthoritySources)[number];
-    }>();
-    const pendingSources = new Array<(typeof qualificationAuthoritySources)[number]>();
-    let retryAtEpochMs = 0;
-    for (const source of qualificationAuthoritySources) {
-      if (!isAgentCollectedAuthoritySource(source)) {
-        return Response.json(
-          {
-            missingSources: [
-              {
-                detail: `No production-owned ${source} qualification export adapter is installed`,
-                source,
-              },
-            ],
-            status: "MISSING",
-          },
-          { status: 424 },
-        );
-      }
-      // oxlint-disable-next-line eslint/no-await-in-loop -- The bundled collector stops at the first missing/conflicting owning source and preserves source order.
-      const response = await collectAgentSourceChunk(
-        env,
-        frozen,
-        decoded.value.runId,
-        decoded.value.chunkIndex,
-        source,
-      );
-      if (response.status === 424 || response.status === 409) return response;
-      // oxlint-disable-next-line eslint/no-await-in-loop -- Decode each ordered source response before advancing to the next authority.
-      const outcome = await response.json();
-      if (response.status === 202) {
-        const pending = Schema.decodeUnknownSync(
-          Schema.Struct({ retryAtEpochMs: Schema.Int, source: Schema.String }),
-        )(outcome);
-        pendingSources.push(source);
-        retryAtEpochMs = Math.max(retryAtEpochMs, pending.retryAtEpochMs);
-        continue;
-      }
-      if (response.status !== 200) return response;
-      const complete = Schema.decodeUnknownSync(
-        Schema.Struct({ recordCount: Schema.Int, source: Schema.String }),
-      )(outcome);
-      recordCounts.push({ recordCount: complete.recordCount, source });
-    }
     const runDescriptor = streamRuns(frozen.plan, frozen.manifest).find(
       (candidate) => candidate.runId === decoded.value.runId,
     );
     if (runDescriptor === undefined) {
       return Response.json({ error: "qualificationArrivalChunkNotFound" }, { status: 409 });
     }
-    return pendingSources.length > 0
-      ? Response.json(
-          QualificationProductAuthoritySourceBundlePending.make({
-            pendingSources,
-            retryAtEpochMs,
-            status: "PENDING",
-          }),
-          { status: 202 },
-        )
-      : Response.json(
-          QualificationProductAuthoritySourceBundleComplete.make({
-            recordCounts,
-            status: "COMPLETE",
-            streamChunkIndex: runDescriptor.firstStreamChunkIndex + decoded.value.chunkIndex,
-          }),
-        );
+    const streamChunkIndex = runDescriptor.firstStreamChunkIndex + decoded.value.chunkIndex;
+    return collectQualificationSourceBundle({
+      collect: (source) =>
+        collectSourceChunk(env, frozen, decoded.value.runId, decoded.value.chunkIndex, source),
+      streamChunkIndex,
+    });
   }
   if (url.pathname === "/v1/executions/arrival-chunks") {
     const decoded = decodeExecuteArrivalChunk(encoded);
@@ -2331,9 +2703,13 @@ export const handleQualificationProductAuthority = async (
       return Response.json({ error: "qualificationProductAuthorityInvalid" }, { status: 400 });
     }
     const frozen = await readFrozenExecution(decoded.value, env);
-    return frozen === null
-      ? Response.json({ error: "qualificationProductAuthorityConflict" }, { status: 409 })
-      : executeArrivalChunk(env, frozen, decoded.value.runId, decoded.value.chunkIndex);
+    if (frozen === null) {
+      return Response.json({ error: "qualificationProductAuthorityConflict" }, { status: 409 });
+    }
+    return (
+      unsupportedExecutionResponse(frozen.manifest) ??
+      executeArrivalChunk(env, frozen, decoded.value.runId, decoded.value.chunkIndex)
+    );
   }
   if (url.pathname === "/v1/executions/arrivals") {
     const decoded = decodeExecuteArrival(encoded);
@@ -2341,9 +2717,13 @@ export const handleQualificationProductAuthority = async (
       return Response.json({ error: "qualificationProductAuthorityInvalid" }, { status: 400 });
     }
     const frozen = await readFrozenExecution(decoded.value, env);
-    return frozen === null
-      ? Response.json({ error: "qualificationProductAuthorityConflict" }, { status: 409 })
-      : executeArrival(env, frozen, decoded.value.runId, decoded.value.arrivalIndex);
+    if (frozen === null) {
+      return Response.json({ error: "qualificationProductAuthorityConflict" }, { status: 409 });
+    }
+    return (
+      unsupportedExecutionResponse(frozen.manifest) ??
+      executeArrival(env, frozen, decoded.value.runId, decoded.value.arrivalIndex)
+    );
   }
   if (url.pathname !== "/v1/executions/preflight") {
     return new Response(null, { status: 404 });
@@ -2357,7 +2737,10 @@ export const handleQualificationProductAuthority = async (
   if (inventory === "CONFLICT") {
     return Response.json({ error: "qualificationCohortInventoryConflict" }, { status: 409 });
   }
-  const missingSources = [...(await attemptOwnedSources(env, frozen.invocation.executionId))];
+  const missingSources = [
+    ...coverageMissingSources(frozen.manifest),
+    ...(await attemptOwnedSources(env, frozen.invocation.executionId)),
+  ];
   if (inventory === "MISSING") {
     missingSources.push({
       detail: "The complete frozen disposable qualification cohort inventory is unavailable",
@@ -2365,12 +2748,13 @@ export const handleQualificationProductAuthority = async (
     });
   }
   const runs = streamRuns(frozen.plan, frozen.manifest);
-  return missingSources.length === 0
+  const canonicalMissing = canonicalMissingSources(missingSources);
+  return canonicalMissing.length === 0
     ? Response.json({
         runs,
         sources: qualificationAuthoritySources,
         status: "READY",
         totalArrivalChunks: runs.reduce((total, run) => total + run.chunkCount, 0),
       })
-    : Response.json({ missingSources, status: "MISSING" }, { status: 424 });
+    : Response.json({ missingSources: canonicalMissing, status: "MISSING" }, { status: 424 });
 };

@@ -1,3 +1,6 @@
+import type { ProductionQualificationManifest, ReferenceJourney } from "./qualification-manifest";
+import type { SemanticComponent } from "./semantic-evidence";
+
 /** Product-owned authorities that must contribute immutable material before qualification can pass. */
 export const qualificationAuthoritySources = [
   "allowance_and_billing_ledger",
@@ -17,6 +20,221 @@ export const qualificationAuthoritySources = [
 ] as const;
 
 export type QualificationAuthoritySource = (typeof qualificationAuthoritySources)[number];
+
+export const qualificationReferenceJourneys = [
+  "accountBillingSafetyDataRights",
+  "documentBuild",
+  "fileAnalysis",
+  "gmail",
+  "ordinaryConversation",
+  "registration",
+  "reminder",
+  "researchReport",
+  "scheduledEmail",
+] as const satisfies ReadonlyArray<ReferenceJourney>;
+
+const allJourneys = qualificationReferenceJourneys;
+
+export type QualificationAuthorityAdapterRequirement =
+  | "allowanceTables"
+  | "artifactBucket"
+  | "attemptIndexTable"
+  | "directoryBinding"
+  | "postgresBinding"
+  | "scheduledEmailTable";
+
+/**
+ * One source adapter installed in the private product-authority Worker.
+ * Coverage names only journeys whose required component the adapter can prove end to end.
+ */
+export const qualificationAuthorityAdapterRegistry = [
+  {
+    component: "PostgreSQL",
+    journeys: allJourneys,
+    mode: "agentPostgresCollector",
+    requirements: [
+      "allowanceTables",
+      "artifactBucket",
+      "attemptIndexTable",
+      "directoryBinding",
+      "postgresBinding",
+    ],
+    source: "allowance_and_billing_ledger",
+  },
+  {
+    component: "Gmail",
+    journeys: ["scheduledEmail"],
+    mode: "agentPostgresCollector",
+    requirements: ["artifactBucket", "attemptIndexTable", "postgresBinding", "scheduledEmailTable"],
+    source: "gmail_provider_receipts",
+  },
+  {
+    component: "Memory",
+    journeys: ["ordinaryConversation"],
+    mode: "agentPostgresCollector",
+    requirements: ["artifactBucket", "attemptIndexTable", "directoryBinding", "postgresBinding"],
+    source: "memory_commit_receipts",
+  },
+  {
+    component: "ModelAccess",
+    journeys: allJourneys,
+    mode: "agentPostgresCollector",
+    requirements: [
+      "allowanceTables",
+      "artifactBucket",
+      "attemptIndexTable",
+      "directoryBinding",
+      "postgresBinding",
+    ],
+    source: "model_access_receipts",
+  },
+  {
+    component: "AgentSQLite",
+    journeys: allJourneys,
+    mode: "agentPostgresCollector",
+    requirements: ["artifactBucket", "attemptIndexTable", "directoryBinding", "postgresBinding"],
+    source: "osfo_committed_turns",
+  },
+  {
+    component: "Provider",
+    journeys: ["scheduledEmail"],
+    mode: "agentPostgresCollector",
+    requirements: ["artifactBucket", "attemptIndexTable", "postgresBinding", "scheduledEmailTable"],
+    source: "provider_delivery_receipts",
+  },
+  {
+    component: "TaskCompute",
+    journeys: ["scheduledEmail"],
+    mode: "agentPostgresCollector",
+    requirements: ["artifactBucket", "attemptIndexTable", "postgresBinding", "scheduledEmailTable"],
+    source: "task_compute_receipts",
+  },
+  {
+    component: "Think",
+    journeys: allJourneys,
+    mode: "arrivalReadback",
+    requirements: ["artifactBucket"],
+    source: "think_submission_receipts",
+  },
+  {
+    component: "Worker",
+    journeys: allJourneys,
+    mode: "arrivalReadback",
+    requirements: ["artifactBucket"],
+    source: "worker_admission_receipts",
+  },
+  {
+    component: "Workflow",
+    journeys: ["scheduledEmail"],
+    mode: "agentPostgresCollector",
+    requirements: ["artifactBucket", "attemptIndexTable", "postgresBinding", "scheduledEmailTable"],
+    source: "workflow_instance_receipts",
+  },
+] as const satisfies ReadonlyArray<{
+  readonly component: SemanticComponent;
+  readonly journeys: ReadonlyArray<ReferenceJourney>;
+  readonly mode: "agentPostgresCollector" | "arrivalReadback";
+  readonly requirements: ReadonlyArray<QualificationAuthorityAdapterRequirement>;
+  readonly source: QualificationAuthoritySource;
+}>;
+
+export type QualificationAuthorityAdapter = (typeof qualificationAuthorityAdapterRegistry)[number];
+export type QualificationInstalledAuthoritySource = QualificationAuthorityAdapter["source"];
+export type QualificationAgentPostgresAuthoritySource = Extract<
+  QualificationAuthorityAdapter,
+  { readonly mode: "agentPostgresCollector" }
+>["source"];
+export type QualificationArrivalReadbackAuthoritySource = Extract<
+  QualificationAuthorityAdapter,
+  { readonly mode: "arrivalReadback" }
+>["source"];
+
+export const qualificationAgentPostgresAuthoritySources = qualificationAuthorityAdapterRegistry
+  .filter(({ mode }) => mode === "agentPostgresCollector")
+  .map(({ source }) => source);
+
+export const qualificationArrivalReadbackAuthoritySources = qualificationAuthorityAdapterRegistry
+  .filter(({ mode }) => mode === "arrivalReadback")
+  .map(({ source }) => source);
+
+export const isQualificationInstalledAuthoritySource = (
+  source: QualificationAuthoritySource,
+): source is QualificationInstalledAuthoritySource =>
+  qualificationAuthorityAdapterRegistry.some((adapter) => adapter.source === source);
+
+export const isQualificationAgentPostgresAuthoritySource = (
+  source: QualificationAuthoritySource,
+): source is QualificationAgentPostgresAuthoritySource =>
+  qualificationAuthorityAdapterRegistry.some(
+    (adapter) => adapter.source === source && adapter.mode === "agentPostgresCollector",
+  );
+
+export const isQualificationArrivalReadbackAuthoritySource = (
+  source: QualificationAuthoritySource,
+): source is QualificationArrivalReadbackAuthoritySource =>
+  qualificationAuthorityAdapterRegistry.some(
+    (adapter) => adapter.source === source && adapter.mode === "arrivalReadback",
+  );
+
+export const qualificationAuthorityAdapterFor = (source: QualificationAuthoritySource) =>
+  qualificationAuthorityAdapterRegistry.find((adapter) => adapter.source === source);
+
+export const qualificationAuthoritySourcesRequiring = (
+  requirement: QualificationAuthorityAdapterRequirement,
+): ReadonlyArray<QualificationInstalledAuthoritySource> =>
+  qualificationAuthorityAdapterRegistry.flatMap((adapter) =>
+    adapter.requirements.some((required) => required === requirement) ? [adapter.source] : [],
+  );
+
+export interface QualificationAuthorityCoverageGap {
+  readonly component: SemanticComponent | "FaultController";
+  readonly journey: ReferenceJourney | null;
+  readonly source: QualificationAuthoritySource;
+}
+
+const sourceComponents = {
+  allowance_and_billing_ledger: "PostgreSQL",
+  gmail_provider_receipts: "Gmail",
+  memory_commit_receipts: "Memory",
+  model_access_receipts: "ModelAccess",
+  osfo_agent_activation_log: "AgentActivation",
+  osfo_committed_turns: "AgentSQLite",
+  provider_delivery_receipts: "Provider",
+  r2_object_metadata: "R2",
+  task_compute_receipts: "TaskCompute",
+  think_submission_receipts: "Think",
+  whatsapp_delivery_receipts: "WhatsApp",
+  worker_admission_receipts: "Worker",
+  workflow_instance_receipts: "Workflow",
+} as const satisfies Partial<Record<QualificationAuthoritySource, SemanticComponent>>;
+
+/** Exact unsupported producer pairs in canonical source then frozen journey order. */
+export const qualificationAuthorityCoverageGaps = (
+  manifest: ProductionQualificationManifest,
+): ReadonlyArray<QualificationAuthorityCoverageGap> => {
+  const gaps = new Array<QualificationAuthorityCoverageGap>();
+  for (const source of qualificationAuthoritySources) {
+    if (source === "qualification_fault_controller_receipts") {
+      if (manifest.faults.length > 0) {
+        gaps.push({ component: "FaultController", journey: null, source });
+      }
+      continue;
+    }
+    const component = sourceComponents[source];
+    if (component === undefined) continue;
+    const coveredJourneys = qualificationAuthorityAdapterFor(source)?.journeys ?? [];
+    for (const { journey, percentage } of manifest.journeyMix) {
+      if (
+        percentage > 0 &&
+        manifest.semanticRequirements[journey].requiredComponents.includes(component) &&
+        !coveredJourneys.some((coveredJourney) => coveredJourney === journey)
+      ) {
+        gaps.push({ component, journey, source });
+      }
+    }
+  }
+  return gaps;
+};
 
 export const isQualificationAuthoritySource = (
   value: string,
