@@ -151,7 +151,10 @@ export const qualificationCohortScrubDispatches = pgTable(
     check(
       "qualification_cohort_scrub_dispatches_publication_check",
       sql`(${table.state} = 'PENDING' and ${table.publication_state} is null
-          and ${table.publication_attempt_count} is null and ${table.publication_next_attempt_at} is null)
+          and ${table.publication_attempt_count} is null and ${table.publication_claim_token} is null
+          and ${table.publication_conflict_checksum} is null and ${table.publication_input_checksum} is null
+          and ${table.publication_lease_expires_at} is null and ${table.publication_next_attempt_at} is null
+          and ${table.publication_settled_at} is null and ${table.publication_artifact_checksum} is null)
         or (${table.state} in ('SETTLED', 'CONFLICT') and ${table.publication_state} = 'PENDING'
           and ${table.publication_attempt_count} >= 0 and ${table.publication_next_attempt_at} is not null
           and ${table.publication_claim_token} is null and ${table.publication_lease_expires_at} is null

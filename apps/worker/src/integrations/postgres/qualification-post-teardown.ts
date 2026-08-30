@@ -41,12 +41,15 @@ export type QualificationPostTeardownPublicationClaim =
       readonly scrubState: "CONFLICT" | "SETTLED";
     } & QualificationPostTeardownPublicationIdentity)
   | { readonly _tag: "Busy"; readonly leaseExpiresAt: Date }
+  | { readonly _tag: "Deferred"; readonly nextAttemptAt: Date }
+  | { readonly _tag: "LeaseExpired"; readonly leaseExpiresAt: Date }
   | { readonly _tag: "Conflict" }
   | { readonly _tag: "Missing" }
   | {
       readonly _tag: "Terminal";
       readonly artifactChecksum: string | null;
       readonly conflictChecksum: string | null;
+      readonly inputChecksum: string;
       readonly state: "CONFLICT" | "INELIGIBLE" | "PUBLISHED";
     };
 
@@ -132,6 +135,8 @@ export const makeQualificationPostTeardownPublicationAuthority = (database: Data
           const claimed = [];
           for (const row of rows) {
             if (row.state !== "SETTLED" && row.state !== "CONFLICT") continue;
+            if (row.publication_state === "CLAIMED" && row.publication_claim_token === claimToken)
+              continue;
             const [updated] = await transaction
               .update(qualificationCohortScrubDispatches)
               .set({
@@ -169,10 +174,12 @@ export const makeQualificationPostTeardownPublicationAuthority = (database: Data
               row.publication_state === "CONFLICT" ||
               row.publication_state === "INELIGIBLE"
             ) {
+              if (row.publication_input_checksum === null) return { _tag: "Conflict" };
               return {
                 _tag: "Terminal",
                 artifactChecksum: row.publication_artifact_checksum,
                 conflictChecksum: row.publication_conflict_checksum,
+                inputChecksum: row.publication_input_checksum,
                 state: row.publication_state,
               };
             }
@@ -185,6 +192,18 @@ export const makeQualificationPostTeardownPublicationAuthority = (database: Data
                 ? toClaim(row, claimToken, row.publication_lease_expires_at)
                 : { _tag: "Busy", leaseExpiresAt: row.publication_lease_expires_at };
             }
+            if (
+              row.publication_state === "CLAIMED" &&
+              row.publication_lease_expires_at !== null &&
+              row.publication_claim_token === claimToken
+            )
+              return { _tag: "LeaseExpired", leaseExpiresAt: row.publication_lease_expires_at };
+            if (
+              row.publication_state === "PENDING" &&
+              row.publication_next_attempt_at !== null &&
+              row.publication_next_attempt_at > clock
+            )
+              return { _tag: "Deferred", nextAttemptAt: row.publication_next_attempt_at };
             if (row.publication_state !== "PENDING" && row.publication_state !== "CLAIMED")
               return { _tag: "Conflict" };
             const leaseExpiresAt = new Date(
@@ -196,6 +215,7 @@ export const makeQualificationPostTeardownPublicationAuthority = (database: Data
                 publication_attempt_count: (row.publication_attempt_count ?? 0) + 1,
                 publication_claim_token: claimToken,
                 publication_lease_expires_at: leaseExpiresAt,
+                publication_next_attempt_at: clock,
                 publication_state: "CLAIMED",
               })
               .where(eq(qualificationCohortScrubDispatches.dispatch_id, row.dispatch_id))
@@ -288,6 +308,9 @@ export const makeQualificationPostTeardownPublicationAuthority = (database: Data
 
   const inspectAuthority = Effect.fn("QualificationPostTeardownPublication.inspectAuthority")(
     (input: {
+      readonly cohortArtifactChecksum: string;
+      readonly cohortArtifactId: string;
+      readonly cohortId: string;
       readonly executionId: string;
       readonly manifestChecksum: string;
       readonly planChecksum: string;
@@ -302,7 +325,14 @@ export const makeQualificationPostTeardownPublicationAuthority = (database: Data
               .where(eq(qualificationCohorts.execution_id, input.executionId))
               .limit(1);
             if (cohort === undefined) return { _tag: "Missing" };
+            const canonicalCohortArtifactId = qualificationCohortRootArtifactKeys(
+              input.executionId,
+            )[1];
             if (
+              cohort.cohort_id !== input.cohortId ||
+              input.cohortArtifactId !== canonicalCohortArtifactId ||
+              cohort.artifact_id !== canonicalCohortArtifactId ||
+              cohort.artifact_checksum !== input.cohortArtifactChecksum ||
               cohort.manifest_checksum !== input.manifestChecksum ||
               cohort.plan_checksum !== input.planChecksum ||
               cohort.source_version !== input.sourceVersion ||

@@ -212,11 +212,21 @@ it.effect("claims and reclaims due POST teardown publication work", () =>
         [identity.dispatchId],
       ),
     );
+    expect(yield* authority.claimExact(identity, "first")).toMatchObject({ _tag: "LeaseExpired" });
+    expect(yield* authority.claimBatch("first")).toEqual([]);
     const [reclaimed] = yield* authority.claimBatch("second");
     expect(reclaimed).toMatchObject({ _tag: "Claimed", attemptCount: 2, claimToken: "second" });
     expect(yield* authority.pinInput(identity, "first", "input")).toEqual({ _tag: "Conflict" });
     expect(yield* authority.pinInput(identity, "second", "input")).toEqual({ _tag: "Applied" });
-    expect(yield* authority.release(identity, "second", 0)).toEqual({ _tag: "Applied" });
+    expect(yield* authority.release(identity, "second", 3_600_001)).toEqual({ _tag: "Conflict" });
+    expect(yield* authority.release(identity, "second", 1_000)).toEqual({ _tag: "Applied" });
+    expect(yield* authority.claimExact(identity, "third")).toMatchObject({ _tag: "Deferred" });
+    yield* Effect.promise(() =>
+      fixture.client.query(
+        `update qualification_cohort_scrub_dispatches set publication_next_attempt_at = clock_timestamp() - interval '1 second' where dispatch_id = $1`,
+        [identity.dispatchId],
+      ),
+    );
     expect(yield* authority.claimExact(identity, "third")).toMatchObject({
       _tag: "Claimed",
       attemptCount: 3,
@@ -238,6 +248,46 @@ it.effect("claims and reclaims due POST teardown publication work", () =>
       publication_artifact_checksum: "post-checksum",
       publication_next_attempt_at: null,
       publication_state: "PUBLISHED",
+    });
+    expect(yield* authority.claimExact(identity, "replay")).toMatchObject({
+      _tag: "Terminal",
+      artifactChecksum: "post-checksum",
+      inputChecksum: "input",
+      state: "PUBLISHED",
+    });
+  }),
+);
+
+it.effect("rejects nullable and stale POST publication state combinations", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedCohort(fixture, { adventurer: 1, free: 1 });
+    const identity = qualificationCohortScrubDispatchIdentity(cohortId, executionId);
+    yield* Effect.promise(() =>
+      fixture.database.insert(qualificationCohortScrubDispatches).values({
+        cohort_id: cohortId,
+        dispatch_id: identity.dispatchId,
+        execution_id: executionId,
+        protocol_version: identity.protocolVersion,
+        root_instance_id: identity.rootInstanceId,
+        state: "PENDING",
+      }),
+    );
+    yield* Effect.promise(async () => {
+      await expect(
+        fixture.client.query(
+          `update qualification_cohort_scrub_dispatches set publication_artifact_checksum = 'stale' where dispatch_id = $1`,
+          [identity.dispatchId],
+        ),
+      ).rejects.toThrow("publication_check");
+      await expect(
+        fixture.client.query(
+          `update qualification_cohort_scrub_dispatches set state = 'SETTLED', settled_at = clock_timestamp(), root_checksum = 'root', publication_state = 'PENDING', publication_attempt_count = 0 where dispatch_id = $1`,
+          [identity.dispatchId],
+        ),
+      ).rejects.toThrow("publication_check");
     });
   }),
 );
@@ -684,6 +734,51 @@ it.effect("chains every plan page before one root scrub completion", () =>
       provisionIdentityCount: 0,
       rootChecksum: completedRoot.rootChecksum,
     });
+    const dispatchIdentity = qualificationCohortScrubDispatchIdentity(cohortId, executionId);
+    yield* Effect.promise(() =>
+      fixture.database.insert(qualificationCohortScrubDispatches).values({
+        cohort_id: cohortId,
+        dispatch_id: dispatchIdentity.dispatchId,
+        execution_id: executionId,
+        last_status: "complete",
+        last_status_checksum: qualificationChecksum({
+          dispatchId: dispatchIdentity.dispatchId,
+          rootChecksum: completedRoot.rootChecksum,
+        }),
+        protocol_version: dispatchIdentity.protocolVersion,
+        publication_attempt_count: 0,
+        publication_next_attempt_at: new Date(),
+        publication_state: "PENDING",
+        root_checksum: completedRoot.rootChecksum,
+        root_instance_id: dispatchIdentity.rootInstanceId,
+        settled_at: new Date(),
+        state: "SETTLED",
+      }),
+    );
+    const publication = makeQualificationPostTeardownPublicationAuthority(fixture.database);
+    const inspection = {
+      cohortArtifactChecksum: "cohort-checksum",
+      cohortArtifactId: `qualification/executions/${executionId}/cohort/manifest.json`,
+      cohortId,
+      executionId,
+      manifestChecksum: "manifest-checksum",
+      planChecksum: "plan-checksum",
+      sourceVersion: "source-version",
+    };
+    expect(yield* publication.inspectAuthority(inspection)).toMatchObject({
+      _tag: "Ready",
+      cohortId,
+      rootChecksum: completedRoot.rootChecksum,
+    });
+    expect(yield* publication.inspectAuthority({ ...inspection, cohortId: "substituted" })).toEqual(
+      { _tag: "Conflict" },
+    );
+    expect(
+      yield* publication.inspectAuthority({ ...inspection, cohortArtifactId: "substituted" }),
+    ).toEqual({ _tag: "Conflict" });
+    expect(
+      yield* publication.inspectAuthority({ ...inspection, cohortArtifactChecksum: "substituted" }),
+    ).toEqual({ _tag: "Conflict" });
     yield* Effect.promise(() =>
       fixture.client.query(
         "update qualification_cohort_scrub_roots set artifact_authority_proof_checksum = 'substituted-proof' where cohort_id = $1",

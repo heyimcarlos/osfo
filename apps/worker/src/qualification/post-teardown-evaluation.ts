@@ -120,6 +120,7 @@ export const QualificationPostTeardownReport = Schema.Struct({
   sourceVersion: Identity,
   teardownReceiptArtifactId: Identity,
   teardownReceiptChecksum: Identity,
+  teardownVerdict: Schema.Literals(["FAIL", "PASS"]),
   topologyVersion: Identity,
   verdict: Schema.Literals(["FAIL", "MISSING"]),
   version: Schema.Literal("qualification-post-teardown-evaluation-report-v1"),
@@ -145,6 +146,7 @@ export const QualificationPostTeardownCompletion = Schema.Struct({
   reportChecksum: Identity,
   teardownReceiptArtifactId: Identity,
   teardownReceiptChecksum: Identity,
+  teardownVerdict: Schema.Literals(["FAIL", "PASS"]),
   verdict: Schema.Literals(["FAIL", "MISSING"]),
   version: Schema.Literal("qualification-post-teardown-evaluation-completion-v1"),
 });
@@ -172,21 +174,58 @@ export const QualificationPostTeardownResponse = Schema.Struct({
     reportChecksum: Identity,
     teardownReceiptArtifactId: Identity,
     teardownReceiptChecksum: Identity,
+    teardownVerdict: Schema.Literals(["FAIL", "PASS"]),
     verdict: Schema.Literals(["FAIL", "MISSING"]),
     version: Schema.Literal("qualification-post-teardown-owner-response-v1"),
   }),
   status: Schema.Literals([409, 424]),
 });
 
-export const QualificationPostTeardownConflict = Schema.Struct({
+const ConflictBase = {
   artifactId: Identity,
   checksum: Identity,
   conflictingArtifactId: Identity,
   executionId: Identity,
+  finalizationInputChecksum: Identity,
   manifestChecksum: Identity,
+  ownerRequestChecksum: Identity,
   planChecksum: Identity,
+  preTeardownCompletionArtifactId: Identity,
+  preTeardownCompletionChecksum: Identity,
+  preTeardownReportArtifactId: Identity,
+  preTeardownReportChecksum: Identity,
+  preTeardownResponseArtifactId: Identity,
+  preTeardownResponseChecksum: Identity,
   version: Schema.Literal("qualification-post-teardown-evaluation-conflict-v1"),
-});
+} as const;
+export const QualificationPostTeardownConflict = Schema.Union([
+  Schema.Struct({ ...ConflictBase, stage: Schema.Literal("receipt") }),
+  Schema.Struct({
+    ...ConflictBase,
+    stage: Schema.Literal("report"),
+    teardownReceiptArtifactId: Identity,
+    teardownReceiptChecksum: Identity,
+  }),
+  Schema.Struct({
+    ...ConflictBase,
+    stage: Schema.Literal("completion"),
+    reportArtifactId: Identity,
+    reportChecksum: Identity,
+    teardownReceiptArtifactId: Identity,
+    teardownReceiptChecksum: Identity,
+  }),
+  Schema.Struct({
+    ...ConflictBase,
+    stage: Schema.Literal("response"),
+    completionArtifactId: Identity,
+    completionChecksum: Identity,
+    reportArtifactId: Identity,
+    reportChecksum: Identity,
+    teardownReceiptArtifactId: Identity,
+    teardownReceiptChecksum: Identity,
+  }),
+]);
+export type QualificationPostTeardownConflict = typeof QualificationPostTeardownConflict.Type;
 
 // oxlint-disable-next-line osfo/no-object-parameters -- Constructors pass only schema-owned POST authority values.
 const encodedBytes = (value: object) =>
@@ -287,6 +326,7 @@ export const qualificationPostTeardownReport = (input: {
     sourceVersion: pre.sourceVersion,
     teardownReceiptArtifactId: input.teardownReceipt.artifactId,
     teardownReceiptChecksum: input.teardownReceipt.checksum,
+    teardownVerdict: input.teardownReceipt.teardownVerdict,
     topologyVersion: pre.topologyVersion,
     verdict: failingFamilyCount > 0 ? ("FAIL" as const) : ("MISSING" as const),
     version: "qualification-post-teardown-evaluation-report-v1" as const,
@@ -316,6 +356,7 @@ export const qualificationPostTeardownCompletion = (report: QualificationPostTea
     reportChecksum: report.checksum,
     teardownReceiptArtifactId: report.teardownReceiptArtifactId,
     teardownReceiptChecksum: report.teardownReceiptChecksum,
+    teardownVerdict: report.teardownVerdict,
     verdict: report.verdict,
     version: "qualification-post-teardown-evaluation-completion-v1" as const,
   };
@@ -329,10 +370,8 @@ export const qualificationPostTeardownResponse = (
   report: QualificationPostTeardownReport,
   completion: typeof QualificationPostTeardownCompletion.Type,
 ) => {
-  if (
-    completion.reportArtifactId !== report.artifactId ||
-    completion.reportChecksum !== report.checksum
-  )
+  const expectedCompletion = qualificationPostTeardownCompletion(report);
+  if (canonicalQualificationJson(completion) !== canonicalQualificationJson(expectedCompletion))
     throw new Error("Qualification POST completion lineage conflicts");
   const body = {
     completionArtifactId: completion.artifactId,
@@ -356,6 +395,7 @@ export const qualificationPostTeardownResponse = (
     reportChecksum: report.checksum,
     teardownReceiptArtifactId: report.teardownReceiptArtifactId,
     teardownReceiptChecksum: report.teardownReceiptChecksum,
+    teardownVerdict: report.teardownVerdict,
     verdict: report.verdict,
     version: "qualification-post-teardown-owner-response-v1" as const,
   };
@@ -365,26 +405,27 @@ export const qualificationPostTeardownResponse = (
   return Schema.decodeSync(QualificationPostTeardownResponse)(response);
 };
 
-export const qualificationPostTeardownConflict = (input: {
-  readonly conflictingArtifactId: string;
-  readonly executionId: string;
-  readonly manifestChecksum: string;
-  readonly planChecksum: string;
-}) => {
-  const allowed = [
-    qualificationPostTeardownReceiptArtifactId(input.executionId),
-    qualificationPostTeardownReportArtifactId(input.executionId),
-    qualificationPostTeardownCompletionArtifactId(input.executionId),
-    qualificationPostTeardownResponseArtifactId(input.executionId),
-  ];
-  if (!allowed.includes(input.conflictingArtifactId))
+type ConflictInput<T> = T extends unknown ? Omit<T, "artifactId" | "checksum" | "version"> : never;
+export const qualificationPostTeardownConflict = (
+  input: ConflictInput<QualificationPostTeardownConflict>,
+) => {
+  const targetByStage = {
+    completion: qualificationPostTeardownCompletionArtifactId(input.executionId),
+    receipt: qualificationPostTeardownReceiptArtifactId(input.executionId),
+    report: qualificationPostTeardownReportArtifactId(input.executionId),
+    response: qualificationPostTeardownResponseArtifactId(input.executionId),
+  } as const;
+  if (input.conflictingArtifactId !== targetByStage[input.stage])
     throw new Error("Qualification POST conflict target is not canonical");
   const content = {
     ...input,
     artifactId: qualificationPostTeardownConflictArtifactId(input.executionId),
     version: "qualification-post-teardown-evaluation-conflict-v1" as const,
   };
-  const conflict = { ...content, checksum: qualificationChecksum(content) };
+  const conflict = {
+    ...content,
+    checksum: qualificationChecksum(content),
+  };
   if (encodedBytes(conflict) > qualificationPostTeardownArtifactMaximumBytes)
     throw new Error("Qualification POST conflict exceeds compact authority budget");
   return Schema.decodeSync(QualificationPostTeardownConflict)(conflict);

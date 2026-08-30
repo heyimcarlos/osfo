@@ -14,7 +14,10 @@ SET "publication_attempt_count" = 0,
 WHERE "state" IN ('SETTLED', 'CONFLICT');--> statement-breakpoint
 CREATE INDEX "qualification_cohort_scrub_dispatches_publication_due_idx" ON "qualification_cohort_scrub_dispatches" USING btree ("publication_state","publication_next_attempt_at","created_at");--> statement-breakpoint
 ALTER TABLE "qualification_cohort_scrub_dispatches" ADD CONSTRAINT "qualification_cohort_scrub_dispatches_publication_check" CHECK (("qualification_cohort_scrub_dispatches"."state" = 'PENDING' and "qualification_cohort_scrub_dispatches"."publication_state" is null
-          and "qualification_cohort_scrub_dispatches"."publication_attempt_count" is null and "qualification_cohort_scrub_dispatches"."publication_next_attempt_at" is null)
+          and "qualification_cohort_scrub_dispatches"."publication_attempt_count" is null and "qualification_cohort_scrub_dispatches"."publication_claim_token" is null
+          and "qualification_cohort_scrub_dispatches"."publication_conflict_checksum" is null and "qualification_cohort_scrub_dispatches"."publication_input_checksum" is null
+          and "qualification_cohort_scrub_dispatches"."publication_lease_expires_at" is null and "qualification_cohort_scrub_dispatches"."publication_next_attempt_at" is null
+          and "qualification_cohort_scrub_dispatches"."publication_settled_at" is null and "qualification_cohort_scrub_dispatches"."publication_artifact_checksum" is null)
         or ("qualification_cohort_scrub_dispatches"."state" in ('SETTLED', 'CONFLICT') and "qualification_cohort_scrub_dispatches"."publication_state" = 'PENDING'
           and "qualification_cohort_scrub_dispatches"."publication_attempt_count" >= 0 and "qualification_cohort_scrub_dispatches"."publication_next_attempt_at" is not null
           and "qualification_cohort_scrub_dispatches"."publication_claim_token" is null and "qualification_cohort_scrub_dispatches"."publication_lease_expires_at" is null
