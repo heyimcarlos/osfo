@@ -5,6 +5,7 @@ import type { AdminActorId, AdminReason } from "../domain/account-administration
 import type { ActionId } from "../domain/action-execution";
 import type { DeletionCaseId } from "../domain/deletion-case";
 import type { UserAccessFact } from "../domain/user-suspension";
+import type { QualificationCohortScrubDispatchIdentity } from "../qualification/cohort-scrub-dispatch";
 import { retainedCatalog } from "../domain/plan-policy";
 import {
   approvalFor,
@@ -142,6 +143,14 @@ export interface PortInterface {
     ) => Effect.Effect<void, AccountDeletionUnavailable>;
     readonly removeUser: (
       candidate: PendingAccountDeletion,
+    ) => Effect.Effect<
+      void | ReadonlyArray<QualificationCohortScrubDispatchIdentity>,
+      AccountDeletionUnavailable
+    >;
+  };
+  readonly qualificationScrub: {
+    readonly dispatch: (
+      identity: QualificationCohortScrubDispatchIdentity,
     ) => Effect.Effect<void, AccountDeletionUnavailable>;
   };
 }
@@ -340,7 +349,23 @@ export const make = Effect.gen(function* () {
       yield* dependencies.agents.remove(candidate.agentId);
     }
     yield* requireAuthority("before PostgreSQL deletion");
-    yield* dependencies.persistence.removeUser(candidate);
+    const dispatches = yield* dependencies.persistence.removeUser(candidate);
+    if (dispatches !== undefined) {
+      yield* Effect.forEach(
+        dispatches,
+        (identity) =>
+          dependencies.qualificationScrub
+            .dispatch(identity)
+            .pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("Qualification cohort scrub dispatch remains pending").pipe(
+                  Effect.annotateLogs({ cause, executionId: identity.executionId }),
+                ),
+              ),
+            ),
+        { concurrency: 1, discard: true },
+      );
+    }
     return undefined;
   });
 

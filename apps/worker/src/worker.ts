@@ -147,6 +147,7 @@ const worker = {
         settleScheduledBranches([
           () => App.expireChannelLinkInvites(env).then(() => undefined),
           () => App.reconcileAccountDeletions(env).then(() => undefined),
+          () => App.reconcileQualificationCohortScrubDispatches(env).then(() => undefined),
           () => DocumentBuildHostReconciliation.run(env).then(() => undefined),
           () => DocumentCostReconciliation.run(env).then(() => undefined),
           () => WhatsAppWakeUpComposition.drainScheduled(env, config).then(() => undefined),

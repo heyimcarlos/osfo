@@ -11,6 +11,9 @@ import { AccountDeletionPostgres } from "../integrations/postgres/account-deleti
 import { ResearchReportPostgres } from "../integrations/postgres/research-report";
 import { DocumentBuildPostgres } from "../integrations/postgres/document-build";
 import { AccountDeletion } from "../services/account-deletion";
+import { QualificationCohortScrubDispatchComposition } from "./qualification-cohort-scrub-dispatch";
+import type { QualificationCohortArtifactAuthority } from "../qualification-cohort-artifact-authority";
+import type { QualificationCohortScrubRootWorkflowPayload } from "../qualification/cohort-scrub-root";
 import { WhatsAppWakeUps } from "../services/whatsapp-wakeups";
 import { ResearchReportComposition } from "./research-report";
 import { DocumentBuildComposition } from "./document-build";
@@ -42,9 +45,16 @@ export interface Bindings {
   readonly ARTIFACTS?: R2Bucket;
   readonly FILES?: R2Bucket;
   readonly integrationAuthorityDeletion: IntegrationAuthorityDeletionCapability;
+  readonly DB?: Pick<Hyperdrive, "connectionString">;
   readonly OSFO_DIRECTORY: {
     readonly getByName: (identity: string) => DirectoryDeletionStub;
   };
+  readonly QUALIFICATION_COHORT_ARTIFACT_AUTHORITY?:
+    | DurableObjectNamespace<QualificationCohortArtifactAuthority>
+    | undefined;
+  readonly QUALIFICATION_COHORT_SCRUB_ROOT_WORKFLOW?:
+    | Workflow<QualificationCohortScrubRootWorkflowPayload>
+    | undefined;
   readonly DOCUMENT_BUILD_TIMER_WORKFLOW?: DocumentBuildComposition.WorkflowBinding;
   readonly DOCUMENT_BUILD_WORKFLOW?: DocumentBuildComposition.WorkflowBinding;
   readonly RESEARCH_REPORT_TIMER_WORKFLOW?: ResearchReportComposition.WorkflowBinding;
@@ -248,6 +258,42 @@ const makePort = (bindings: Bindings) =>
               ),
             ),
       persistence: AccountDeletionPostgres.make(database),
+      qualificationScrub: {
+        dispatch: (identity) => {
+          if (
+            bindings.DB === undefined ||
+            bindings.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY === undefined ||
+            bindings.QUALIFICATION_COHORT_SCRUB_ROOT_WORKFLOW === undefined
+          ) {
+            return Effect.fail(
+              new AccountDeletion.AccountDeletionUnavailable({
+                cause: "missing qualification scrub bindings",
+                message: "Qualification cohort scrub dispatch is unavailable",
+                operation: "dispatchQualificationCohortScrubRoot",
+              }),
+            );
+          }
+          return QualificationCohortScrubDispatchComposition.dispatchQualificationCohortScrubRoot(
+            {
+              DB: bindings.DB,
+              QUALIFICATION_COHORT_ARTIFACT_AUTHORITY:
+                bindings.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY,
+              QUALIFICATION_COHORT_SCRUB_ROOT_WORKFLOW:
+                bindings.QUALIFICATION_COHORT_SCRUB_ROOT_WORKFLOW,
+            },
+            identity,
+          ).pipe(
+            Effect.mapError(
+              (cause) =>
+                new AccountDeletion.AccountDeletionUnavailable({
+                  cause,
+                  message: "Qualification cohort scrub dispatch is unavailable",
+                  operation: "dispatchQualificationCohortScrubRoot",
+                }),
+            ),
+          );
+        },
+      },
     });
   });
 

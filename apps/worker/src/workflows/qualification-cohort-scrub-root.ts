@@ -13,7 +13,10 @@ import {
   sealQualificationCohortArtifactRoot,
 } from "../integrations/cloudflare/qualification-cohort-artifacts";
 import { makeQualificationCohortScrubAuthority } from "../integrations/postgres/qualification-cohort-scrub";
-import { decodeQualificationCohortScrubRootWorkflowPayload } from "../qualification/cohort-scrub-root";
+import {
+  decodeQualificationCohortScrubRootWorkflowPayload,
+  type QualificationCohortScrubRootResult,
+} from "../qualification/cohort-scrub-root";
 import { qualificationCohortScrubPartitionInstanceId } from "../qualification/cohort-scrub-partition";
 import type {
   QualificationCohortScrubPartitionWorkflowPayload,
@@ -25,7 +28,6 @@ import {
   QualificationCohortScrubRootTerminal,
   runQualificationCohortScrubRoot,
   type QualificationCohortScrubRootPorts,
-  type QualificationCohortScrubRootResult,
 } from "./qualification-cohort-scrub-root-runtime";
 
 interface QualificationCohortScrubRootEnv {

@@ -7,16 +7,18 @@ import { AgentId, PlanPolicyVersion, UserId } from "../domain";
 import { AdminActorId, AdminReason } from "../domain/account-administration";
 import { ActionId } from "../domain/action-execution";
 import { DeletionCaseId } from "../domain/deletion-case";
+import { qualificationCohortScrubDispatchIdentity } from "../qualification/cohort-scrub-dispatch";
 import { AccountDeletion } from "./account-deletion";
 import { ApprovalPresentation } from "./authorization";
 import { MemoryProvider } from "./memory-provider";
 import { makeAccountDeletionFence } from "../agents/osfo/account-deletion-fence";
 
 const testPort = (
-  port: Omit<AccountDeletion.PortInterface, "workflows"> &
-    Partial<Pick<AccountDeletion.PortInterface, "workflows">>,
+  port: Omit<AccountDeletion.PortInterface, "qualificationScrub" | "workflows"> &
+    Partial<Pick<AccountDeletion.PortInterface, "qualificationScrub" | "workflows">>,
 ) =>
   AccountDeletion.Port.of({
+    qualificationScrub: { dispatch: () => Effect.void },
     workflows: { quiesce: () => Effect.void },
     ...port,
   });
@@ -139,7 +141,7 @@ it.effect(
       persistence: {
         ...passthroughIntegrationProgress,
         pending: Effect.succeed([candidate]),
-        removeUser: () => Effect.sync(() => calls.push("postgres")),
+        removeUser: () => Effect.sync(() => calls.push("postgres")).pipe(Effect.as(undefined)),
       },
     });
 
@@ -240,7 +242,7 @@ it.effect("orders the Agent fence before Workflow hosts and private-data erasure
       ...passthroughIntegrationProgress,
       ensureAccessFence: () => Effect.sync(() => calls.push("access-fence")),
       pending: Effect.succeed([candidate]),
-      removeUser: () => Effect.sync(() => calls.push("postgres-erase")),
+      removeUser: () => Effect.sync(() => calls.push("postgres-erase")).pipe(Effect.as(undefined)),
     },
   });
 
@@ -330,7 +332,7 @@ it.effect("keeps local data pending until provider deletion confirms permanent a
     persistence: {
       ...passthroughIntegrationProgress,
       pending: Effect.succeed([candidate]),
-      removeUser: () => Effect.sync(() => calls.push("postgres")),
+      removeUser: () => Effect.sync(() => calls.push("postgres")).pipe(Effect.as(undefined)),
     },
   });
   return Effect.gen(function* () {
@@ -400,7 +402,7 @@ it.effect(
       persistence: {
         ...passthroughIntegrationProgress,
         pending: Effect.succeed([candidate]),
-        removeUser: () => Effect.sync(() => calls.push("postgres")),
+        removeUser: () => Effect.sync(() => calls.push("postgres")).pipe(Effect.as(undefined)),
       },
     });
     const provider = MemoryProvider.Service.of({
@@ -510,7 +512,7 @@ it.effect(
               : Effect.void;
           }),
         pending: Effect.succeed([candidate]),
-        removeUser: () => Effect.sync(() => calls.push("postgres")),
+        removeUser: () => Effect.sync(() => calls.push("postgres")).pipe(Effect.as(undefined)),
       },
     });
     return Effect.gen(function* () {
@@ -734,7 +736,7 @@ it.effect("keeps the case pending and local data intact when R2 ownership is con
     persistence: {
       ...passthroughIntegrationProgress,
       pending: Effect.succeed([candidate]),
-      removeUser: () => Effect.sync(() => calls.push("postgres")),
+      removeUser: () => Effect.sync(() => calls.push("postgres")).pipe(Effect.as(undefined)),
     },
   });
 
@@ -900,7 +902,7 @@ it.effect("does not advance when Agent quiescence fails", () => {
     persistence: {
       ...passthroughIntegrationProgress,
       pending: Effect.succeed([candidate]),
-      removeUser: () => Effect.sync(() => calls.push("postgres")),
+      removeUser: () => Effect.sync(() => calls.push("postgres")).pipe(Effect.as(undefined)),
     },
   });
 
@@ -995,7 +997,7 @@ it.effect(
           }),
         ensureAccessFence: () => Effect.void,
         pending: Effect.succeed([candidate]),
-        removeUser: () => Effect.sync(() => calls.push("postgres")),
+        removeUser: () => Effect.sync(() => calls.push("postgres")).pipe(Effect.as(undefined)),
         stageIntegrationTargets: (_, discovered) =>
           Effect.sync(() => {
             for (const target of discovered) {
@@ -1156,7 +1158,7 @@ it.effect("rechecks a retained administrative case through every protected stage
     persistence: {
       ...passthroughIntegrationProgress,
       pending: Effect.succeed([candidate]),
-      removeUser: () => Effect.sync(() => calls.push("postgres")),
+      removeUser: () => Effect.sync(() => calls.push("postgres")).pipe(Effect.as(undefined)),
     },
   });
 
@@ -1216,7 +1218,7 @@ it.effect("keeps an administrative case pending when its exact administrator is 
     persistence: {
       ...passthroughIntegrationProgress,
       pending: Effect.succeed([candidate]),
-      removeUser: () => Effect.sync(() => calls.push("postgres")),
+      removeUser: () => Effect.sync(() => calls.push("postgres")).pipe(Effect.as(undefined)),
     },
   });
 
@@ -1234,6 +1236,59 @@ it.effect("keeps an administrative case pending when its exact administrator is 
     ),
   );
 });
+
+it.effect(
+  "attempts durable cohort scrub dispatch without undoing completed product deletion",
+  () => {
+    const calls: Array<string> = [];
+    const userId = UserId.make("user-1");
+    const candidate = {
+      _tag: "Administrative" as const,
+      adminActorId: AdminActorId.make("admin-1"),
+      agentId: AgentId.make("agent-1"),
+      deletionCaseId: DeletionCaseId.make("deletion-case-1"),
+      reason: AdminReason.make("Required administrative erasure"),
+      userId,
+    };
+    const dispatch = qualificationCohortScrubDispatchIdentity("cohort", "execution");
+    const port = testPort({
+      inspectAuthorization: () =>
+        Effect.succeed({
+          ...activeFacts(userId),
+          administrativeAuthority: { adminActorId: candidate.adminActorId },
+        }),
+      agents: { quiesce: () => Effect.void, remove: () => Effect.void },
+      integrations: { pending: () => Effect.succeed([]), revoke: () => Effect.void },
+      objects: { remove: (_, authorizeDelete) => authorizeDelete },
+      persistence: {
+        ...passthroughIntegrationProgress,
+        pending: Effect.succeed([candidate]),
+        removeUser: () =>
+          Effect.sync(() => calls.push("postgres")).pipe(Effect.as([dispatch] as const)),
+      },
+      qualificationScrub: {
+        dispatch: () =>
+          Effect.sync(() => calls.push("dispatch")).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new AccountDeletion.AccountDeletionUnavailable({
+                  cause: "lost Workflow create response",
+                  message: "Qualification cohort scrub dispatch is unavailable",
+                  operation: "dispatchQualificationCohortScrubRoot",
+                }),
+              ),
+            ),
+          ),
+      },
+    });
+
+    return Effect.gen(function* () {
+      const deletion = yield* AccountDeletion.Service;
+      yield* deletion.reconcileOne(candidate);
+      expect(calls).toEqual(["provider", "postgres", "dispatch"]);
+    }).pipe(Effect.provide(accountDeletionLayer(port, calls, () => "deleted")));
+  },
+);
 
 const accountDeletionLayer = (
   port: AccountDeletion.PortInterface,

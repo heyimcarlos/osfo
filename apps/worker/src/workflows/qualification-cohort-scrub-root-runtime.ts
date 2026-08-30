@@ -35,6 +35,7 @@ import {
   qualificationCohortScrubRootInstanceId,
   qualificationCohortScrubRootPartitionPayload,
   qualificationCohortScrubRootTopology,
+  type QualificationCohortScrubRootResult,
   type QualificationCohortScrubRootTopology,
   type QualificationCohortScrubRootWorkflowPayload,
 } from "../qualification/cohort-scrub-root";
@@ -126,16 +127,6 @@ export interface QualificationCohortScrubRootAuthority {
     readonly protocolVersion: typeof qualificationCohortArtifactProtocol;
     readonly rootChecksum: string;
   }) => Promise<QualificationCohortArtifactSealRootOutcome>;
-}
-
-export interface QualificationCohortScrubRootResult {
-  readonly cohortId: string;
-  readonly executionId: string;
-  readonly finalPageChecksum: string;
-  readonly rootChecksum: string;
-  readonly state: "SCRUBBED";
-  readonly totalPageCount: number;
-  readonly totalPartitionCount: number;
 }
 
 export class QualificationCohortScrubRootRetryable extends Data.TaggedError(

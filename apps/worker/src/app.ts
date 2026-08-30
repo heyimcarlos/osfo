@@ -11,6 +11,7 @@ import { Routes } from "./routes";
 import { ChannelLinks } from "./services/channel-links";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/identity";
 import { AccountDeletionComposition } from "./composition/account-deletion";
+import { QualificationCohortScrubDispatchComposition } from "./composition/qualification-cohort-scrub-dispatch";
 import { ComposioAccountDeletion } from "./integrations/composio/account-deletion";
 import { SupermemoryMemoryProvider } from "./integrations/supermemory/memory-provider";
 import { AccountDeletion } from "./services/account-deletion";
@@ -23,6 +24,12 @@ export interface Bindings {
   readonly FILES?: R2Bucket;
   readonly integrationAuthorityDeletion: AccountDeletionComposition.IntegrationAuthorityDeletionCapability;
   readonly DB: Pick<Hyperdrive, "connectionString">;
+  readonly QUALIFICATION_COHORT_ARTIFACT_AUTHORITY?:
+    | CloudflareEnv["QUALIFICATION_COHORT_ARTIFACT_AUTHORITY"]
+    | undefined;
+  readonly QUALIFICATION_COHORT_SCRUB_ROOT_WORKFLOW?:
+    | CloudflareEnv["QUALIFICATION_COHORT_SCRUB_ROOT_WORKFLOW"]
+    | undefined;
   readonly DOCUMENT_BUILD_TIMER_WORKFLOW?: CloudflareEnv["DOCUMENT_BUILD_TIMER_WORKFLOW"];
   readonly DOCUMENT_BUILD_WORKFLOW?: CloudflareEnv["DOCUMENT_BUILD_WORKFLOW"];
   readonly OSFO_DIRECTORY: Routes.Bindings["OSFO_DIRECTORY"];
@@ -118,6 +125,25 @@ export const reconcileAccountDeletions = (env: CloudflareEnv) => {
   );
 };
 
+/** Recover the bounded cohort scrub outbox after deletion or Workflow response loss. */
+export const reconcileQualificationCohortScrubDispatches = (env: CloudflareEnv) => {
+  if (
+    env.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY === undefined ||
+    env.QUALIFICATION_COHORT_SCRUB_ROOT_WORKFLOW === undefined
+  ) {
+    return Promise.reject(
+      new Error("Qualification cohort scrub dispatch bindings are unavailable"),
+    );
+  }
+  return Effect.runPromise(
+    QualificationCohortScrubDispatchComposition.reconcileQualificationCohortScrubDispatches({
+      DB: env.DB,
+      QUALIFICATION_COHORT_ARTIFACT_AUTHORITY: env.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY,
+      QUALIFICATION_COHORT_SCRUB_ROOT_WORKFLOW: env.QUALIFICATION_COHORT_SCRUB_ROOT_WORKFLOW,
+    }),
+  );
+};
+
 const adaptBindings = (env: CloudflareEnv, config: CloudflareConfig): Bindings => ({
   ARTIFACTS: env.ARTIFACTS,
   FILES: env.FILES,
@@ -128,6 +154,8 @@ const adaptBindings = (env: CloudflareEnv, config: CloudflareConfig): Bindings =
           _tag: "Delivered",
           adapter: ComposioAccountDeletion.make(config.composio.apiKey),
         },
+  QUALIFICATION_COHORT_ARTIFACT_AUTHORITY: env.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY,
+  QUALIFICATION_COHORT_SCRUB_ROOT_WORKFLOW: env.QUALIFICATION_COHORT_SCRUB_ROOT_WORKFLOW,
   DB: env.DB,
   DOCUMENT_BUILD_TIMER_WORKFLOW: env.DOCUMENT_BUILD_TIMER_WORKFLOW,
   DOCUMENT_BUILD_WORKFLOW: env.DOCUMENT_BUILD_WORKFLOW,

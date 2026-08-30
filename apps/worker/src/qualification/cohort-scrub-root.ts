@@ -28,6 +28,17 @@ export const QualificationCohortScrubRootWorkflowPayload = Schema.Struct({
 export type QualificationCohortScrubRootWorkflowPayload =
   typeof QualificationCohortScrubRootWorkflowPayload.Type;
 
+export const QualificationCohortScrubRootResult = Schema.Struct({
+  cohortId: boundedIdentity,
+  executionId: boundedIdentity,
+  finalPageChecksum: boundedIdentity,
+  rootChecksum: boundedIdentity,
+  state: Schema.Literal("SCRUBBED"),
+  totalPageCount: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(4_000)),
+  totalPartitionCount: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(125)),
+});
+export type QualificationCohortScrubRootResult = typeof QualificationCohortScrubRootResult.Type;
+
 export interface QualificationCohortScrubRootTopology {
   readonly adventurerPageCount: number;
   readonly adventurerParticipantCount: number;
@@ -48,11 +59,19 @@ export const qualificationCohortArtifactRecordCount = (
   });
 
 const decodePayload = Schema.decodeUnknownOption(QualificationCohortScrubRootWorkflowPayload);
+const decodeResult = Schema.decodeUnknownOption(QualificationCohortScrubRootResult);
 
 export const decodeQualificationCohortScrubRootWorkflowPayload = (
   input: unknown,
 ): QualificationCohortScrubRootWorkflowPayload | null => {
   const decoded = decodePayload(input);
+  return Option.isSome(decoded) ? decoded.value : null;
+};
+
+export const decodeQualificationCohortScrubRootResult = (
+  input: unknown,
+): QualificationCohortScrubRootResult | null => {
+  const decoded = decodeResult(input);
   return Option.isSome(decoded) ? decoded.value : null;
 };
 

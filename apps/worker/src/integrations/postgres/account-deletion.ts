@@ -6,6 +6,7 @@ import {
   billingSubscriptions,
 } from "@osfo/db/schema/billing";
 import {
+  qualificationCohortScrubDispatches,
   qualificationCohorts,
   qualificationParticipantAllocations,
   qualificationRootAttempts,
@@ -26,6 +27,10 @@ import { ActionId } from "../../domain/action-execution";
 import { DeletionCaseId } from "../../domain/deletion-case";
 import { retainedCatalog } from "../../domain/plan-policy";
 import { qualificationChecksum } from "../../qualification/qualification-checksum";
+import {
+  qualificationCohortScrubDispatchIdentity,
+  qualificationCohortScrubDispatchProtocol,
+} from "../../qualification/cohort-scrub-dispatch";
 import { AccountDeletion } from "../../services/account-deletion";
 import { ApprovalPresentation } from "../../services/authorization";
 import {
@@ -241,34 +246,71 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
             ),
           )
           .returning({ cohortId: qualificationParticipantAllocations.cohort_id });
-        await Promise.all(
-          [...new Set(completedAllocations.map(({ cohortId }) => cohortId))].map((cohortId) =>
-            transaction
-              .update(qualificationCohorts)
-              .set({ state: "PRODUCT_DELETED" })
-              .where(
-                and(
-                  eq(qualificationCohorts.cohort_id, cohortId),
-                  sql`not exists (
-                    select 1 from ${qualificationParticipantAllocations}
-                    where ${qualificationParticipantAllocations.cohort_id} = ${cohortId}
-                      and ${qualificationParticipantAllocations.state} <> 'DELETED'
-                  )`,
-                ),
-              ),
-          ),
+        const transitioned = (
+          await Promise.all(
+            [...new Set(completedAllocations.map(({ cohortId }) => cohortId))].map((cohortId) =>
+              transaction
+                .update(qualificationCohorts)
+                .set({ state: "PRODUCT_DELETED" })
+                .where(
+                  and(
+                    eq(qualificationCohorts.cohort_id, cohortId),
+                    sql`not exists (
+                      select 1 from ${qualificationParticipantAllocations}
+                      where ${qualificationParticipantAllocations.cohort_id} = ${cohortId}
+                        and ${qualificationParticipantAllocations.state} <> 'DELETED'
+                    )`,
+                  ),
+                )
+                .returning({
+                  cohortId: qualificationCohorts.cohort_id,
+                  executionId: qualificationCohorts.execution_id,
+                }),
+            ),
+          )
+        ).flat();
+        const dispatches = await Promise.all(
+          transitioned.map(async ({ cohortId, executionId }) => {
+            const identity = qualificationCohortScrubDispatchIdentity(cohortId, executionId);
+            await transaction
+              .insert(qualificationCohortScrubDispatches)
+              .values({
+                cohort_id: cohortId,
+                dispatch_id: identity.dispatchId,
+                execution_id: executionId,
+                protocol_version: qualificationCohortScrubDispatchProtocol,
+                root_instance_id: identity.rootInstanceId,
+                state: "PENDING",
+              })
+              .onConflictDoNothing();
+            const [retainedDispatch] = await transaction
+              .select()
+              .from(qualificationCohortScrubDispatches)
+              .where(eq(qualificationCohortScrubDispatches.dispatch_id, identity.dispatchId))
+              .limit(1);
+            if (
+              retainedDispatch === undefined ||
+              retainedDispatch.cohort_id !== identity.cohortId ||
+              retainedDispatch.execution_id !== identity.executionId ||
+              retainedDispatch.protocol_version !== identity.protocolVersion ||
+              retainedDispatch.root_instance_id !== identity.rootInstanceId
+            ) {
+              throw new Error("The qualification cohort scrub dispatch identity conflicts");
+            }
+            return identity;
+          }),
         );
-        return true;
+        return { dispatches, removed: true };
       }),
     );
-    if (!removed) {
+    if (!removed || !removed.removed) {
       return yield* new AccountDeletion.AccountDeletionUnavailable({
         cause: candidate.deletionCaseId,
         message: "The exact Deletion Case changed before PostgreSQL deletion",
         operation: "removeUser",
       });
     }
-    return undefined;
+    return removed.dispatches;
   });
   const updateIntegrationTargets = Effect.fn("AccountDeletionPostgres.updateIntegrationTargets")(
     function* <A>(

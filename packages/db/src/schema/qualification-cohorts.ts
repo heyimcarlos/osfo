@@ -23,6 +23,7 @@ const cohortStateValues = [
 const participantStateValues = ["ACTIVE", "DELETION_REQUESTED", "DELETED"] as const;
 const provisionStateValues = ["PENDING", "CONSUMED"] as const;
 const attemptStateValues = ["OFFERED", "DECIDED"] as const;
+const scrubDispatchStateValues = ["PENDING", "SETTLED", "CONFLICT"] as const;
 
 /** Server-owned provenance for one disposable qualification cohort. */
 export const qualificationCohorts = pgTable(
@@ -65,6 +66,65 @@ export const qualificationCohorts = pgTable(
     check(
       "qualification_cohorts_counts_check",
       sql`${table.expected_free_participants} > 0 and ${table.expected_adventurer_participants} > 0`,
+    ),
+  ],
+);
+
+/** Durable content-free kickoff intent committed with PRODUCT_DELETED. */
+export const qualificationCohortScrubDispatches = pgTable(
+  "qualification_cohort_scrub_dispatches",
+  {
+    claim_token: text(),
+    claimed_at: timestamp({ mode: "date", withTimezone: true }),
+    cohort_id: text().notNull(),
+    created_at: timestamp({ mode: "date", withTimezone: true }).defaultNow().notNull(),
+    dispatch_id: text().primaryKey(),
+    execution_id: text().notNull(),
+    last_observed_at: timestamp({ mode: "date", withTimezone: true }),
+    last_status: text(),
+    last_status_checksum: text(),
+    lease_expires_at: timestamp({ mode: "date", withTimezone: true }),
+    protocol_version: text().notNull(),
+    restart_applied_at: timestamp({ mode: "date", withTimezone: true }),
+    restart_generation: integer().default(0).notNull(),
+    restart_intent_checksum: text(),
+    restart_reserved_at: timestamp({ mode: "date", withTimezone: true }),
+    root_checksum: text(),
+    root_instance_id: text().notNull(),
+    settled_at: timestamp({ mode: "date", withTimezone: true }),
+    state: text({ enum: scrubDispatchStateValues }).notNull(),
+    terminal_failure_checksum: text(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.cohort_id, table.execution_id],
+      foreignColumns: [qualificationCohorts.cohort_id, qualificationCohorts.execution_id],
+      name: "qualification_cohort_scrub_dispatches_cohort_fk",
+    }).onDelete("restrict"),
+    unique("qualification_cohort_scrub_dispatches_execution_unique").on(table.execution_id),
+    unique("qualification_cohort_scrub_dispatches_instance_unique").on(table.root_instance_id),
+    check(
+      "qualification_cohort_scrub_dispatches_claim_check",
+      sql`(${table.claim_token} is null and ${table.claimed_at} is null and ${table.lease_expires_at} is null)
+        or (${table.claim_token} is not null and ${table.claimed_at} is not null
+          and ${table.lease_expires_at} is not null and ${table.claimed_at} < ${table.lease_expires_at})`,
+    ),
+    check(
+      "qualification_cohort_scrub_dispatches_restart_check",
+      sql`${table.restart_generation} between 0 and 3
+        and ((${table.restart_intent_checksum} is null and ${table.restart_reserved_at} is null
+          and ${table.restart_applied_at} is null)
+          or (${table.restart_intent_checksum} is not null and ${table.restart_reserved_at} is not null
+            and (${table.restart_applied_at} is null or ${table.restart_applied_at} >= ${table.restart_reserved_at})))`,
+    ),
+    check(
+      "qualification_cohort_scrub_dispatches_terminal_check",
+      sql`(${table.state} = 'PENDING' and ${table.settled_at} is null and ${table.root_checksum} is null
+          and ${table.terminal_failure_checksum} is null)
+        or (${table.state} = 'SETTLED' and ${table.settled_at} is not null and ${table.root_checksum} is not null
+          and ${table.terminal_failure_checksum} is null)
+        or (${table.state} = 'CONFLICT' and ${table.settled_at} is not null and ${table.root_checksum} is null
+          and ${table.terminal_failure_checksum} is not null)`,
     ),
   ],
 );

@@ -1,13 +1,16 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/global-date-in-effect, eslint/no-underscore-dangle -- PostgreSQL test setup is Promise-native, timestamps are fixed, and outcomes use the canonical _tag discriminator. */
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside Effect generators. */
 import { expect, it } from "@effect/vitest";
+import { qualificationCohortScrubDispatches } from "@osfo/db/schema/qualification-cohorts";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { Effect } from "effect";
 
 import { qualificationChecksum } from "../../qualification/qualification-checksum";
 import { qualificationCohortScrubPartitionProtocol } from "../../qualification/cohort-scrub-partition";
+import { qualificationCohortScrubDispatchIdentity } from "../../qualification/cohort-scrub-dispatch";
 import { qualificationCohortScrubRootWorkflowPayload } from "../../qualification/cohort-scrub-root";
 import { makeQualificationCohortAuthority } from "./qualification-cohort";
+import { makeQualificationCohortScrubDispatchAuthority } from "./qualification-cohort-scrub-dispatch";
 
 const cohortId = "qualification-scrub-cohort";
 const executionId = "qualification-scrub-execution";
@@ -716,5 +719,112 @@ it.effect("rejects a malformed product-deletion receipt before claiming its page
         plan: "free",
       }),
     ).toEqual({ _tag: "Conflict" });
+  }),
+);
+
+it.effect(
+  "claims the durable scrub dispatch with DB-clock lease fencing and bounded concurrency",
+  () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeTestDatabase;
+      yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+      yield* applyMigrations(fixture.client);
+      yield* seedCohort(fixture, { adventurer: 1, free: 1 });
+      const identity = qualificationCohortScrubDispatchIdentity(cohortId, executionId);
+      yield* Effect.promise(() =>
+        fixture.database.insert(qualificationCohortScrubDispatches).values({
+          cohort_id: cohortId,
+          dispatch_id: identity.dispatchId,
+          execution_id: executionId,
+          protocol_version: identity.protocolVersion,
+          root_instance_id: identity.rootInstanceId,
+          state: "PENDING",
+        }),
+      );
+      const authority = makeQualificationCohortScrubDispatchAuthority(fixture.database);
+
+      const first = yield* authority.claimExact(identity, "claim-1");
+      expect(first).toMatchObject({ _tag: "Claimed", claimToken: "claim-1" });
+      expect(yield* authority.claimExact(identity, "claim-1")).toEqual(first);
+      expect(yield* authority.claimExact(identity, "claim-2")).toMatchObject({ _tag: "Busy" });
+      expect(yield* authority.claimBatch("batch-while-busy")).toEqual([]);
+
+      yield* Effect.promise(() =>
+        fixture.client.query(
+          `update qualification_cohort_scrub_dispatches
+         set claimed_at = clock_timestamp() - interval '2 seconds',
+             lease_expires_at = clock_timestamp() - interval '1 second'`,
+        ),
+      );
+      expect(yield* authority.claimExact(identity, "claim-1")).toMatchObject({
+        _tag: "LeaseExpired",
+      });
+      expect(yield* authority.claimExact(identity, "claim-2")).toMatchObject({
+        _tag: "Claimed",
+        claimToken: "claim-2",
+      });
+    }),
+);
+
+it.effect("persists one bounded restart generation and exact settled replay", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedCohort(fixture, { adventurer: 1, free: 1 });
+    const identity = qualificationCohortScrubDispatchIdentity(cohortId, executionId);
+    yield* Effect.promise(() =>
+      fixture.database.insert(qualificationCohortScrubDispatches).values({
+        cohort_id: cohortId,
+        dispatch_id: identity.dispatchId,
+        execution_id: executionId,
+        protocol_version: identity.protocolVersion,
+        root_instance_id: identity.rootInstanceId,
+        state: "PENDING",
+      }),
+    );
+    const authority = makeQualificationCohortScrubDispatchAuthority(fixture.database);
+    expect(yield* authority.claimBatch("claim", 26)).toEqual([]);
+    const [claimed] = yield* authority.claimBatch("claim", 25);
+    expect(claimed).toBeDefined();
+    if (claimed === undefined) return;
+    const reserved = yield* authority.reserveRestart(identity, "claim", "status-checksum");
+    expect(reserved).toMatchObject({ _tag: "Reserved", generation: 1 });
+    if (reserved._tag !== "Reserved") return;
+    expect(yield* authority.reserveRestart(identity, "claim", "status-checksum")).toEqual({
+      _tag: "Conflict",
+    });
+    expect(yield* authority.markRestartApplied(identity, "claim", reserved.intentChecksum)).toEqual(
+      { _tag: "Applied" },
+    );
+    expect(yield* authority.claimExact(identity, "observe-claim")).toMatchObject({
+      _tag: "Claimed",
+    });
+    expect(yield* authority.observe(identity, "observe-claim", "running")).toEqual({
+      _tag: "Applied",
+    });
+    const [afterObservation] = yield* Effect.promise(() =>
+      fixture.database.select().from(qualificationCohortScrubDispatches),
+    );
+    expect(afterObservation).toMatchObject({
+      restart_applied_at: null,
+      restart_generation: 1,
+      restart_intent_checksum: null,
+      restart_reserved_at: null,
+    });
+    const replayClaim = yield* authority.claimExact(identity, "settle-claim");
+    expect(replayClaim._tag).toBe("Claimed");
+    expect(yield* authority.settle(identity, "settle-claim", "root-checksum")).toEqual({
+      _tag: "Applied",
+    });
+    expect(yield* authority.claimExact(identity, "replay")).toMatchObject({
+      _tag: "Completed",
+      ...identity,
+      rootChecksum: "root-checksum",
+    });
+    const [retained] = yield* Effect.promise(() =>
+      fixture.database.select().from(qualificationCohortScrubDispatches),
+    );
+    expect(Object.keys(retained ?? {})).not.toContain("user_id");
   }),
 );

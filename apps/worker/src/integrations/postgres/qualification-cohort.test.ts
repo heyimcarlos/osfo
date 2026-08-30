@@ -7,6 +7,7 @@ import { sessions, users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { allowancePeriods } from "@osfo/db/schema/allowances";
 import {
+  qualificationCohortScrubDispatches,
   qualificationParticipantAllocations,
   qualificationParticipantProvisions,
 } from "@osfo/db/schema/qualification-cohorts";
@@ -478,7 +479,7 @@ it.effect("requires pre-registration provisions and rejects ordinary or duplicat
       DeletionCasePostgres.make.pipe(Effect.provide(Db.layerFromDatabase(fixture.database))),
     );
     const accountDeletion = AccountDeletionPostgres.make(fixture.database);
-    yield* Effect.forEach(
+    const scrubDispatches = yield* Effect.forEach(
       [free0, free1, adventurer],
       (participant) =>
         Effect.gen(function* () {
@@ -490,7 +491,7 @@ it.effect("requires pre-registration provisions and rejects ordinary or duplicat
           expect(yield* deletionCases.markAccessFenced(command, deletionCaseId)).toEqual({
             _tag: "Fenced",
           });
-          yield* accountDeletion.removeUser({
+          return yield* accountDeletion.removeUser({
             _tag: "Administrative",
             adminActorId,
             agentId: participant.agentId,
@@ -499,8 +500,25 @@ it.effect("requires pre-registration provisions and rejects ordinary or duplicat
             userId: participant.userId,
           });
         }),
-      { concurrency: 1, discard: true },
+      { concurrency: 1 },
     );
+    expect(scrubDispatches.slice(0, 2)).toEqual([[], []]);
+    expect(scrubDispatches[2]).toEqual([
+      expect.objectContaining({
+        cohortId: manifest.cohortId,
+        executionId: manifest.executionId,
+      }),
+    ]);
+    const retainedDispatches = yield* Effect.promise(() =>
+      fixture.database.select().from(qualificationCohortScrubDispatches),
+    );
+    expect(retainedDispatches).toHaveLength(1);
+    expect(retainedDispatches[0]).toMatchObject({
+      cohort_id: manifest.cohortId,
+      execution_id: manifest.executionId,
+      state: "PENDING",
+    });
+    expect(JSON.stringify(retainedDispatches)).not.toContain("@example.test");
     expect(yield* authority.inspectTeardown(manifest.cohortId)).toMatchObject({
       productDeletion: { deleted: 3, expected: 3, state: "COMPLETE" },
       scrub: { completedPages: 0, expectedPages: 2, state: "NOT_STARTED" },
