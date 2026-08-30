@@ -21,6 +21,7 @@ import {
 import {
   isQualificationAgentPostgresAuthoritySource,
   isQualificationArrivalReadbackAuthoritySource,
+  isQualificationControlledAgentFaultAuthoritySource,
   qualificationAuthorityCoverageGaps,
   qualificationAuthoritySourcesRequiring,
   qualificationAuthoritySources,
@@ -31,6 +32,7 @@ import {
 import {
   qualificationRunArrivalAt,
   type QualificationExecutionPlan,
+  type QualificationExecutionRun,
 } from "./qualification/execution";
 import { decodeFrozenQualificationExecution } from "./qualification/frozen-execution";
 import {
@@ -47,6 +49,12 @@ import {
   QualificationAdmissionReceipt,
   QualificationConversationAttemptArtifact,
 } from "./qualification/qualification-attempt";
+import {
+  QualificationControlledAgentAbort,
+  QualificationControlledAgentRecoveryReceipt,
+  qualificationControlledAgentAbortOperationId,
+  qualificationControlledAgentFaultReceipt,
+} from "./qualification/controlled-agent-fault";
 
 import {
   canonicalQualificationJson,
@@ -69,6 +77,7 @@ import {
   QualificationScheduledEmailApprovalConflict,
 } from "./qualification/scheduled-email-journey";
 import { ProductAuthorityExportBoundary } from "./qualification/semantic-evidence";
+import { FaultControllerReceiptBoundary } from "./qualification/qualification-runs";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect and qualification contracts use _tag as their closed-union discriminator. */
 /* oxlint-disable effecttsgo/async-function -- Cloudflare, R2, and postgres.js are Promise-native host boundaries. */
@@ -77,6 +86,20 @@ import { ProductAuthorityExportBoundary } from "./qualification/semantic-evidenc
 type QualificationAuthorityRecord = object;
 
 const QualificationAuthorityOccurredAt = Schema.Struct({ occurredAt: Schema.String });
+const ControlledAgentFaultAuthorityShard = Schema.Struct({
+  artifactId: Schema.String,
+  authority: Schema.Literal("qualification_fault_controller_receipts"),
+  checksum: Schema.String,
+  executionId: Schema.String,
+  exportedAtUtc: Schema.String,
+  index: Schema.Literal(0),
+  planChecksum: Schema.String,
+  previousArtifactChecksum: Schema.Literal("NONE"),
+  recordCount: Schema.Int,
+  records: Schema.Array(FaultControllerReceiptBoundary),
+  sourceVersion: Schema.String,
+  streamChunkIndex: Schema.Int,
+});
 
 const ExecuteArrivalInvocation = Schema.Struct({
   ...QualificationProductAuthorityInvocation.fields,
@@ -803,13 +826,15 @@ const coverageMissingSources = (
   manifest: ProductionQualificationManifest,
 ): ReadonlyArray<MissingSource> =>
   qualificationAuthorityCoverageGaps(manifest).map(
-    ({ activationCause, component, journey, source }) => ({
+    ({ activationCause, component, faultKind, faultScope, journey, source }) => ({
       detail:
         activationCause !== undefined
           ? `No production-owned ${source} adapter proves the ${activationCause} activation cause`
-          : journey === null
-            ? `No production-owned ${source} adapter covers the frozen ${component} authority`
-            : `No production-owned ${source} adapter covers ${journey}/${component}`,
+          : faultKind !== undefined
+            ? `No production-owned ${source} adapter proves ${faultKind}${faultScope === undefined ? "" : `/${faultScope}`}`
+            : journey === null
+              ? `No production-owned ${source} adapter covers the frozen ${component} authority`
+              : `No production-owned ${source} adapter covers ${journey}/${component}`,
       source,
     }),
   );
@@ -888,11 +913,63 @@ const retainAttemptAuthority = async (
     : null;
 };
 
+const controlledColdActivationRun = (run: QualificationExecutionRun): boolean =>
+  run.kind === "challenge" &&
+  run.challenge === "coldActivation" &&
+  run.arrivalCount === 1 &&
+  run.fault?.kind === "coldActivation" &&
+  run.fault.target === "osfoAgent" &&
+  run.fault.trigger === "beforeOffer";
+
+const controlledAgentRecoveryArtifactId = (controllerOperationId: string) =>
+  `qualification/fault-controller/${encodeURIComponent(controllerOperationId)}.json`;
+
+export const controlledAgentFaultPreparedBeforeOffer = (input: {
+  readonly appliedAtUtc: string;
+  readonly offeredAtEpochMs: number;
+  readonly recoveredAtUtc: string;
+}): boolean => {
+  const appliedAtEpochMs = Date.parse(input.appliedAtUtc);
+  const recoveredAtEpochMs = Date.parse(input.recoveredAtUtc);
+  return (
+    Number.isFinite(appliedAtEpochMs) &&
+    Number.isFinite(recoveredAtEpochMs) &&
+    appliedAtEpochMs <= recoveredAtEpochMs &&
+    recoveredAtEpochMs <= input.offeredAtEpochMs
+  );
+};
+
+const retainControlledAgentRecoveryAuthority = async (
+  bucket: QualificationProductAuthorityArtifactBucket,
+  receipt: QualificationControlledAgentRecoveryReceipt,
+): Promise<boolean> => {
+  const artifactId = controlledAgentRecoveryArtifactId(receipt.controllerOperationId);
+  const encoded = canonicalQualificationJson(receipt);
+  const retained = await bucket.put(artifactId, encoded, {
+    customMetadata: {
+      "osfo-artifact-checksum": receipt.artifactChecksum,
+      "osfo-body-sha256": await sha256Hex(encoded),
+      "osfo-controller-operation-id": receipt.controllerOperationId,
+      "osfo-execution-id": receipt.executionId,
+      "osfo-kind": "qualification-controlled-agent-recovery-v1",
+      "osfo-plan-checksum": receipt.planChecksum,
+      "osfo-root-id": receipt.rootId,
+      "osfo-run-id": receipt.runId,
+    },
+    httpMetadata: { contentType: "application/json" },
+    onlyIf: { etagDoesNotMatch: "*" },
+  });
+  if (retained !== null) return true;
+  const existing = await bucket.get(artifactId);
+  return existing !== null && (await existing.text()) === encoded;
+};
+
 const executeArrival = async (
   env: QualificationProductAuthorityEnv,
   frozen: FrozenExecution,
   runId: string,
   arrivalIndex: number,
+  mode: "execute" | "prepareControlledFault" = "execute",
 ): Promise<Response> => {
   if (!(await hasExactCohortInventoryReceipt(env, frozen))) {
     return Response.json(
@@ -911,6 +988,9 @@ const executeArrival = async (
   const run = frozen.plan.runs.find((candidate) => candidate.runId === runId);
   if (run === undefined) {
     return Response.json({ error: "qualificationRunNotFound" }, { status: 409 });
+  }
+  if (mode === "prepareControlledFault" && !controlledColdActivationRun(run)) {
+    return Response.json({ status: "NOT_REQUIRED" });
   }
   const arrival = qualificationRunArrivalAt(frozen.manifest, run, arrivalIndex);
   if (arrival === undefined) {
@@ -1290,6 +1370,81 @@ const executeArrival = async (
         ? null
         : Response.json({ error: "qualificationScheduledEmailAuthorityConflict" }, { status: 409 });
     };
+    const completeControlledAgentFault = async (
+      receipt: QualificationAdmissionReceipt,
+    ): Promise<Response | null> => {
+      if (!controlledColdActivationRun(run)) return null;
+      const controllerOperationId = qualificationControlledAgentAbortOperationId(context);
+      const authority = await directory.readQualificationControlledAgentRecovery(
+        agentId,
+        controllerOperationId,
+      );
+      if (authority._tag === "QualificationControlledAgentFaultConflict") {
+        return Response.json(
+          { error: "qualificationControlledAgentFaultConflict" },
+          { status: 409 },
+        );
+      }
+      if (
+        authority._tag !== "QualificationControlledAgentRecoveryAuthority" ||
+        authority.receipt === null
+      ) {
+        return Response.json(
+          {
+            missingSources: [
+              {
+                detail: `${context.rootId} has no consumed controlled Agent recovery authority`,
+                source: "qualification_fault_controller_receipts",
+              },
+            ],
+            status: "MISSING",
+          },
+          { status: 424 },
+        );
+      }
+      const recovery = Schema.decodeOption(QualificationControlledAgentRecoveryReceipt)(
+        authority.receipt,
+      );
+      if (
+        Option.isNone(recovery) ||
+        recovery.value.executionId !== context.executionId ||
+        recovery.value.planChecksum !== context.planChecksum ||
+        recovery.value.rootId !== context.rootId ||
+        recovery.value.runId !== context.runId ||
+        recovery.value.controllerOperationId !== controllerOperationId ||
+        receipt.attemptId !== context.attemptId
+      ) {
+        return Response.json(
+          { error: "qualificationControlledAgentFaultConflict" },
+          { status: 409 },
+        );
+      }
+      const faultReceipt = qualificationControlledAgentFaultReceipt({
+        manifestChecksum: frozen.manifest.manifestChecksum,
+        receipt: recovery.value,
+        scheduledTriggerAtUtc: new Date(run.startsAtEpochMs).toISOString(),
+      });
+      const runDescriptor = streamRuns(frozen.plan, frozen.manifest).find(
+        (candidate) => candidate.runId === run.runId,
+      );
+      if (
+        runDescriptor === undefined ||
+        !(await retainControlledAgentRecoveryAuthority(env.ARTIFACTS, recovery.value)) ||
+        !(await retainProductAuthorityShard(
+          env,
+          frozen,
+          "qualification_fault_controller_receipts",
+          runDescriptor.firstStreamChunkIndex,
+          [faultReceipt],
+        ))
+      ) {
+        return Response.json(
+          { error: "qualificationControlledAgentFaultConflict" },
+          { status: 409 },
+        );
+      }
+      return null;
+    };
     const retainedAdmissions = await directory.readQualificationAdmissionReceipts(
       agentId,
       frozen.plan.executionId,
@@ -1305,10 +1460,25 @@ const executeArrival = async (
     if (retainedAdmission !== undefined) {
       const indexed = await Effect.runPromise(attemptIndex.recordDecision(retainedAdmission));
       const allowanceRetained = await retainAcceptedMessageUse(retainedAdmission);
-      const scheduledEmailContinuation =
+      const controlledFaultContinuation =
         indexed === "CONFLICT" || !allowanceRetained
           ? null
+          : await completeControlledAgentFault(retainedAdmission);
+      const scheduledEmailContinuation =
+        indexed === "CONFLICT" || !allowanceRetained || controlledFaultContinuation !== null
+          ? null
           : await completeScheduledEmailJourney(retainedAdmission);
+      if (
+        mode === "prepareControlledFault" &&
+        indexed !== "CONFLICT" &&
+        allowanceRetained &&
+        controlledFaultContinuation === null
+      ) {
+        return Response.json({
+          controllerOperationId: qualificationControlledAgentAbortOperationId(context),
+          status: "READY",
+        });
+      }
       return indexed === "CONFLICT"
         ? Response.json({ error: "qualificationAttemptIndexConflict" }, { status: 409 })
         : !allowanceRetained
@@ -1324,8 +1494,86 @@ const executeArrival = async (
               },
               { status: 424 },
             )
-          : (scheduledEmailContinuation ??
+          : (controlledFaultContinuation ??
+            scheduledEmailContinuation ??
             Response.json({ receipt: retainedAdmission, status: "COMPLETE" }));
+    }
+    if (controlledColdActivationRun(run)) {
+      const command = QualificationControlledAgentAbort.make({
+        context,
+        controllerOperationId: qualificationControlledAgentAbortOperationId(context),
+        manifestChecksum: frozen.manifest.manifestChecksum,
+        proofArtifactChecksum: retainedProof.artifactChecksum,
+        proofArtifactId: retainedProof.artifactId,
+        sessionId: participant.sessionId,
+      });
+      if (mode === "prepareControlledFault" && Date.now() > context.offeredAtEpochMs) {
+        return Response.json(
+          {
+            missingSources: [
+              {
+                detail: `${context.rootId} controlled abort missed its before-offer barrier`,
+                source: "qualification_fault_controller_receipts",
+              },
+            ],
+            status: "MISSING",
+          },
+          { status: 424 },
+        );
+      }
+      const preparation =
+        mode === "prepareControlledFault"
+          ? await directory.applyQualificationControlledAgentAbort(agentId, command)
+          : await directory.inspectQualificationControlledAgentFaultPreparation(
+              agentId,
+              command.controllerOperationId,
+            );
+      if (preparation._tag === "QualificationControlledAgentFaultConflict") {
+        return Response.json(
+          { error: "qualificationControlledAgentFaultConflict" },
+          { status: 409 },
+        );
+      }
+      if (preparation._tag !== "QualificationControlledAgentFaultReady") {
+        return Response.json(
+          {
+            missingSources: [
+              {
+                detail: `${context.rootId} controlled Agent abort is not durably recovered`,
+                source: "qualification_fault_controller_receipts",
+              },
+            ],
+            status: "MISSING",
+          },
+          { status: 424 },
+        );
+      }
+      if (
+        !controlledAgentFaultPreparedBeforeOffer({
+          appliedAtUtc: preparation.appliedAtUtc,
+          offeredAtEpochMs: context.offeredAtEpochMs,
+          recoveredAtUtc: preparation.recoveredAtUtc,
+        })
+      ) {
+        return Response.json(
+          {
+            missingSources: [
+              {
+                detail: `${context.rootId} controlled abort completed after its offered time`,
+                source: "qualification_fault_controller_receipts",
+              },
+            ],
+            status: "MISSING",
+          },
+          { status: 424 },
+        );
+      }
+      if (mode === "prepareControlledFault") {
+        return Response.json({
+          controllerOperationId: command.controllerOperationId,
+          status: "READY",
+        });
+      }
     }
     await directory.submitQualificationConversation(agentId, {
       authorization,
@@ -1380,6 +1628,8 @@ const executeArrival = async (
           { status: 424 },
         );
       }
+      const controlledFaultContinuation = await completeControlledAgentFault(receipt);
+      if (controlledFaultContinuation !== null) return controlledFaultContinuation;
       const scheduledEmailContinuation = await completeScheduledEmailJourney(receipt);
       if (scheduledEmailContinuation !== null) return scheduledEmailContinuation;
     }
@@ -2539,6 +2789,207 @@ const collectArrivalReadbackSourceChunk = async (
       });
 };
 
+const collectControlledAgentFaultSourceChunk = async (
+  env: QualificationProductAuthorityEnv,
+  frozen: FrozenExecution,
+  runId: string,
+  chunkIndex: number,
+): Promise<Response> => {
+  const run = frozen.plan.runs.find((candidate) => candidate.runId === runId);
+  const descriptor = streamRuns(frozen.plan, frozen.manifest).find(
+    (candidate) => candidate.runId === runId,
+  );
+  if (
+    run === undefined ||
+    descriptor === undefined ||
+    chunkIndex !== 0 ||
+    !controlledColdActivationRun(run)
+  ) {
+    return Response.json(
+      {
+        missingSources: [
+          {
+            detail: `${runId} has no installed controlled fault producer`,
+            source: "qualification_fault_controller_receipts",
+          },
+        ],
+        status: "MISSING",
+      },
+      { status: 424 },
+    );
+  }
+  const streamChunkIndex = descriptor.firstStreamChunkIndex;
+  const artifactId = productAuthorityShardArtifactId(
+    frozen.plan.executionId,
+    "qualification_fault_controller_receipts",
+    streamChunkIndex,
+  );
+  const inventory = await env.ARTIFACTS.list({
+    include: ["customMetadata"],
+    limit: 2,
+    prefix: artifactId,
+  });
+  if (inventory.objects.length === 0) {
+    return Response.json(
+      {
+        missingSources: [
+          {
+            detail: `${runId} controlled fault receipt is absent`,
+            source: "qualification_fault_controller_receipts",
+          },
+        ],
+        status: "MISSING",
+      },
+      { status: 424 },
+    );
+  }
+  if (inventory.objects.length !== 1 || inventory.objects[0]?.key !== artifactId) {
+    return Response.json({ error: "qualificationControlledAgentFaultConflict" }, { status: 409 });
+  }
+  const object = await env.ARTIFACTS.get(artifactId);
+  if (object === null) {
+    return Response.json(
+      {
+        missingSources: [
+          {
+            detail: `${runId} controlled fault receipt body is absent`,
+            source: "qualification_fault_controller_receipts",
+          },
+        ],
+        status: "MISSING",
+      },
+      { status: 424 },
+    );
+  }
+  const encoded = await object.text();
+  const decoded = Schema.decodeOption(Schema.fromJsonString(ControlledAgentFaultAuthorityShard))(
+    encoded,
+  );
+  const arrival = qualificationRunArrivalAt(frozen.manifest, run, 0);
+  if (Option.isNone(decoded) || arrival === undefined) {
+    return Response.json({ error: "qualificationControlledAgentFaultConflict" }, { status: 409 });
+  }
+  const shard = decoded.value;
+  const receipt = shard.records[0];
+  const context: QualificationContext = {
+    attemptId: qualificationChecksum({
+      executionId: frozen.plan.executionId,
+      planChecksum: frozen.plan.planChecksum,
+      rootId: arrival.rootId,
+      runId,
+    }),
+    executionId: frozen.plan.executionId,
+    journey: "journey" in arrival ? arrival.journey : "ordinaryConversation",
+    offeredAtEpochMs: arrival.offeredAtEpochMs,
+    planChecksum: frozen.plan.planChecksum,
+    region: run.region,
+    rootId: arrival.rootId,
+    runId,
+  };
+  const operationId = qualificationControlledAgentAbortOperationId(context);
+  const recoveryArtifactId = controlledAgentRecoveryArtifactId(operationId);
+  const recoveryObject = await env.ARTIFACTS.get(recoveryArtifactId);
+  if (recoveryObject === null) {
+    return Response.json(
+      {
+        missingSources: [
+          {
+            detail: `${runId} controlled Agent recovery authority is absent`,
+            source: "qualification_fault_controller_receipts",
+          },
+        ],
+        status: "MISSING",
+      },
+      { status: 424 },
+    );
+  }
+  const recoveryEncoded = await recoveryObject.text();
+  const recovery = Schema.decodeOption(
+    Schema.fromJsonString(QualificationControlledAgentRecoveryReceipt),
+  )(recoveryEncoded);
+  const { checksum, ...content } = shard;
+  const expectedBodySha256 = await sha256Hex(encoded);
+  const metadataMatches = (metadata: Readonly<Record<string, string>> | undefined): boolean =>
+    metadata?.["osfo-artifact-checksum"] === checksum &&
+    metadata["osfo-body-sha256"] === expectedBodySha256 &&
+    metadata["osfo-execution-id"] === frozen.plan.executionId &&
+    metadata["osfo-index"] === "0" &&
+    metadata["osfo-kind"] === "qualification-product-authority-export-v1" &&
+    metadata["osfo-plan-checksum"] === frozen.plan.planChecksum &&
+    metadata["osfo-previous-checksum"] === "NONE" &&
+    metadata["osfo-record-count"] === "1" &&
+    metadata["osfo-source"] === "qualification_fault_controller_receipts" &&
+    metadata["osfo-source-version"] === frozen.manifest.sourceVersion &&
+    metadata["osfo-stream-chunk-index"] === String(streamChunkIndex);
+  const recoveryChecksumExact = Option.isSome(recovery)
+    ? (() => {
+        const { artifactChecksum, ...recoveryContent } = recovery.value;
+        return artifactChecksum === qualificationChecksum(recoveryContent);
+      })()
+    : false;
+  const receiptChecksumExact = (() => {
+    if (receipt === undefined) return false;
+    const { artifactChecksum, ...receiptContent } = receipt;
+    return artifactChecksum === qualificationChecksum(receiptContent);
+  })();
+  const exact =
+    receipt !== undefined &&
+    shard.artifactId === artifactId &&
+    shard.executionId === frozen.plan.executionId &&
+    shard.planChecksum === frozen.plan.planChecksum &&
+    shard.recordCount === 1 &&
+    shard.records.length === 1 &&
+    shard.sourceVersion === frozen.manifest.sourceVersion &&
+    shard.streamChunkIndex === streamChunkIndex &&
+    checksum === qualificationChecksum(content) &&
+    receipt.artifactId === recoveryArtifactId &&
+    receipt.controllerOperationId === operationId &&
+    receipt.executionId === frozen.plan.executionId &&
+    receipt.manifestChecksum === frozen.manifest.manifestChecksum &&
+    receipt.planChecksum === frozen.plan.planChecksum &&
+    receipt.runId === runId &&
+    receipt.injectedAtUtc <= new Date(arrival.offeredAtEpochMs).toISOString() &&
+    receipt.endedAtUtc <= new Date(arrival.offeredAtEpochMs).toISOString() &&
+    Option.isSome(recovery) &&
+    recoveryChecksumExact &&
+    receiptChecksumExact &&
+    receipt.applicationStatus === "applied" &&
+    receipt.controllerSource === "osfo-directory-facet-abort-v1" &&
+    receipt.durationSeconds === 0 &&
+    receipt.kind === "coldActivation" &&
+    receipt.scheduledTriggerAtUtc === new Date(run.startsAtEpochMs).toISOString() &&
+    receipt.target === "osfoAgent" &&
+    receipt.trigger === "beforeOffer" &&
+    recovery.value.applicationAuthorityFactId === receipt.applicationAuthorityFactId &&
+    recovery.value.appliedAtUtc === receipt.injectedAtUtc &&
+    recovery.value.controllerOperationId === operationId &&
+    recovery.value.executionId === frozen.plan.executionId &&
+    recovery.value.manifestChecksum === frozen.manifest.manifestChecksum &&
+    recovery.value.planChecksum === frozen.plan.planChecksum &&
+    recovery.value.recoveredAtUtc === receipt.endedAtUtc &&
+    recovery.value.restorationAuthorityFactId === receipt.restorationAuthorityFactId &&
+    recovery.value.rootId === arrival.rootId &&
+    recovery.value.runId === runId &&
+    recoveryObject.customMetadata?.["osfo-artifact-checksum"] === recovery.value.artifactChecksum &&
+    recoveryObject.customMetadata?.["osfo-body-sha256"] === (await sha256Hex(recoveryEncoded)) &&
+    recoveryObject.customMetadata?.["osfo-controller-operation-id"] === operationId &&
+    recoveryObject.customMetadata?.["osfo-execution-id"] === frozen.plan.executionId &&
+    recoveryObject.customMetadata?.["osfo-kind"] === "qualification-controlled-agent-recovery-v1" &&
+    recoveryObject.customMetadata?.["osfo-plan-checksum"] === frozen.plan.planChecksum &&
+    recoveryObject.customMetadata?.["osfo-root-id"] === arrival.rootId &&
+    recoveryObject.customMetadata?.["osfo-run-id"] === runId &&
+    metadataMatches(object.customMetadata) &&
+    metadataMatches(inventory.objects[0]?.customMetadata);
+  return exact
+    ? Response.json({
+        recordCount: 1,
+        source: "qualification_fault_controller_receipts",
+        status: "COMPLETE",
+        streamChunkIndex,
+      })
+    : Response.json({ error: "qualificationControlledAgentFaultConflict" }, { status: 409 });
+};
+
 const collectSourceChunk = (
   env: QualificationProductAuthorityEnv,
   frozen: FrozenExecution,
@@ -2551,6 +3002,9 @@ const collectSourceChunk = (
   }
   if (isQualificationAgentPostgresAuthoritySource(source)) {
     return collectAgentSourceChunk(env, frozen, runId, chunkIndex, source);
+  }
+  if (isQualificationControlledAgentFaultAuthoritySource(source)) {
+    return collectControlledAgentFaultSourceChunk(env, frozen, runId, chunkIndex);
   }
   return Promise.resolve(
     Response.json(
@@ -2891,6 +3345,20 @@ export const handleQualificationProductAuthority = async (
       unsupportedExecutionResponse(frozen.manifest) ??
       executeArrivalChunk(env, frozen, decoded.value.runId, decoded.value.chunkIndex)
     );
+  }
+  if (url.pathname === "/v1/executions/controlled-agent-fault-preparations") {
+    const decoded = decodeExecuteArrivalChunk(encoded);
+    if (Option.isNone(decoded)) {
+      return Response.json({ error: "qualificationProductAuthorityInvalid" }, { status: 400 });
+    }
+    const frozen = await readFrozenExecution(decoded.value, env);
+    if (frozen === null) {
+      return Response.json({ error: "qualificationProductAuthorityConflict" }, { status: 409 });
+    }
+    if (decoded.value.chunkIndex !== 0) {
+      return Response.json({ error: "qualificationControlledAgentFaultConflict" }, { status: 409 });
+    }
+    return executeArrival(env, frozen, decoded.value.runId, 0, "prepareControlledFault");
   }
   if (url.pathname === "/v1/executions/arrivals") {
     const decoded = decodeExecuteArrival(encoded);

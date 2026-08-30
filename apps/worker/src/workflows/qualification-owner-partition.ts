@@ -65,7 +65,12 @@ const PartitionStepResult = Schema.TaggedUnion({
   Missing: { outcome: QualificationProductAuthorityMissing },
   Pending: { outcome: QualificationProductAuthoritySourceBundlePending },
 });
+const FaultPreparationStepResult = Schema.TaggedUnion({
+  Missing: {},
+  Ready: {},
+});
 const decodeStepResult = Schema.decodePromise(PartitionStepResult);
+const decodeFaultPreparationStepResult = Schema.decodePromise(FaultPreparationStepResult);
 
 interface PartitionArtifactObject {
   readonly customMetadata?: Readonly<Record<string, string>>;
@@ -278,6 +283,40 @@ const runQualificationOwnerPartitionAttempt = async (input: {
     chunk.streamChunkIndex !== input.payload.lastStreamChunkIndex
   ) {
     throw new Error("Qualification child must own exactly one frozen arrival chunk");
+  }
+  const faultPreparation = await decodeFaultPreparationStepResult(
+    await input.step.do(`prepare controlled fault ${chunk.streamChunkIndex}`, async () => {
+      const response = await input.env.PRODUCT_AUTHORITY.fetch(
+        "https://qualification-product-authority.internal/v1/executions/controlled-agent-fault-preparations",
+        {
+          body: canonicalQualificationJson({
+            chunkIndex: chunk.chunkIndex,
+            executionId: input.payload.executionId,
+            manifestChecksum: input.payload.manifestChecksum,
+            planChecksum: input.payload.planChecksum,
+            requestArtifactChecksum: input.payload.requestArtifactChecksum,
+            requestArtifactId: input.payload.requestArtifactId,
+            runId: chunk.runId,
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      if (response.status === 200) return FaultPreparationStepResult.cases.Ready.make({});
+      if (response.status === 424) return FaultPreparationStepResult.cases.Missing.make({});
+      throw new Error(`Controlled fault preparation returned ${response.status}`);
+    }),
+  );
+  if (faultPreparation._tag === "Missing") {
+    return retainCompletion(input.env, input.payload, {
+      arrival: null,
+      failureCode: null,
+      leafInputArtifactChecksum: null,
+      leafInputArtifactId: null,
+      missingSources: ["qualification_fault_controller_receipts"],
+      sourceChecksums: [],
+      status: "MISSING",
+    });
   }
   await input.step.sleepUntil(
     `await offered chunk ${chunk.streamChunkIndex}`,

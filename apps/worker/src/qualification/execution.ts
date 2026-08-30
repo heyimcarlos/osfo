@@ -714,6 +714,11 @@ const validateFaultReceipt = (
   const scheduledAt = Date.parse(receipt.scheduledTriggerAtUtc);
   const observedAt = Date.parse(receipt.triggerObservedAtUtc);
   const injectedAt = Date.parse(receipt.injectedAtUtc);
+  const endedAt = Date.parse(receipt.endedAtUtc);
+  const controlledBeforeOffer =
+    receipt.kind === "coldActivation" &&
+    receipt.target === "osfoAgent" &&
+    receipt.trigger === "beforeOffer";
   return (
     artifactChecksum === qualificationChecksum(content) &&
     receipt.applicationStatus === "applied" &&
@@ -732,12 +737,18 @@ const validateFaultReceipt = (
     Number.isFinite(scheduledAt) &&
     Number.isFinite(observedAt) &&
     Number.isFinite(injectedAt) &&
-    observedAt >= scheduledAt &&
-    injectedAt >= observedAt &&
-    Date.parse(receipt.endedAtUtc) === injectedAt + receipt.durationSeconds * 1_000 &&
-    (attempt.requiresAuthorityFact
-      ? receipt.triggerAuthorityFactId !== null
-      : receipt.triggerAuthorityFactId === null && injectedAt - scheduledAt <= maximumOfferLagMs)
+    (controlledBeforeOffer
+      ? receipt.triggerAuthorityFactId === null &&
+        observedAt === injectedAt &&
+        injectedAt <= endedAt &&
+        endedAt <= scheduledAt
+      : observedAt >= scheduledAt &&
+        injectedAt >= observedAt &&
+        endedAt === injectedAt + receipt.durationSeconds * 1_000 &&
+        (attempt.requiresAuthorityFact
+          ? receipt.triggerAuthorityFactId !== null
+          : receipt.triggerAuthorityFactId === null &&
+            injectedAt - scheduledAt <= maximumOfferLagMs))
   );
 };
 

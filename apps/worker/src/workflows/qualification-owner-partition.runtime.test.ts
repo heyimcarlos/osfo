@@ -36,7 +36,7 @@ const payload: QualificationOwnerPartitionWorkflowPayload = {
 };
 
 const runtime = async (
-  tamper: "bundleCount" | "duplicateSource" | "metadata" | "missing" | null = null,
+  tamper: "bundleCount" | "duplicateSource" | "faultMissing" | "metadata" | "missing" | null = null,
 ) => {
   const retained = new Map<
     string,
@@ -66,10 +66,18 @@ const runtime = async (
   };
   let arrivalEffects = 0;
   let sourceCollections = 0;
+  const events = new Array<string>();
   const fetcher = {
     fetch: async (input: RequestInfo | URL) => {
       const path = new URL(new Request(input).url).pathname;
+      if (path.endsWith("/controlled-agent-fault-preparations")) {
+        events.push("fault-ready");
+        return tamper === "faultMissing"
+          ? Response.json({ status: "MISSING" }, { status: 424 })
+          : Response.json({ status: "NOT_REQUIRED" });
+      }
       if (path.endsWith("/arrival-chunks")) {
+        events.push("arrival");
         const bodyContent = {
           chunkIndex: 0,
           executionId: payload.executionId,
@@ -181,7 +189,10 @@ const runtime = async (
   };
   const step = {
     do: <Value>(_name: string, callback: () => Promise<Value>) => callback(),
-    sleepUntil: () => Promise.resolve(),
+    sleepUntil: () => {
+      events.push("sleep");
+      return Promise.resolve();
+    },
   };
   const env = { ARTIFACTS: bucket, PRODUCT_AUTHORITY: fetcher };
   const first = await runQualificationOwnerPartition({ env, payload, step });
@@ -191,6 +202,7 @@ const runtime = async (
   const second = await runQualificationOwnerPartition({ env, payload, step });
   return {
     arrivalEffects,
+    events,
     first,
     firstBytes,
     retained,
@@ -220,6 +232,18 @@ it("retains byte-identical COMPLETE once and replays no arrival or provider effe
       "qualification/executions/partition-execution/owner-partitions/00000000.json",
     )?.value,
   );
+});
+
+it("blocks every arrival until controlled fault preparation is durably ready", async () => {
+  const ready = await runtime();
+  expect(ready.events.slice(0, 3)).toEqual(["fault-ready", "sleep", "arrival"]);
+  const missing = await runtime("faultMissing");
+  expect(missing.first).toMatchObject({
+    missingSources: ["qualification_fault_controller_receipts"],
+    outcome: "MISSING",
+  });
+  expect(missing.arrivalEffects).toBe(0);
+  expect(missing.events).toEqual(["fault-ready", "fault-ready"]);
 });
 
 it("retains named MISSING instead of leaving the coordinator waiting", async () => {

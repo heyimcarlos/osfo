@@ -128,12 +128,21 @@ import {
   retainQualificationAdmissionReceipt,
 } from "./db/qualification-admissions";
 import {
+  armQualificationControlledAgentAbort,
+  inspectQualificationControlledAgentAbort,
   readQualificationActivationReceipts,
+  readQualificationControlledAgentRecovery,
+  recoverQualificationControlledAgentAbort,
   retainAdmittedRequestActivation,
   retainQualificationAdmissionActivation,
   startQualificationRuntimeActivation,
   type QualificationRuntimeActivationClaim,
 } from "./db/qualification-activations";
+import {
+  QualificationControlledAgentAbort,
+  QualificationControlledAgentAbortApplied,
+  verifyQualificationControlledAgentAbort,
+} from "../../qualification/controlled-agent-fault";
 import {
   launchModelAccessPolicy,
   type ManagedModelRoute,
@@ -6801,6 +6810,121 @@ export class OsfoAgent extends Think<Env> {
     });
   }
 
+  /** Arm a proof-bound private abort against this exact running activation. */
+  async armQualificationControlledAgentAbort(encoded: unknown) {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeUnknownOption(QualificationControlledAgentAbort)(encoded);
+    if (Option.isNone(decoded)) {
+      return { _tag: "QualificationControlledAgentFaultConflict" as const };
+    }
+    const command = decoded.value;
+    const sessionId = Schema.decodeOption(SessionId)(command.sessionId);
+    if (Option.isNone(sessionId)) {
+      return { _tag: "QualificationControlledAgentFaultConflict" as const };
+    }
+    const owned = await Effect.runPromiseExit(this.#store.ownsSession(sessionId.value));
+    if (!Exit.isSuccess(owned) || !owned.value) {
+      return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+    }
+    const proof = await this.env.ARTIFACTS.get(command.proofArtifactId);
+    if (
+      proof === null ||
+      !verifyQualificationControlledAgentAbort(await proof.text(), command, AgentId.make(this.name))
+    ) {
+      return { _tag: "QualificationControlledAgentFaultConflict" as const };
+    }
+    const retained = await Effect.runPromiseExit(
+      armQualificationControlledAgentAbort(this.#db, {
+        activationId: this.#qualificationActivationId,
+        command,
+      }),
+    );
+    if (Exit.isSuccess(retained)) {
+      return { _tag: "QualificationControlledAgentFaultArmed" as const, arm: retained.value };
+    }
+    return Option.match(Cause.findErrorOption(retained.cause), {
+      onNone: () => ({ _tag: "QualificationControlledAgentFaultUnavailable" as const }),
+      onSome: (failure) =>
+        failure._tag === "QualificationActivationConflict"
+          ? ({ _tag: "QualificationControlledAgentFaultConflict" as const } as const)
+          : ({ _tag: "QualificationControlledAgentFaultUnavailable" as const } as const),
+    });
+  }
+
+  /** Inspect an armed token and this live activation for abort reconciliation. */
+  async inspectQualificationControlledAgentAbort(controllerOperationId: string) {
+    await this.#migrationsReady;
+    if (controllerOperationId.length === 0 || controllerOperationId.length > 500) {
+      return { _tag: "QualificationControlledAgentFaultConflict" as const };
+    }
+    const retained = await Effect.runPromiseExit(
+      inspectQualificationControlledAgentAbort(this.#db, controllerOperationId),
+    );
+    if (Exit.isSuccess(retained)) {
+      return {
+        _tag: "QualificationControlledAgentFaultState" as const,
+        activationId: this.#qualificationActivationId,
+        retained: retained.value,
+      };
+    }
+    return Option.match(Cause.findErrorOption(retained.cause), {
+      onNone: () => ({ _tag: "QualificationControlledAgentFaultUnavailable" as const }),
+      onSome: (failure) =>
+        failure._tag === "QualificationActivationConflict"
+          ? ({ _tag: "QualificationControlledAgentFaultConflict" as const } as const)
+          : ({ _tag: "QualificationControlledAgentFaultUnavailable" as const } as const),
+    });
+  }
+
+  /** Retain recovery only when this distinct activation matches the parent's applied fact. */
+  async recoverQualificationControlledAgentAbort(encoded: unknown) {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeUnknownOption(QualificationControlledAgentAbortApplied)(encoded);
+    if (Option.isNone(decoded)) {
+      return { _tag: "QualificationControlledAgentFaultConflict" as const };
+    }
+    const retained = await Effect.runPromiseExit(
+      recoverQualificationControlledAgentAbort(this.#db, {
+        applied: decoded.value,
+        recoveredActivationId: this.#qualificationActivationId,
+      }),
+    );
+    if (Exit.isSuccess(retained)) {
+      return { _tag: "QualificationControlledAgentFaultRecovered" as const };
+    }
+    return Option.match(Cause.findErrorOption(retained.cause), {
+      onNone: () => ({ _tag: "QualificationControlledAgentFaultUnavailable" as const }),
+      onSome: (failure) =>
+        failure._tag === "QualificationActivationConflict"
+          ? ({ _tag: "QualificationControlledAgentFaultConflict" as const } as const)
+          : ({ _tag: "QualificationControlledAgentFaultUnavailable" as const } as const),
+    });
+  }
+
+  /** Read one producer-owned recovery fact after its exact root consumed the token. */
+  async readQualificationControlledAgentRecovery(controllerOperationId: string) {
+    await this.#migrationsReady;
+    if (controllerOperationId.length === 0 || controllerOperationId.length > 500) {
+      return { _tag: "QualificationControlledAgentFaultConflict" as const };
+    }
+    const retained = await Effect.runPromiseExit(
+      readQualificationControlledAgentRecovery(this.#db, controllerOperationId),
+    );
+    if (Exit.isSuccess(retained)) {
+      return {
+        _tag: "QualificationControlledAgentRecoveryAuthority" as const,
+        receipt: retained.value,
+      };
+    }
+    return Option.match(Cause.findErrorOption(retained.cause), {
+      onNone: () => ({ _tag: "QualificationControlledAgentFaultUnavailable" as const }),
+      onSome: (failure) =>
+        failure._tag === "QualificationActivationConflict"
+          ? ({ _tag: "QualificationControlledAgentFaultConflict" as const } as const)
+          : ({ _tag: "QualificationControlledAgentFaultUnavailable" as const } as const),
+    });
+  }
+
   /** Join qualification roots to terminal Think, Agent SQLite, and Memory authority. */
   async readQualificationTurnAuthority(executionId: string, encodedSessionId: string) {
     await this.#migrationsReady;
@@ -6932,12 +7056,18 @@ export class OsfoAgent extends Think<Env> {
   ): Promise<boolean> {
     const activation = this.#qualificationRuntimeActivation;
     if (activation === null) return false;
+    const observed = {
+      ...activation,
+      requestId: admission.submissionId,
+      sessionId: admission.metadata.sessionId,
+    };
     const retained = await Effect.runPromiseExit(
-      retainAdmittedRequestActivation(this.#db, {
-        ...activation,
-        requestId: admission.submissionId,
-        sessionId: admission.metadata.sessionId,
-      }),
+      retainAdmittedRequestActivation(
+        this.#db,
+        admission.metadata.qualificationContext === undefined
+          ? observed
+          : { ...observed, qualificationContext: admission.metadata.qualificationContext },
+      ),
     );
     this.#qualificationRuntimeActivation = {
       ...activation,

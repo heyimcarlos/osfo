@@ -22,6 +22,7 @@ import qualificationAdmissionMigrationSql from "./migrations/0018_qualification_
 import qualificationModelAccessMigrationSql from "./migrations/0019_lonely_ser_duncan.sql";
 import qualificationGatewayIdentityMigrationSql from "./migrations/0020_wealthy_excalibur.sql";
 import qualificationActivationMigrationSql from "./migrations/0021_short_thunderbolt.sql";
+import qualificationControlledAgentFaultMigrationSql from "./migrations/0022_productive_kang.sql";
 import {
   AgentMigrationDefinitionMismatch,
   AgentMigrationDigestMismatch,
@@ -148,6 +149,11 @@ export const agentMigrations: ReadonlyArray<AgentMigration> = [
     digest: "sha256:68d169ce1a9f4646752437c970b534b9697252bdd783181ca5cef3ee4d0f54a8",
     sql: qualificationActivationMigrationSql,
     version: 22,
+  },
+  {
+    digest: "sha256:3d17b73c4bf9f87e97f3a05aa7eddd4914899a51bb34ba30358cca2380b29840",
+    sql: qualificationControlledAgentFaultMigrationSql,
+    version: 23,
   },
 ];
 

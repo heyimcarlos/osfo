@@ -19,6 +19,7 @@ type Protection =
 
 const publicBoundaryPolicy = {
   analyzeFile: ["ordinaryMutation", "accountDeletionFence"],
+  armQualificationControlledAgentAbort: ["cancellationReconciliationDeletion", "none"],
   authorizeAction: ["read", "trackedThinkLifecycle"],
   beforeStep: ["ordinaryMutation", "trackedThinkLifecycle"],
   beforeTurn: ["ordinaryMutation", "trackedThinkLifecycle"],
@@ -48,6 +49,7 @@ const publicBoundaryPolicy = {
   inspectCoreMemory: ["read", "fencedSessionExecution"],
   inspectDocumentBuildSourceSnapshot: ["read", "accountDeletionFence"],
   inspectIntegrationConnections: ["read", "none"],
+  inspectQualificationControlledAgentAbort: ["read", "none"],
   listActionPresentations: ["read", "none"],
   inspectUserFile: ["read", "accountDeletionFence"],
   inspectPersonalSkills: ["read", "none"],
@@ -67,6 +69,7 @@ const publicBoundaryPolicy = {
   readCommittedTurns: ["cancellationReconciliationDeletion", "none"],
   readQualificationActivationReceipts: ["read", "none"],
   readQualificationAdmissionReceipts: ["read", "none"],
+  readQualificationControlledAgentRecovery: ["read", "none"],
   readQualificationTurnAuthority: ["read", "none"],
   readFile: ["read", "none"],
   resolveDocumentBuildFiles: ["read", "accountDeletionFence"],
@@ -74,6 +77,7 @@ const publicBoundaryPolicy = {
   readSession: ["read", "none"],
   readSessionAuthorizationFacts: ["read", "none"],
   recoverScheduledEmail: ["cancellationReconciliationDeletion", "none"],
+  recoverQualificationControlledAgentAbort: ["cancellationReconciliationDeletion", "none"],
   reconcileMemoryProviderOutbox: ["cancellationReconciliationDeletion", "none"],
   reconcileModelCallUsage: ["cancellationReconciliationDeletion", "none"],
   settleGatewayModelUsage: ["cancellationReconciliationDeletion", "none"],
@@ -87,6 +91,7 @@ const publicBoundaryPolicy = {
 } as const satisfies Record<string, readonly [BoundaryClass, Protection]>;
 
 const directoryBoundaryPolicy = {
+  applyQualificationControlledAgentAbort: ["cancellationReconciliationDeletion", "directoryGate"],
   chatWithMessengerContext: ["ordinaryMutation", "directoryGate"],
   beginScheduledEmail: ["ordinaryMutation", "directoryGate"],
   configureChannels: ["initialization", "initializationLifecycle"],
@@ -105,6 +110,7 @@ const directoryBoundaryPolicy = {
   inspectAgent: ["read", "none"],
   inspectDocumentBuildSourceSnapshot: ["read", "directoryGate"],
   inspectIntegrationConnections: ["read", "directoryGate"],
+  inspectQualificationControlledAgentFaultPreparation: ["read", "directoryGate"],
   inspectUserFile: ["read", "directoryGate"],
   inspectPersonalSkills: ["read", "directoryGate"],
   inspectReminderWakeUpSource: ["read", "directoryGate"],
@@ -115,6 +121,7 @@ const directoryBoundaryPolicy = {
   probeAgent: ["read", "none"],
   readQualificationActivationReceipts: ["read", "directoryGate"],
   readQualificationAdmissionReceipts: ["read", "directoryGate"],
+  readQualificationControlledAgentRecovery: ["read", "directoryGate"],
   readQualificationTurnAuthority: ["read", "directoryGate"],
   resolveDocumentBuildFiles: ["read", "directoryGate"],
   recoverScheduledEmail: ["cancellationReconciliationDeletion", "directoryGate"],

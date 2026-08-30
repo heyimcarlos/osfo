@@ -399,8 +399,9 @@ export const qualificationAdmittedRequestActivations = sqliteTable(
         onDelete: "restrict",
         onUpdate: "restrict",
       }),
-    cause: text({ enum: ["deployment", "firstUse", "warm"] }),
+    cause: text({ enum: ["deployment", "faultRecovery", "firstUse", "warm"] }),
     classification: text({ enum: ["cold", "warm"] }),
+    controller_operation_id: text(),
     deployment_version_id: text(),
     observed_at: text()
       .notNull()
@@ -417,7 +418,7 @@ export const qualificationAdmittedRequestActivations = sqliteTable(
   (table) => [
     check(
       "osfo_qualification_admitted_request_activation_cause",
-      sql`${table.cause} IS NULL OR ${table.cause} IN ('deployment', 'firstUse', 'warm')`,
+      sql`${table.cause} IS NULL OR ${table.cause} IN ('deployment', 'faultRecovery', 'firstUse', 'warm')`,
     ),
     check(
       "osfo_qualification_admitted_request_activation_classification",
@@ -426,6 +427,10 @@ export const qualificationAdmittedRequestActivations = sqliteTable(
     check(
       "osfo_qualification_admitted_request_activation_pair",
       sql`(${table.cause} IS NULL AND ${table.classification} IS NULL) OR (${table.cause} IS NOT NULL AND ${table.classification} IS NOT NULL)`,
+    ),
+    check(
+      "osfo_qualification_admitted_request_activation_controller",
+      sql`(${table.cause} = 'faultRecovery' AND ${table.controller_operation_id} IS NOT NULL) OR (${table.cause} != 'faultRecovery' AND ${table.controller_operation_id} IS NULL) OR (${table.cause} IS NULL AND ${table.controller_operation_id} IS NULL)`,
     ),
     index("osfo_qualification_admitted_requests_by_session").on(
       table.session_id,
@@ -446,7 +451,8 @@ export const qualificationActivationReceipts = sqliteTable(
       }),
     artifact_checksum: text().notNull(),
     attempt_id: text().primaryKey(),
-    cause: text({ enum: ["deployment", "firstUse", "warm"] }),
+    cause: text({ enum: ["deployment", "faultRecovery", "firstUse", "warm"] }),
+    controller_operation_id: text(),
     classification: text({ enum: ["cold", "warm"] }),
     deployment_version_id: text(),
     execution_id: text().notNull(),
@@ -472,7 +478,7 @@ export const qualificationActivationReceipts = sqliteTable(
   (table) => [
     check(
       "osfo_qualification_activation_receipt_cause",
-      sql`${table.cause} IS NULL OR ${table.cause} IN ('deployment', 'firstUse', 'warm')`,
+      sql`${table.cause} IS NULL OR ${table.cause} IN ('deployment', 'faultRecovery', 'firstUse', 'warm')`,
     ),
     check(
       "osfo_qualification_activation_receipt_classification",
@@ -481,6 +487,10 @@ export const qualificationActivationReceipts = sqliteTable(
     check(
       "osfo_qualification_activation_receipt_pair",
       sql`(${table.cause} IS NULL AND ${table.classification} IS NULL) OR (${table.cause} IS NOT NULL AND ${table.classification} IS NOT NULL)`,
+    ),
+    check(
+      "osfo_qualification_activation_receipt_controller",
+      sql`(${table.cause} = 'faultRecovery' AND ${table.controller_operation_id} IS NOT NULL) OR (${table.cause} != 'faultRecovery' AND ${table.controller_operation_id} IS NULL) OR (${table.cause} IS NULL AND ${table.controller_operation_id} IS NULL)`,
     ),
     check(
       "osfo_qualification_activation_receipt_region",
@@ -493,6 +503,82 @@ export const qualificationActivationReceipts = sqliteTable(
       table.run_id,
       table.occurred_at,
     ),
+  ],
+);
+
+/** One proof-bound controlled abort, recovered only by a distinct runtime activation. */
+export const qualificationControlledAgentAborts = sqliteTable(
+  "osfo_qualification_controlled_agent_aborts",
+  {
+    application_authority_fact_id: text(),
+    applied_at: text(),
+    armed_activation_id: text()
+      .notNull()
+      .references(() => qualificationRuntimeActivations.activation_id, {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      }),
+    armed_at: text()
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    artifact_checksum: text().notNull(),
+    attempt_id: text().notNull().unique(),
+    controller_operation_id: text().primaryKey(),
+    execution_id: text().notNull(),
+    journey: text({
+      enum: [
+        "accountBillingSafetyDataRights",
+        "documentBuild",
+        "fileAnalysis",
+        "gmail",
+        "ordinaryConversation",
+        "registration",
+        "reminder",
+        "researchReport",
+        "scheduledEmail",
+      ],
+    }).notNull(),
+    manifest_checksum: text().notNull(),
+    offered_at_epoch_ms: integer().notNull(),
+    plan_checksum: text().notNull(),
+    proof_artifact_checksum: text().notNull(),
+    proof_artifact_id: text().notNull(),
+    recovered_activation_id: text().references(
+      () => qualificationRuntimeActivations.activation_id,
+      {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      },
+    ),
+    recovery_artifact_checksum: text(),
+    recovered_at: text(),
+    region: text({ enum: ["americas", "asiaPacific", "europe"] }).notNull(),
+    request_id: text(),
+    restoration_authority_fact_id: text(),
+    root_id: text().notNull(),
+    run_id: text().notNull(),
+    session_id: sessionId()
+      .notNull()
+      .references(() => sessionOwnership.session_id, {
+        onDelete: "cascade",
+        onUpdate: "restrict",
+      }),
+    state: text({ enum: ["armed", "recovered", "consumed", "interfered"] }).notNull(),
+  },
+  (table) => [
+    check(
+      "osfo_qualification_controlled_agent_abort_state",
+      sql`${table.state} IN ('armed', 'recovered', 'consumed', 'interfered')`,
+    ),
+    check(
+      "osfo_qualification_controlled_agent_abort_recovery",
+      sql`(${table.state} = 'armed' AND ${table.application_authority_fact_id} IS NULL AND ${table.recovered_activation_id} IS NULL AND ${table.recovery_artifact_checksum} IS NULL AND ${table.restoration_authority_fact_id} IS NULL) OR (${table.state} != 'armed' AND ${table.application_authority_fact_id} IS NOT NULL AND ${table.applied_at} IS NOT NULL AND ${table.recovered_activation_id} IS NOT NULL AND ${table.recovered_at} IS NOT NULL AND ${table.recovery_artifact_checksum} IS NOT NULL AND ${table.restoration_authority_fact_id} IS NOT NULL)`,
+    ),
+    uniqueIndex("osfo_qualification_controlled_agent_abort_root_unique").on(
+      table.execution_id,
+      table.root_id,
+    ),
+    index("osfo_qualification_controlled_agent_abort_session").on(table.session_id, table.state),
   ],
 );
 

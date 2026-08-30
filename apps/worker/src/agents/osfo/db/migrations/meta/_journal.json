@@ -155,6 +155,13 @@
       "when": 1788059647980,
       "tag": "0021_short_thunderbolt",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1788063556605,
+      "tag": "0022_productive_kang",
+      "breakpoints": true
     }
   ]
 }

@@ -33,8 +33,19 @@ import { WebFileUpload } from "./web-file-upload";
 import { DocumentBuildFileResolution } from "./document-build-file-resolution";
 import type { DecideActionApprovalRequest } from "./think-action-approvals";
 import type { SubmitQualificationConversationRequest } from "../../qualification/qualification-attempt";
+import {
+  QualificationControlledAgentAbort,
+  QualificationControlledAgentAbortApplied,
+  qualificationControlledAgentAbortOperationId,
+  qualificationControlledAgentAbortReconciliation,
+  qualificationControlledAgentFaultDeletionFenced,
+  qualificationControlledAgentFaultControllerRecord,
+  validQualificationControlledAgentFaultControllerRecord,
+  type QualificationControlledAgentFaultControllerRecord,
+} from "../../qualification/controlled-agent-fault";
+import { qualificationChecksum } from "../../qualification/qualification-checksum";
 
-/* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle, osfo/no-unknown-parameters -- Think RPC methods receive untrusted payloads and immediately schema-decode them at this messenger composition root. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle, osfo/no-unknown-parameters -- Think RPC methods receive untrusted payloads, immediately schema-decode them, and retain host-observed controller time at this messenger composition root. */
 
 export { OSFO_DIRECTORY_NAME } from "./identity";
 
@@ -172,6 +183,291 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
       executionId,
       sessionId,
     );
+  }
+
+  /** Apply and reconcile one proof-bound cold-activation abort on a disposable Agent. */
+  async applyQualificationControlledAgentAbort(agentId: string, encoded: unknown) {
+    const decoded = Schema.decodeUnknownOption(QualificationControlledAgentAbort)(encoded);
+    if (
+      Option.isNone(decoded) ||
+      decoded.value.controllerOperationId !==
+        qualificationControlledAgentAbortOperationId(decoded.value.context)
+    ) {
+      return { _tag: "QualificationControlledAgentFaultConflict" as const };
+    }
+    const command = decoded.value;
+    if (
+      !this.hasSubAgent(OsfoAgent, agentId) ||
+      (await this.#qualificationFaultDeletionFenced(agentId))
+    ) {
+      return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+    }
+    const key = qualificationControlledAgentFaultKey(agentId, command.controllerOperationId);
+    const retained =
+      await this.ctx.storage.get<QualificationControlledAgentFaultControllerRecord>(key);
+    if (await this.#qualificationFaultDeletionFenced(agentId)) {
+      return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+    }
+    if (
+      retained !== undefined &&
+      !validQualificationControlledAgentFaultControllerRecord(retained)
+    ) {
+      return { _tag: "QualificationControlledAgentFaultConflict" as const };
+    }
+    if (
+      retained !== undefined &&
+      (retained.agentId !== agentId ||
+        qualificationChecksum(retained.arm.context) !== qualificationChecksum(command.context))
+    ) {
+      return { _tag: "QualificationControlledAgentFaultConflict" as const };
+    }
+    let controller = retained;
+    if (controller === undefined) {
+      const child = await this.#qualificationFaultAgent(agentId);
+      if (child === null) {
+        return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+      }
+      const armed = await child.armQualificationControlledAgentAbort(command);
+      if (await this.#qualificationFaultDeletionFenced(agentId)) {
+        return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+      }
+      if (armed._tag !== "QualificationControlledAgentFaultArmed") return armed;
+      const proposed = qualificationControlledAgentFaultControllerRecord({
+        agentId,
+        applied: null,
+        arm: armed.arm,
+        state: "armed",
+      });
+      const retainedArm = await retainControlledAgentFaultRecord(this.ctx.storage, key, proposed);
+      if (await this.#qualificationFaultDeletionFenced(agentId)) {
+        await this.ctx.storage.delete(key);
+        return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+      }
+      if (retainedArm === null) {
+        return { _tag: "QualificationControlledAgentFaultConflict" as const };
+      }
+      controller = retainedArm;
+    }
+    if (controller.state === "ambiguous") {
+      return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+    }
+    if (controller.state === "armed") {
+      const child = await this.#qualificationFaultAgent(agentId);
+      if (child === null) {
+        return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+      }
+      const before = await child.inspectQualificationControlledAgentAbort(
+        command.controllerOperationId,
+      );
+      if (await this.#qualificationFaultDeletionFenced(agentId)) {
+        return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+      }
+      if (before._tag !== "QualificationControlledAgentFaultState") return before;
+      if (
+        qualificationControlledAgentAbortReconciliation({
+          armedActivationId: controller.arm.armedActivationId,
+          observedActivationId: before.activationId,
+          retainedState: controller.state,
+        }) !== "abortArmedActivation"
+      ) {
+        const ambiguous = qualificationControlledAgentFaultControllerRecord({
+          agentId,
+          applied: null,
+          arm: controller.arm,
+          state: "ambiguous",
+        });
+        await replaceControlledAgentFaultRecord(
+          this.ctx.storage,
+          key,
+          controller.artifactChecksum,
+          ambiguous,
+        );
+        if (await this.#qualificationFaultDeletionFenced(agentId)) {
+          await this.ctx.storage.delete(key);
+        }
+        return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+      }
+      try {
+        this.abortSubAgent(
+          OsfoAgent,
+          agentId,
+          new Error("Qualification requested one controlled Agent cold activation"),
+        );
+      } catch {
+        if (await this.#qualificationFaultDeletionFenced(agentId)) {
+          return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+        }
+        const reconciled = await this.#qualificationFaultAgent(agentId);
+        if (reconciled === null) {
+          return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+        }
+        const reconciledState = await reconciled.inspectQualificationControlledAgentAbort(
+          command.controllerOperationId,
+        );
+        if (
+          reconciledState._tag === "QualificationControlledAgentFaultState" &&
+          qualificationControlledAgentAbortReconciliation({
+            armedActivationId: controller.arm.armedActivationId,
+            observedActivationId: reconciledState.activationId,
+            retainedState: controller.state,
+          }) === "retainMissing" &&
+          reconciledState.activationId !== controller.arm.armedActivationId
+        ) {
+          const ambiguous = qualificationControlledAgentFaultControllerRecord({
+            agentId,
+            applied: null,
+            arm: controller.arm,
+            state: "ambiguous",
+          });
+          await replaceControlledAgentFaultRecord(
+            this.ctx.storage,
+            key,
+            controller.artifactChecksum,
+            ambiguous,
+          );
+          if (await this.#qualificationFaultDeletionFenced(agentId)) {
+            await this.ctx.storage.delete(key);
+          }
+        }
+        return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+      }
+      const appliedAtUtc = new Date().toISOString();
+      const applied = QualificationControlledAgentAbortApplied.make({
+        ...command,
+        applicationAuthorityFactId: qualificationChecksum({
+          armedArtifactChecksum: controller.arm.artifactChecksum,
+          controllerOperationId: command.controllerOperationId,
+          kind: "facetAbortApplied",
+        }),
+        appliedAtUtc,
+        armedActivationId: controller.arm.armedActivationId,
+      });
+      const appliedRecord = qualificationControlledAgentFaultControllerRecord({
+        agentId,
+        applied,
+        arm: controller.arm,
+        state: "applied",
+      });
+      const replaced = await replaceControlledAgentFaultRecord(
+        this.ctx.storage,
+        key,
+        controller.artifactChecksum,
+        appliedRecord,
+      );
+      if (await this.#qualificationFaultDeletionFenced(agentId)) {
+        await this.ctx.storage.delete(key);
+        return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+      }
+      if (!replaced) {
+        return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+      }
+      controller = appliedRecord;
+    }
+    if (controller.applied === null) {
+      return { _tag: "QualificationControlledAgentFaultConflict" as const };
+    }
+    const restarted = await this.#qualificationFaultAgent(agentId);
+    if (restarted === null) {
+      return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+    }
+    const state = await restarted.inspectQualificationControlledAgentAbort(
+      command.controllerOperationId,
+    );
+    if (await this.#qualificationFaultDeletionFenced(agentId)) {
+      return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+    }
+    if (state._tag !== "QualificationControlledAgentFaultState") return state;
+    if (
+      qualificationControlledAgentAbortReconciliation({
+        armedActivationId: controller.arm.armedActivationId,
+        observedActivationId: state.activationId,
+        retainedState: controller.state,
+      }) !== "recoverChangedActivation"
+    ) {
+      return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+    }
+    const recovered = await restarted.recoverQualificationControlledAgentAbort(controller.applied);
+    if (await this.#qualificationFaultDeletionFenced(agentId)) {
+      return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+    }
+    if (recovered._tag !== "QualificationControlledAgentFaultRecovered") return recovered;
+    const verified = await restarted.inspectQualificationControlledAgentAbort(
+      command.controllerOperationId,
+    );
+    if (await this.#qualificationFaultDeletionFenced(agentId)) {
+      return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+    }
+    return verified._tag === "QualificationControlledAgentFaultState" &&
+      verified.retained?.recovery !== null &&
+      verified.retained?.recovery !== undefined
+      ? {
+          _tag: "QualificationControlledAgentFaultReady" as const,
+          appliedAtUtc: verified.retained.recovery.appliedAtUtc,
+          controllerOperationId: command.controllerOperationId,
+          recoveredAtUtc: verified.retained.recovery.recoveredAtUtc,
+        }
+      : { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+  }
+
+  /** Read the exact per-root recovery authority after admission consumption. */
+  async readQualificationControlledAgentRecovery(agentId: string, controllerOperationId: string) {
+    if (
+      !this.hasSubAgent(OsfoAgent, agentId) ||
+      (await this.#qualificationFaultDeletionFenced(agentId))
+    ) {
+      return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+    }
+    const child = await this.#qualificationFaultAgent(agentId);
+    return child === null
+      ? { _tag: "QualificationControlledAgentFaultUnavailable" as const }
+      : child.readQualificationControlledAgentRecovery(controllerOperationId);
+  }
+
+  /** Verify the before-offer barrier without ever repeating its abort side effect. */
+  async inspectQualificationControlledAgentFaultPreparation(
+    agentId: string,
+    controllerOperationId: string,
+  ) {
+    if (await this.#qualificationFaultDeletionFenced(agentId)) {
+      return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+    }
+    const retained = await this.ctx.storage.get<QualificationControlledAgentFaultControllerRecord>(
+      qualificationControlledAgentFaultKey(agentId, controllerOperationId),
+    );
+    if (await this.#qualificationFaultDeletionFenced(agentId)) {
+      return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+    }
+    if (!validQualificationControlledAgentFaultControllerRecord(retained)) {
+      return retained === undefined
+        ? ({ _tag: "QualificationControlledAgentFaultUnavailable" as const } as const)
+        : ({ _tag: "QualificationControlledAgentFaultConflict" as const } as const);
+    }
+    if (retained.state !== "applied" || retained.applied === null) {
+      return retained.state === "ambiguous"
+        ? ({ _tag: "QualificationControlledAgentFaultUnavailable" as const } as const)
+        : ({ _tag: "QualificationControlledAgentFaultConflict" as const } as const);
+    }
+    const child = await this.#qualificationFaultAgent(agentId);
+    if (child === null) {
+      return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+    }
+    const state = await child.inspectQualificationControlledAgentAbort(controllerOperationId);
+    if (await this.#qualificationFaultDeletionFenced(agentId)) {
+      return { _tag: "QualificationControlledAgentFaultUnavailable" as const };
+    }
+    return state._tag === "QualificationControlledAgentFaultState" &&
+      state.activationId !== retained.arm.armedActivationId &&
+      (state.retained?.state === "recovered" || state.retained?.state === "consumed") &&
+      state.retained.recovery !== null
+      ? ({
+          _tag: "QualificationControlledAgentFaultReady" as const,
+          appliedAtUtc: state.retained.recovery.appliedAtUtc,
+          controllerOperationId,
+          recoveredAtUtc: state.retained.recovery.recoveredAtUtc,
+        } as const)
+      : state._tag === "QualificationControlledAgentFaultConflict"
+        ? state
+        : ({ _tag: "QualificationControlledAgentFaultUnavailable" as const } as const);
   }
 
   /** Read terminal qualification facts from their exact serialized Agent authority. */
@@ -488,7 +784,33 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
 
   /** Delete one user-owned facet and its SQLite state. */
   async deleteAgent(agentId: string): Promise<void> {
+    await this.ctx.storage.put(qualificationControlledAgentFaultDeletionKey(agentId), true);
+    const retained = await this.ctx.storage.list({
+      prefix: qualificationControlledAgentFaultPrefix(agentId),
+    });
+    if (retained.size > 0) await this.ctx.storage.delete([...retained.keys()]);
     await this.deleteSubAgent(OsfoAgent, agentId);
+    await this.ctx.storage.delete(qualificationControlledAgentFaultDeletionKey(agentId));
+  }
+
+  async #qualificationFaultDeletionFenced(agentId: string): Promise<boolean> {
+    return qualificationControlledAgentFaultDeletionFenced({
+      hasAgent: () => this.hasSubAgent(OsfoAgent, agentId),
+      readDeletionStarted: async () =>
+        (await this.ctx.storage.get<boolean>(
+          qualificationControlledAgentFaultDeletionKey(agentId),
+        )) === true,
+    });
+  }
+
+  async #qualificationFaultAgent(agentId: string) {
+    if (await this.#qualificationFaultDeletionFenced(agentId)) return null;
+    try {
+      const agent = await this.subAgent(OsfoAgent, agentId);
+      return (await this.#qualificationFaultDeletionFenced(agentId)) ? null : agent;
+    } catch {
+      return null;
+    }
   }
 
   /** Fence new provider appends and wait for already-started provider work. */
@@ -585,6 +907,51 @@ const replyToDirectoryGate = Effect.fn("OsfoDirectory.replyToMessenger")(functio
   }
   yield* streamTextReply(callback, message.id, "Please send that message again.");
 });
+
+const qualificationControlledAgentFaultAgentHash = (agentId: string) => {
+  return qualificationChecksum({
+    agentId,
+    kind: "qualification-controlled-agent-fault-agent",
+  });
+};
+
+const qualificationControlledAgentFaultPrefix = (agentId: string) =>
+  `qualification-controlled-agent-fault/${qualificationControlledAgentFaultAgentHash(agentId)}/`;
+
+const qualificationControlledAgentFaultKey = (agentId: string, controllerOperationId: string) =>
+  `${qualificationControlledAgentFaultPrefix(agentId)}${encodeURIComponent(controllerOperationId)}`;
+
+const qualificationControlledAgentFaultDeletionKey = (agentId: string) =>
+  `qualification-controlled-agent-deleted/${qualificationControlledAgentFaultAgentHash(agentId)}`;
+
+const retainControlledAgentFaultRecord = (
+  storage: DurableObjectStorage,
+  key: string,
+  record: QualificationControlledAgentFaultControllerRecord,
+): Promise<QualificationControlledAgentFaultControllerRecord | null> =>
+  storage.transaction(async (transaction) => {
+    const retained = await transaction.get<QualificationControlledAgentFaultControllerRecord>(key);
+    if (retained === undefined) {
+      await transaction.put(key, record);
+      return record;
+    }
+    return validQualificationControlledAgentFaultControllerRecord(retained) ? retained : null;
+  });
+
+const replaceControlledAgentFaultRecord = (
+  storage: DurableObjectStorage,
+  key: string,
+  expectedChecksum: string,
+  record: QualificationControlledAgentFaultControllerRecord,
+): Promise<boolean> =>
+  storage.transaction(async (transaction) => {
+    const retained = await transaction.get<QualificationControlledAgentFaultControllerRecord>(key);
+    if (!validQualificationControlledAgentFaultControllerRecord(retained)) return false;
+    if (retained.artifactChecksum === record.artifactChecksum) return true;
+    if (retained.artifactChecksum !== expectedChecksum) return false;
+    await transaction.put(key, record);
+    return true;
+  });
 
 const directoryMessengerLayer = (env: Env & RuntimeSecrets) => {
   const config = loadConfig(env);

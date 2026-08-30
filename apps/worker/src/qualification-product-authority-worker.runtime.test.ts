@@ -13,10 +13,16 @@ import {
   qualificationChecksum,
 } from "./qualification/qualification-checksum";
 import { QualificationAdmissionReceipt } from "./qualification/qualification-attempt";
+import {
+  qualificationControlledAgentAbortOperationId,
+  qualificationControlledAgentFaultReceipt,
+  qualificationControlledAgentRecoveryReceipt,
+} from "./qualification/controlled-agent-fault";
 import { createBoundedBetaManifest } from "./qualification/qualification-manifest";
 import { ScheduledEmail } from "./services/scheduled-email";
 import {
   collectQualificationSourceBundle,
+  controlledAgentFaultPreparedBeforeOffer,
   handleQualificationProductAuthority,
   mapQualificationAuthorityConnections,
   qualificationActivationAuthorityRecords,
@@ -26,6 +32,11 @@ import {
   retainQualificationProductAuthorityShard,
 } from "./qualification-product-authority-worker";
 import { scheduledEmailWorkflowEvidenceArtifactId } from "./workflows/scheduled-email";
+
+const sha256Hex = async (encoded: string) => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
 
 it("bounds product-authority host calls below the Workers connection ceiling", async () => {
   let active = 0;
@@ -43,6 +54,31 @@ it("bounds product-authority host calls below the Workers connection ceiling", a
   expect(results).toEqual(Array.from({ length: 37 }, (_, index) => index));
   expect(maximumActive).toBe(qualificationAuthorityConnectionLimit);
   expect(maximumActive).toBeLessThan(6);
+});
+
+it("requires both applied and restored authority before the exact first offer", () => {
+  const offeredAtEpochMs = Date.parse("2026-08-29T17:00:01.000Z");
+  expect(
+    controlledAgentFaultPreparedBeforeOffer({
+      appliedAtUtc: "2026-08-29T17:00:00.000Z",
+      offeredAtEpochMs,
+      recoveredAtUtc: "2026-08-29T17:00:00.999Z",
+    }),
+  ).toBe(true);
+  expect(
+    controlledAgentFaultPreparedBeforeOffer({
+      appliedAtUtc: "2026-08-29T17:00:00.000Z",
+      offeredAtEpochMs,
+      recoveredAtUtc: "2026-08-29T17:00:01.001Z",
+    }),
+  ).toBe(false);
+  expect(
+    controlledAgentFaultPreparedBeforeOffer({
+      appliedAtUtc: "invalid",
+      offeredAtEpochMs,
+      recoveredAtUtc: "2026-08-29T17:00:00.999Z",
+    }),
+  ).toBe(false);
 });
 
 it("rejects malformed or cross-root substituted Agent activation authority", () => {
@@ -243,6 +279,7 @@ const activationReceipt = (admission: QualificationAdmissionReceipt, requestId: 
     attemptId: admission.attemptId,
     cause: "warm" as const,
     classification: "warm" as const,
+    controllerOperationId: null,
     deploymentVersionId: "deployment-1",
     executionId: admission.executionId,
     occurredAt: admission.occurredAt,
@@ -1190,4 +1227,190 @@ it("reads Worker and Think authority only from exact immutable producer shards",
     { ARTIFACTS: bucket, DB: { connectionString: "postgres://must-not-be-read.invalid/osfo" } },
   );
   expect(substituted.status).toBe(409);
+});
+
+it("reads controlled Agent fault authority only from exact retained recovery and source facts", async () => {
+  const manifest = createBoundedBetaManifest({
+    dependencyVersions: {
+      "@cloudflare/think": "0.15.1",
+      agents: "0.20.1",
+      effect: "4.0.0-rc.111",
+    },
+    hardLimits: [
+      { maximum: 128, name: "workerMemory", unit: "MiB" },
+      { maximum: 1_000, name: "workerSubrequests", unit: "requests" },
+      { maximum: 250_000, name: "qualificationWorkflowSubrequests", unit: "requests" },
+    ],
+    sourceVersion: "controlled-fault-readback-sha",
+    topologyVersion: "cloudflare-v1",
+    workloadSeed: 17,
+  });
+  const plan = createQualificationExecutionPlan(manifest, 0, "controlled-fault-readback");
+  const run = plan.runs.find(
+    (candidate) => candidate.kind === "challenge" && candidate.challenge === "coldActivation",
+  );
+  if (run === undefined) throw new Error("Expected the frozen cold-activation challenge");
+  const arrival = qualificationRunArrivalAt(manifest, run, 0);
+  if (arrival === undefined) throw new Error("Expected the frozen cold-activation arrival");
+  const context = {
+    attemptId: qualificationChecksum({
+      executionId: plan.executionId,
+      planChecksum: plan.planChecksum,
+      rootId: arrival.rootId,
+      runId: run.runId,
+    }),
+    executionId: plan.executionId,
+    journey: "journey" in arrival ? arrival.journey : ("ordinaryConversation" as const),
+    offeredAtEpochMs: arrival.offeredAtEpochMs,
+    planChecksum: plan.planChecksum,
+    region: run.region,
+    rootId: arrival.rootId,
+    runId: run.runId,
+  };
+  const operationId = qualificationControlledAgentAbortOperationId(context);
+  const offeredAtUtc = new Date(arrival.offeredAtEpochMs).toISOString();
+  const recovery = qualificationControlledAgentRecoveryReceipt({
+    applicationAuthorityFactId: "facet-abort-applied",
+    appliedAtUtc: new Date(arrival.offeredAtEpochMs - 2).toISOString(),
+    armedActivationId: "activation-before-abort",
+    controllerOperationId: operationId,
+    executionId: plan.executionId,
+    manifestChecksum: manifest.manifestChecksum,
+    planChecksum: plan.planChecksum,
+    recoveredActivationId: "activation-after-abort",
+    recoveredAtUtc: new Date(arrival.offeredAtEpochMs - 1).toISOString(),
+    rootId: arrival.rootId,
+    runId: run.runId,
+  });
+  const faultReceipt = qualificationControlledAgentFaultReceipt({
+    manifestChecksum: manifest.manifestChecksum,
+    receipt: recovery,
+    scheduledTriggerAtUtc: new Date(run.startsAtEpochMs).toISOString(),
+  });
+  const requestContent = {
+    authoritySources: qualificationAuthoritySources,
+    cohortArtifactChecksum: "cohort-checksum",
+    cohortArtifactId: `qualification/executions/${plan.executionId}/cohort/manifest.json`,
+    executionId: plan.executionId,
+    manifest,
+    manifestChecksum: manifest.manifestChecksum,
+    plan,
+    planChecksum: plan.planChecksum,
+    protocolVersion: "qualification-owner-v1" as const,
+    shardRecordLimit: 256 as const,
+  };
+  const requestArtifactChecksum = qualificationChecksum(requestContent);
+  const requestArtifactId = `qualification/executions/${plan.executionId}/owner-request.json`;
+  const retained = new Map<
+    string,
+    { readonly metadata: Record<string, string>; readonly value: string }
+  >([
+    [
+      requestArtifactId,
+      {
+        metadata: {},
+        value: canonicalQualificationJson({
+          ...requestContent,
+          artifactChecksum: requestArtifactChecksum,
+        }),
+      },
+    ],
+  ]);
+  const bucket = {
+    get: (key: string) => {
+      const object = retained.get(key);
+      return Promise.resolve(
+        object === undefined
+          ? null
+          : { customMetadata: object.metadata, text: () => Promise.resolve(object.value) },
+      );
+    },
+    list: (options: { limit: number; prefix: string }) =>
+      Promise.resolve({
+        objects: [...retained.entries()]
+          .filter(([key]) => key.startsWith(options.prefix))
+          .slice(0, options.limit)
+          .map(([key, object]) => ({
+            checksums: { toJSON: () => ({}) },
+            customMetadata: object.metadata,
+            key,
+          })),
+        truncated: false as const,
+      }),
+    put: (
+      key: string,
+      value: string,
+      options: { readonly customMetadata: Record<string, string> },
+    ) => {
+      if (retained.has(key)) return Promise.resolve(null);
+      retained.set(key, { metadata: options.customMetadata, value });
+      return Promise.resolve({});
+    },
+  };
+  const recoveryArtifactId = faultReceipt.artifactId;
+  const recoveryEncoded = canonicalQualificationJson(recovery);
+  retained.set(recoveryArtifactId, {
+    metadata: {
+      "osfo-artifact-checksum": recovery.artifactChecksum,
+      "osfo-body-sha256": await sha256Hex(recoveryEncoded),
+      "osfo-controller-operation-id": operationId,
+      "osfo-execution-id": plan.executionId,
+      "osfo-kind": "qualification-controlled-agent-recovery-v1",
+      "osfo-plan-checksum": plan.planChecksum,
+      "osfo-root-id": arrival.rootId,
+      "osfo-run-id": run.runId,
+    },
+    value: recoveryEncoded,
+  });
+  await retainQualificationProductAuthorityShard({
+    bucket,
+    executionId: plan.executionId,
+    planChecksum: plan.planChecksum,
+    records: [faultReceipt],
+    source: "qualification_fault_controller_receipts",
+    sourceVersion: manifest.sourceVersion,
+    startsAtEpochMs: plan.startsAtEpochMs,
+    streamChunkIndex: plan.runs
+      .slice(0, plan.runs.indexOf(run))
+      .reduce((count, candidate) => count + Math.ceil(candidate.arrivalCount / 256), 0),
+  });
+  const invocation = canonicalQualificationJson({
+    chunkIndex: 0,
+    executionId: plan.executionId,
+    manifestChecksum: manifest.manifestChecksum,
+    planChecksum: plan.planChecksum,
+    requestArtifactChecksum,
+    requestArtifactId,
+    runId: run.runId,
+    source: "qualification_fault_controller_receipts",
+  });
+  const collect = () =>
+    handleQualificationProductAuthority(
+      new Request("https://qualification-product-authority.internal/v1/executions/source-chunks", {
+        body: invocation,
+        method: "POST",
+      }),
+      { ARTIFACTS: bucket, DB: { connectionString: "postgres://unused.invalid/osfo" } },
+    );
+
+  await expect(collect()).resolves.toMatchObject({ status: 200 });
+  retained.delete(recoveryArtifactId);
+  const missing = await collect();
+  expect(missing.status).toBe(424);
+  expect(await missing.json()).toMatchObject({ status: "MISSING" });
+  retained.set(recoveryArtifactId, {
+    metadata: {
+      "osfo-artifact-checksum": recovery.artifactChecksum,
+      "osfo-body-sha256": "tampered",
+      "osfo-controller-operation-id": operationId,
+      "osfo-execution-id": plan.executionId,
+      "osfo-kind": "qualification-controlled-agent-recovery-v1",
+      "osfo-plan-checksum": plan.planChecksum,
+      "osfo-root-id": arrival.rootId,
+      "osfo-run-id": run.runId,
+    },
+    value: recoveryEncoded,
+  });
+  await expect(collect()).resolves.toMatchObject({ status: 409 });
+  expect(offeredAtUtc).toBe(new Date(arrival.offeredAtEpochMs).toISOString());
 });

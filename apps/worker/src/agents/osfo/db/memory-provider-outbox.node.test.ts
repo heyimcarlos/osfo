@@ -48,11 +48,18 @@ import {
 } from "./qualification-admissions";
 import { qualificationAdmissionReceipt } from "../../../qualification/qualification-attempt";
 import {
+  armQualificationControlledAgentAbort,
   readQualificationActivationReceipts,
+  readQualificationControlledAgentRecovery,
+  recoverQualificationControlledAgentAbort,
   retainAdmittedRequestActivation,
   retainQualificationAdmissionActivation,
   startQualificationRuntimeActivation,
 } from "./qualification-activations";
+import {
+  QualificationControlledAgentAbortApplied,
+  qualificationControlledAgentAbortOperationId,
+} from "../../../qualification/controlled-agent-fault";
 import { ModelCallAttemptId } from "../../../domain/model-call-attempt";
 import { makeModelCallUsageStore, readQualificationModelAccess } from "./model-call-usage";
 import type { CompletedOperation, RankedResult } from "../../../services/web";
@@ -100,6 +107,22 @@ const qualificationAttemptInput = (attemptId: string, rootId: string, submission
   routeId: "route-1",
   submissionId,
 });
+
+const controlledAbort = () => {
+  const context = qualificationAttemptInput(
+    "attempt-1",
+    "root-1",
+    "submission-1",
+  ).qualificationContext;
+  return {
+    context,
+    controllerOperationId: qualificationControlledAgentAbortOperationId(context),
+    manifestChecksum: "manifest-1",
+    proofArtifactChecksum: "proof-1",
+    proofArtifactId: "qualification/executions/execution-1/attempts/run-1/root-1.json",
+    sessionId: "session-1",
+  } as const;
+};
 
 it("includes every generated Agent migration in the runtime manifest", () => {
   const migrations = new URL("./migrations/", import.meta.url);
@@ -227,6 +250,144 @@ it.effect("binds an accepted qualification root to first-use activation authorit
   ),
 );
 
+it.effect(
+  "consumes one exact recovered controller token with its matching accepted admission",
+  () =>
+    withDatabase(({ storage }) =>
+      Effect.gen(function* () {
+        const db = makeAgentDb(asDurableObjectStorage(storage));
+        yield* makeAgentStore(db).initialize(AgentId.make("agent-1"), {
+          agentId: AgentId.make("agent-1"),
+          initializationId: AgentInitializationId.make("initialization-1"),
+          initializedAt: now,
+          routeId: ConversationRouteId.make("route-1"),
+          sessionId: SessionId.make("session-1"),
+        });
+        yield* startQualificationRuntimeActivation(db, {
+          activationId: "activation-before-abort",
+          deploymentVersionId: "deployment-1",
+        });
+        const command = controlledAbort();
+        const arm = yield* armQualificationControlledAgentAbort(db, {
+          activationId: "activation-before-abort",
+          command,
+        });
+        expect(
+          yield* readQualificationControlledAgentRecovery(db, command.controllerOperationId),
+        ).toBeNull();
+
+        const recoveredActivation = yield* startQualificationRuntimeActivation(db, {
+          activationId: "activation-after-abort",
+          deploymentVersionId: "deployment-1",
+        });
+        const applied = QualificationControlledAgentAbortApplied.make({
+          ...command,
+          applicationAuthorityFactId: "directory-facet-abort-1",
+          appliedAtUtc: "2026-08-29T17:00:00.000Z",
+          armedActivationId: arm.armedActivationId,
+        });
+        yield* recoverQualificationControlledAgentAbort(db, {
+          applied,
+          recoveredActivationId: recoveredActivation.activationId,
+        });
+        const observation = yield* retainAdmittedRequestActivation(db, {
+          ...recoveredActivation,
+          qualificationContext: command.context,
+          requestId: "submission-1",
+          sessionId: "session-1",
+        });
+        expect(observation).toMatchObject({
+          cause: "faultRecovery",
+          classification: "cold",
+          controllerOperationId: command.controllerOperationId,
+        });
+        const admission = qualificationAdmissionReceipt(
+          qualificationAttemptInput("attempt-1", "root-1", "submission-1"),
+          AgentId.make("agent-1"),
+          {
+            decision: "accepted",
+            occurredAt: "2026-08-29T17:00:01.000Z",
+            thinkSubmissionId: "submission-1",
+          },
+        );
+        yield* retainQualificationAdmissionActivation(db, {
+          admission,
+          region: "americas",
+          requestId: "submission-1",
+        });
+        const receipt = yield* readQualificationControlledAgentRecovery(
+          db,
+          command.controllerOperationId,
+        );
+        expect(receipt).toMatchObject({
+          applicationAuthorityFactId: "directory-facet-abort-1",
+          armedActivationId: "activation-before-abort",
+          recoveredActivationId: "activation-after-abort",
+          rootId: "root-1",
+        });
+      }),
+    ),
+);
+
+it.effect("rejects replay changes and lets an ordinary admission safely interfere", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      yield* makeAgentStore(db).initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId: ConversationRouteId.make("route-1"),
+        sessionId: SessionId.make("session-1"),
+      });
+      yield* startQualificationRuntimeActivation(db, {
+        activationId: "activation-before-abort",
+        deploymentVersionId: "deployment-1",
+      });
+      const command = controlledAbort();
+      const arm = yield* armQualificationControlledAgentAbort(db, {
+        activationId: "activation-before-abort",
+        command,
+      });
+      const changedArm = yield* armQualificationControlledAgentAbort(db, {
+        activationId: "activation-before-abort",
+        command: { ...command, proofArtifactChecksum: "different-proof" },
+      }).pipe(Effect.flip);
+      expect(changedArm._tag).toBe("QualificationActivationConflict");
+
+      const recoveredActivation = yield* startQualificationRuntimeActivation(db, {
+        activationId: "activation-after-abort",
+        deploymentVersionId: "deployment-1",
+      });
+      yield* recoverQualificationControlledAgentAbort(db, {
+        applied: QualificationControlledAgentAbortApplied.make({
+          ...command,
+          applicationAuthorityFactId: "directory-facet-abort-1",
+          appliedAtUtc: "2026-08-29T17:00:00.000Z",
+          armedActivationId: arm.armedActivationId,
+        }),
+        recoveredActivationId: recoveredActivation.activationId,
+      });
+      const ordinary = yield* retainAdmittedRequestActivation(db, {
+        ...recoveredActivation,
+        requestId: "ordinary-submission",
+        sessionId: "session-1",
+      });
+      expect(ordinary.cause).not.toBe("faultRecovery");
+      expect(
+        yield* readQualificationControlledAgentRecovery(db, command.controllerOperationId),
+      ).toBeNull();
+      const qualification = yield* retainAdmittedRequestActivation(db, {
+        ...recoveredActivation,
+        qualificationContext: command.context,
+        requestId: "submission-1",
+        sessionId: "session-1",
+      });
+      expect(qualification.cause).not.toBe("faultRecovery");
+    }),
+  ),
+);
+
 it.effect("consumes the first-use claim before activation-scoped memory can observe it", () =>
   withDatabase(({ storage }) =>
     Effect.gen(function* () {
@@ -336,6 +497,10 @@ it.effect(
           region: "americas",
           requestId: "submission-1",
         });
+        yield* armQualificationControlledAgentAbort(db, {
+          activationId: activation.activationId,
+          command: controlledAbort(),
+        });
 
         const activationColumns = database
           .prepare("PRAGMA table_info('osfo_qualification_activation_receipts')")
@@ -345,6 +510,14 @@ it.effect(
         expect(activationColumns).not.toContain("email");
         expect(activationColumns).not.toContain("phone");
         expect(activationColumns).not.toContain("message");
+        const controllerColumns = database
+          .prepare("PRAGMA table_info('osfo_qualification_controlled_agent_aborts')")
+          .all()
+          .map((column) => String(column["name"]));
+        expect(controllerColumns).not.toContain("user_id");
+        expect(controllerColumns).not.toContain("email");
+        expect(controllerColumns).not.toContain("phone");
+        expect(controllerColumns).not.toContain("message");
 
         yield* store.replaceCurrentSession({
           expectedCurrentSessionId: SessionId.make("session-1"),
@@ -370,6 +543,11 @@ it.effect(
             .prepare(
               "SELECT COUNT(*) AS count FROM osfo_qualification_admitted_request_activations",
             )
+            .get()?.["count"],
+        ).toBe(0);
+        expect(
+          database
+            .prepare("SELECT COUNT(*) AS count FROM osfo_qualification_controlled_agent_aborts")
             .get()?.["count"],
         ).toBe(0);
       }),
@@ -566,8 +744,8 @@ it.effect("activates an Agent that slept before the conversation processing migr
       const result = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
       expect(result).toEqual({
-        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
-        currentVersion: 22,
+        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        currentVersion: 23,
       });
       expect(
         database

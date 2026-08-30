@@ -448,6 +448,11 @@ const faultReceiptHonorsTrigger = (
   const scheduledAt = Date.parse(receipt.scheduledTriggerAtUtc);
   const observedAt = Date.parse(receipt.triggerObservedAtUtc);
   const injectedAt = Date.parse(receipt.injectedAtUtc);
+  const endedAt = Date.parse(receipt.endedAtUtc);
+  const controlledBeforeOffer =
+    receipt.kind === "coldActivation" &&
+    receipt.target === "osfoAgent" &&
+    receipt.trigger === "beforeOffer";
   const requiresAuthorityFact = authorityTriggeredFaults.has(receipt.trigger);
   const triggerDisposition =
     receipt.triggerAuthorityFactId === null
@@ -463,14 +468,19 @@ const faultReceiptHonorsTrigger = (
     receipt.restorationAuthorityFactId.length > 0 &&
     receipt.applicationAuthorityFactId !== receipt.restorationAuthorityFactId &&
     scheduledAt >= Date.parse(runStartedAtUtc) &&
-    observedAt >= scheduledAt &&
-    injectedAt >= observedAt &&
-    injectedAt <= Date.parse(runEndedAtUtc) &&
-    Date.parse(receipt.endedAtUtc) === injectedAt + receipt.durationSeconds * 1_000 &&
-    (requiresAuthorityFact
-      ? triggerDisposition !== undefined &&
-        Date.parse(triggerDisposition.resolvedAtUtc) <= observedAt
-      : receipt.triggerAuthorityFactId === null && injectedAt - scheduledAt <= 250)
+    (controlledBeforeOffer
+      ? receipt.triggerAuthorityFactId === null &&
+        observedAt === injectedAt &&
+        injectedAt <= endedAt &&
+        endedAt <= scheduledAt
+      : observedAt >= scheduledAt &&
+        injectedAt >= observedAt &&
+        injectedAt <= Date.parse(runEndedAtUtc) &&
+        endedAt === injectedAt + receipt.durationSeconds * 1_000 &&
+        (requiresAuthorityFact
+          ? triggerDisposition !== undefined &&
+            Date.parse(triggerDisposition.resolvedAtUtc) <= observedAt
+          : receipt.triggerAuthorityFactId === null && injectedAt - scheduledAt <= 250))
   );
 };
 
@@ -1278,9 +1288,10 @@ export const assessQualificationRuns = (
             run.startedAtUtc,
             run.completedAtUtc,
           ) ||
-          Date.parse(controllerReceipt.endedAtUtc) !==
-            Date.parse(controllerReceipt.injectedAtUtc) +
-              controllerReceipt.durationSeconds * 1_000 ||
+          (controllerReceipt.kind !== "coldActivation" &&
+            Date.parse(controllerReceipt.endedAtUtc) !==
+              Date.parse(controllerReceipt.injectedAtUtc) +
+                controllerReceipt.durationSeconds * 1_000) ||
           Date.parse(controllerReceipt.endedAtUtc) > Date.parse(run.completedAtUtc)
         ) {
           findings.push(

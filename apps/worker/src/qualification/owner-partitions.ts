@@ -38,7 +38,7 @@ export interface QualificationPartitionDescriptor {
 }
 
 export const qualificationPartitionWorstCaseSteps = (chunkCount: number): number =>
-  chunkCount + chunkCount * qualificationPartitionMaximumPollsPerChunk;
+  2 * chunkCount + chunkCount * qualificationPartitionMaximumPollsPerChunk;
 
 /** Static host budget for leaf creation, inventory, exact reads, and bounded join retention. */
 export const qualificationOwnerLeafFanoutBudget = (partitionCount: number) => {

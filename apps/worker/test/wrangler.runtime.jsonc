@@ -42,7 +42,13 @@
   ],
   "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "osfo-runtime-test-artifacts" }],
   "durable_objects": {
-    "bindings": [{ "name": "OSFO_AGENT_TEST", "class_name": "OsfoAgent" }],
+    "bindings": [
+      { "name": "OSFO_AGENT_TEST", "class_name": "OsfoAgent" },
+      { "name": "OSFO_DIRECTORY_TEST", "class_name": "OsfoDirectory" },
+    ],
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OsfoAgent"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["OsfoAgent"] },
+    { "tag": "v2", "new_sqlite_classes": ["OsfoDirectory"] },
+  ],
 }

@@ -1,4 +1,8 @@
-import type { ProductionQualificationManifest, ReferenceJourney } from "./qualification-manifest";
+import type {
+  FaultInjection,
+  ProductionQualificationManifest,
+  ReferenceJourney,
+} from "./qualification-manifest";
 import type { SemanticComponent } from "./semantic-evidence";
 
 /** Product-owned authorities that must contribute immutable material before qualification can pass. */
@@ -89,12 +93,20 @@ export const qualificationAuthorityAdapterRegistry = [
     source: "model_access_receipts",
   },
   {
-    activationCauses: ["deployment", "firstUse", "warm"],
+    activationCauses: ["deployment", "faultRecovery", "firstUse", "warm"],
     component: "AgentActivation",
     journeys: allJourneys,
     mode: "agentPostgresCollector",
     requirements: ["artifactBucket", "attemptIndexTable", "directoryBinding", "postgresBinding"],
     source: "osfo_agent_activation_log",
+  },
+  {
+    component: "FaultController",
+    faultKinds: ["coldActivation"],
+    journeys: [],
+    mode: "controlledAgentFaultReadback",
+    requirements: ["artifactBucket", "directoryBinding"],
+    source: "qualification_fault_controller_receipts",
   },
   {
     component: "AgentSQLite",
@@ -139,12 +151,13 @@ export const qualificationAuthorityAdapterRegistry = [
     source: "workflow_instance_receipts",
   },
 ] as const satisfies ReadonlyArray<{
-  readonly component: SemanticComponent;
+  readonly component: SemanticComponent | "FaultController";
   readonly activationCauses?: ReadonlyArray<
     "deployment" | "faultRecovery" | "firstUse" | "idleEviction" | "warm"
   >;
+  readonly faultKinds?: ReadonlyArray<FaultInjection["kind"]>;
   readonly journeys: ReadonlyArray<ReferenceJourney>;
-  readonly mode: "agentPostgresCollector" | "arrivalReadback";
+  readonly mode: "agentPostgresCollector" | "arrivalReadback" | "controlledAgentFaultReadback";
   readonly requirements: ReadonlyArray<QualificationAuthorityAdapterRequirement>;
   readonly source: QualificationAuthoritySource;
 }>;
@@ -158,6 +171,10 @@ export type QualificationAgentPostgresAuthoritySource = Extract<
 export type QualificationArrivalReadbackAuthoritySource = Extract<
   QualificationAuthorityAdapter,
   { readonly mode: "arrivalReadback" }
+>["source"];
+export type QualificationControlledAgentFaultAuthoritySource = Extract<
+  QualificationAuthorityAdapter,
+  { readonly mode: "controlledAgentFaultReadback" }
 >["source"];
 
 export const qualificationAgentPostgresAuthoritySources = qualificationAuthorityAdapterRegistry
@@ -187,6 +204,13 @@ export const isQualificationArrivalReadbackAuthoritySource = (
     (adapter) => adapter.source === source && adapter.mode === "arrivalReadback",
   );
 
+export const isQualificationControlledAgentFaultAuthoritySource = (
+  source: QualificationAuthoritySource,
+): source is QualificationControlledAgentFaultAuthoritySource =>
+  qualificationAuthorityAdapterRegistry.some(
+    (adapter) => adapter.source === source && adapter.mode === "controlledAgentFaultReadback",
+  );
+
 export const qualificationAuthorityAdapterFor = (source: QualificationAuthoritySource) =>
   qualificationAuthorityAdapterRegistry.find((adapter) => adapter.source === source);
 
@@ -200,6 +224,8 @@ export const qualificationAuthoritySourcesRequiring = (
 export interface QualificationAuthorityCoverageGap {
   readonly activationCause?: "faultRecovery" | "idleEviction";
   readonly component: SemanticComponent | "FaultController";
+  readonly faultKind?: FaultInjection["kind"];
+  readonly faultScope?: "allCold";
   readonly journey: ReferenceJourney | null;
   readonly source: QualificationAuthoritySource;
 }
@@ -227,8 +253,22 @@ export const qualificationAuthorityCoverageGaps = (
   const gaps = new Array<QualificationAuthorityCoverageGap>();
   for (const source of qualificationAuthoritySources) {
     if (source === "qualification_fault_controller_receipts") {
-      if (manifest.faults.length > 0) {
-        gaps.push({ component: "FaultController", journey: null, source });
+      const adapter = qualificationAuthorityAdapterFor(source);
+      const coveredKinds =
+        adapter !== undefined && "faultKinds" in adapter ? adapter.faultKinds : [];
+      for (const { kind: faultKind } of manifest.faults) {
+        if (!coveredKinds.some((coveredKind) => coveredKind === faultKind)) {
+          gaps.push({ component: "FaultController", faultKind, journey: null, source });
+        }
+      }
+      if (manifest.lanes.some(({ kind }) => kind === "allCold")) {
+        gaps.push({
+          component: "FaultController",
+          faultKind: "coldActivation",
+          faultScope: "allCold",
+          journey: null,
+          source,
+        });
       }
       continue;
     }

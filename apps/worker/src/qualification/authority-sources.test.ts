@@ -56,6 +56,7 @@ describe("qualification authority adapter coverage", () => {
       "memory_commit_receipts",
       "model_access_receipts",
       "osfo_agent_activation_log",
+      "qualification_fault_controller_receipts",
       "osfo_committed_turns",
     ]);
     expect(qualificationAuthoritySourcesRequiring("scheduledEmailTable")).toEqual([
@@ -90,16 +91,24 @@ describe("qualification authority adapter coverage", () => {
       source: "osfo_agent_activation_log",
     });
     expect(gaps).toContainEqual({
-      activationCause: "faultRecovery",
-      component: "AgentActivation",
-      journey: null,
-      source: "osfo_agent_activation_log",
-    });
-    expect(gaps).toContainEqual({
       component: "FaultController",
+      faultKind: "dependencyOutage",
       journey: null,
       source: "qualification_fault_controller_receipts",
     });
+    expect(gaps).toContainEqual({
+      component: "FaultController",
+      faultKind: "coldActivation",
+      faultScope: "allCold",
+      journey: null,
+      source: "qualification_fault_controller_receipts",
+    });
+    expect(
+      gaps.some(
+        ({ activationCause, source }) =>
+          source === "osfo_agent_activation_log" && activationCause === "faultRecovery",
+      ),
+    ).toBe(false);
     expect(
       gaps.some(
         ({ source }) =>
