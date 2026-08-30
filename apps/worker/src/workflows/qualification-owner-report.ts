@@ -5,6 +5,7 @@ import {
   canonicalQualificationJson,
   qualificationChecksum,
 } from "../qualification/qualification-checksum";
+import { QualificationEvaluationCorrectnessReceipt } from "../qualification/qualification-evaluation-reducer";
 import {
   QualificationDistributedEvaluationReport,
   QualificationDistributedEvaluationReportCompletion,
@@ -17,6 +18,10 @@ import {
   type QualificationDistributedEvaluationReportInput,
 } from "../qualification/distributed-evaluation-report";
 import type { QualificationOwnerWorkflowPayload } from "../workflow-contracts";
+import {
+  QualificationDimensionCoordinatorCompletion,
+  qualificationDimensionPageSize,
+} from "./qualification-owner-dimensions";
 
 interface QualificationOwnerReportReadBucket {
   readonly get: (key: string) => Promise<{
@@ -219,15 +224,116 @@ export type QualificationDistributedEvaluationReportCompletionMaterial =
     }
   | { readonly status: "FAIL" | "MISSING" };
 
+export type QualificationDistributedEvaluationReferenceMaterial =
+  | { readonly status: "COMPLETE" }
+  | { readonly status: "FAIL" | "MISSING" };
+
+/** Authenticate only the compact terminal correctness receipt, never its retained shard tree. */
+export const authenticateQualificationDistributedCorrectnessReference = async (input: {
+  readonly artifactId: string;
+  readonly bucket: QualificationOwnerReportReadBucket;
+  readonly checksum: string;
+  readonly executionId: string;
+  readonly planChecksum: string;
+  readonly verdict: "FAIL" | "MISSING" | "PASS";
+}): Promise<QualificationDistributedEvaluationReferenceMaterial> => {
+  const retained = await input.bucket.get(input.artifactId);
+  if (retained === null) return { status: "MISSING" };
+  const encoded = await retained.text();
+  let receipt: typeof QualificationEvaluationCorrectnessReceipt.Type;
+  try {
+    receipt = Schema.decodeSync(Schema.fromJsonString(QualificationEvaluationCorrectnessReceipt))(
+      encoded,
+    );
+  } catch {
+    return { status: "FAIL" };
+  }
+  const { checksum, ...content } = receipt;
+  return receipt.artifactId === input.artifactId &&
+    receipt.checksum === input.checksum &&
+    checksum === qualificationChecksum(content) &&
+    receipt.executionId === input.executionId &&
+    receipt.planChecksum === input.planChecksum &&
+    receipt.verdict === input.verdict &&
+    retained.httpMetadata?.contentType === "application/json" &&
+    exactMetadata(retained.customMetadata, {
+      "osfo-artifact-checksum": receipt.checksum,
+      "osfo-body-sha256": await sha256Hex(encoded),
+      "osfo-execution-id": receipt.executionId,
+      "osfo-first-partition-index": String(receipt.firstPartitionIndex),
+      "osfo-input-receipt-chain-digest": receipt.inputReceiptChainDigest,
+      "osfo-kind": "qualification-evaluation-correctness-receipt-v1",
+      "osfo-last-partition-index": String(receipt.lastPartitionIndex),
+      "osfo-plan-checksum": receipt.planChecksum,
+      "osfo-record-count": String(receipt.rootAccumulator.rootCount),
+      "osfo-root-receipt-checksum": receipt.rootAccumulator.checksum,
+      "osfo-summary-checksum": receipt.findingSummaryArtifactChecksum,
+      "osfo-verdict": receipt.verdict,
+    })
+    ? { status: "COMPLETE" }
+    : { status: "FAIL" };
+};
+
+/** Authenticate only the compact dimension completion, never its root or evaluation pages. */
+export const authenticateQualificationDistributedDimensionReference = async (input: {
+  readonly artifactId: string;
+  readonly bucket: QualificationOwnerReportReadBucket;
+  readonly checksum: string;
+  readonly executionId: string;
+  readonly planChecksum: string;
+  readonly verdict: "FAIL" | "MISSING" | "PASS";
+}): Promise<QualificationDistributedEvaluationReferenceMaterial> => {
+  const retained = await input.bucket.get(input.artifactId);
+  if (retained === null) return { status: "MISSING" };
+  const encoded = await retained.text();
+  let completion: typeof QualificationDimensionCoordinatorCompletion.Type;
+  try {
+    completion = Schema.decodeSync(
+      Schema.fromJsonString(QualificationDimensionCoordinatorCompletion),
+    )(encoded);
+  } catch {
+    return { status: "FAIL" };
+  }
+  const { checksum, ...content } = completion;
+  return completion.artifactId === input.artifactId &&
+    completion.checksum === input.checksum &&
+    checksum === qualificationChecksum(content) &&
+    completion.executionId === input.executionId &&
+    completion.planChecksum === input.planChecksum &&
+    completion.verdict === input.verdict &&
+    completion.dimensionCount ===
+      completion.identityDimensionCount + completion.numericDimensionCount &&
+    completion.rootPageCount ===
+      Math.ceil(completion.dimensionCount / qualificationDimensionPageSize) &&
+    completion.evaluationPageCount ===
+      Math.ceil(completion.numericDimensionCount / qualificationDimensionPageSize) &&
+    retained.httpMetadata?.contentType === "application/json" &&
+    exactMetadata(retained.customMetadata, {
+      "osfo-artifact-checksum": completion.checksum,
+      "osfo-body-sha256": await sha256Hex(encoded),
+      "osfo-dimension-count": String(completion.dimensionCount),
+      "osfo-execution-id": completion.executionId,
+      "osfo-kind": "qualification-dimension-coordinator-completion-v1",
+      "osfo-plan-checksum": completion.planChecksum,
+      "osfo-record-count": String(completion.evaluationPageCount),
+      "osfo-verdict": completion.verdict,
+    })
+    ? { status: "COMPLETE" }
+    : { status: "FAIL" };
+};
+
 export const authenticateQualificationDistributedEvaluationReportCompletion = async (input: {
   readonly artifactId: string;
   readonly bucket: QualificationOwnerReportReadBucket;
   readonly checksum: string;
   readonly executionId: string;
+  readonly failingFamilyCount: number;
   readonly manifestChecksum: string;
+  readonly missingFamilyCount: number;
   readonly planChecksum: string;
   readonly reportArtifactId: string;
   readonly reportChecksum: string;
+  readonly verdict: "FAIL" | "MISSING";
 }): Promise<QualificationDistributedEvaluationReportCompletionMaterial> => {
   const retained = await input.bucket.get(input.artifactId);
   if (retained === null) return { status: "MISSING" };
@@ -247,10 +353,13 @@ export const authenticateQualificationDistributedEvaluationReportCompletion = as
     completion.checksum === input.checksum &&
     checksum === qualificationChecksum(content) &&
     completion.executionId === input.executionId &&
+    completion.failingFamilyCount === input.failingFamilyCount &&
     completion.manifestChecksum === input.manifestChecksum &&
+    completion.missingFamilyCount === input.missingFamilyCount &&
     completion.planChecksum === input.planChecksum &&
     completion.reportArtifactId === input.reportArtifactId &&
     completion.reportChecksum === input.reportChecksum &&
+    completion.verdict === input.verdict &&
     retained.httpMetadata?.contentType === "application/json" &&
     exactMetadata(retained.customMetadata, completionMetadata(completion, await sha256Hex(encoded)))
     ? { completion, status: "COMPLETE" }

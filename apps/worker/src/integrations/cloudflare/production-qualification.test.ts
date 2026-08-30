@@ -19,6 +19,10 @@ import {
 } from "../../qualification/qualification-manifest";
 import { qualificationCohortArtifactId } from "../../qualification/qualification-cohort";
 import { qualificationDistributedEvaluationReport } from "../../qualification/distributed-evaluation-report";
+import {
+  qualificationEvaluationCorrectnessReceipt,
+  qualificationEvaluationRootAccumulatorReceipt,
+} from "../../qualification/qualification-evaluation-reducer";
 import { retainQualificationDistributedEvaluationReport } from "../../workflows/qualification-owner-report";
 import type {
   QualificationExecutionListedObject,
@@ -117,6 +121,114 @@ const memoryBucket = () => {
     },
   } satisfies QualificationExecutionListingBucket;
   return { bucket, listCallCount: () => listCallCount, listed, metadata, retained };
+};
+
+const sha256Hex = async (encoded: string) => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
+const retainDimensionReference = async (
+  storage: ReturnType<typeof memoryBucket>,
+  input: {
+    readonly artifactId: string;
+    readonly executionId: string;
+    readonly planChecksum: string;
+  },
+) => {
+  const content = {
+    artifactId: input.artifactId,
+    dimensionCount: 0,
+    evaluationPageCount: 0,
+    executionId: input.executionId,
+    identityDimensionCount: 0,
+    numericDimensionCount: 0,
+    planChecksum: input.planChecksum,
+    rootPageCount: 0,
+    terminalEvaluationPageChecksum: "ZERO",
+    terminalRootPageChecksum: "ZERO",
+    verdict: "PASS" as const,
+    version: "qualification-dimension-coordinator-completion-v1" as const,
+  };
+  const completion = { ...content, checksum: qualificationChecksum(content) };
+  const encoded = canonicalQualificationJson(completion);
+  storage.retained.set(input.artifactId, encoded);
+  storage.metadata.set(input.artifactId, {
+    customMetadata: {
+      "osfo-artifact-checksum": completion.checksum,
+      "osfo-body-sha256": await sha256Hex(encoded),
+      "osfo-dimension-count": "0",
+      "osfo-execution-id": input.executionId,
+      "osfo-kind": "qualification-dimension-coordinator-completion-v1",
+      "osfo-plan-checksum": input.planChecksum,
+      "osfo-record-count": "0",
+      "osfo-verdict": "PASS",
+    },
+    httpMetadata: { contentType: "application/json" },
+  });
+  return completion;
+};
+
+const retainCorrectnessReference = async (
+  storage: ReturnType<typeof memoryBucket>,
+  input: {
+    readonly artifactId: string;
+    readonly executionId: string;
+    readonly planChecksum: string;
+  },
+) => {
+  const root = qualificationEvaluationRootAccumulatorReceipt({
+    acceptedCount: 0,
+    artifactId: `${input.artifactId}/roots.json`,
+    artifactPrefix: `${input.artifactId}/roots`,
+    executionId: input.executionId,
+    firstPartitionIndex: 0,
+    firstRootId: null,
+    firstShardChecksum: "ZERO",
+    index: 0,
+    inputReceiptChecksums: ["leaf-checksum"],
+    lastPartitionIndex: 0,
+    lastRootId: null,
+    level: 0,
+    planChecksum: input.planChecksum,
+    rootCount: 0,
+    shardCount: 0,
+    terminalShardChecksum: "ZERO",
+  });
+  if (root === null) throw new Error("Expected correctness root fixture");
+  const receipt = qualificationEvaluationCorrectnessReceipt({
+    artifactId: input.artifactId,
+    executionId: input.executionId,
+    findingSummary: { exemplars: [], failCount: 0, missingCount: 0 },
+    findingSummaryArtifactChecksum: "summary-checksum",
+    findingSummaryArtifactId: `${input.artifactId}/summary.json`,
+    index: 0,
+    inputReceiptChecksums: ["leaf-checksum"],
+    level: 0,
+    planChecksum: input.planChecksum,
+    rootAccumulator: root,
+  });
+  if (receipt === null) throw new Error("Expected correctness fixture");
+  const encoded = canonicalQualificationJson(receipt);
+  storage.retained.set(input.artifactId, encoded);
+  storage.metadata.set(input.artifactId, {
+    customMetadata: {
+      "osfo-artifact-checksum": receipt.checksum,
+      "osfo-body-sha256": await sha256Hex(encoded),
+      "osfo-execution-id": input.executionId,
+      "osfo-first-partition-index": "0",
+      "osfo-input-receipt-chain-digest": receipt.inputReceiptChainDigest,
+      "osfo-kind": "qualification-evaluation-correctness-receipt-v1",
+      "osfo-last-partition-index": "0",
+      "osfo-plan-checksum": input.planChecksum,
+      "osfo-record-count": "0",
+      "osfo-root-receipt-checksum": receipt.rootAccumulator.checksum,
+      "osfo-summary-checksum": receipt.findingSummaryArtifactChecksum,
+      "osfo-verdict": "PASS",
+    },
+    httpMetadata: { contentType: "application/json" },
+  });
+  return receipt;
 };
 
 const retainCohort = (
@@ -551,6 +663,44 @@ it.effect("preserves an exact completed MISSING authority-source report", () =>
   }),
 );
 
+it("preserves the legacy v1 FAIL response as owner-unavailable MISSING on replay", async () => {
+  const manifest = compactManifest();
+  const plan = createQualificationExecutionPlan(manifest, 0, "legacy-owner-fail");
+  const { bucket, retained } = memoryBucket();
+  retainCohort(retained, manifest, plan);
+  const composition = {
+    ARTIFACTS: bucket,
+    QUALIFICATION_OWNER: {
+      fetch: () =>
+        Promise.resolve(
+          Response.json(
+            {
+              error: "qualificationAuthorityConflict",
+              executionId: plan.executionId,
+              failureCodes: ["partitionCompletionConflict"],
+              manifestChecksum: manifest.manifestChecksum,
+              planChecksum: plan.planChecksum,
+              verdict: "FAIL",
+            },
+            { status: 409 },
+          ),
+        ),
+    },
+  };
+
+  const first = await runProductionQualification(composition, manifest, plan);
+  const replay = await runProductionQualification(composition, manifest, plan);
+
+  for (const result of [first, replay]) {
+    expect(result).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ code: "productionQualificationOwnerUnavailable" }),
+      ]),
+      verdict: "MISSING",
+    });
+  }
+});
+
 it.each([false, true] as const)(
   "authenticates a distributed PRE_TEARDOWN report before returning %s",
   async (tamperMetadata) => {
@@ -627,6 +777,282 @@ it.each([false, true] as const)(
       verdict: tamperMetadata ? "FAIL" : "MISSING",
     });
     expect(listCallCount()).toBe(0);
+  },
+);
+
+it("rejects a self-authentic completion whose family counts disagree with the report", async () => {
+  const manifest = compactManifest();
+  const plan = createQualificationExecutionPlan(manifest, 0, "altered-completion-counts");
+  const storage = memoryBucket();
+  retainCohort(storage.retained, manifest, plan);
+  const report = qualificationDistributedEvaluationReport({
+    acceptanceLevel: manifest.acceptanceLevel,
+    correctness: { reason: "qualificationCorrectnessMissing", verdict: "MISSING" },
+    dimensions: { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
+    executionId: plan.executionId,
+    manifestChecksum: manifest.manifestChecksum,
+    planChecksum: plan.planChecksum,
+    sourceVersion: manifest.sourceVersion,
+    topologyVersion: manifest.topologyVersion,
+  });
+  const result = await runProductionQualification(
+    {
+      ARTIFACTS: storage.bucket,
+      QUALIFICATION_OWNER: {
+        fetch: async () => {
+          const completion = await retainQualificationDistributedEvaluationReport(
+            storage.bucket,
+            report,
+          );
+          const { checksum: _, ...originalContent } = completion;
+          const content = {
+            ...originalContent,
+            missingFamilyCount: completion.missingFamilyCount + 1,
+          };
+          const altered = { ...content, checksum: qualificationChecksum(content) };
+          const encoded = canonicalQualificationJson(altered);
+          storage.retained.set(altered.artifactId, encoded);
+          storage.metadata.set(altered.artifactId, {
+            customMetadata: {
+              "osfo-artifact-checksum": altered.checksum,
+              "osfo-body-sha256": await sha256Hex(encoded),
+              "osfo-execution-id": altered.executionId,
+              "osfo-kind": "qualification-distributed-evaluation-report-completion-v1",
+              "osfo-manifest-checksum": altered.manifestChecksum,
+              "osfo-plan-checksum": altered.planChecksum,
+              "osfo-report-checksum": altered.reportChecksum,
+              "osfo-verdict": altered.verdict,
+            },
+            httpMetadata: { contentType: "application/json" },
+          });
+          return Response.json(
+            {
+              completionArtifactId: altered.artifactId,
+              completionChecksum: altered.checksum,
+              error: "qualificationAuthorityMaterialMissing",
+              executionId: plan.executionId,
+              failingFamilies: [],
+              manifestChecksum: manifest.manifestChecksum,
+              missingFamilies: report.families
+                .filter(({ verdict }) => verdict === "MISSING")
+                .map(({ family }) => family),
+              phase: "PRE_TEARDOWN",
+              planChecksum: plan.planChecksum,
+              reportArtifactId: report.artifactId,
+              reportChecksum: report.checksum,
+              verdict: "MISSING",
+              version: "qualification-owner-response-v2",
+            },
+            { status: 424 },
+          );
+        },
+      },
+    },
+    manifest,
+    plan,
+  );
+
+  expect(result).toMatchObject({
+    findings: expect.arrayContaining([
+      expect.objectContaining({ code: "productionQualificationOwnerConflict" }),
+    ]),
+    verdict: "FAIL",
+  });
+  expect(storage.listCallCount()).toBe(0);
+});
+
+it.each(["valid", "missing", "metadata", "crossExecution"] as const)(
+  "authenticates the compact dimension reference without listing: %s",
+  async (scenario) => {
+    const manifest = compactManifest();
+    const plan = createQualificationExecutionPlan(manifest, 0, `distributed-reference-${scenario}`);
+    const storage = memoryBucket();
+    retainCohort(storage.retained, manifest, plan);
+    const artifactId = `qualification/executions/${plan.executionId}/dimensions/completion.json`;
+    const dimension = await retainDimensionReference(storage, {
+      artifactId,
+      executionId: scenario === "crossExecution" ? "other-execution" : plan.executionId,
+      planChecksum: plan.planChecksum,
+    });
+    if (scenario === "missing") {
+      storage.retained.delete(artifactId);
+      storage.metadata.delete(artifactId);
+    }
+    if (scenario === "metadata") {
+      const current = storage.metadata.get(artifactId);
+      if (current === undefined) throw new Error("Expected dimension metadata fixture");
+      storage.metadata.set(artifactId, {
+        ...current,
+        customMetadata: { ...current.customMetadata, "osfo-record-count": "1" },
+      });
+    }
+    const report = qualificationDistributedEvaluationReport({
+      acceptanceLevel: manifest.acceptanceLevel,
+      correctness: { reason: "qualificationCorrectnessMissing", verdict: "MISSING" },
+      dimensions: {
+        artifactId,
+        checksum: dimension.checksum,
+        dimensionCount: 0,
+        failCount: 0,
+        missingCount: 0,
+        verdict: "PASS",
+      },
+      executionId: plan.executionId,
+      manifestChecksum: manifest.manifestChecksum,
+      planChecksum: plan.planChecksum,
+      sourceVersion: manifest.sourceVersion,
+      topologyVersion: manifest.topologyVersion,
+    });
+    const result = await runProductionQualification(
+      {
+        ARTIFACTS: storage.bucket,
+        QUALIFICATION_OWNER: {
+          fetch: async () => {
+            const completion = await retainQualificationDistributedEvaluationReport(
+              storage.bucket,
+              report,
+            );
+            return Response.json(
+              {
+                completionArtifactId: completion.artifactId,
+                completionChecksum: completion.checksum,
+                error: "qualificationAuthorityMaterialMissing",
+                executionId: plan.executionId,
+                failingFamilies: [],
+                manifestChecksum: manifest.manifestChecksum,
+                missingFamilies: report.families
+                  .filter(({ verdict }) => verdict === "MISSING")
+                  .map(({ family }) => family),
+                phase: "PRE_TEARDOWN",
+                planChecksum: plan.planChecksum,
+                reportArtifactId: report.artifactId,
+                reportChecksum: report.checksum,
+                verdict: "MISSING",
+                version: "qualification-owner-response-v2",
+              },
+              { status: 424 },
+            );
+          },
+        },
+      },
+      manifest,
+      plan,
+    );
+
+    expect(result).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({
+          code:
+            scenario === "valid"
+              ? "productionQualificationDistributedReportMissing"
+              : scenario === "missing"
+                ? "productionQualificationOwnerUnavailable"
+                : "productionQualificationOwnerConflict",
+        }),
+      ]),
+      verdict: scenario === "valid" || scenario === "missing" ? "MISSING" : "FAIL",
+    });
+    expect(storage.listCallCount()).toBe(0);
+  },
+);
+
+it.each(["valid", "missing", "metadata", "crossExecution"] as const)(
+  "authenticates the compact correctness reference without listing: %s",
+  async (scenario) => {
+    const manifest = compactManifest();
+    const plan = createQualificationExecutionPlan(
+      manifest,
+      0,
+      `distributed-correctness-reference-${scenario}`,
+    );
+    const storage = memoryBucket();
+    retainCohort(storage.retained, manifest, plan);
+    const artifactId = `qualification/executions/${plan.executionId}/correctness/receipt.json`;
+    const correctness = await retainCorrectnessReference(storage, {
+      artifactId,
+      executionId: scenario === "crossExecution" ? "other-execution" : plan.executionId,
+      planChecksum: plan.planChecksum,
+    });
+    if (scenario === "missing") {
+      storage.retained.delete(artifactId);
+      storage.metadata.delete(artifactId);
+    }
+    if (scenario === "metadata") {
+      const current = storage.metadata.get(artifactId);
+      if (current === undefined) throw new Error("Expected correctness metadata fixture");
+      storage.metadata.set(artifactId, {
+        ...current,
+        customMetadata: { ...current.customMetadata, "osfo-record-count": "1" },
+      });
+    }
+    const report = qualificationDistributedEvaluationReport({
+      acceptanceLevel: manifest.acceptanceLevel,
+      correctness: {
+        acceptedCount: 0,
+        artifactId,
+        checksum: correctness.checksum,
+        failCount: 0,
+        missingCount: 0,
+        rootCount: 0,
+        verdict: "PASS",
+      },
+      dimensions: { reason: "dimension_authority_missing", verdict: "MISSING" },
+      executionId: plan.executionId,
+      manifestChecksum: manifest.manifestChecksum,
+      planChecksum: plan.planChecksum,
+      sourceVersion: manifest.sourceVersion,
+      topologyVersion: manifest.topologyVersion,
+    });
+    const result = await runProductionQualification(
+      {
+        ARTIFACTS: storage.bucket,
+        QUALIFICATION_OWNER: {
+          fetch: async () => {
+            const completion = await retainQualificationDistributedEvaluationReport(
+              storage.bucket,
+              report,
+            );
+            return Response.json(
+              {
+                completionArtifactId: completion.artifactId,
+                completionChecksum: completion.checksum,
+                error: "qualificationAuthorityMaterialMissing",
+                executionId: plan.executionId,
+                failingFamilies: [],
+                manifestChecksum: manifest.manifestChecksum,
+                missingFamilies: report.families
+                  .filter(({ verdict }) => verdict === "MISSING")
+                  .map(({ family }) => family),
+                phase: "PRE_TEARDOWN",
+                planChecksum: plan.planChecksum,
+                reportArtifactId: report.artifactId,
+                reportChecksum: report.checksum,
+                verdict: "MISSING",
+                version: "qualification-owner-response-v2",
+              },
+              { status: 424 },
+            );
+          },
+        },
+      },
+      manifest,
+      plan,
+    );
+
+    expect(result).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({
+          code:
+            scenario === "valid"
+              ? "productionQualificationDistributedReportMissing"
+              : scenario === "missing"
+                ? "productionQualificationOwnerUnavailable"
+                : "productionQualificationOwnerConflict",
+        }),
+      ]),
+      verdict: scenario === "valid" || scenario === "missing" ? "MISSING" : "FAIL",
+    });
+    expect(storage.listCallCount()).toBe(0);
   },
 );
 

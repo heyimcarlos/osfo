@@ -7,11 +7,21 @@ import {
 } from "../qualification/qualification-checksum";
 import { qualificationDistributedEvaluationReport } from "../qualification/distributed-evaluation-report";
 import {
+  qualificationEvaluationCorrectnessReceipt,
+  qualificationEvaluationRootAccumulatorReceipt,
+} from "../qualification/qualification-evaluation-reducer";
+import {
+  authenticateQualificationDistributedCorrectnessReference,
   authenticateQualificationDistributedEvaluationReportCompletion,
   authenticateQualificationDistributedEvaluationReport,
   retainQualificationDistributedEvaluationReport,
   retainQualificationDistributedEvaluationOwnerResponse,
 } from "./qualification-owner-report";
+
+const sha256Hex = async (encoded: string) => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+};
 
 const report = qualificationDistributedEvaluationReport({
   acceptanceLevel: "BoundedBeta",
@@ -66,6 +76,91 @@ const memoryBucket = () => {
 };
 
 describe("qualification owner distributed report retention", () => {
+  it("authenticates the compact correctness receipt without traversing its shard tree", async () => {
+    const retained = memoryBucket();
+    const root = qualificationEvaluationRootAccumulatorReceipt({
+      acceptedCount: 0,
+      artifactId: "correctness-roots-receipt.json",
+      artifactPrefix: "correctness-roots",
+      executionId: report.executionId,
+      firstPartitionIndex: 0,
+      firstRootId: null,
+      firstShardChecksum: "ZERO",
+      index: 0,
+      inputReceiptChecksums: ["leaf-checksum"],
+      lastPartitionIndex: 0,
+      lastRootId: null,
+      level: 0,
+      planChecksum: report.planChecksum,
+      rootCount: 0,
+      shardCount: 0,
+      terminalShardChecksum: "ZERO",
+    });
+    if (root === null) throw new Error("Expected root receipt fixture");
+    const receipt = qualificationEvaluationCorrectnessReceipt({
+      artifactId: "correctness.json",
+      executionId: report.executionId,
+      findingSummary: { exemplars: [], failCount: 0, missingCount: 0 },
+      findingSummaryArtifactChecksum: "summary-checksum",
+      findingSummaryArtifactId: "summary.json",
+      index: 0,
+      inputReceiptChecksums: ["leaf-checksum"],
+      level: 0,
+      planChecksum: report.planChecksum,
+      rootAccumulator: root,
+    });
+    if (receipt === null) throw new Error("Expected correctness receipt fixture");
+    const encoded = canonicalQualificationJson(receipt);
+    retained.values.set(receipt.artifactId, {
+      customMetadata: {
+        "osfo-artifact-checksum": receipt.checksum,
+        "osfo-body-sha256": await sha256Hex(encoded),
+        "osfo-execution-id": receipt.executionId,
+        "osfo-first-partition-index": "0",
+        "osfo-input-receipt-chain-digest": receipt.inputReceiptChainDigest,
+        "osfo-kind": "qualification-evaluation-correctness-receipt-v1",
+        "osfo-last-partition-index": "0",
+        "osfo-plan-checksum": receipt.planChecksum,
+        "osfo-record-count": "0",
+        "osfo-root-receipt-checksum": receipt.rootAccumulator.checksum,
+        "osfo-summary-checksum": receipt.findingSummaryArtifactChecksum,
+        "osfo-verdict": "PASS",
+      },
+      encoded,
+      httpMetadata: { contentType: "application/json" },
+    });
+
+    const input = {
+      artifactId: receipt.artifactId,
+      bucket: retained.bucket,
+      checksum: receipt.checksum,
+      executionId: receipt.executionId,
+      planChecksum: receipt.planChecksum,
+      verdict: "PASS" as const,
+    };
+    await expect(authenticateQualificationDistributedCorrectnessReference(input)).resolves.toEqual({
+      status: "COMPLETE",
+    });
+    await expect(
+      authenticateQualificationDistributedCorrectnessReference({
+        ...input,
+        executionId: "other-execution",
+      }),
+    ).resolves.toEqual({ status: "FAIL" });
+    const current = retained.values.get(receipt.artifactId);
+    if (current === undefined) throw new Error("Expected retained correctness fixture");
+    retained.values.set(receipt.artifactId, {
+      ...current,
+      customMetadata: {
+        ...current.customMetadata,
+        "osfo-record-count": "1",
+      },
+    });
+    await expect(authenticateQualificationDistributedCorrectnessReference(input)).resolves.toEqual({
+      status: "FAIL",
+    });
+  });
+
   it.each([
     [
       "correctness FAIL",
@@ -185,10 +280,13 @@ describe("qualification owner distributed report retention", () => {
         bucket: retained.bucket,
         checksum: completion.checksum,
         executionId: report.executionId,
+        failingFamilyCount: report.failingFamilyCount,
         manifestChecksum: report.manifestChecksum,
+        missingFamilyCount: report.missingFamilyCount,
         planChecksum: report.planChecksum,
         reportArtifactId: report.artifactId,
         reportChecksum: report.checksum,
+        verdict: report.verdict,
       }),
     ).resolves.toEqual({ completion, status: "COMPLETE" });
   });

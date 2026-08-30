@@ -38,8 +38,35 @@ const OwnerWorkflowResponse = Schema.Struct({
   body: Schema.Unknown,
   status: Schema.Int,
 });
+const DistributedOwnerWorkflowResponse = Schema.Struct({
+  body: Schema.Struct({
+    completionArtifactId: Schema.String,
+    completionChecksum: Schema.String,
+    error: Schema.Literals([
+      "qualificationAuthorityConflict",
+      "qualificationAuthorityMaterialMissing",
+    ]),
+    executionId: Schema.String,
+    failingFamilies: Schema.Array(Schema.String),
+    manifestChecksum: Schema.String,
+    missingFamilies: Schema.Array(Schema.String),
+    phase: Schema.Literal("PRE_TEARDOWN"),
+    planChecksum: Schema.String,
+    reportArtifactId: Schema.String,
+    reportChecksum: Schema.String,
+    verdict: Schema.Literals(["FAIL", "MISSING"]),
+    version: Schema.Literal("qualification-owner-response-v2"),
+  }),
+  status: Schema.Int,
+});
 const decodeOwnerWorkflowResponse = Schema.decodeUnknownOption(
   Schema.fromJsonString(OwnerWorkflowResponse),
+);
+const decodeDistributedOwnerWorkflowResponse = Schema.decodeUnknownOption(
+  Schema.fromJsonString(DistributedOwnerWorkflowResponse),
+);
+const decodeOwnerResponseVersion = Schema.decodeUnknownOption(
+  Schema.Struct({ version: Schema.String }),
 );
 
 interface QualificationOwnerInstance {
@@ -48,7 +75,11 @@ interface QualificationOwnerInstance {
 
 interface QualificationOwnerEnv {
   readonly ARTIFACTS: {
-    readonly get: (key: string) => Promise<{ readonly text: () => Promise<string> } | null>;
+    readonly get: (key: string) => Promise<{
+      readonly customMetadata?: Readonly<Record<string, string>>;
+      readonly httpMetadata?: { readonly contentType?: string };
+      readonly text: () => Promise<string>;
+    } | null>;
   };
   readonly QUALIFICATION_OWNER_WORKFLOW: {
     readonly create: (options: {
@@ -72,6 +103,14 @@ const validatedRetainedRequest = (
     : null;
 };
 
+const exactMetadata = (
+  actual: Readonly<Record<string, string>> | undefined,
+  expected: Readonly<Record<string, string>>,
+) =>
+  actual !== undefined &&
+  Object.keys(actual).length === Object.keys(expected).length &&
+  Object.entries(expected).every(([key, value]) => actual[key] === value);
+
 // oxlint-disable-next-line effecttsgo/async-function -- Cloudflare R2 is a Promise-native boundary.
 const completedResponse = async (
   env: QualificationOwnerEnv,
@@ -80,8 +119,40 @@ const completedResponse = async (
   const artifactId = `qualification/executions/${encodeURIComponent(executionId)}/owner-response.json`;
   const artifact = await env.ARTIFACTS.get(artifactId);
   if (artifact === null) return null;
-  const decoded = decodeOwnerWorkflowResponse(await artifact.text());
+  const encoded = await artifact.text();
+  const distributed = decodeDistributedOwnerWorkflowResponse(encoded);
+  if (Option.isSome(distributed)) {
+    const response = distributed.value;
+    const expectedStatus = response.body.verdict === "FAIL" ? 409 : 424;
+    const expectedError =
+      response.body.verdict === "FAIL"
+        ? "qualificationAuthorityConflict"
+        : "qualificationAuthorityMaterialMissing";
+    if (
+      response.body.executionId !== executionId ||
+      response.body.error !== expectedError ||
+      response.status !== expectedStatus ||
+      artifact.httpMetadata?.contentType !== "application/json" ||
+      !exactMetadata(artifact.customMetadata, {
+        "osfo-execution-id": executionId,
+        "osfo-kind": "qualification-owner-response-v2",
+        "osfo-report-checksum": response.body.reportChecksum,
+        "osfo-verdict": response.body.verdict,
+      })
+    ) {
+      return Response.json({ error: "qualificationOwnerResponseConflict" }, { status: 409 });
+    }
+    return Response.json(response.body, { status: response.status });
+  }
+  const decoded = decodeOwnerWorkflowResponse(encoded);
   if (Option.isNone(decoded) || decoded.value.status < 200 || decoded.value.status > 599) {
+    return Response.json({ error: "qualificationOwnerResponseConflict" }, { status: 409 });
+  }
+  const version = decodeOwnerResponseVersion(decoded.value.body);
+  if (
+    artifact.customMetadata?.["osfo-kind"] === "qualification-owner-response-v2" ||
+    (Option.isSome(version) && version.value.version === "qualification-owner-response-v2")
+  ) {
     return Response.json({ error: "qualificationOwnerResponseConflict" }, { status: 409 });
   }
   return Response.json(decoded.value.body, { status: decoded.value.status });

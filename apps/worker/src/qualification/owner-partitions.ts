@@ -24,7 +24,7 @@ export const qualificationDimensionLaunchPageSize = 50;
 export const qualificationDimensionRootOwnerSubrequestBudget =
   2 * qualificationDimensionParentPollCount + 40;
 /** Five default durable-step attempts across report, envelope, and response reconciliation. */
-export const qualificationDistributedEvaluationReportMaximumSubrequests = 28;
+export const qualificationDistributedEvaluationReportMaximumSubrequests = 30;
 
 export interface QualificationPartitionChunk {
   readonly chunkIndex: number;

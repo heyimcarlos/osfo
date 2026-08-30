@@ -27,6 +27,8 @@ import {
   type QualificationExecutionListingBucket,
 } from "./qualification-execution-artifacts";
 import {
+  authenticateQualificationDistributedCorrectnessReference,
+  authenticateQualificationDistributedDimensionReference,
   authenticateQualificationDistributedEvaluationReport,
   authenticateQualificationDistributedEvaluationReportCompletion,
 } from "../../workflows/qualification-owner-report";
@@ -127,6 +129,14 @@ const OwnerMissingResponse = Schema.Struct({
   planChecksum: Schema.String,
   verdict: Schema.Literal("MISSING"),
 });
+const OwnerFailedResponse = Schema.Struct({
+  error: Schema.Literal("qualificationAuthorityConflict"),
+  executionId: Schema.String,
+  failureCodes: Schema.Array(Schema.String),
+  manifestChecksum: Schema.String,
+  planChecksum: Schema.String,
+  verdict: Schema.Literal("FAIL"),
+});
 const OwnerDistributedEvaluationResponse = Schema.Struct({
   completionArtifactId: Schema.String,
   completionChecksum: Schema.String,
@@ -147,6 +157,7 @@ const OwnerDistributedEvaluationResponse = Schema.Struct({
 });
 const OwnerTerminalResponse = Schema.Union([
   OwnerMissingResponse,
+  OwnerFailedResponse,
   OwnerDistributedEvaluationResponse,
 ]);
 const OwnerReport = Schema.Struct({
@@ -548,6 +559,9 @@ export const runProductionQualification = (
         try: () => response.text(),
       });
       const terminal = yield* decode(EncodedOwnerTerminalResponse, encodedTerminal);
+      if ("failureCodes" in terminal) {
+        return yield* ownerUnavailable(`Qualification owner returned ${response.status}`);
+      }
       if (
         terminal.executionId !== plan.executionId ||
         terminal.manifestChecksum !== manifest.manifestChecksum ||
@@ -596,10 +610,13 @@ export const runProductionQualification = (
             bucket: env.ARTIFACTS,
             checksum: terminal.completionChecksum,
             executionId: plan.executionId,
+            failingFamilyCount: material.report.failingFamilyCount,
             manifestChecksum: manifest.manifestChecksum,
+            missingFamilyCount: material.report.missingFamilyCount,
             planChecksum: plan.planChecksum,
             reportArtifactId: terminal.reportArtifactId,
             reportChecksum: terminal.reportChecksum,
+            verdict: material.report.verdict,
           }),
       });
       if (completion.status !== "COMPLETE") {
@@ -607,10 +624,69 @@ export const runProductionQualification = (
           ? ownerConflict("Distributed qualification report completion conflicts with its response")
           : ownerUnavailable("Distributed qualification report completion is missing");
       }
-      if (completion.completion.verdict !== terminal.verdict) {
+      if (
+        completion.completion.verdict !== terminal.verdict ||
+        completion.completion.verdict !== material.report.verdict ||
+        completion.completion.failingFamilyCount !== material.report.failingFamilyCount ||
+        completion.completion.missingFamilyCount !== material.report.missingFamilyCount
+      ) {
         return yield* ownerConflict(
-          "Distributed qualification report completion verdict conflicts",
+          "Distributed qualification report completion conflicts with its report",
         );
+      }
+      const correctnessFamily = material.report.families.find(
+        ({ family }) => family === "forest_correctness",
+      );
+      if (correctnessFamily === undefined) {
+        return yield* ownerConflict("Distributed correctness family is missing");
+      }
+      const correctnessReference = correctnessFamily.references[0];
+      if (correctnessReference !== undefined) {
+        const reference = yield* Effect.tryPromise({
+          catch: (cause) =>
+            ownerUnavailable("Distributed correctness reference readback failed", cause),
+          try: () =>
+            authenticateQualificationDistributedCorrectnessReference({
+              artifactId: correctnessReference.artifactId,
+              bucket: env.ARTIFACTS,
+              checksum: correctnessReference.checksum,
+              executionId: plan.executionId,
+              planChecksum: plan.planChecksum,
+              verdict: correctnessFamily.verdict,
+            }),
+        });
+        if (reference.status !== "COMPLETE") {
+          return yield* reference.status === "FAIL"
+            ? ownerConflict("Distributed correctness reference conflicts with its report")
+            : ownerUnavailable("Distributed correctness reference is missing");
+        }
+      }
+      const dimensionFamily = material.report.families.find(
+        ({ family }) => family === "numeric_stage_operation_dimensions",
+      );
+      if (dimensionFamily === undefined) {
+        return yield* ownerConflict("Distributed dimension family is missing");
+      }
+      const dimensionReference = dimensionFamily.references[0];
+      if (dimensionReference !== undefined) {
+        const reference = yield* Effect.tryPromise({
+          catch: (cause) =>
+            ownerUnavailable("Distributed dimension reference readback failed", cause),
+          try: () =>
+            authenticateQualificationDistributedDimensionReference({
+              artifactId: dimensionReference.artifactId,
+              bucket: env.ARTIFACTS,
+              checksum: dimensionReference.checksum,
+              executionId: plan.executionId,
+              planChecksum: plan.planChecksum,
+              verdict: dimensionFamily.verdict,
+            }),
+        });
+        if (reference.status !== "COMPLETE") {
+          return yield* reference.status === "FAIL"
+            ? ownerConflict("Distributed dimension reference conflicts with its report")
+            : ownerUnavailable("Distributed dimension reference is missing");
+        }
       }
       const failingFamilies = material.report.families
         .filter(({ verdict }) => verdict === "FAIL")
