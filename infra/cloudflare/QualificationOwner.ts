@@ -6,6 +6,7 @@ import { qualificationWorkflowSubrequestLimit } from "@osfo/worker/qualification
 import { Artifacts } from "./Artifacts";
 import { QualificationOwnerWorkflow } from "./QualificationOwnerWorkflow";
 import { QualificationOwnerPartitionWorkflow } from "./QualificationOwnerPartitionWorkflow";
+import { QualificationOwnerDimensionCoordinatorWorkflow } from "./QualificationOwnerDimensionCoordinatorWorkflow";
 import { QualificationEvaluationCorrectnessReducerWorkflow } from "./QualificationEvaluationCorrectnessReducerWorkflow";
 import { QualificationEvaluationReducerWorkflow } from "./QualificationEvaluationReducerWorkflow";
 import { QualificationEvaluationLeafWorkflow } from "./QualificationEvaluationLeafWorkflow";
@@ -36,6 +37,8 @@ export const QualificationOwnerLayer = QualificationOwnerWorker.make(
       QUALIFICATION_EVALUATION_LEAF_WORKFLOW: QualificationEvaluationLeafWorkflow,
       QUALIFICATION_EVALUATION_REDUCER_WORKFLOW: QualificationEvaluationReducerWorkflow,
       QUALIFICATION_OWNER_PARTITION_WORKFLOW: QualificationOwnerPartitionWorkflow,
+      QUALIFICATION_OWNER_DIMENSION_COORDINATOR_WORKFLOW:
+        QualificationOwnerDimensionCoordinatorWorkflow,
       QUALIFICATION_OWNER_WORKFLOW: QualificationOwnerWorkflow,
     },
     limits: { subrequests: qualificationWorkflowSubrequestLimit },

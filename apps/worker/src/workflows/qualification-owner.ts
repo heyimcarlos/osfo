@@ -19,9 +19,15 @@ import {
 import type {
   QualificationEvaluationCorrectnessReducerWorkflowPayload,
   QualificationEvaluationLeafWorkflowPayload,
+  QualificationOwnerDimensionWorkflowPayload,
   QualificationOwnerPartitionWorkflowPayload,
   QualificationOwnerWorkflowPayload,
 } from "../workflow-contracts";
+import {
+  qualificationDimensionParentDeadlineMs,
+  qualificationDimensionParentPollCount,
+  qualificationDimensionParentPollIntervalMs,
+} from "../qualification/owner-partitions";
 import {
   retainFailedQualificationReport,
   retainMissingQualificationReport,
@@ -34,6 +40,11 @@ import {
   createOrReconcileQualificationWorkflowBatch,
   runQualificationOwnerCorrectnessForest,
 } from "./qualification-owner-correctness";
+import {
+  authenticateQualificationDimensionCoordinatorCompletion,
+  qualificationDimensionCoordinatorArtifactPrefix,
+  qualificationDimensionCoordinatorWorkflowId,
+} from "./qualification-owner-dimensions";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-await-in-loop, eslint/no-underscore-dangle -- Cloudflare Workflow APIs are Promise-only host boundaries; source polling must run as ordered, durable, uniquely named tagged steps. */
 
@@ -81,6 +92,41 @@ interface QualificationOwnerWorkflowEnv {
         }>;
       }>
     >;
+    readonly get: (id: string) => Promise<{
+      readonly id: string;
+      readonly status: () => Promise<{
+        readonly status:
+          | "complete"
+          | "errored"
+          | "paused"
+          | "queued"
+          | "running"
+          | "terminated"
+          | "unknown"
+          | "waiting"
+          | "waitingForPause";
+      }>;
+    }>;
+  };
+  readonly QUALIFICATION_OWNER_DIMENSION_COORDINATOR_WORKFLOW: {
+    readonly create: (options: {
+      readonly id: string;
+      readonly params: QualificationOwnerDimensionWorkflowPayload;
+    }) => Promise<{
+      readonly id: string;
+      readonly status: () => Promise<{
+        readonly status:
+          | "complete"
+          | "errored"
+          | "paused"
+          | "queued"
+          | "running"
+          | "terminated"
+          | "unknown"
+          | "waiting"
+          | "waitingForPause";
+      }>;
+    }>;
     readonly get: (id: string) => Promise<{
       readonly id: string;
       readonly status: () => Promise<{
@@ -685,6 +731,71 @@ type QualificationOwnerWorkflowResult =
   | { readonly status: "COMPLETE"; readonly verdict: "FAIL" | "MISSING" | "PASS" }
   | { readonly status: "MISSING" };
 
+type QualificationDimensionPollOutcome =
+  | {
+      readonly completion: Extract<
+        Awaited<ReturnType<typeof authenticateQualificationDimensionCoordinatorCompletion>>,
+        { readonly status: "COMPLETE" }
+      >["value"];
+      readonly status: "COMPLETE";
+    }
+  | { readonly status: "FAIL" | "MISSING" };
+
+/** Wait beyond the four reducer horizons without racing normal preprocessing or fan-out time. */
+export const pollQualificationDimensionCoordinator = async (input: {
+  readonly env: Pick<
+    QualificationOwnerWorkflowEnv,
+    "ARTIFACTS" | "QUALIFICATION_OWNER_DIMENSION_COORDINATOR_WORKFLOW"
+  >;
+  readonly executionId: string;
+  readonly launchedAtEpochMs: number;
+  readonly planChecksum: string;
+  readonly step: QualificationSourceCollectionStep;
+  readonly workflowId: string;
+}): Promise<QualificationDimensionPollOutcome> => {
+  let outcome: QualificationDimensionPollOutcome = { status: "MISSING" };
+  for (let attempt = 0; attempt < qualificationDimensionParentPollCount; attempt += 1) {
+    outcome = await input.step.do(
+      `poll qualification dimension coordinator ${attempt + 1}`,
+      async () => {
+        const instance = await input.env.QUALIFICATION_OWNER_DIMENSION_COORDINATOR_WORKFLOW.get(
+          input.workflowId,
+        );
+        if (instance.id !== input.workflowId) {
+          throw new Error("Qualification dimension coordinator identity conflicts");
+        }
+        const status = await instance.status();
+        if (status.status === "errored" || status.status === "terminated") {
+          return { status: "FAIL" as const };
+        }
+        if (status.status !== "complete") return { status: "MISSING" as const };
+        const artifactId = `${qualificationDimensionCoordinatorArtifactPrefix(input.executionId)}/completion.json`;
+        const retained = await input.env.ARTIFACTS.get(artifactId);
+        if (retained === null) return { status: "FAIL" as const };
+        const completion = await authenticateQualificationDimensionCoordinatorCompletion({
+          artifactId,
+          bucket: input.env.ARTIFACTS,
+          checksum: retained.customMetadata?.["osfo-artifact-checksum"] ?? "MISSING",
+          executionId: input.executionId,
+          planChecksum: input.planChecksum,
+        });
+        return completion.status === "COMPLETE"
+          ? { completion: completion.value, status: "COMPLETE" as const }
+          : completion;
+      },
+    );
+    if (outcome.status !== "MISSING") break;
+    const nextPollAt =
+      input.launchedAtEpochMs + (attempt + 1) * qualificationDimensionParentPollIntervalMs;
+    if (nextPollAt >= input.launchedAtEpochMs + qualificationDimensionParentDeadlineMs) break;
+    await input.step.sleepUntil(
+      `wait for qualification dimension coordinator ${attempt + 1}`,
+      nextPollAt,
+    );
+  }
+  return outcome;
+};
+
 /** Execute one frozen qualification through serializable, replay-safe Workflow phases. */
 export const runQualificationOwnerWorkflow = async (input: {
   readonly env: QualificationOwnerWorkflowEnv;
@@ -885,9 +996,112 @@ export const runQualificationOwnerWorkflow = async (input: {
     });
     return { status: "MISSING" };
   }
-  await input.step.do("retain missing bounded qualification reducer", async () => {
+  if (!("verdict" in correctness)) {
+    throw new Error("Qualification correctness outcome conflicts");
+  }
+  if (correctness.verdict === "FAIL") {
+    await input.step.do("retain failed qualification correctness verdict", async () => {
+      await retainFailedQualificationReport(input.env.ARTIFACTS, input.payload, [
+        "qualificationCorrectnessFailed",
+      ]);
+      return { retained: true };
+    });
+    return { status: "COMPLETE", verdict: "FAIL" };
+  }
+  if (correctness.verdict === "MISSING") {
+    await input.step.do("retain missing qualification correctness verdict", async () => {
+      await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
+        "qualificationCorrectnessMissing",
+      ]);
+      return { retained: true };
+    });
+    return { status: "MISSING" };
+  }
+  const dimensionPayload: QualificationOwnerDimensionWorkflowPayload = {
+    ...input.payload,
+    correctnessArtifactId: correctness.artifactId,
+    correctnessChecksum: correctness.checksum,
+    correctnessLevel: correctness.levelCount,
+    leafCompletionCount: leafCompletion.completionCount,
+    leafCompletionPageCount: leafCompletion.pageCount,
+    leafCompletionTerminalPageChecksum: leafCompletion.terminalPageChecksum,
+  };
+  const dimensionWorkflowId = qualificationDimensionCoordinatorWorkflowId({
+    executionId: input.payload.executionId,
+    planChecksum: input.payload.planChecksum,
+  });
+  const launchedAtEpochMs = await input.step.do(
+    "launch qualification dimension coordinator",
+    async () => {
+      let instance;
+      try {
+        instance = await input.env.QUALIFICATION_OWNER_DIMENSION_COORDINATOR_WORKFLOW.create({
+          id: dimensionWorkflowId,
+          params: dimensionPayload,
+        });
+      } catch {
+        instance =
+          await input.env.QUALIFICATION_OWNER_DIMENSION_COORDINATOR_WORKFLOW.get(
+            dimensionWorkflowId,
+          );
+      }
+      if (instance.id !== dimensionWorkflowId) {
+        throw new Error("Qualification dimension coordinator identity conflicts");
+      }
+      // oxlint-disable-next-line effecttsgo/global-date -- This durable launch step freezes the outer evaluation horizon.
+      return Date.now();
+    },
+  );
+  const dimension = await pollQualificationDimensionCoordinator({
+    env: input.env,
+    executionId: input.payload.executionId,
+    launchedAtEpochMs,
+    planChecksum: input.payload.planChecksum,
+    step: input.step,
+    workflowId: dimensionWorkflowId,
+  });
+  if (dimension.status === "FAIL") {
+    await input.step.do("retain failed qualification dimension reducer", async () => {
+      await retainFailedQualificationReport(input.env.ARTIFACTS, input.payload, [
+        "qualificationDimensionReducerFailed",
+      ]);
+      return { retained: true };
+    });
+    return { status: "COMPLETE", verdict: "FAIL" };
+  }
+  if (dimension.status === "MISSING") {
+    await input.step.do("retain missing qualification dimension reducer", async () => {
+      await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
+        "bounded_qualification_reducer",
+      ]);
+      return { retained: true };
+    });
+    return { status: "MISSING" };
+  }
+  if (dimension.status !== "COMPLETE") {
+    throw new Error("Qualification dimension outcome conflicts");
+  }
+  if (dimension.completion.verdict === "MISSING") {
+    await input.step.do("retain missing qualification dimension evidence", async () => {
+      await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
+        "bounded_qualification_reducer",
+      ]);
+      return { retained: true };
+    });
+    return { status: "MISSING" };
+  }
+  if (dimension.completion.verdict === "FAIL") {
+    await input.step.do("retain failed qualification dimension SLOs", async () => {
+      await retainFailedQualificationReport(input.env.ARTIFACTS, input.payload, [
+        "qualificationDimensionSloFailed",
+      ]);
+      return { retained: true };
+    });
+    return { status: "COMPLETE", verdict: "FAIL" };
+  }
+  await input.step.do("retain missing distributed qualification report", async () => {
     await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
-      "bounded_qualification_reducer",
+      "distributed_qualification_report",
     ]);
     return { retained: true };
   });

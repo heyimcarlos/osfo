@@ -11,8 +11,15 @@ import type {
   QualificationEvaluationLeafWorkflowPayload,
   QualificationOwnerPartitionWorkflowPayload,
 } from "../workflow-contracts";
-import { runQualificationOwnerWorkflow } from "./qualification-owner";
+import {
+  pollQualificationDimensionCoordinator,
+  runQualificationOwnerWorkflow,
+} from "./qualification-owner";
 import { runQualificationEvaluationCorrectnessReducer } from "./qualification-evaluation-correctness-reducer";
+import {
+  authenticateQualificationDimensionCoordinatorCompletion,
+  qualificationDimensionCoordinatorArtifactPrefix,
+} from "./qualification-owner-dimensions";
 
 const executionId = "owner-leaf-integration";
 const manifestChecksum = "manifest-checksum";
@@ -27,6 +34,7 @@ const sha256Hex = async (encoded: string) => {
 const runtime = async (
   omitLeafCompletion: boolean,
   partitionCreateResponse?: "partial" | "wrong",
+  leafOutcome: "FAIL" | "MISSING" = "MISSING",
 ) => {
   const retained = new Map<
     string,
@@ -148,9 +156,12 @@ const runtime = async (
             const artifactId = `qualification/executions/${executionId}/evaluation-leaf-completions/00000000.json`;
             const outcome = {
               artifactId: params.leafInputArtifactId,
-              code: "qualificationEvaluationAuthorityMissing" as const,
+              code:
+                leafOutcome === "FAIL"
+                  ? ("qualificationEvaluationAuthorityConflict" as const)
+                  : ("qualificationEvaluationAuthorityMissing" as const),
               source: "worker_admission_receipts" as const,
-              status: "MISSING" as const,
+              status: leafOutcome,
             };
             const content = {
               artifactId,
@@ -170,7 +181,7 @@ const runtime = async (
               "osfo-execution-id": executionId,
               "osfo-kind": "qualification-evaluation-leaf-completion-v1",
               "osfo-leaf-input-checksum": params.leafInputChecksum,
-              "osfo-outcome": "MISSING",
+              "osfo-outcome": leafOutcome,
               "osfo-partition-index": "0",
               "osfo-plan-checksum": planChecksum,
               "osfo-record-count": "0",
@@ -207,6 +218,10 @@ const runtime = async (
             ? Promise.reject(new Error("Correctness instance is missing"))
             : Promise.resolve(instance);
         },
+      },
+      QUALIFICATION_OWNER_DIMENSION_COORDINATOR_WORKFLOW: {
+        create: () => Promise.reject(new Error("Dimension coordinator must not launch")),
+        get: () => Promise.reject(new Error("Dimension coordinator must not launch")),
       },
       QUALIFICATION_OWNER_PARTITION_WORKFLOW: {
         createBatch: async (batch) => {
@@ -295,7 +310,7 @@ const runtime = async (
   return { correctnessPayloads, leafPayloads, partitionPayloads, result, retained };
 };
 
-it("fans authenticated partition inputs into leaves before stopping at the missing reducer", async () => {
+it("preserves an authenticated correctness MISSING verdict before dimension fanout", async () => {
   const result = await runtime(false);
   expect(result.partitionPayloads).toHaveLength(1);
   expect(result.leafPayloads).toHaveLength(1);
@@ -303,7 +318,7 @@ it("fans authenticated partition inputs into leaves before stopping at the missi
   expect(result.result).toEqual({ status: "MISSING" });
   expect(
     result.retained.get(`qualification/executions/${executionId}/owner-response.json`)?.value,
-  ).toContain('"missingSources":["bounded_qualification_reducer"]');
+  ).toContain('"missingSources":["qualificationCorrectnessMissing"]');
 });
 
 it("reports absent leaf completion material distinctly from the unbuilt reducer", async () => {
@@ -314,6 +329,14 @@ it("reports absent leaf completion material distinctly from the unbuilt reducer"
   ).toContain('"missingSources":["qualification_evaluation_leaf_completions"]');
 });
 
+it("preserves an authenticated correctness FAIL verdict before dimension fanout", async () => {
+  const result = await runtime(false, undefined, "FAIL");
+  expect(result.result).toEqual({ status: "COMPLETE", verdict: "FAIL" });
+  expect(
+    result.retained.get(`qualification/executions/${executionId}/owner-response.json`)?.value,
+  ).toContain('"failureCodes":["qualificationCorrectnessFailed"]');
+});
+
 it.each(["partial", "wrong"] as const)(
   "rejects a %s partition createBatch response",
   async (partitionCreateResponse) => {
@@ -322,3 +345,214 @@ it.each(["partial", "wrong"] as const)(
     );
   },
 );
+
+it("waits beyond the four reducer horizons for a normally completing dimension coordinator", async () => {
+  const dimensionExecutionId = "dimension-parent-horizon";
+  const artifactId = `${qualificationDimensionCoordinatorArtifactPrefix(dimensionExecutionId)}/completion.json`;
+  const rootArtifactId = `${qualificationDimensionCoordinatorArtifactPrefix(dimensionExecutionId)}/root-pages/00000000.json`;
+  const rootContent = {
+    artifactId: rootArtifactId,
+    executionId: dimensionExecutionId,
+    firstDimensionIndex: 0,
+    index: 0,
+    lastDimensionIndex: 0,
+    planChecksum,
+    previousPageChecksum: "NONE",
+    references: [
+      {
+        dimension: "operation:modelStep",
+        receiptArtifactId: "operation-model-step-receipt.json",
+        receiptChecksum: "operation-model-step-receipt",
+        valueType: "latencyMs" as const,
+      },
+    ],
+    version: "qualification-dimension-root-page-v1" as const,
+  };
+  const rootPage = { ...rootContent, checksum: qualificationChecksum(rootContent) };
+  const encodedRootPage = canonicalQualificationJson(rootPage);
+  const evaluationArtifactId = `${qualificationDimensionCoordinatorArtifactPrefix(dimensionExecutionId)}/evaluation-pages/00000000.json`;
+  const evaluation = {
+    denominatorCount: 1,
+    dimension: "operation:modelStep",
+    firstPartitionIndex: 0,
+    lastPartitionIndex: 0,
+    maximum: 1,
+    missingRootCount: 0,
+    objectiveMaximumLatencyMs: null,
+    objectiveRequiredRatio: null,
+    p50: 1,
+    p95: 1,
+    p99: 1,
+    receiptArtifactId: "operation-model-step-receipt.json",
+    receiptChecksum: "operation-model-step-receipt",
+    sampleStatus: "COMPLETE" as const,
+    thresholdOrderStatistic: null,
+    valueCount: 1,
+    verdict: "PASS" as const,
+  };
+  const evaluationContent = {
+    artifactId: evaluationArtifactId,
+    evaluations: [evaluation],
+    executionId: dimensionExecutionId,
+    failCount: 0,
+    firstDimensionIndex: 0,
+    index: 0,
+    lastDimensionIndex: 0,
+    missingCount: 0,
+    planChecksum,
+    previousPageChecksum: "NONE",
+    version: "qualification-dimension-evaluation-page-v1" as const,
+  };
+  const evaluationPage = {
+    ...evaluationContent,
+    checksum: qualificationChecksum(evaluationContent),
+  };
+  const encodedEvaluationPage = canonicalQualificationJson(evaluationPage);
+  const content = {
+    artifactId,
+    dimensionCount: 1,
+    evaluationPageCount: 1,
+    executionId: dimensionExecutionId,
+    identityDimensionCount: 0,
+    numericDimensionCount: 1,
+    planChecksum,
+    rootPageCount: 1,
+    terminalEvaluationPageChecksum: evaluationPage.checksum,
+    terminalRootPageChecksum: rootPage.checksum,
+    verdict: "PASS" as const,
+    version: "qualification-dimension-coordinator-completion-v1" as const,
+  };
+  const completion = { ...content, checksum: qualificationChecksum(content) };
+  const encoded = canonicalQualificationJson(completion);
+  const metadata = {
+    "osfo-artifact-checksum": completion.checksum,
+    "osfo-body-sha256": await sha256Hex(encoded),
+    "osfo-dimension-count": "1",
+    "osfo-execution-id": dimensionExecutionId,
+    "osfo-kind": "qualification-dimension-coordinator-completion-v1",
+    "osfo-plan-checksum": planChecksum,
+    "osfo-record-count": "1",
+    "osfo-verdict": "PASS",
+  };
+  const rootMetadata = {
+    "osfo-artifact-checksum": rootPage.checksum,
+    "osfo-body-sha256": await sha256Hex(encodedRootPage),
+    "osfo-execution-id": dimensionExecutionId,
+    "osfo-first-dimension-index": "0",
+    "osfo-index": "0",
+    "osfo-kind": "qualification-dimension-root-page-v1",
+    "osfo-last-dimension-index": "0",
+    "osfo-plan-checksum": planChecksum,
+    "osfo-previous-checksum": "NONE",
+    "osfo-record-count": "1",
+  };
+  const evaluationMetadata = {
+    "osfo-artifact-checksum": evaluationPage.checksum,
+    "osfo-body-sha256": await sha256Hex(encodedEvaluationPage),
+    "osfo-execution-id": dimensionExecutionId,
+    "osfo-fail-count": "0",
+    "osfo-first-dimension-index": "0",
+    "osfo-index": "0",
+    "osfo-kind": "qualification-dimension-evaluation-page-v1",
+    "osfo-last-dimension-index": "0",
+    "osfo-missing-count": "0",
+    "osfo-plan-checksum": planChecksum,
+    "osfo-previous-checksum": "NONE",
+    "osfo-record-count": "1",
+  };
+  const artifacts = new Map([
+    [artifactId, { encoded, metadata }],
+    [rootArtifactId, { encoded: encodedRootPage, metadata: rootMetadata }],
+    [evaluationArtifactId, { encoded: encodedEvaluationPage, metadata: evaluationMetadata }],
+  ]);
+  let statusCalls = 0;
+  const result = await pollQualificationDimensionCoordinator({
+    env: {
+      ARTIFACTS: {
+        get: (key) => {
+          const retained = artifacts.get(key);
+          return Promise.resolve(
+            retained === undefined
+              ? null
+              : {
+                  customMetadata: retained.metadata,
+                  text: () => Promise.resolve(retained.encoded),
+                },
+          );
+        },
+        list: () => Promise.resolve({ objects: [], truncated: false }),
+        put: () => Promise.resolve({ etag: "unused" }),
+      },
+      QUALIFICATION_OWNER_DIMENSION_COORDINATOR_WORKFLOW: {
+        create: () => Promise.reject(new Error("Polling does not create")),
+        get: (id) =>
+          Promise.resolve({
+            id,
+            status: () => {
+              statusCalls += 1;
+              return Promise.resolve({
+                status: statusCalls > 97 ? ("complete" as const) : ("running" as const),
+              });
+            },
+          }),
+      },
+    },
+    executionId: dimensionExecutionId,
+    launchedAtEpochMs: 0,
+    planChecksum,
+    step: {
+      do: async (_name, callback) => structuredClone(await callback()),
+      sleepUntil: () => Promise.resolve(),
+    },
+    workflowId: "dimension-workflow",
+  });
+  expect(statusCalls).toBe(98);
+  expect(result).toMatchObject({ status: "COMPLETE", completion: { verdict: "PASS" } });
+
+  artifacts.delete(rootArtifactId);
+  await expect(
+    authenticateQualificationDimensionCoordinatorCompletion({
+      artifactId,
+      bucket: {
+        get: (key) => {
+          const retained = artifacts.get(key);
+          return Promise.resolve(
+            retained === undefined
+              ? null
+              : {
+                  customMetadata: retained.metadata,
+                  text: () => Promise.resolve(retained.encoded),
+                },
+          );
+        },
+        put: () => Promise.resolve({ etag: "unused" }),
+      },
+      checksum: completion.checksum,
+      executionId: dimensionExecutionId,
+      planChecksum,
+    }),
+  ).resolves.toEqual({ status: "MISSING" });
+  artifacts.set(rootArtifactId, { encoded: "{}", metadata: rootMetadata });
+  await expect(
+    authenticateQualificationDimensionCoordinatorCompletion({
+      artifactId,
+      bucket: {
+        get: (key) => {
+          const retained = artifacts.get(key);
+          return Promise.resolve(
+            retained === undefined
+              ? null
+              : {
+                  customMetadata: retained.metadata,
+                  text: () => Promise.resolve(retained.encoded),
+                },
+          );
+        },
+        put: () => Promise.resolve({ etag: "unused" }),
+      },
+      checksum: completion.checksum,
+      executionId: dimensionExecutionId,
+      planChecksum,
+    }),
+  ).resolves.toEqual({ status: "FAIL" });
+});

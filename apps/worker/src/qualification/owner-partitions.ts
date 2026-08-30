@@ -1,4 +1,5 @@
 import type { QualificationExecutionPlan } from "./execution";
+import { qualificationEvaluationDimensionInventory } from "./qualification-evaluation-reducer";
 
 export const qualificationPartitionChunkLimit = 1;
 export const qualificationPartitionMaximumPollsPerChunk = 100;
@@ -11,6 +12,17 @@ export const qualificationCorrectnessLaunchPageSize = 16;
 export const qualificationCorrectnessPollCount = 72;
 export const qualificationCorrectnessPollIntervalMs = 20 * 60_000;
 export const qualificationCorrectnessForestDeadlineMs = 24 * 60 * 60_000;
+export const qualificationDimensionLevelHorizonMs = 24 * 60 * 60_000;
+export const qualificationDimensionMaximumLevelCount = 4;
+export const qualificationDimensionMaximumEvaluationDurationMs =
+  qualificationDimensionLevelHorizonMs * qualificationDimensionMaximumLevelCount;
+export const qualificationDimensionParentPollIntervalMs = 60 * 60_000;
+export const qualificationDimensionParentDeadlineMs = 5 * 24 * 60 * 60_000;
+export const qualificationDimensionParentPollCount =
+  qualificationDimensionParentDeadlineMs / qualificationDimensionParentPollIntervalMs;
+export const qualificationDimensionLaunchPageSize = 50;
+export const qualificationDimensionRootOwnerSubrequestBudget =
+  2 * qualificationDimensionParentPollCount + 40;
 
 export interface QualificationPartitionChunk {
   readonly chunkIndex: number;
@@ -131,6 +143,97 @@ export const qualificationOwnerCorrectnessForestBudget = (partitionCount: number
     pollCount: qualificationCorrectnessPollCount,
     pollIntervalMs: qualificationCorrectnessPollIntervalMs,
     reducerCount,
+  };
+};
+
+const safeAdd = (values: ReadonlyArray<number>): number => {
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw new Error("Qualification dimension budget exceeds safe integer bounds");
+  }
+  return total;
+};
+
+/** Per-instance budget for the deep dimension coordinator and its bounded root owner. */
+export const qualificationOwnerDimensionCoordinatorBudget = (plan: QualificationExecutionPlan) => {
+  const inventory = qualificationEvaluationDimensionInventory(plan);
+  const partitionCount = plan.runs.reduce(
+    (total, run) => total + Math.ceil(run.arrivalCount / 256),
+    0,
+  );
+  const leafJoinPageCount = Math.ceil(partitionCount / qualificationPartitionCreateBatchLimit);
+  const levelWidths = new globalThis.Array<number>();
+  let dimensionIndexPageCount = 0;
+  let launchPageCount = 0;
+  for (const dimension of inventory) {
+    dimensionIndexPageCount +=
+      Math.floor(dimension.lastPartitionIndex / qualificationPartitionCreateBatchLimit) -
+      Math.floor(dimension.firstPartitionIndex / qualificationPartitionCreateBatchLimit) +
+      1;
+    for (const [level, width] of dimension.levelCounts.entries()) {
+      levelWidths[level] = (levelWidths[level] ?? 0) + width;
+      launchPageCount += Math.ceil(width / qualificationDimensionLaunchPageSize);
+    }
+  }
+  const reducerCount = safeAdd(levelWidths);
+  const dimensionCount = inventory.length;
+  const dimensionLevelCount = safeAdd(inventory.map(({ levelCounts }) => levelCounts.length));
+  const numericDimensionCount = inventory.filter(
+    ({ valueType }) => valueType === "latencyMs",
+  ).length;
+  const selectedShardReadCount = 4 * numericDimensionCount;
+  const priorCompletionPageCount = launchPageCount - dimensionCount;
+  const inventoryPageCount =
+    Math.ceil(dimensionIndexPageCount / 1_000) + 2 * Math.ceil(reducerCount / 1_000);
+  const evaluationOutputPageCount =
+    Math.ceil(dimensionCount / qualificationDimensionLaunchPageSize) +
+    Math.ceil(numericDimensionCount / qualificationDimensionLaunchPageSize) +
+    1;
+  const maximumCoordinatorSubrequests = safeAdd([
+    leafJoinPageCount,
+    partitionCount,
+    3 * dimensionIndexPageCount,
+    Math.ceil(dimensionIndexPageCount / 1_000),
+    dimensionCount,
+    6 * launchPageCount,
+    2 * dimensionLevelCount,
+    4 * reducerCount,
+    priorCompletionPageCount,
+    2 * Math.ceil(reducerCount / 1_000),
+    dimensionCount,
+    selectedShardReadCount,
+    2 * evaluationOutputPageCount,
+    4,
+  ]);
+  const maximumCoordinatorDurableSteps = safeAdd([
+    leafJoinPageCount,
+    dimensionIndexPageCount,
+    3 * launchPageCount,
+    priorCompletionPageCount,
+    inventoryPageCount,
+    dimensionCount,
+    evaluationOutputPageCount,
+    dimensionCount,
+    2 * dimensionLevelCount,
+    5,
+  ]);
+  return {
+    dimensionCount,
+    dimensionLevelCount,
+    dimensionIndexPageCount,
+    launchPageCount,
+    levelHorizonMs: qualificationDimensionLevelHorizonMs,
+    levelWidths,
+    maximumCoordinatorDurableSteps,
+    maximumCoordinatorSubrequests,
+    maximumEvaluationDurationMs: qualificationDimensionMaximumEvaluationDurationMs,
+    maximumRootOwnerSubrequests:
+      qualificationOwnerCorrectnessForestBudget(partitionCount).maximumCumulativeOwnerSubrequests +
+      qualificationDimensionRootOwnerSubrequestBudget,
+    maximumStepSubrequests: 169,
+    numericDimensionCount,
+    reducerCount,
+    selectedShardReadCount,
   };
 };
 

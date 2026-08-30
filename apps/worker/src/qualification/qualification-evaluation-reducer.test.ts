@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 /* oxlint-disable effecttsgo/async-function -- R2 persistence fakes exercise Promise-native adapter replay. */
 
 import {
+  qualificationEvaluationDimensionInventory,
   qualificationEvaluationForestBudget,
   qualificationEvaluationFindingShard,
   qualificationEvaluationFindingSummaryShard,
@@ -716,6 +717,53 @@ it.each([
     expect(budget).toEqual(expected);
     expect(budget.createBatchCount).toBeLessThan(10_000);
     expect(budget.maximumOwnerSteps).toBeLessThan(10_000);
+  },
+);
+
+it.each([
+  [
+    "BoundedBeta",
+    createBoundedBetaManifest(manifestVersions),
+    { identity: 8, numeric: 145, total: 153, workflowLevels: [918, 181, 14] },
+  ],
+  [
+    "ScaleQualifiedPublic",
+    createScaleQualifiedPublicManifest(manifestVersions),
+    { identity: 8, numeric: 423, total: 431, workflowLevels: [9_946, 795, 28, 14] },
+  ],
+] as const)(
+  "derives the exact %s dimension inventory from frozen policy",
+  (acceptanceLevel, manifest, expected) => {
+    const plan = createQualificationExecutionPlan(
+      manifest,
+      0,
+      `dimension-inventory-${acceptanceLevel}`,
+    );
+    const inventory = qualificationEvaluationDimensionInventory(plan);
+
+    expect(inventory).toHaveLength(expected.total);
+    expect(inventory.filter(({ valueType }) => valueType === "identity")).toHaveLength(
+      expected.identity,
+    );
+    expect(inventory.filter(({ valueType }) => valueType === "latencyMs")).toHaveLength(
+      expected.numeric,
+    );
+    expect(
+      Array.from(
+        { length: Math.max(...inventory.map(({ levelCounts }) => levelCounts.length)) },
+        (_unused, level) =>
+          inventory.reduce((total, dimension) => total + (dimension.levelCounts[level] ?? 0), 0),
+      ),
+    ).toEqual(expected.workflowLevels);
+    expect(new Set(inventory.map(({ dimension }) => dimension)).size).toBe(expected.total);
+    expect(
+      inventory.every(
+        ({ firstPartitionIndex, lastPartitionIndex, leafCount, levelCounts }) =>
+          firstPartitionIndex <= lastPartitionIndex &&
+          lastPartitionIndex - firstPartitionIndex + 1 === leafCount &&
+          levelCounts.at(-1) === 1,
+      ),
+    ).toBe(true);
   },
 );
 

@@ -2,10 +2,10 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import { Schema } from "effect";
 
 import {
+  authenticateQualificationEvaluationSortedRunReceipt,
   mergeQualificationSortedPage,
   qualificationEvaluationMaximumDimensionContinuations,
   QualificationEvaluationSortedRunDescriptor,
-  QualificationEvaluationSortedRunReceipt,
   QualificationEvaluationSortedRunShard,
   qualificationEvaluationSortedRunReceipt,
   qualificationEvaluationSortedRunShard,
@@ -13,6 +13,7 @@ import {
   retainQualificationEvaluationArtifact,
   type QualificationEvaluationArtifactBucket,
   type QualificationEvaluationMergeInput,
+  type QualificationEvaluationSortedRunReceipt,
 } from "../qualification/qualification-evaluation-reducer";
 import {
   canonicalQualificationJson,
@@ -110,54 +111,6 @@ const aggregateDescriptorFields = (
 const sha256Hex = async (encoded: string): Promise<string> => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-};
-
-const readInputReceipt = async (
-  env: QualificationEvaluationReducerEnv,
-  payload: QualificationEvaluationReducerWorkflowPayload,
-  reference: QualificationEvaluationReducerWorkflowPayload["inputs"][number],
-) => {
-  const retained = await env.ARTIFACTS.get(reference.artifactId);
-  if (retained === null) return null;
-  const encoded = await retained.text();
-  let receipt: typeof QualificationEvaluationSortedRunReceipt.Type;
-  try {
-    receipt = Schema.decodeSync(Schema.fromJsonString(QualificationEvaluationSortedRunReceipt))(
-      encoded,
-    );
-  } catch {
-    return null;
-  }
-  const { checksum, ...content } = receipt;
-  return receipt.artifactId === reference.artifactId &&
-    receipt.checksum === reference.checksum &&
-    receipt.checksum === qualificationChecksum(content) &&
-    receipt.dimension === payload.dimension &&
-    receipt.executionId === payload.executionId &&
-    receipt.planChecksum === payload.planChecksum &&
-    retained.customMetadata?.["osfo-artifact-checksum"] === checksum &&
-    retained.customMetadata?.["osfo-body-sha256"] === (await sha256Hex(encoded)) &&
-    retained.customMetadata?.["osfo-dimension"] === receipt.dimension &&
-    retained.customMetadata?.["osfo-execution-id"] === payload.executionId &&
-    retained.customMetadata?.["osfo-input-checksum"] ===
-      qualificationChecksum(receipt.inputReceiptChecksums) &&
-    retained.customMetadata?.["osfo-denominator-chain-digest"] === receipt.denominatorChainDigest &&
-    retained.customMetadata?.["osfo-denominator-count"] === String(receipt.denominatorCount) &&
-    retained.customMetadata?.["osfo-first-partition-index"] ===
-      String(receipt.firstPartitionIndex) &&
-    retained.customMetadata?.["osfo-input-receipt-chain-digest"] ===
-      receipt.inputReceiptChainDigest &&
-    retained.customMetadata?.["osfo-kind"] === "qualification-evaluation-sorted-run-receipt-v2" &&
-    retained.customMetadata?.["osfo-last-partition-index"] === String(receipt.lastPartitionIndex) &&
-    retained.customMetadata?.["osfo-missing-root-count"] === String(receipt.missingRootCount) &&
-    retained.customMetadata?.["osfo-plan-checksum"] === payload.planChecksum &&
-    retained.customMetadata?.["osfo-record-count"] === String(receipt.valueCount) &&
-    retained.customMetadata?.["osfo-run-id"] === receipt.runId &&
-    retained.customMetadata?.["osfo-sample-status"] === receipt.sampleStatus &&
-    retained.customMetadata?.["osfo-value-type"] === receipt.valueType &&
-    retained.customMetadata?.["osfo-terminal-checksum"] === receipt.terminalShardChecksum
-    ? receipt
-    : null;
 };
 
 const readInputShard = async (input: {
@@ -344,9 +297,19 @@ export const runQualificationEvaluationReducer = async (input: {
     throw new Error("Qualification reducer inputs conflict");
   }
   const verifiedInputs = await input.step.do("verify evaluation input receipts", async () => {
-    const receipts = new Array<Awaited<ReturnType<typeof readInputReceipt>>>();
+    const receipts = new Array<
+      Awaited<ReturnType<typeof authenticateQualificationEvaluationSortedRunReceipt>>
+    >();
     for (const reference of input.payload.inputs) {
-      receipts.push(await readInputReceipt(input.env, input.payload, reference));
+      receipts.push(
+        await authenticateQualificationEvaluationSortedRunReceipt({
+          bucket: input.env.ARTIFACTS,
+          dimension: input.payload.dimension,
+          executionId: input.payload.executionId,
+          planChecksum: input.payload.planChecksum,
+          reference,
+        }),
+      );
     }
     if (receipts.some((receipt) => receipt === null)) {
       throw new Error("Qualification reducer input receipt conflicts");

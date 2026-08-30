@@ -9,6 +9,7 @@ import {
   qualificationOwnerPartitions,
   qualificationOwnerLeafFanoutBudget,
   qualificationOwnerCorrectnessForestBudget,
+  qualificationOwnerDimensionCoordinatorBudget,
   qualificationOwnerCorrectnessLevelCounts,
   qualificationOwnerPartitionPhaseBudget,
   qualificationLeafCompletionHorizonMs,
@@ -57,6 +58,53 @@ describe("qualification owner partitions", () => {
             partitionChunks.at(-1)?.streamChunkIndex === lastStreamChunkIndex,
         ),
       ).toBe(true);
+    },
+  );
+
+  it.each([
+    [
+      "bounded beta",
+      createBoundedBetaManifest(manifestVersions),
+      {
+        dimensionCount: 153,
+        dimensionIndexPageCount: 396,
+        launchPageCount: 320,
+        levelWidths: [918, 181, 14],
+        maximumCoordinatorSubrequests: 9_904,
+        maximumRootOwnerSubrequests: 13_788,
+        numericDimensionCount: 145,
+        reducerCount: 1_113,
+        selectedShardReadCount: 580,
+      },
+    ],
+    [
+      "scale-qualified public",
+      createScaleQualifiedPublicManifest(manifestVersions),
+      {
+        dimensionCount: 431,
+        dimensionIndexPageCount: 3_544,
+        launchPageCount: 1_002,
+        levelWidths: [9_946, 795, 28, 14],
+        maximumCoordinatorSubrequests: 71_781,
+        maximumRootOwnerSubrequests: 148_291,
+        numericDimensionCount: 423,
+        reducerCount: 10_783,
+        selectedShardReadCount: 1_692,
+      },
+    ],
+  ] as const)(
+    "keeps the exact %s dimension forests below every owner limit",
+    (_, manifest, expected) => {
+      const plan = createQualificationExecutionPlan(manifest, 0, `dimension-budget-${_}`);
+      const budget = qualificationOwnerDimensionCoordinatorBudget(plan);
+
+      expect(budget).toMatchObject(expected);
+      expect(budget.levelHorizonMs).toBe(24 * 60 * 60_000);
+      expect(budget.maximumEvaluationDurationMs).toBe(4 * 24 * 60 * 60_000);
+      expect(budget.maximumCoordinatorSubrequests).toBeLessThanOrEqual(250_000 * 0.7);
+      expect(budget.maximumRootOwnerSubrequests).toBeLessThanOrEqual(250_000 * 0.7);
+      expect(budget.maximumCoordinatorDurableSteps).toBeLessThan(10_000);
+      expect(budget.maximumStepSubrequests).toBeLessThanOrEqual(169);
     },
   );
 

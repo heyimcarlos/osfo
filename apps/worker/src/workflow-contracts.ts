@@ -87,3 +87,13 @@ export interface QualificationEvaluationLeafWorkflowPayload {
   readonly requestArtifactId: string;
   readonly runId: string;
 }
+
+/** Compact authority passed to the bounded per-dimension forest coordinator. */
+export interface QualificationOwnerDimensionWorkflowPayload extends QualificationOwnerWorkflowPayload {
+  readonly correctnessArtifactId: string;
+  readonly correctnessChecksum: string;
+  readonly correctnessLevel: number;
+  readonly leafCompletionCount: number;
+  readonly leafCompletionPageCount: number;
+  readonly leafCompletionTerminalPageChecksum: string;
+}

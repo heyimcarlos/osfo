@@ -8,6 +8,7 @@ export { QualificationOwnerPartitionWorkflow } from "./workflows/qualification-o
 export { QualificationEvaluationCorrectnessReducerWorkflow } from "./workflows/qualification-evaluation-correctness-reducer";
 export { QualificationEvaluationReducerWorkflow } from "./workflows/qualification-evaluation-reducer";
 export { QualificationEvaluationLeafWorkflow } from "./workflows/qualification-evaluation-leaf";
+export { QualificationOwnerDimensionCoordinatorWorkflow } from "./workflows/qualification-owner-dimension-coordinator";
 
 const OwnerInvocation = Schema.Struct({
   executionId: Schema.String,

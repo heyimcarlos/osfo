@@ -3,7 +3,11 @@ import { Array, Option, Order, Schema } from "effect";
 import { qualificationAuthoritySources } from "./authority-sources";
 import type { QualificationExecutionPlan } from "./execution";
 import { qualificationChecksum } from "./qualification-checksum";
-import { isMeasuredStageLane, qualificationStageDimensionCount } from "./stage-evidence";
+import {
+  isMeasuredStageLane,
+  qualificationStageDimensionCount,
+  qualificationStageDimensions,
+} from "./stage-evidence";
 
 /* oxlint-disable effecttsgo/async-function -- Web Crypto and R2 are Promise-native adapter boundaries owned by this module. */
 
@@ -692,6 +696,57 @@ export interface QualificationEvaluationArtifactBucket {
   ) => Promise<{ readonly etag: string } | null>;
 }
 
+/** Authenticate one retained sorted receipt before it becomes a reducer or gate input. */
+export const authenticateQualificationEvaluationSortedRunReceipt = async (input: {
+  readonly bucket: QualificationEvaluationArtifactBucket;
+  readonly dimension: string;
+  readonly executionId: string;
+  readonly planChecksum: string;
+  readonly reference: { readonly artifactId: string; readonly checksum: string };
+}) => {
+  const retained = await input.bucket.get(input.reference.artifactId);
+  if (retained === null) return null;
+  const encoded = await retained.text();
+  let receipt: typeof QualificationEvaluationSortedRunReceipt.Type;
+  try {
+    receipt = Schema.decodeSync(Schema.fromJsonString(QualificationEvaluationSortedRunReceipt))(
+      encoded,
+    );
+  } catch {
+    return null;
+  }
+  const { checksum, ...content } = receipt;
+  return receipt.artifactId === input.reference.artifactId &&
+    receipt.checksum === input.reference.checksum &&
+    receipt.checksum === qualificationChecksum(content) &&
+    receipt.dimension === input.dimension &&
+    receipt.executionId === input.executionId &&
+    receipt.planChecksum === input.planChecksum &&
+    retained.customMetadata?.["osfo-artifact-checksum"] === checksum &&
+    retained.customMetadata?.["osfo-body-sha256"] === (await sha256Hex(encoded)) &&
+    retained.customMetadata?.["osfo-dimension"] === receipt.dimension &&
+    retained.customMetadata?.["osfo-execution-id"] === input.executionId &&
+    retained.customMetadata?.["osfo-input-checksum"] ===
+      qualificationChecksum(receipt.inputReceiptChecksums) &&
+    retained.customMetadata?.["osfo-denominator-chain-digest"] === receipt.denominatorChainDigest &&
+    retained.customMetadata?.["osfo-denominator-count"] === String(receipt.denominatorCount) &&
+    retained.customMetadata?.["osfo-first-partition-index"] ===
+      String(receipt.firstPartitionIndex) &&
+    retained.customMetadata?.["osfo-input-receipt-chain-digest"] ===
+      receipt.inputReceiptChainDigest &&
+    retained.customMetadata?.["osfo-kind"] === "qualification-evaluation-sorted-run-receipt-v2" &&
+    retained.customMetadata?.["osfo-last-partition-index"] === String(receipt.lastPartitionIndex) &&
+    retained.customMetadata?.["osfo-missing-root-count"] === String(receipt.missingRootCount) &&
+    retained.customMetadata?.["osfo-plan-checksum"] === input.planChecksum &&
+    retained.customMetadata?.["osfo-record-count"] === String(receipt.valueCount) &&
+    retained.customMetadata?.["osfo-run-id"] === receipt.runId &&
+    retained.customMetadata?.["osfo-sample-status"] === receipt.sampleStatus &&
+    retained.customMetadata?.["osfo-value-type"] === receipt.valueType &&
+    retained.customMetadata?.["osfo-terminal-checksum"] === receipt.terminalShardChecksum
+    ? receipt
+    : null;
+};
+
 const sha256Hex = async (encoded: string): Promise<string> => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
   return globalThis.Array.from(new Uint8Array(digest), (byte) =>
@@ -1067,6 +1122,77 @@ export const qualificationEvaluationGlobalSortedDimensions = [
   "workflowStartIds",
 ] as const;
 export const qualificationEvaluationReducerCreateBatchLimit = 50;
+
+export interface QualificationEvaluationDimensionInventoryEntry {
+  readonly dimension: string;
+  readonly firstPartitionIndex: number;
+  readonly lastPartitionIndex: number;
+  readonly leafCount: number;
+  readonly levelCounts: ReadonlyArray<number>;
+  readonly valueType: "identity" | "latencyMs";
+}
+
+const dimensionLevelCounts = (leafCount: number): ReadonlyArray<number> => {
+  const levels = new globalThis.Array<number>();
+  let width = leafCount;
+  while (width > 1) {
+    width = Math.ceil(width / qualificationEvaluationReducerFanIn);
+    levels.push(width);
+  }
+  return levels;
+};
+
+/** Exact policy-owned sorted dimensions and their contiguous leaf ranges. */
+export const qualificationEvaluationDimensionInventory = (
+  plan: QualificationExecutionPlan,
+): ReadonlyArray<QualificationEvaluationDimensionInventoryEntry> => {
+  const runRanges = new Map<
+    string,
+    {
+      readonly firstPartitionIndex: number;
+      readonly lastPartitionIndex: number;
+      readonly leafCount: number;
+    }
+  >();
+  let partitionIndex = 0;
+  for (const run of plan.runs) {
+    const leafCount = Math.ceil(run.arrivalCount / qualificationEvaluationSampleShardLimit);
+    runRanges.set(run.runId, {
+      firstPartitionIndex: partitionIndex,
+      lastPartitionIndex: partitionIndex + leafCount - 1,
+      leafCount,
+    });
+    partitionIndex += leafCount;
+  }
+  const globalRange = {
+    firstPartitionIndex: 0,
+    lastPartitionIndex: partitionIndex - 1,
+    leafCount: partitionIndex,
+    levelCounts: dimensionLevelCounts(partitionIndex),
+  };
+  const inventory: Array<QualificationEvaluationDimensionInventoryEntry> =
+    qualificationEvaluationGlobalSortedDimensions.map((dimension) => ({
+      ...globalRange,
+      dimension,
+      valueType: dimension.startsWith("operation:")
+        ? ("latencyMs" as const)
+        : ("identity" as const),
+    }));
+  for (const run of plan.runs) {
+    if (run.kind !== "lane" || !isMeasuredStageLane(run.lane)) continue;
+    const range = runRanges.get(run.runId);
+    if (range === undefined) throw new Error(`Qualification run ${run.runId} has no leaf range`);
+    for (const { coldCause, stage } of qualificationStageDimensions(run.lane)) {
+      inventory.push({
+        ...range,
+        dimension: `stage:${run.lane}:${run.region}:${run.repetition}:${stage}:${coldCause ?? "all"}`,
+        levelCounts: dimensionLevelCounts(range.leafCount),
+        valueType: "latencyMs",
+      });
+    }
+  }
+  return inventory;
+};
 
 const mergeWorkflowCount = (leafWidth: number): number => {
   let count = 0;

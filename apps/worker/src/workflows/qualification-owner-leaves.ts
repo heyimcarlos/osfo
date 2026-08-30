@@ -86,7 +86,7 @@ export const QualificationEvaluationLeafCompletionJoinPage = Schema.Struct({
   version: Schema.Literal("qualification-evaluation-leaf-completion-page-v1"),
 });
 
-interface QualificationOwnerLeafBucket {
+export interface QualificationOwnerLeafBucket {
   readonly get: (key: string) => Promise<{
     readonly customMetadata?: Readonly<Record<string, string>>;
     readonly text: () => Promise<string>;
@@ -330,11 +330,17 @@ const safeDecimalCount = (value: string, maximum: number) => {
   return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= maximum ? parsed : null;
 };
 
-const readCompletion = async (input: {
+export interface AuthenticatedQualificationEvaluationLeafCompletion {
+  readonly receipt: typeof QualificationEvaluationLeafReceipt.Type | null;
+  readonly reference: typeof QualificationEvaluationLeafCompletionReference.Type;
+}
+
+/** Re-read one producer-owned completion and all nested authority needed by later reducers. */
+export const authenticateQualificationEvaluationLeafCompletion = async (input: {
   readonly bucket: QualificationOwnerLeafBucket;
   readonly launchInput: typeof QualificationEvaluationLeafLaunchInput.Type;
   readonly payload: QualificationOwnerWorkflowPayload;
-}): Promise<typeof QualificationEvaluationLeafCompletionReference.Type | undefined> => {
+}): Promise<AuthenticatedQualificationEvaluationLeafCompletion | undefined> => {
   const artifactId = completionArtifactId(
     input.payload.executionId,
     input.launchInput.partitionIndex,
@@ -466,27 +472,33 @@ const readCompletion = async (input: {
       throw new Error("Qualification leaf roots conflict");
     }
     return {
-      acceptedCount,
+      receipt,
+      reference: {
+        acceptedCount,
+        artifactId: completion.artifactId,
+        checksum: completion.checksum,
+        leafInputArtifactId: completion.leafInputArtifactId,
+        leafInputChecksum: completion.leafInputChecksum,
+        outcome: completion.outcome.status,
+        partitionIndex: completion.partitionIndex,
+        rootCount,
+        runId: completion.runId,
+      },
+    };
+  }
+  return {
+    receipt: null,
+    reference: {
+      acceptedCount: 0,
       artifactId: completion.artifactId,
       checksum: completion.checksum,
       leafInputArtifactId: completion.leafInputArtifactId,
       leafInputChecksum: completion.leafInputChecksum,
       outcome: completion.outcome.status,
       partitionIndex: completion.partitionIndex,
-      rootCount,
+      rootCount: 0,
       runId: completion.runId,
-    };
-  }
-  return {
-    acceptedCount: 0,
-    artifactId: completion.artifactId,
-    checksum: completion.checksum,
-    leafInputArtifactId: completion.leafInputArtifactId,
-    leafInputChecksum: completion.leafInputChecksum,
-    outcome: completion.outcome.status,
-    partitionIndex: completion.partitionIndex,
-    rootCount: 0,
-    runId: completion.runId,
+    },
   };
 };
 
@@ -813,12 +825,12 @@ export const runQualificationOwnerLeafFanout = async (input: {
         if (launchPage === null) throw new Error("Qualification leaf join launch page conflicts");
         const references = new Array<typeof QualificationEvaluationLeafCompletionReference.Type>();
         for (const launchInput of launchPage.inputs) {
-          const reference = await readCompletion({
+          const authenticated = await authenticateQualificationEvaluationLeafCompletion({
             bucket: input.env.ARTIFACTS,
             launchInput,
             payload: input.payload,
           });
-          if (reference !== undefined) references.push(reference);
+          if (authenticated !== undefined) references.push(authenticated.reference);
         }
         return joinPage({
           bucket: input.env.ARTIFACTS,
