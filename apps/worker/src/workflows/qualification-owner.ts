@@ -17,6 +17,7 @@ import {
   qualificationChecksum,
 } from "../qualification/qualification-checksum";
 import type {
+  QualificationEvaluationLeafWorkflowPayload,
   QualificationOwnerPartitionWorkflowPayload,
   QualificationOwnerWorkflowPayload,
 } from "../workflow-contracts";
@@ -24,6 +25,10 @@ import {
   retainFailedQualificationReport,
   retainMissingQualificationReport,
 } from "./qualification-owner-report";
+import {
+  retainQualificationEvaluationLeafLaunchPage,
+  runQualificationOwnerLeafFanout,
+} from "./qualification-owner-leaves";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-await-in-loop, eslint/no-underscore-dangle -- Cloudflare Workflow APIs are Promise-only host boundaries; source polling must run as ordered, durable, uniquely named tagged steps. */
 
@@ -35,6 +40,15 @@ interface QualificationOwnerWorkflowEnv {
       batch: ReadonlyArray<{
         readonly id: string;
         readonly params: QualificationOwnerPartitionWorkflowPayload;
+      }>,
+    ) => Promise<ReadonlyArray<{ readonly id: string }>>;
+    readonly get: (id: string) => Promise<{ readonly id: string }>;
+  };
+  readonly QUALIFICATION_EVALUATION_LEAF_WORKFLOW: {
+    readonly createBatch: (
+      batch: ReadonlyArray<{
+        readonly id: string;
+        readonly params: QualificationEvaluationLeafWorkflowPayload;
       }>,
     ) => Promise<ReadonlyArray<{ readonly id: string }>>;
     readonly get: (id: string) => Promise<{ readonly id: string }>;
@@ -146,14 +160,6 @@ interface QualificationOwnerArtifactBucket {
   ) => Promise<{ readonly etag: string } | null>;
 }
 
-const listedSha256 = (value: ArrayBuffer | ArrayBufferView): string => {
-  const bytes =
-    value instanceof ArrayBuffer
-      ? new Uint8Array(value)
-      : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-};
-
 const sha256Hex = async (encoded: string): Promise<string> => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -219,9 +225,10 @@ const partitionCompletionPrefix = (executionId: string) =>
 const partitionPagePrefix = (executionId: string) =>
   `qualification/executions/${encodeURIComponent(executionId)}/owner-partition-pages`;
 
-const verifyPartitionCompletionPages = async (input: {
+export const verifyPartitionCompletionPages = async (input: {
   readonly bucket: QualificationOwnerArtifactBucket;
   readonly executionId: string;
+  readonly manifestChecksum: string;
   readonly partitions: ReadonlyArray<FrozenPartition>;
   readonly planChecksum: string;
   readonly step: QualificationSourceCollectionStep;
@@ -231,51 +238,120 @@ const verifyPartitionCompletionPages = async (input: {
     readonly failureCodes: ReadonlyArray<string>;
     readonly firstStreamChunkIndex: number;
     readonly lastStreamChunkIndex: number;
-    readonly recordCount: number;
+    readonly launchPageChecksum: string | null;
     readonly missingSources: ReadonlyArray<string>;
+    readonly recordCount: number;
     readonly sourceDigests: ReadonlyArray<{
       readonly digest: string;
       readonly recordCount: number;
       readonly source: string;
     }>;
   }>();
-  let cursor: string | undefined;
-  let expectedIndex = 0;
-  let pageIndex = 0;
-  let previousPageChecksum = "NONE";
+  let inventoryCursor: string | undefined;
+  let inventoryObjectCount = 0;
+  let inventoryPageIndex = 0;
+  let previousInventoryIndex = -1;
   do {
-    const pageResult = await input.step.do(
-      `verify partition completion page ${pageIndex}`,
+    const inventory = await input.step.do(
+      `inventory partition completion page ${inventoryPageIndex}`,
       async () => {
-        const listOptions = {
+        const options = {
           include: ["customMetadata"] as const,
-          limit: 100,
+          limit: qualificationPartitionBatchSize,
           prefix: `${partitionCompletionPrefix(input.executionId)}/`,
         };
-        const page = await input.bucket.list(
-          cursor === undefined ? listOptions : { ...listOptions, cursor },
+        const listed = await input.bucket.list(
+          inventoryCursor === undefined ? options : { ...options, cursor: inventoryCursor },
         );
-        if (page.truncated && (page.cursor === undefined || page.objects.length === 0)) {
+        if (listed.truncated && (listed.cursor === undefined || listed.objects.length === 0)) {
           throw new Error("Qualification partition completion listing did not advance");
         }
-        const receipts = new Array<typeof PartitionCompletion.Type>();
-        for (let offset = 0; offset < page.objects.length; offset += 1) {
-          const object = page.objects[offset];
-          const expected = input.partitions[expectedIndex + offset];
-          if (object === undefined || expected === undefined) {
+        let lastIndex = previousInventoryIndex;
+        for (const object of listed.objects) {
+          const prefix = `${partitionCompletionPrefix(input.executionId)}/`;
+          const suffix = object.key.slice(prefix.length);
+          if (!object.key.startsWith(prefix) || !/^[0-9]{8}\.json$/.test(suffix)) {
             throw new Error("Qualification partition completion has an unexpected object");
+          }
+          const streamChunkIndex = Number(suffix.slice(0, 8));
+          const expected = input.partitions[streamChunkIndex];
+          if (
+            expected === undefined ||
+            expected.streamChunkIndex !== streamChunkIndex ||
+            streamChunkIndex <= lastIndex
+          ) {
+            throw new Error("Qualification partition completion inventory conflicts");
           }
           // oxlint-disable-next-line effecttsgo/prefer-typed-schema-decoder -- R2 custom metadata is optional untrusted input at this boundary.
           const metadata = Schema.decodeUnknownSync(PartitionCompletionMetadata)(
             object.customMetadata,
           );
-          const retained = await input.bucket.get(object.key);
-          if (retained === null)
-            throw new Error("Qualification partition completion body is missing");
+          if (
+            metadata["osfo-execution-id"] !== input.executionId ||
+            metadata["osfo-index"] !== String(streamChunkIndex) ||
+            metadata["osfo-plan-checksum"] !== input.planChecksum
+          ) {
+            throw new Error("Qualification partition completion inventory conflicts");
+          }
+          lastIndex = streamChunkIndex;
+        }
+        return {
+          count: listed.objects.length,
+          lastIndex,
+          nextCursor: listed.truncated ? listed.cursor : null,
+        };
+      },
+    );
+    previousInventoryIndex = inventory.lastIndex;
+    inventoryObjectCount += inventory.count;
+    inventoryCursor = inventory.nextCursor ?? undefined;
+    inventoryPageIndex += 1;
+  } while (inventoryCursor !== undefined);
+
+  let observedPartitionCount = 0;
+  let previousPageChecksum = "NONE";
+  let previousLaunchPageChecksum = "NONE";
+  const pageCount = Math.ceil(input.partitions.length / qualificationPartitionBatchSize);
+  for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+    const expectedPartitions = input.partitions.slice(
+      pageIndex * qualificationPartitionBatchSize,
+      (pageIndex + 1) * qualificationPartitionBatchSize,
+    );
+    const result = await input.step.do(
+      `verify partition completion page ${pageIndex}`,
+      async () => {
+        const receipts = new Array<typeof PartitionCompletion.Type>();
+        for (const expected of expectedPartitions) {
+          const artifactId = `${partitionCompletionPrefix(input.executionId)}/${expected.streamChunkIndex.toString().padStart(8, "0")}.json`;
+          const listed = await input.bucket.list({
+            include: ["customMetadata"],
+            limit: 2,
+            prefix: artifactId,
+          });
+          if (
+            listed.truncated ||
+            listed.objects.length > 1 ||
+            listed.objects.some(({ key }) => key !== artifactId)
+          ) {
+            throw new Error(`Qualification partition ${expected.streamChunkIndex} conflicts`);
+          }
+          const retained = await input.bucket.get(artifactId);
+          if (retained === null && listed.objects.length === 0) continue;
+          if (retained === null || listed.objects.length !== 1) {
+            throw new Error(`Qualification partition ${expected.streamChunkIndex} conflicts`);
+          }
           const encoded = await retained.text();
           const receipt = Schema.decodeSync(Schema.fromJsonString(PartitionCompletion))(encoded);
           const { checksum, ...content } = receipt;
-          const bodySha256 = object.checksums.sha256;
+          const bodySha256 = await sha256Hex(encoded);
+          // oxlint-disable-next-line effecttsgo/prefer-typed-schema-decoder -- R2 custom metadata is optional untrusted input at this boundary.
+          const listedMetadata = Schema.decodeUnknownSync(PartitionCompletionMetadata)(
+            listed.objects[0]?.customMetadata,
+          );
+          // oxlint-disable-next-line effecttsgo/prefer-typed-schema-decoder -- R2 custom metadata is optional untrusted input at this boundary.
+          const retainedMetadata = Schema.decodeUnknownSync(PartitionCompletionMetadata)(
+            retained.customMetadata,
+          );
           const exactSources = new Set<string>(qualificationAuthoritySources);
           const hasExactSources =
             receipt.sourceChecksums.length === exactSources.size &&
@@ -328,10 +404,9 @@ const verifyPartitionCompletionPages = async (input: {
               }
             }
           }
+          const metadataValues = [listedMetadata, retainedMetadata];
           if (
-            object.key !==
-              `${partitionCompletionPrefix(input.executionId)}/${expected.streamChunkIndex.toString().padStart(8, "0")}.json` ||
-            receipt.artifactId !== object.key ||
+            receipt.artifactId !== artifactId ||
             receipt.chunkIndex !== expected.chunkIndex ||
             receipt.executionId !== input.executionId ||
             receipt.partitionIndex !== expected.partitionIndex ||
@@ -347,21 +422,20 @@ const verifyPartitionCompletionPages = async (input: {
               : receipt.sourceChecksums.length !== 0) ||
             !leafInputValid ||
             checksum !== qualificationChecksum(content) ||
-            metadata["osfo-artifact-checksum"] !== checksum ||
-            metadata["osfo-body-sha256"] !==
-              (bodySha256 === undefined ? "" : listedSha256(bodySha256)) ||
-            metadata["osfo-execution-id"] !== input.executionId ||
-            metadata["osfo-index"] !== String(expected.streamChunkIndex) ||
-            metadata["osfo-outcome"] !== receipt.outcome ||
-            metadata["osfo-plan-checksum"] !== input.planChecksum ||
-            metadata["osfo-record-count"] !== String(receipt.recordCount)
+            metadataValues.some(
+              (metadata) =>
+                metadata["osfo-artifact-checksum"] !== checksum ||
+                metadata["osfo-body-sha256"] !== bodySha256 ||
+                metadata["osfo-execution-id"] !== input.executionId ||
+                metadata["osfo-index"] !== String(expected.streamChunkIndex) ||
+                metadata["osfo-outcome"] !== receipt.outcome ||
+                metadata["osfo-plan-checksum"] !== input.planChecksum ||
+                metadata["osfo-record-count"] !== String(receipt.recordCount),
+            )
           ) {
             throw new Error(`Qualification partition ${expected.streamChunkIndex} conflicts`);
           }
           receipts.push(receipt);
-        }
-        if (receipts.length === 0) {
-          return { nextCursor: null, pageReceipt: null, receiptCount: 0 };
         }
         const sourceDigests = qualificationAuthoritySources.map((source) => ({
           digest: qualificationChecksum(
@@ -379,6 +453,37 @@ const verifyPartitionCompletionPages = async (input: {
           ),
           source,
         }));
+        let launchPageChecksum: string | null = null;
+        if (
+          inventoryObjectCount === input.partitions.length &&
+          receipts.length === expectedPartitions.length &&
+          receipts.every(({ outcome }) => outcome === "COMPLETE")
+        ) {
+          const launchInputs = receipts.map((receipt) => {
+            if (
+              receipt.leafInputArtifactId === null ||
+              receipt.leafInputArtifactChecksum === null
+            ) {
+              throw new Error("Complete qualification partition omits its leaf input");
+            }
+            return {
+              leafInputArtifactId: receipt.leafInputArtifactId,
+              leafInputChecksum: receipt.leafInputArtifactChecksum,
+              partitionIndex: receipt.partitionIndex,
+              runId: receipt.runId,
+            };
+          });
+          const launchPage = await retainQualificationEvaluationLeafLaunchPage({
+            bucket: input.bucket,
+            executionId: input.executionId,
+            inputs: launchInputs,
+            manifestChecksum: input.manifestChecksum,
+            pageIndex,
+            planChecksum: input.planChecksum,
+            previousPageChecksum: previousLaunchPageChecksum,
+          });
+          launchPageChecksum = launchPage.checksum;
+        }
         const pageContent = {
           evaluationLeafInputDigest: qualificationChecksum(
             receipts.map(({ leafInputArtifactChecksum }) => leafInputArtifactChecksum),
@@ -387,8 +492,9 @@ const verifyPartitionCompletionPages = async (input: {
           failureCodes: receipts.flatMap(({ failureCode }) =>
             failureCode === null ? [] : [failureCode],
           ),
-          firstStreamChunkIndex: receipts[0]?.streamChunkIndex ?? -1,
-          lastStreamChunkIndex: receipts.at(-1)?.streamChunkIndex ?? -1,
+          firstStreamChunkIndex: expectedPartitions[0]?.streamChunkIndex ?? -1,
+          lastStreamChunkIndex: expectedPartitions.at(-1)?.streamChunkIndex ?? -1,
+          launchPageChecksum,
           missingSources: [...new Set(receipts.flatMap(({ missingSources }) => missingSources))],
           pageIndex,
           planChecksum: input.planChecksum,
@@ -408,20 +514,32 @@ const verifyPartitionCompletionPages = async (input: {
             "osfo-kind": "qualification-owner-partition-page-v1",
           },
         );
-        return {
-          nextCursor: page.truncated ? page.cursor : null,
-          pageReceipt,
-          receiptCount: receipts.length,
-        };
+        return { launchPageChecksum, pageReceipt, receiptCount: receipts.length };
       },
     );
-    if (pageResult.pageReceipt !== null) pages.push(pageResult.pageReceipt);
-    expectedIndex += pageResult.receiptCount;
-    if (pageResult.pageReceipt !== null) previousPageChecksum = pageResult.pageReceipt.checksum;
-    cursor = pageResult.nextCursor ?? undefined;
-    pageIndex += 1;
-  } while (cursor !== undefined);
-  return { missingPartitionCount: input.partitions.length - expectedIndex, pages };
+    pages.push(result.pageReceipt);
+    observedPartitionCount += result.receiptCount;
+    previousPageChecksum = result.pageReceipt.checksum;
+    if (result.launchPageChecksum !== null) {
+      previousLaunchPageChecksum = result.launchPageChecksum;
+    }
+  }
+  const missingPartitionCount = input.partitions.length - observedPartitionCount;
+  const launchPageChecksums = pages.flatMap(({ launchPageChecksum }) =>
+    launchPageChecksum === null ? [] : [launchPageChecksum],
+  );
+  return {
+    launch:
+      missingPartitionCount === 0 && launchPageChecksums.length === pageCount
+        ? {
+            pageCount,
+            partitionCount: input.partitions.length,
+            terminalPageChecksum: launchPageChecksums.at(-1) ?? "NONE",
+          }
+        : null,
+    missingPartitionCount,
+    pages,
+  };
 };
 
 export interface QualificationSourceCollectionStep {
@@ -649,6 +767,7 @@ export const runQualificationOwnerWorkflow = async (input: {
   const completion = await verifyPartitionCompletionPages({
     bucket: input.env.ARTIFACTS,
     executionId: input.payload.executionId,
+    manifestChecksum: input.payload.manifestChecksum,
     partitions,
     planChecksum: input.payload.planChecksum,
     step: input.step,
@@ -677,6 +796,24 @@ export const runQualificationOwnerWorkflow = async (input: {
   if (missingSources.length > 0) {
     await input.step.do("retain missing qualification partition report", async () => {
       await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, missingSources);
+      return { retained: true };
+    });
+    return { status: "MISSING" };
+  }
+  if (completion.launch === null) {
+    throw new Error("Complete qualification partitions omit the leaf launch authority");
+  }
+  const leafCompletion = await runQualificationOwnerLeafFanout({
+    env: input.env,
+    launch: completion.launch,
+    payload: input.payload,
+    step: input.step,
+  });
+  if (leafCompletion.status === "MISSING") {
+    await input.step.do("retain missing qualification leaf completions", async () => {
+      await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
+        "qualification_evaluation_leaf_completions",
+      ]);
       return { retained: true };
     });
     return { status: "MISSING" };

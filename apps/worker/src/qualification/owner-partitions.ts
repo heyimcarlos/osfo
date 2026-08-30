@@ -4,6 +4,8 @@ export const qualificationPartitionChunkLimit = 1;
 export const qualificationPartitionMaximumPollsPerChunk = 100;
 export const qualificationPartitionWorkflowStepBudget = 10_000;
 export const qualificationPartitionCreateBatchLimit = 50;
+export const qualificationLeafCompletionHorizonMs = 17 * 60_000;
+export const qualificationLeafFanoutMaximumDurationMs = 3 * 60_000;
 
 export interface QualificationPartitionChunk {
   readonly chunkIndex: number;
@@ -20,6 +22,21 @@ export interface QualificationPartitionDescriptor {
 
 export const qualificationPartitionWorstCaseSteps = (chunkCount: number): number =>
   chunkCount + chunkCount * qualificationPartitionMaximumPollsPerChunk;
+
+/** Static host budget for leaf creation, inventory, exact reads, and bounded join retention. */
+export const qualificationOwnerLeafFanoutBudget = (partitionCount: number) => {
+  const batchCount = Math.ceil(partitionCount / qualificationPartitionCreateBatchLimit);
+  return {
+    batchCount,
+    maximumDurableSteps: 4 * batchCount + 5,
+    maximumSubrequests: 7 * partitionCount + 12 * batchCount + 4,
+    maximumTerminalDurationMs:
+      qualificationLeafFanoutMaximumDurationMs + qualificationLeafCompletionHorizonMs,
+    maximumWorkflowOperations: 6 * batchCount + 5,
+    postFinalLaunchHorizonMs: qualificationLeafCompletionHorizonMs,
+    scheduledFanoutDurationMs: Math.max(0, batchCount - 1) * 1_000,
+  };
+};
 
 /** Freeze contiguous chunk partitions whose declared worst-case polling stays below host limits. */
 export const qualificationOwnerPartitions = (
