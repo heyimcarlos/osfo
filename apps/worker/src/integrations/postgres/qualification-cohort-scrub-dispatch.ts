@@ -268,6 +268,9 @@ export const makeQualificationCohortScrubDispatchAuthority = (database: Database
         root_checksum: rootChecksum,
         settled_at: clock,
         state: "SETTLED" as const,
+        publication_attempt_count: 0,
+        publication_next_attempt_at: clock,
+        publication_state: "PENDING" as const,
       })),
   );
 
@@ -287,6 +290,9 @@ export const makeQualificationCohortScrubDispatchAuthority = (database: Database
         settled_at: clock,
         state: "CONFLICT" as const,
         terminal_failure_checksum: failureChecksum,
+        publication_attempt_count: 0,
+        publication_next_attempt_at: clock,
+        publication_state: "PENDING" as const,
       })),
   );
 
@@ -361,6 +367,9 @@ const quarantineIdentityConflict = async (
       settled_at: clock,
       state: "CONFLICT",
       terminal_failure_checksum: failureChecksum,
+      publication_attempt_count: 0,
+      publication_next_attempt_at: clock,
+      publication_state: "PENDING",
     })
     .where(eq(qualificationCohortScrubDispatches.dispatch_id, row.dispatch_id))
     .returning({ dispatchId: qualificationCohortScrubDispatches.dispatch_id });

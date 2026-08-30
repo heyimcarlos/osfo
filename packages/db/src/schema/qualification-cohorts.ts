@@ -3,6 +3,7 @@ import {
   boolean,
   check,
   foreignKey,
+  index,
   integer,
   pgTable,
   text,
@@ -24,6 +25,13 @@ const participantStateValues = ["ACTIVE", "DELETION_REQUESTED", "DELETED"] as co
 const provisionStateValues = ["PENDING", "CONSUMED"] as const;
 const attemptStateValues = ["OFFERED", "DECIDED"] as const;
 const scrubDispatchStateValues = ["PENDING", "SETTLED", "CONFLICT"] as const;
+const postTeardownPublicationStateValues = [
+  "PENDING",
+  "CLAIMED",
+  "PUBLISHED",
+  "CONFLICT",
+  "INELIGIBLE",
+] as const;
 
 /** Server-owned provenance for one disposable qualification cohort. */
 export const qualificationCohorts = pgTable(
@@ -85,6 +93,15 @@ export const qualificationCohortScrubDispatches = pgTable(
     last_status_checksum: text(),
     lease_expires_at: timestamp({ mode: "date", withTimezone: true }),
     protocol_version: text().notNull(),
+    publication_artifact_checksum: text(),
+    publication_attempt_count: integer(),
+    publication_claim_token: text(),
+    publication_conflict_checksum: text(),
+    publication_input_checksum: text(),
+    publication_lease_expires_at: timestamp({ mode: "date", withTimezone: true }),
+    publication_next_attempt_at: timestamp({ mode: "date", withTimezone: true }),
+    publication_settled_at: timestamp({ mode: "date", withTimezone: true }),
+    publication_state: text({ enum: postTeardownPublicationStateValues }),
     restart_applied_at: timestamp({ mode: "date", withTimezone: true }),
     restart_generation: integer().default(0).notNull(),
     restart_intent_checksum: text(),
@@ -96,6 +113,11 @@ export const qualificationCohortScrubDispatches = pgTable(
     terminal_failure_checksum: text(),
   },
   (table) => [
+    index("qualification_cohort_scrub_dispatches_publication_due_idx").on(
+      table.publication_state,
+      table.publication_next_attempt_at,
+      table.created_at,
+    ),
     foreignKey({
       columns: [table.cohort_id, table.execution_id],
       foreignColumns: [qualificationCohorts.cohort_id, qualificationCohorts.execution_id],
@@ -125,6 +147,37 @@ export const qualificationCohortScrubDispatches = pgTable(
           and ${table.terminal_failure_checksum} is null)
         or (${table.state} = 'CONFLICT' and ${table.settled_at} is not null and ${table.root_checksum} is null
           and ${table.terminal_failure_checksum} is not null)`,
+    ),
+    check(
+      "qualification_cohort_scrub_dispatches_publication_check",
+      sql`(${table.state} = 'PENDING' and ${table.publication_state} is null
+          and ${table.publication_attempt_count} is null and ${table.publication_next_attempt_at} is null)
+        or (${table.state} in ('SETTLED', 'CONFLICT') and ${table.publication_state} = 'PENDING'
+          and ${table.publication_attempt_count} >= 0 and ${table.publication_next_attempt_at} is not null
+          and ${table.publication_claim_token} is null and ${table.publication_lease_expires_at} is null
+          and ${table.publication_settled_at} is null and ${table.publication_artifact_checksum} is null
+          and ${table.publication_conflict_checksum} is null)
+        or (${table.state} in ('SETTLED', 'CONFLICT') and ${table.publication_state} = 'CLAIMED'
+          and ${table.publication_attempt_count} > 0 and ${table.publication_next_attempt_at} is not null
+          and ${table.publication_claim_token} is not null and ${table.publication_lease_expires_at} is not null
+          and ${table.publication_settled_at} is null and ${table.publication_artifact_checksum} is null
+          and ${table.publication_conflict_checksum} is null)
+        or (${table.state} in ('SETTLED', 'CONFLICT') and ${table.publication_state} in ('PUBLISHED', 'INELIGIBLE')
+          and ${table.publication_attempt_count} >= 0 and ${table.publication_input_checksum} is not null
+          and ${table.publication_next_attempt_at} is null
+          and ${table.publication_settled_at} is not null and ${table.publication_artifact_checksum} is not null
+          and ${table.publication_claim_token} is null and ${table.publication_lease_expires_at} is null
+          and ${table.publication_conflict_checksum} is null)
+        or (${table.state} in ('SETTLED', 'CONFLICT') and ${table.publication_state} = 'CONFLICT'
+          and ${table.publication_attempt_count} >= 0 and ${table.publication_input_checksum} is not null
+          and ${table.publication_next_attempt_at} is null
+          and ${table.publication_settled_at} is not null and ${table.publication_artifact_checksum} is null
+          and ${table.publication_claim_token} is null and ${table.publication_lease_expires_at} is null
+          and ${table.publication_conflict_checksum} is not null)`,
+    ),
+    check(
+      "qualification_cohort_scrub_dispatches_publication_lease_check",
+      sql`${table.publication_lease_expires_at} is null or ${table.publication_next_attempt_at} < ${table.publication_lease_expires_at}`,
     ),
   ],
 );

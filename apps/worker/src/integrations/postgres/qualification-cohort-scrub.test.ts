@@ -16,6 +16,7 @@ import { qualificationCohortScrubRootWorkflowPayload } from "../../qualification
 import { settleScheduledBranches } from "../../scheduled-lifecycle";
 import { makeQualificationCohortAuthority } from "./qualification-cohort";
 import { makeQualificationCohortScrubDispatchAuthority } from "./qualification-cohort-scrub-dispatch";
+import { makeQualificationPostTeardownPublicationAuthority } from "./qualification-post-teardown";
 
 const cohortId = "qualification-scrub-cohort";
 const executionId = "qualification-scrub-execution";
@@ -176,6 +177,67 @@ it.effect("does not expose scrub work before every product deletion is proven", 
     expect(yield* authority.inspectTeardown(cohortId)).toMatchObject({
       productDeletion: { deleted: 2, expected: 3, state: "PENDING" },
       scrub: { state: "NOT_STARTED" },
+    });
+  }),
+);
+
+it.effect("claims and reclaims due POST teardown publication work", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedCohort(fixture, { adventurer: 1, free: 1 });
+    const identity = qualificationCohortScrubDispatchIdentity(cohortId, executionId);
+    yield* Effect.promise(() =>
+      fixture.database.insert(qualificationCohortScrubDispatches).values({
+        cohort_id: cohortId,
+        dispatch_id: identity.dispatchId,
+        execution_id: executionId,
+        protocol_version: identity.protocolVersion,
+        publication_attempt_count: 0,
+        publication_next_attempt_at: new Date(0),
+        publication_state: "PENDING",
+        root_instance_id: identity.rootInstanceId,
+        root_checksum: "root",
+        settled_at: new Date(0),
+        state: "SETTLED",
+      }),
+    );
+    const authority = makeQualificationPostTeardownPublicationAuthority(fixture.database);
+    const [claimed] = yield* authority.claimBatch("first");
+    expect(claimed).toMatchObject({ _tag: "Claimed", attemptCount: 1 });
+    yield* Effect.promise(() =>
+      fixture.client.query(
+        `update qualification_cohort_scrub_dispatches set publication_lease_expires_at = clock_timestamp() - interval '1 second' where dispatch_id = $1`,
+        [identity.dispatchId],
+      ),
+    );
+    const [reclaimed] = yield* authority.claimBatch("second");
+    expect(reclaimed).toMatchObject({ _tag: "Claimed", attemptCount: 2, claimToken: "second" });
+    expect(yield* authority.pinInput(identity, "first", "input")).toEqual({ _tag: "Conflict" });
+    expect(yield* authority.pinInput(identity, "second", "input")).toEqual({ _tag: "Applied" });
+    expect(yield* authority.release(identity, "second", 0)).toEqual({ _tag: "Applied" });
+    expect(yield* authority.claimExact(identity, "third")).toMatchObject({
+      _tag: "Claimed",
+      attemptCount: 3,
+      inputChecksum: "input",
+    });
+    expect(yield* authority.publish(identity, "second", "input", "post-checksum")).toEqual({
+      _tag: "Conflict",
+    });
+    expect(yield* authority.publish(identity, "third", "input", "post-checksum")).toEqual({
+      _tag: "Applied",
+    });
+    const [terminal] = yield* Effect.promise(() =>
+      fixture.database
+        .select()
+        .from(qualificationCohortScrubDispatches)
+        .where(eq(qualificationCohortScrubDispatches.dispatch_id, identity.dispatchId)),
+    );
+    expect(terminal).toMatchObject({
+      publication_artifact_checksum: "post-checksum",
+      publication_next_attempt_at: null,
+      publication_state: "PUBLISHED",
     });
   }),
 );

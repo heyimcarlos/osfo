@@ -330,6 +330,13 @@
       "when": 1788094315533,
       "tag": "0046_careless_stick",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1788116478907,
+      "tag": "0047_qualification_post_teardown_publication",
+      "breakpoints": true
     }
   ]
 }
