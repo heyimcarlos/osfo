@@ -37,8 +37,12 @@ import type {
 } from "../integrations/postgres/qualification-post-teardown";
 import { authenticateQualificationExecutionRunCorpusReceipt } from "./qualification-execution-run-corpus";
 import {
+  authenticateQualificationDistributedCorrectnessReference,
+  authenticateQualificationDistributedDimensionReference,
+  authenticateQualificationDistributedEvaluationConflict,
   authenticateQualificationDistributedEvaluationReport,
   authenticateQualificationDistributedEvaluationReportCompletion,
+  qualificationDistributedEvaluationConflictArtifactId,
 } from "./qualification-owner-report";
 
 interface RetainedObject {
@@ -231,29 +235,42 @@ const decodePost = (stage: PostStage, encoded: string): PostValue => {
     encoded,
   );
 };
+const retainedArtifactMatches = async (
+  retained: RetainedObject,
+  retainedBody: string,
+  artifact: PostArtifact,
+  executionId: string,
+  inputChecksum: string,
+) => {
+  const encoded = canonicalQualificationJson(artifact.value);
+  try {
+    return (
+      retainedBody === encoded &&
+      canonicalQualificationJson(decodePost(artifact.stage, retainedBody)) === encoded &&
+      retained.httpMetadata?.contentType === "application/json" &&
+      exactMetadata(
+        retained.customMetadata,
+        await metadataFor(artifact, executionId, inputChecksum),
+      )
+    );
+  } catch {
+    return false;
+  }
+};
 const authenticateArtifact = async (
   bucket: QualificationPostTeardownBucket,
   artifact: PostArtifact,
   executionId: string,
   inputChecksum: string,
 ): Promise<"ABSENT" | "CONFLICT" | "EXACT"> => {
-  const encoded = canonicalQualificationJson(artifact.value);
-  const metadata = await metadataFor(artifact, executionId, inputChecksum);
   const retained = await bucket.get(artifact.artifactId);
   if (retained === null) return "ABSENT";
   const body = await retained.text();
-  try {
-    return body === encoded &&
-      canonicalQualificationJson(decodePost(artifact.stage, body)) === encoded &&
-      retained.httpMetadata?.contentType === "application/json" &&
-      exactMetadata(retained.customMetadata, metadata)
-      ? "EXACT"
-      : "CONFLICT";
-  } catch {
-    return "CONFLICT";
-  }
+  return (await retainedArtifactMatches(retained, body, artifact, executionId, inputChecksum))
+    ? "EXACT"
+    : "CONFLICT";
 };
-const retainArtifact = async (
+const createAbsentArtifact = async (
   bucket: QualificationPostTeardownBucket,
   artifact: PostArtifact,
   executionId: string,
@@ -261,29 +278,15 @@ const retainArtifact = async (
 ): Promise<"CONFLICT" | "EXACT"> => {
   const encoded = canonicalQualificationJson(artifact.value);
   const metadata = await metadataFor(artifact, executionId, inputChecksum);
-  const authenticate = async (retained: RetainedObject | null) => {
-    if (retained === null) return false;
-    const body = await retained.text();
-    try {
-      return (
-        body === encoded &&
-        canonicalQualificationJson(decodePost(artifact.stage, body)) === encoded &&
-        retained.httpMetadata?.contentType === "application/json" &&
-        exactMetadata(retained.customMetadata, metadata)
-      );
-    } catch {
-      return false;
-    }
-  };
-  const existing = await bucket.get(artifact.artifactId);
-  if (existing !== null) return (await authenticate(existing)) ? "EXACT" : "CONFLICT";
   const put = await bucket.put(artifact.artifactId, encoded, {
     customMetadata: metadata,
     httpMetadata: { contentType: "application/json" },
     onlyIf: { etagDoesNotMatch: "*" },
   });
   if (put !== null) return "EXACT";
-  return (await authenticate(await bucket.get(artifact.artifactId))) ? "EXACT" : "CONFLICT";
+  return (await authenticateArtifact(bucket, artifact, executionId, inputChecksum)) === "EXACT"
+    ? "EXACT"
+    : "CONFLICT";
 };
 const mutationApplied = (
   mutation: QualificationPostTeardownPublicationMutation,
@@ -309,6 +312,420 @@ const corpusIsLegacy = (report: QualificationDistributedEvaluationReport) => {
     family.references.length === 0
   );
 };
+const makeFinalizationRuntime = (input: FinalizationInput) => {
+  const identity = {
+    cohortId: input.claim.cohortId,
+    dispatchId: input.claim.dispatchId,
+    executionId: input.claim.executionId,
+  };
+  const get = Effect.fn("QualificationPostTeardown.get")((key: string) =>
+    Effect.tryPromise({
+      try: () => input.bucket.get(key),
+      catch: (cause) =>
+        new QualificationPostTeardownFinalizationUnavailable({
+          cause,
+          operation: `get:${key}`,
+        }),
+    }),
+  );
+  const release = Effect.fn("QualificationPostTeardown.release")(function* (reason: string) {
+    yield* mutationApplied(
+      yield* input.publication.release(
+        identity,
+        input.claim.claimToken,
+        input.releaseBackoffMilliseconds,
+      ),
+      input.invocation.requestArtifactId,
+    );
+    return { _tag: "Released", checksum: qualificationChecksum({ reason }) } as const;
+  });
+  const settleInputConflict = Effect.fn("QualificationPostTeardown.settleInputConflict")(function* (
+    artifactId: string,
+    reason: string,
+  ) {
+    const observedChecksum = qualificationChecksum({
+      artifactId,
+      executionId: identity.executionId,
+      reason,
+    });
+    const pinnedChecksum = input.claim.inputChecksum ?? observedChecksum;
+    if (input.claim.inputChecksum === null) {
+      const pinned = yield* input.publication.pinInput(
+        identity,
+        input.claim.claimToken,
+        pinnedChecksum,
+      );
+      if (pinned._tag !== "Applied")
+        return yield* Effect.fail(
+          new QualificationPostTeardownFinalizationConflict({ artifactId, message: reason }),
+        );
+    }
+    const retained = yield* input.publication.retainConflict(
+      identity,
+      input.claim.claimToken,
+      pinnedChecksum,
+      observedChecksum,
+    );
+    if (retained._tag !== "Applied")
+      return yield* Effect.fail(
+        new QualificationPostTeardownFinalizationConflict({ artifactId, message: reason }),
+      );
+    return yield* Effect.fail(
+      new QualificationPostTeardownFinalizationConflict({ artifactId, message: reason }),
+    );
+  });
+  const pinExact = Effect.fn("QualificationPostTeardown.pinExact")(function* (
+    checksum: string,
+    artifactId: string,
+  ) {
+    const pinned = yield* input.publication.pinInput(identity, input.claim.claimToken, checksum);
+    if (pinned._tag !== "Applied")
+      return yield* settleInputConflict(artifactId, "Finalization input checksum conflicts");
+    return undefined;
+  });
+  return { get, identity, input, pinExact, release, settleInputConflict } as const;
+};
+type FinalizationRuntime = ReturnType<typeof makeFinalizationRuntime>;
+type AuthenticatedPreTeardown = {
+  readonly completionArtifactId: string;
+  readonly completionChecksum: string;
+  readonly expectedRootCount: number;
+  readonly frozen: NonNullable<ReturnType<typeof decodeFrozenQualificationExecution>>;
+  readonly partitionCount: number;
+  readonly report: QualificationDistributedEvaluationReport;
+  readonly responseId: string;
+  readonly responseSha: string;
+};
+type PreTeardownResult =
+  | { readonly _tag: "Authenticated"; readonly authority: AuthenticatedPreTeardown }
+  | { readonly _tag: "Done"; readonly outcome: QualificationPostTeardownFinalizationOutcome };
+const preTeardownDone = (
+  outcome: QualificationPostTeardownFinalizationOutcome,
+): PreTeardownResult => ({ _tag: "Done", outcome });
+const authenticatePreTeardown = Effect.fn("QualificationPostTeardown.authenticatePreTeardown")(
+  function* (runtime: FinalizationRuntime) {
+    const { identity, input } = runtime;
+    const requestObject = yield* runtime.get(input.invocation.requestArtifactId);
+    if (requestObject === null)
+      return preTeardownDone(yield* runtime.release("ownerRequestMissing"));
+    const requestEncoded = yield* Effect.tryPromise({
+      try: () => requestObject.text(),
+      catch: (cause) =>
+        new QualificationPostTeardownFinalizationUnavailable({
+          cause,
+          operation: "ownerRequest.text",
+        }),
+    });
+    const frozen = decodeFrozenQualificationExecution(requestEncoded, input.invocation);
+    if (
+      frozen === null ||
+      requestObject.httpMetadata?.contentType !== "application/json" ||
+      !exactMetadata(requestObject.customMetadata, { "osfo-kind": "qualification-execution-v1" })
+    )
+      return yield* runtime.settleInputConflict(
+        input.invocation.requestArtifactId,
+        "Frozen owner request conflicts",
+      );
+    const expectedRootCount = frozen.plan.runs.reduce((total, run) => total + run.arrivalCount, 0);
+    const partitionCount = frozen.plan.runs.reduce(
+      (total, run) => total + Math.ceil(run.arrivalCount / 256),
+      0,
+    );
+    const expectedDimensionCount = qualificationOwnerDimensionCoordinatorBudget(
+      frozen.plan,
+    ).dimensionCount;
+    const preConflict = yield* Effect.tryPromise({
+      try: () =>
+        authenticateQualificationDistributedEvaluationConflict({
+          bucket: input.bucket,
+          executionId: identity.executionId,
+          manifestChecksum: input.invocation.manifestChecksum,
+          planChecksum: input.invocation.planChecksum,
+        }),
+      catch: (cause) =>
+        new QualificationPostTeardownFinalizationUnavailable({
+          cause,
+          operation: "authenticatePreConflict",
+        }),
+    });
+    if (preConflict === "CONFLICT")
+      return yield* runtime.settleInputConflict(
+        qualificationDistributedEvaluationConflictArtifactId(identity.executionId),
+        "PRE distributed evaluation conflict marker is retained",
+      );
+    const responseId = `qualification/executions/${encodeURIComponent(identity.executionId)}/owner-response.json`;
+    const responseObject = yield* runtime.get(responseId);
+    if (responseObject === null)
+      return preTeardownDone(yield* runtime.release("preResponseMissing"));
+    const responseEncoded = yield* Effect.tryPromise({
+      try: () => responseObject.text(),
+      catch: (cause) =>
+        new QualificationPostTeardownFinalizationUnavailable({
+          cause,
+          operation: "preResponse.text",
+        }),
+    });
+    let response: typeof OwnerResponse.Type;
+    try {
+      response = Schema.decodeSync(Schema.fromJsonString(OwnerResponse))(responseEncoded);
+    } catch {
+      return yield* runtime.settleInputConflict(responseId, "PRE response conflicts");
+    }
+    if (canonicalQualificationJson(response) !== responseEncoded)
+      return yield* runtime.settleInputConflict(responseId, "PRE response is not canonical");
+    const reportMaterial = yield* Effect.tryPromise({
+      try: () =>
+        authenticateQualificationDistributedEvaluationReport({
+          acceptanceLevel: frozen.manifest.acceptanceLevel,
+          artifactId: response.body.reportArtifactId,
+          bucket: input.bucket,
+          checksum: response.body.reportChecksum,
+          executionId: identity.executionId,
+          expectedDimensionCount,
+          expectedRootCount,
+          manifestChecksum: input.invocation.manifestChecksum,
+          planChecksum: input.invocation.planChecksum,
+          sourceVersion: frozen.manifest.sourceVersion,
+          topologyVersion: frozen.manifest.topologyVersion,
+        }),
+      catch: (cause) =>
+        new QualificationPostTeardownFinalizationUnavailable({
+          cause,
+          operation: "authenticatePreReport",
+        }),
+    });
+    if (reportMaterial.status === "MISSING")
+      return preTeardownDone(yield* runtime.release("preReportMissing"));
+    if (reportMaterial.status !== "COMPLETE")
+      return yield* runtime.settleInputConflict(
+        response.body.reportArtifactId,
+        "PRE report conflicts",
+      );
+    const report = reportMaterial.report;
+    const completionMaterial = yield* Effect.tryPromise({
+      try: () =>
+        authenticateQualificationDistributedEvaluationReportCompletion({
+          artifactId: response.body.completionArtifactId,
+          bucket: input.bucket,
+          checksum: response.body.completionChecksum,
+          executionId: identity.executionId,
+          failingFamilyCount: report.failingFamilyCount,
+          manifestChecksum: report.manifestChecksum,
+          missingFamilyCount: report.missingFamilyCount,
+          planChecksum: report.planChecksum,
+          reportArtifactId: report.artifactId,
+          reportChecksum: report.checksum,
+          verdict: report.verdict,
+        }),
+      catch: (cause) =>
+        new QualificationPostTeardownFinalizationUnavailable({
+          cause,
+          operation: "authenticatePreCompletion",
+        }),
+    });
+    if (completionMaterial.status === "MISSING")
+      return preTeardownDone(yield* runtime.release("preCompletionMissing"));
+    if (completionMaterial.status !== "COMPLETE")
+      return yield* runtime.settleInputConflict(
+        response.body.completionArtifactId,
+        "PRE completion conflicts",
+      );
+    const responseSha = yield* Effect.promise(() => sha256Hex(responseEncoded));
+    if (
+      response.body.executionId !== identity.executionId ||
+      response.body.manifestChecksum !== input.invocation.manifestChecksum ||
+      response.body.planChecksum !== input.invocation.planChecksum ||
+      response.body.reportArtifactId !== report.artifactId ||
+      response.body.reportChecksum !== report.checksum ||
+      response.body.completionArtifactId !== completionMaterial.completion.artifactId ||
+      response.body.completionChecksum !== completionMaterial.completion.checksum ||
+      responseObject.httpMetadata?.contentType !== "application/json" ||
+      !exactMetadata(responseObject.customMetadata, {
+        "osfo-body-sha256": responseSha,
+        "osfo-execution-id": identity.executionId,
+        "osfo-kind": "qualification-owner-response-v2",
+        "osfo-manifest-checksum": input.invocation.manifestChecksum,
+        "osfo-plan-checksum": input.invocation.planChecksum,
+        "osfo-report-checksum": report.checksum,
+        "osfo-verdict": report.verdict,
+      })
+    )
+      return yield* runtime.settleInputConflict(responseId, "PRE lineage conflicts");
+    const failingFamilies = report.families
+      .filter(({ verdict }) => verdict === "FAIL")
+      .map(({ family }) => family);
+    const missingFamilies = report.families
+      .filter(({ verdict }) => verdict === "MISSING")
+      .map(({ family }) => family);
+    if (
+      response.body.verdict !== report.verdict ||
+      completionMaterial.completion.verdict !== report.verdict ||
+      response.status !== (report.verdict === "FAIL" ? 409 : 424) ||
+      response.body.error !==
+        (report.verdict === "FAIL"
+          ? "qualificationAuthorityConflict"
+          : "qualificationAuthorityMaterialMissing") ||
+      canonicalQualificationJson(response.body.failingFamilies) !==
+        canonicalQualificationJson(failingFamilies) ||
+      canonicalQualificationJson(response.body.missingFamilies) !==
+        canonicalQualificationJson(missingFamilies)
+    )
+      return yield* runtime.settleInputConflict(responseId, "PRE response summary conflicts");
+    const correctnessFamily = report.families.find(({ family }) => family === "forest_correctness");
+    const correctnessReference = correctnessFamily?.references[0];
+    if (correctnessFamily !== undefined && correctnessReference?.kind === "correctness") {
+      const material = yield* Effect.tryPromise({
+        try: () =>
+          authenticateQualificationDistributedCorrectnessReference({
+            artifactId: correctnessReference.artifactId,
+            bucket: input.bucket,
+            checksum: correctnessReference.checksum,
+            executionId: identity.executionId,
+            expectedAcceptedCount: correctnessReference.acceptedCount,
+            expectedRootCount: correctnessReference.rootCount,
+            partitionCount,
+            planChecksum: input.invocation.planChecksum,
+            verdict: correctnessFamily.verdict,
+          }),
+        catch: (cause) =>
+          new QualificationPostTeardownFinalizationUnavailable({
+            cause,
+            operation: "authenticateCorrectnessReference",
+          }),
+      });
+      if (material.status === "MISSING")
+        return preTeardownDone(yield* runtime.release("correctnessReferenceMissing"));
+      if (material.status !== "COMPLETE")
+        return yield* runtime.settleInputConflict(
+          correctnessReference.artifactId,
+          "PRE correctness reference conflicts",
+        );
+    } else if (correctnessFamily?.references.length !== 0) {
+      return yield* runtime.settleInputConflict(
+        report.artifactId,
+        "PRE correctness reference kind conflicts",
+      );
+    }
+    const dimensionFamily = report.families.find(
+      ({ family }) => family === "numeric_stage_operation_dimensions",
+    );
+    const dimensionReference = dimensionFamily?.references[0];
+    if (dimensionFamily !== undefined && dimensionReference?.kind === "dimensions") {
+      const material = yield* Effect.tryPromise({
+        try: () =>
+          authenticateQualificationDistributedDimensionReference({
+            artifactId: dimensionReference.artifactId,
+            bucket: input.bucket,
+            checksum: dimensionReference.checksum,
+            executionId: identity.executionId,
+            expectedDimensionCount: dimensionReference.dimensionCount,
+            planChecksum: input.invocation.planChecksum,
+            verdict: dimensionFamily.verdict,
+          }),
+        catch: (cause) =>
+          new QualificationPostTeardownFinalizationUnavailable({
+            cause,
+            operation: "authenticateDimensionReference",
+          }),
+      });
+      if (material.status === "MISSING")
+        return preTeardownDone(yield* runtime.release("dimensionReferenceMissing"));
+      if (material.status !== "COMPLETE")
+        return yield* runtime.settleInputConflict(
+          dimensionReference.artifactId,
+          "PRE dimension reference conflicts",
+        );
+    } else if (dimensionFamily?.references.length !== 0) {
+      return yield* runtime.settleInputConflict(
+        report.artifactId,
+        "PRE dimension reference kind conflicts",
+      );
+    }
+    if (corpusIsLegacy(report)) {
+      const checksum = qualificationChecksum({
+        executionId: identity.executionId,
+        ownerRequestChecksum: input.invocation.requestArtifactChecksum,
+        preCompletionChecksum: completionMaterial.completion.checksum,
+        preReportChecksum: report.checksum,
+        preResponseChecksum: responseSha,
+        reason: "legacyPreTeardown",
+      });
+      yield* runtime.pinExact(checksum, report.artifactId);
+      yield* mutationApplied(
+        yield* input.publication.retainIneligible(
+          identity,
+          input.claim.claimToken,
+          checksum,
+          checksum,
+        ),
+        report.artifactId,
+      );
+      return preTeardownDone({ _tag: "Ineligible", checksum });
+    }
+    const corpus = corpusFamily(report);
+    const corpusReference = corpus?.references[0];
+    if (
+      corpus?.verdict !== "PASS" ||
+      corpus.references.length !== 1 ||
+      corpusReference?.kind !== "executionCorpus"
+    )
+      return yield* runtime.settleInputConflict(
+        report.artifactId,
+        "PRE execution corpus family conflicts",
+      );
+    const corpusMaterial = yield* Effect.tryPromise({
+      try: () =>
+        authenticateQualificationExecutionRunCorpusReceipt({
+          artifactId: corpusReference.artifactId,
+          bucket: input.bucket,
+          checksum: corpusReference.checksum,
+          executionId: identity.executionId,
+          expectedRootCount,
+          manifestChecksum: input.invocation.manifestChecksum,
+          partitionCount,
+          planChecksum: input.invocation.planChecksum,
+          sourceVersion: frozen.manifest.sourceVersion,
+          topologyVersion: frozen.manifest.topologyVersion,
+        }),
+      catch: (cause) =>
+        new QualificationPostTeardownFinalizationUnavailable({
+          cause,
+          operation: "authenticateExecutionCorpus",
+        }),
+    });
+    if (corpusMaterial.status === "MISSING")
+      return preTeardownDone(yield* runtime.release("executionCorpusMissing"));
+    if (
+      corpusMaterial.status !== "COMPLETE" ||
+      corpusMaterial.receipt.acceptedCount !== corpusReference.acceptedCount ||
+      corpusMaterial.receipt.completionCount !== corpusReference.completionCount ||
+      corpusMaterial.receipt.pageCount !== corpusReference.pageCount ||
+      corpusMaterial.receipt.partitionCount !== corpusReference.partitionCount ||
+      corpusMaterial.receipt.rootCount !== corpusReference.rootCount ||
+      corpusMaterial.receipt.terminalJoinPageChecksum !==
+        corpusReference.terminalJoinPageChecksum ||
+      corpusMaterial.receipt.terminalLaunchPageChecksum !==
+        corpusReference.terminalLaunchPageChecksum
+    )
+      return yield* runtime.settleInputConflict(
+        corpusReference.artifactId,
+        "PRE execution corpus conflicts",
+      );
+    return {
+      _tag: "Authenticated",
+      authority: {
+        completionArtifactId: completionMaterial.completion.artifactId,
+        completionChecksum: completionMaterial.completion.checksum,
+        expectedRootCount,
+        frozen,
+        partitionCount,
+        report,
+        responseId,
+        responseSha,
+      },
+    } satisfies PreTeardownResult;
+  },
+);
 const makeStageConflict = (input: {
   readonly artifact: PostArtifact;
   readonly completion: typeof QualificationPostTeardownCompletion.Type;
@@ -354,328 +771,350 @@ const makeStageConflict = (input: {
     teardownReceiptChecksum: input.receipt.checksum,
   });
 };
+type PostChain = {
+  readonly artifacts: ReadonlyArray<PostArtifact>;
+  readonly chainChecksum: string;
+  readonly completion: typeof QualificationPostTeardownCompletion.Type;
+  readonly finalizationInputChecksum: string;
+  readonly preCompletionChecksum: string;
+  readonly preReportChecksum: string;
+  readonly preResponseChecksum: string;
+  readonly receipt: QualificationPostTeardownReceipt;
+  readonly report: QualificationPostTeardownReport;
+};
+const retainPostChain = Effect.fn("QualificationPostTeardown.retainPostChain")(function* (
+  runtime: FinalizationRuntime,
+  chain: PostChain,
+) {
+  const { identity, input } = runtime;
+  const conflictArtifactId = qualificationPostTeardownConflictArtifactId(identity.executionId);
+  const settleCollision = Effect.fn("QualificationPostTeardown.settlePostCollision")(function* (
+    artifact: PostArtifact,
+  ) {
+    const marker = makeStageConflict({
+      artifact,
+      completion: chain.completion,
+      inputChecksum: chain.finalizationInputChecksum,
+      ownerRequestChecksum: input.invocation.requestArtifactChecksum,
+      preCompletionChecksum: chain.preCompletionChecksum,
+      preReportChecksum: chain.preReportChecksum,
+      preResponseChecksum: chain.preResponseChecksum,
+      receipt: chain.receipt,
+      report: chain.report,
+    });
+    const markerArtifact: PostArtifact = {
+      artifactId: conflictArtifactId,
+      checksum: marker.checksum,
+      kind: "qualification-post-teardown-evaluation-conflict-v1",
+      stage: "conflict",
+      value: marker,
+    };
+    const markerResult = yield* Effect.tryPromise({
+      try: () =>
+        createAbsentArtifact(
+          input.bucket,
+          markerArtifact,
+          identity.executionId,
+          chain.finalizationInputChecksum,
+        ),
+      catch: (cause) =>
+        new QualificationPostTeardownFinalizationUnavailable({
+          cause,
+          operation: "retain:conflict",
+        }),
+    });
+    if (markerResult !== "EXACT") {
+      const conflictChecksum = qualificationChecksum({
+        artifactId: marker.artifactId,
+        executionId: identity.executionId,
+        reason: "POST conflict marker conflicts",
+      });
+      yield* mutationApplied(
+        yield* input.publication.retainConflict(
+          identity,
+          input.claim.claimToken,
+          chain.finalizationInputChecksum,
+          conflictChecksum,
+        ),
+        marker.artifactId,
+      );
+      return yield* Effect.fail(
+        new QualificationPostTeardownFinalizationConflict({
+          artifactId: marker.artifactId,
+          message: "POST conflict marker conflicts",
+        }),
+      );
+    }
+    yield* mutationApplied(
+      yield* input.publication.retainConflict(
+        identity,
+        input.claim.claimToken,
+        chain.finalizationInputChecksum,
+        marker.checksum,
+      ),
+      marker.artifactId,
+    );
+    return yield* Effect.fail(
+      new QualificationPostTeardownFinalizationConflict({
+        artifactId: artifact.artifactId,
+        message: "Immutable POST artifact conflicts",
+      }),
+    );
+  });
+
+  const retainedMarker = yield* runtime.get(conflictArtifactId);
+  if (retainedMarker !== null) {
+    const markerEncoded = yield* Effect.tryPromise({
+      try: () => retainedMarker.text(),
+      catch: (cause) =>
+        new QualificationPostTeardownFinalizationUnavailable({
+          cause,
+          operation: "conflict.text",
+        }),
+    });
+    let retainedConflict: QualificationPostTeardownConflict;
+    try {
+      retainedConflict = Schema.decodeUnknownSync(
+        Schema.fromJsonString(QualificationPostTeardownConflict),
+      )(markerEncoded);
+    } catch {
+      const conflictChecksum = qualificationChecksum({
+        artifactId: conflictArtifactId,
+        executionId: identity.executionId,
+        reason: "POST conflict marker is malformed",
+      });
+      yield* mutationApplied(
+        yield* input.publication.retainConflict(
+          identity,
+          input.claim.claimToken,
+          chain.finalizationInputChecksum,
+          conflictChecksum,
+        ),
+        conflictArtifactId,
+      );
+      return yield* Effect.fail(
+        new QualificationPostTeardownFinalizationConflict({
+          artifactId: conflictArtifactId,
+          message: "POST conflict marker is malformed",
+        }),
+      );
+    }
+    const target = chain.artifacts.find(({ stage }) => stage === retainedConflict.stage);
+    if (target === undefined) {
+      const conflictChecksum = qualificationChecksum({
+        artifactId: retainedConflict.artifactId,
+        executionId: identity.executionId,
+        reason: "POST conflict marker target is unavailable",
+      });
+      yield* mutationApplied(
+        yield* input.publication.retainConflict(
+          identity,
+          input.claim.claimToken,
+          chain.finalizationInputChecksum,
+          conflictChecksum,
+        ),
+        retainedConflict.artifactId,
+      );
+      return yield* Effect.fail(
+        new QualificationPostTeardownFinalizationConflict({
+          artifactId: retainedConflict.artifactId,
+          message: "POST conflict marker target is unavailable",
+        }),
+      );
+    }
+    const expected = makeStageConflict({
+      artifact: target,
+      completion: chain.completion,
+      inputChecksum: chain.finalizationInputChecksum,
+      ownerRequestChecksum: input.invocation.requestArtifactChecksum,
+      preCompletionChecksum: chain.preCompletionChecksum,
+      preReportChecksum: chain.preReportChecksum,
+      preResponseChecksum: chain.preResponseChecksum,
+      receipt: chain.receipt,
+      report: chain.report,
+    });
+    const expectedArtifact: PostArtifact = {
+      artifactId: expected.artifactId,
+      checksum: expected.checksum,
+      kind: "qualification-post-teardown-evaluation-conflict-v1",
+      stage: "conflict",
+      value: expected,
+    };
+    const markerIsExact = yield* Effect.tryPromise({
+      try: () =>
+        retainedArtifactMatches(
+          retainedMarker,
+          markerEncoded,
+          expectedArtifact,
+          identity.executionId,
+          chain.finalizationInputChecksum,
+        ),
+      catch: (cause) =>
+        new QualificationPostTeardownFinalizationUnavailable({
+          cause,
+          operation: "authenticate:conflict",
+        }),
+    });
+    if (!markerIsExact) {
+      const conflictChecksum = qualificationChecksum({
+        artifactId: retainedConflict.artifactId,
+        executionId: identity.executionId,
+        reason: "POST conflict marker conflicts",
+      });
+      yield* mutationApplied(
+        yield* input.publication.retainConflict(
+          identity,
+          input.claim.claimToken,
+          chain.finalizationInputChecksum,
+          conflictChecksum,
+        ),
+        retainedConflict.artifactId,
+      );
+      return yield* Effect.fail(
+        new QualificationPostTeardownFinalizationConflict({
+          artifactId: retainedConflict.artifactId,
+          message: "POST conflict marker conflicts",
+        }),
+      );
+    }
+    yield* mutationApplied(
+      yield* input.publication.retainConflict(
+        identity,
+        input.claim.claimToken,
+        chain.finalizationInputChecksum,
+        expected.checksum,
+      ),
+      expected.artifactId,
+    );
+    return yield* Effect.fail(
+      new QualificationPostTeardownFinalizationConflict({
+        artifactId: target.artifactId,
+        message: "Retained POST conflict marker dominates replay",
+      }),
+    );
+  }
+
+  const initialStates = new Array<"ABSENT" | "CONFLICT" | "EXACT">();
+  for (const artifact of chain.artifacts)
+    initialStates.push(
+      yield* Effect.tryPromise({
+        try: () =>
+          authenticateArtifact(
+            input.bucket,
+            artifact,
+            identity.executionId,
+            chain.finalizationInputChecksum,
+          ),
+        catch: (cause) =>
+          new QualificationPostTeardownFinalizationUnavailable({
+            cause,
+            operation: `authenticate:${artifact.stage}`,
+          }),
+      }),
+    );
+  const firstAbsent = initialStates.indexOf("ABSENT");
+  const firstConflict = initialStates.indexOf("CONFLICT");
+  const conflictingArtifact = chain.artifacts[firstConflict];
+  if (conflictingArtifact !== undefined) return yield* settleCollision(conflictingArtifact);
+  if (firstAbsent >= 0 && initialStates.slice(firstAbsent + 1).some((state) => state === "EXACT")) {
+    const missingPredecessor = chain.artifacts[firstAbsent];
+    if (missingPredecessor !== undefined) return yield* settleCollision(missingPredecessor);
+  }
+  for (const [artifactIndex, artifact] of chain.artifacts.entries()) {
+    if (initialStates[artifactIndex] === "EXACT") continue;
+    const result = yield* Effect.tryPromise({
+      try: () =>
+        createAbsentArtifact(
+          input.bucket,
+          artifact,
+          identity.executionId,
+          chain.finalizationInputChecksum,
+        ),
+      catch: (cause) =>
+        new QualificationPostTeardownFinalizationUnavailable({
+          cause,
+          operation: `retain:${artifact.stage}`,
+        }),
+    });
+    if (result === "EXACT") continue;
+    return yield* settleCollision(artifact);
+  }
+  yield* mutationApplied(
+    yield* input.publication.publish(
+      identity,
+      input.claim.claimToken,
+      chain.finalizationInputChecksum,
+      chain.chainChecksum,
+    ),
+    qualificationPostTeardownResponseArtifactId(identity.executionId),
+  );
+  return { _tag: "Published", checksum: chain.chainChecksum } as const;
+});
 
 export const finalizeQualificationPostTeardown = Effect.fn("QualificationPostTeardown.finalize")(
   (input: FinalizationInput) =>
     Effect.gen(function* () {
-      const identity = {
-        cohortId: input.claim.cohortId,
-        dispatchId: input.claim.dispatchId,
-        executionId: input.claim.executionId,
-      };
-      const get = (key: string) =>
-        Effect.tryPromise({
-          try: () => input.bucket.get(key),
-          catch: (cause) =>
-            new QualificationPostTeardownFinalizationUnavailable({
-              cause,
-              operation: `get:${key}`,
-            }),
-        });
-      const release = (reason: string) =>
-        Effect.gen(function* () {
-          yield* mutationApplied(
-            yield* input.publication.release(
-              identity,
-              input.claim.claimToken,
-              input.releaseBackoffMilliseconds,
-            ),
-            input.invocation.requestArtifactId,
-          );
-          return { _tag: "Released", checksum: qualificationChecksum({ reason }) } as const;
-        });
-      const settleInputConflict = (artifactId: string, reason: string) =>
-        Effect.gen(function* () {
-          const observedChecksum = qualificationChecksum({
-            artifactId,
-            executionId: identity.executionId,
-            reason,
-          });
-          const pinnedChecksum = input.claim.inputChecksum ?? observedChecksum;
-          if (input.claim.inputChecksum === null) {
-            const pinned = yield* input.publication.pinInput(
-              identity,
-              input.claim.claimToken,
-              pinnedChecksum,
-            );
-            if (pinned._tag !== "Applied")
-              return yield* Effect.fail(
-                new QualificationPostTeardownFinalizationConflict({ artifactId, message: reason }),
-              );
-          }
-          const retained = yield* input.publication.retainConflict(
-            identity,
-            input.claim.claimToken,
-            pinnedChecksum,
-            observedChecksum,
-          );
-          if (retained._tag !== "Applied")
-            return yield* Effect.fail(
-              new QualificationPostTeardownFinalizationConflict({ artifactId, message: reason }),
-            );
-          return yield* Effect.fail(
-            new QualificationPostTeardownFinalizationConflict({ artifactId, message: reason }),
-          );
-        });
-      const pinExact = (checksum: string, artifactId: string) =>
-        Effect.gen(function* () {
-          const pinned = yield* input.publication.pinInput(
-            identity,
-            input.claim.claimToken,
-            checksum,
-          );
-          if (pinned._tag === "Applied") return true;
-          return yield* settleInputConflict(artifactId, "Finalization input checksum conflicts");
-        });
-      const requestObject = yield* get(input.invocation.requestArtifactId);
-      if (requestObject === null) return yield* release("ownerRequestMissing");
-      const requestEncoded = yield* Effect.tryPromise({
-        try: () => requestObject.text(),
-        catch: (cause) =>
-          new QualificationPostTeardownFinalizationUnavailable({
-            cause,
-            operation: "ownerRequest.text",
-          }),
-      });
-      const frozen = decodeFrozenQualificationExecution(requestEncoded, input.invocation);
-      if (
-        frozen === null ||
-        requestObject.httpMetadata?.contentType !== "application/json" ||
-        !exactMetadata(requestObject.customMetadata, { "osfo-kind": "qualification-execution-v1" })
-      )
-        return yield* settleInputConflict(
-          input.invocation.requestArtifactId,
-          "Frozen owner request conflicts",
-        );
-      const expectedRootCount = frozen.plan.runs.reduce(
-        (total, run) => total + run.arrivalCount,
-        0,
-      );
-      const expectedDimensionCount = qualificationOwnerDimensionCoordinatorBudget(
-        frozen.plan,
-      ).dimensionCount;
-      const responseId = `qualification/executions/${encodeURIComponent(input.invocation.executionId)}/owner-response.json`;
-      const responseObject = yield* get(responseId);
-      if (responseObject === null) return yield* release("preResponseMissing");
-      const responseEncoded = yield* Effect.tryPromise({
-        try: () => responseObject.text(),
-        catch: (cause) =>
-          new QualificationPostTeardownFinalizationUnavailable({
-            cause,
-            operation: "preResponse.text",
-          }),
-      });
-      let response: typeof OwnerResponse.Type;
-      try {
-        response = Schema.decodeSync(Schema.fromJsonString(OwnerResponse))(responseEncoded);
-      } catch {
-        return yield* settleInputConflict(responseId, "PRE response conflicts");
-      }
-      if (canonicalQualificationJson(response) !== responseEncoded)
-        return yield* settleInputConflict(responseId, "PRE response is not canonical");
-      const reportMaterial = yield* Effect.tryPromise({
-        try: () =>
-          authenticateQualificationDistributedEvaluationReport({
-            acceptanceLevel: frozen.manifest.acceptanceLevel,
-            artifactId: response.body.reportArtifactId,
-            bucket: input.bucket,
-            checksum: response.body.reportChecksum,
-            executionId: input.invocation.executionId,
-            expectedDimensionCount,
-            expectedRootCount,
-            manifestChecksum: input.invocation.manifestChecksum,
-            planChecksum: input.invocation.planChecksum,
-            sourceVersion: frozen.manifest.sourceVersion,
-            topologyVersion: frozen.manifest.topologyVersion,
-          }),
-        catch: (cause) =>
-          new QualificationPostTeardownFinalizationUnavailable({
-            cause,
-            operation: "authenticatePreReport",
-          }),
-      });
-      if (reportMaterial.status === "MISSING") return yield* release("preReportMissing");
-      if (reportMaterial.status !== "COMPLETE")
-        return yield* settleInputConflict(response.body.reportArtifactId, "PRE report conflicts");
-      const report = reportMaterial.report;
-      const completionMaterial = yield* Effect.tryPromise({
-        try: () =>
-          authenticateQualificationDistributedEvaluationReportCompletion({
-            artifactId: response.body.completionArtifactId,
-            bucket: input.bucket,
-            checksum: response.body.completionChecksum,
-            executionId: input.invocation.executionId,
-            failingFamilyCount: report.failingFamilyCount,
-            manifestChecksum: report.manifestChecksum,
-            missingFamilyCount: report.missingFamilyCount,
-            planChecksum: report.planChecksum,
-            reportArtifactId: report.artifactId,
-            reportChecksum: report.checksum,
-            verdict: report.verdict,
-          }),
-        catch: (cause) =>
-          new QualificationPostTeardownFinalizationUnavailable({
-            cause,
-            operation: "authenticatePreCompletion",
-          }),
-      });
-      if (completionMaterial.status === "MISSING") return yield* release("preCompletionMissing");
-      if (completionMaterial.status !== "COMPLETE")
-        return yield* settleInputConflict(
-          response.body.completionArtifactId,
-          "PRE completion conflicts",
-        );
-      const responseSha = yield* Effect.promise(() => sha256Hex(responseEncoded));
-      if (
-        response.body.executionId !== identity.executionId ||
-        response.body.manifestChecksum !== input.invocation.manifestChecksum ||
-        response.body.planChecksum !== input.invocation.planChecksum ||
-        response.body.reportArtifactId !== report.artifactId ||
-        response.body.reportChecksum !== report.checksum ||
-        response.body.completionArtifactId !== completionMaterial.completion.artifactId ||
-        response.body.completionChecksum !== completionMaterial.completion.checksum ||
-        responseObject.httpMetadata?.contentType !== "application/json" ||
-        !exactMetadata(responseObject.customMetadata, {
-          "osfo-body-sha256": responseSha,
-          "osfo-execution-id": identity.executionId,
-          "osfo-kind": "qualification-owner-response-v2",
-          "osfo-manifest-checksum": input.invocation.manifestChecksum,
-          "osfo-plan-checksum": input.invocation.planChecksum,
-          "osfo-report-checksum": report.checksum,
-          "osfo-verdict": report.verdict,
-        })
-      )
-        return yield* settleInputConflict(responseId, "PRE lineage conflicts");
-      if (corpusIsLegacy(report)) {
-        const checksum = qualificationChecksum({
-          executionId: identity.executionId,
-          ownerRequestChecksum: input.invocation.requestArtifactChecksum,
-          preCompletionChecksum: completionMaterial.completion.checksum,
-          preReportChecksum: report.checksum,
-          preResponseChecksum: responseSha,
-          reason: "legacyPreTeardown",
-        });
-        yield* pinExact(checksum, report.artifactId);
-        yield* mutationApplied(
-          yield* input.publication.retainIneligible(
-            identity,
-            input.claim.claimToken,
-            checksum,
-            checksum,
-          ),
-          report.artifactId,
-        );
-        return { _tag: "Ineligible", checksum } as const;
-      }
-      const corpus = corpusFamily(report);
-      const corpusReference = corpus?.references[0];
-      if (
-        corpus?.verdict !== "PASS" ||
-        corpus.references.length !== 1 ||
-        corpusReference?.kind !== "executionCorpus"
-      )
-        return yield* settleInputConflict(
-          report.artifactId,
-          "PRE execution corpus family conflicts",
-        );
-      const partitionCount = frozen.plan.runs.reduce(
-        (total, run) => total + Math.ceil(run.arrivalCount / 256),
-        0,
-      );
-      const corpusMaterial = yield* Effect.tryPromise({
-        try: () =>
-          authenticateQualificationExecutionRunCorpusReceipt({
-            artifactId: corpusReference.artifactId,
-            bucket: input.bucket,
-            checksum: corpusReference.checksum,
-            executionId: identity.executionId,
-            expectedRootCount,
-            manifestChecksum: input.invocation.manifestChecksum,
-            partitionCount,
-            planChecksum: input.invocation.planChecksum,
-            sourceVersion: frozen.manifest.sourceVersion,
-            topologyVersion: frozen.manifest.topologyVersion,
-          }),
-        catch: (cause) =>
-          new QualificationPostTeardownFinalizationUnavailable({
-            cause,
-            operation: "authenticateExecutionCorpus",
-          }),
-      });
-      if (corpusMaterial.status === "MISSING") return yield* release("executionCorpusMissing");
-      if (
-        corpusMaterial.status !== "COMPLETE" ||
-        corpusMaterial.receipt.acceptedCount !== corpusReference.acceptedCount ||
-        corpusMaterial.receipt.completionCount !== corpusReference.completionCount ||
-        corpusMaterial.receipt.pageCount !== corpusReference.pageCount ||
-        corpusMaterial.receipt.partitionCount !== corpusReference.partitionCount ||
-        corpusMaterial.receipt.rootCount !== corpusReference.rootCount ||
-        corpusMaterial.receipt.terminalJoinPageChecksum !==
-          corpusReference.terminalJoinPageChecksum ||
-        corpusMaterial.receipt.terminalLaunchPageChecksum !==
-          corpusReference.terminalLaunchPageChecksum
-      )
-        return yield* settleInputConflict(
-          corpusReference.artifactId,
-          "PRE execution corpus conflicts",
-        );
+      const runtime = makeFinalizationRuntime(input);
+      const preTeardown = yield* authenticatePreTeardown(runtime);
+      if (preTeardown._tag === "Done") return preTeardown.outcome;
+      const pre = preTeardown.authority;
       const inspected = yield* input.publication
         .inspectAuthority({
-          cohortArtifactChecksum: frozen.cohortArtifactChecksum,
-          cohortArtifactId: frozen.cohortArtifactId,
-          cohortId: identity.cohortId,
-          executionId: identity.executionId,
+          cohortArtifactChecksum: pre.frozen.cohortArtifactChecksum,
+          cohortArtifactId: pre.frozen.cohortArtifactId,
+          cohortId: runtime.identity.cohortId,
+          executionId: runtime.identity.executionId,
           manifestChecksum: input.invocation.manifestChecksum,
           planChecksum: input.invocation.planChecksum,
-          sourceVersion: frozen.manifest.sourceVersion,
+          sourceVersion: pre.frozen.manifest.sourceVersion,
         })
         .pipe(
           Effect.map((inspection) => ({ available: true as const, inspection })),
           Effect.catch(() => Effect.succeed({ available: false as const })),
         );
-      if (!inspected.available) return yield* release("teardownInspectionUnavailable");
+      if (!inspected.available) return yield* runtime.release("teardownInspectionUnavailable");
       const inspection = inspected.inspection;
       if (inspection._tag === "Missing" || inspection._tag === "Pending")
-        return yield* release(`teardown${inspection._tag}`);
+        return yield* runtime.release(`teardown${inspection._tag}`);
       const normalizedInspection =
         inspection._tag === "Conflict"
           ? {
               _tag: "Failed" as const,
-              cohortId: identity.cohortId,
-              dispatchId: identity.dispatchId,
-              executionId: identity.executionId,
+              cohortId: runtime.identity.cohortId,
+              dispatchId: runtime.identity.dispatchId,
+              executionId: runtime.identity.executionId,
               failureChecksum: qualificationChecksum({
-                cohortArtifactChecksum: frozen.cohortArtifactChecksum,
-                cohortId: identity.cohortId,
-                executionId: identity.executionId,
+                cohortArtifactChecksum: pre.frozen.cohortArtifactChecksum,
+                cohortId: runtime.identity.cohortId,
+                executionId: runtime.identity.executionId,
                 reason: "settledAuthorityConflict",
               }),
               manifestChecksum: input.invocation.manifestChecksum,
               planChecksum: input.invocation.planChecksum,
-              sourceVersion: frozen.manifest.sourceVersion,
+              sourceVersion: pre.frozen.manifest.sourceVersion,
             }
           : inspection;
       const finalizationInputChecksum = qualificationChecksum({
-        cohortArtifactChecksum: frozen.cohortArtifactChecksum,
-        cohortArtifactId: frozen.cohortArtifactId,
-        cohortId: identity.cohortId,
-        executionId: identity.executionId,
+        cohortArtifactChecksum: pre.frozen.cohortArtifactChecksum,
+        cohortArtifactId: pre.frozen.cohortArtifactId,
+        cohortId: runtime.identity.cohortId,
+        executionId: runtime.identity.executionId,
         inspection: normalizedInspection,
         ownerRequestChecksum: input.invocation.requestArtifactChecksum,
-        preCompletionChecksum: completionMaterial.completion.checksum,
-        preReportChecksum: report.checksum,
-        preResponseChecksum: responseSha,
+        preCompletionChecksum: pre.completionChecksum,
+        preReportChecksum: pre.report.checksum,
+        preResponseChecksum: pre.responseSha,
       });
-      yield* pinExact(finalizationInputChecksum, input.invocation.requestArtifactId);
+      yield* runtime.pinExact(finalizationInputChecksum, input.invocation.requestArtifactId);
       const lineage = {
-        executionId: identity.executionId,
+        executionId: runtime.identity.executionId,
         manifestChecksum: input.invocation.manifestChecksum,
         ownerRequestChecksum: input.invocation.requestArtifactChecksum,
         planChecksum: input.invocation.planChecksum,
-        preTeardownCompletionChecksum: completionMaterial.completion.checksum,
-        preTeardownReportChecksum: report.checksum,
-        preTeardownResponseChecksum: responseSha,
-        sourceVersion: frozen.manifest.sourceVersion,
+        preTeardownCompletionChecksum: pre.completionChecksum,
+        preTeardownReportChecksum: pre.report.checksum,
+        preTeardownResponseChecksum: pre.responseSha,
+        sourceVersion: pre.frozen.manifest.sourceVersion,
       };
       const receipt = qualificationPostTeardownReceipt(
         normalizedInspection._tag === "Ready"
@@ -710,310 +1149,62 @@ export const finalizeQualificationPostTeardown = Effect.fn("QualificationPostTea
       );
       const postReport = qualificationPostTeardownReport({
         ownerRequestChecksum: input.invocation.requestArtifactChecksum,
-        preTeardownCompletionArtifactId: completionMaterial.completion.artifactId,
-        preTeardownCompletionChecksum: completionMaterial.completion.checksum,
-        preTeardownReport: report,
-        preTeardownResponseArtifactId: responseId,
-        preTeardownResponseChecksum: responseSha,
+        preTeardownCompletionArtifactId: pre.completionArtifactId,
+        preTeardownCompletionChecksum: pre.completionChecksum,
+        preTeardownReport: pre.report,
+        preTeardownResponseArtifactId: pre.responseId,
+        preTeardownResponseChecksum: pre.responseSha,
         teardownReceipt: receipt,
       });
       const completion = qualificationPostTeardownCompletion(postReport);
       const postResponse = qualificationPostTeardownResponse(postReport, completion);
       const artifacts: ReadonlyArray<PostArtifact> = [
         {
-          artifactId: qualificationPostTeardownReceiptArtifactId(identity.executionId),
+          artifactId: qualificationPostTeardownReceiptArtifactId(runtime.identity.executionId),
           checksum: receipt.checksum,
           kind: "qualification-post-teardown-evaluation-receipt-v1",
           stage: "receipt",
           value: receipt,
         },
         {
-          artifactId: qualificationPostTeardownReportArtifactId(identity.executionId),
+          artifactId: qualificationPostTeardownReportArtifactId(runtime.identity.executionId),
           checksum: postReport.checksum,
           kind: "qualification-post-teardown-evaluation-report-v1",
           stage: "report",
           value: postReport,
         },
         {
-          artifactId: qualificationPostTeardownCompletionArtifactId(identity.executionId),
+          artifactId: qualificationPostTeardownCompletionArtifactId(runtime.identity.executionId),
           checksum: completion.checksum,
           kind: "qualification-post-teardown-evaluation-completion-v1",
           stage: "completion",
           value: completion,
         },
         {
-          artifactId: qualificationPostTeardownResponseArtifactId(identity.executionId),
+          artifactId: qualificationPostTeardownResponseArtifactId(runtime.identity.executionId),
           checksum: qualificationChecksum(postResponse),
           kind: "qualification-post-teardown-owner-response-v1",
           stage: "response",
           value: postResponse,
         },
       ];
-      const settleCollision = (artifact: PostArtifact) =>
-        Effect.gen(function* () {
-          const marker = makeStageConflict({
-            artifact,
-            completion,
-            inputChecksum: finalizationInputChecksum,
-            ownerRequestChecksum: input.invocation.requestArtifactChecksum,
-            preCompletionChecksum: completionMaterial.completion.checksum,
-            preReportChecksum: report.checksum,
-            preResponseChecksum: responseSha,
-            receipt,
-            report: postReport,
-          });
-          const markerArtifact: PostArtifact = {
-            artifactId: qualificationPostTeardownConflictArtifactId(identity.executionId),
-            checksum: marker.checksum,
-            kind: "qualification-post-teardown-evaluation-conflict-v1",
-            stage: "conflict",
-            value: marker,
-          };
-          const markerResult = yield* Effect.tryPromise({
-            try: () =>
-              retainArtifact(
-                input.bucket,
-                markerArtifact,
-                identity.executionId,
-                finalizationInputChecksum,
-              ),
-            catch: (cause) =>
-              new QualificationPostTeardownFinalizationUnavailable({
-                cause,
-                operation: "retain:conflict",
-              }),
-          });
-          if (markerResult !== "EXACT") {
-            const conflictChecksum = qualificationChecksum({
-              artifactId: marker.artifactId,
-              executionId: identity.executionId,
-              reason: "POST conflict marker conflicts",
-            });
-            yield* mutationApplied(
-              yield* input.publication.retainConflict(
-                identity,
-                input.claim.claimToken,
-                finalizationInputChecksum,
-                conflictChecksum,
-              ),
-              marker.artifactId,
-            );
-            return yield* Effect.fail(
-              new QualificationPostTeardownFinalizationConflict({
-                artifactId: marker.artifactId,
-                message: "POST conflict marker conflicts",
-              }),
-            );
-          }
-          yield* mutationApplied(
-            yield* input.publication.retainConflict(
-              identity,
-              input.claim.claimToken,
-              finalizationInputChecksum,
-              marker.checksum,
-            ),
-            marker.artifactId,
-          );
-          return yield* Effect.fail(
-            new QualificationPostTeardownFinalizationConflict({
-              artifactId: artifact.artifactId,
-              message: "Immutable POST artifact conflicts",
-            }),
-          );
-        });
-
-      const retainedMarker = yield* get(
-        qualificationPostTeardownConflictArtifactId(identity.executionId),
-      );
-      if (retainedMarker !== null) {
-        const markerEncoded = yield* Effect.tryPromise({
-          try: () => retainedMarker.text(),
-          catch: (cause) =>
-            new QualificationPostTeardownFinalizationUnavailable({
-              cause,
-              operation: "conflict.text",
-            }),
-        });
-        let retainedConflict: QualificationPostTeardownConflict;
-        try {
-          retainedConflict = Schema.decodeUnknownSync(
-            Schema.fromJsonString(QualificationPostTeardownConflict),
-          )(markerEncoded);
-        } catch {
-          const artifactId = qualificationPostTeardownConflictArtifactId(identity.executionId);
-          const conflictChecksum = qualificationChecksum({
-            artifactId,
-            executionId: identity.executionId,
-            reason: "POST conflict marker is malformed",
-          });
-          yield* mutationApplied(
-            yield* input.publication.retainConflict(
-              identity,
-              input.claim.claimToken,
-              finalizationInputChecksum,
-              conflictChecksum,
-            ),
-            artifactId,
-          );
-          return yield* Effect.fail(
-            new QualificationPostTeardownFinalizationConflict({
-              artifactId,
-              message: "POST conflict marker is malformed",
-            }),
-          );
-        }
-        const target = artifacts.find(({ stage }) => stage === retainedConflict.stage);
-        if (target === undefined) {
-          const conflictChecksum = qualificationChecksum({
-            artifactId: retainedConflict.artifactId,
-            executionId: identity.executionId,
-            reason: "POST conflict marker target is unavailable",
-          });
-          yield* mutationApplied(
-            yield* input.publication.retainConflict(
-              identity,
-              input.claim.claimToken,
-              finalizationInputChecksum,
-              conflictChecksum,
-            ),
-            retainedConflict.artifactId,
-          );
-          return yield* Effect.fail(
-            new QualificationPostTeardownFinalizationConflict({
-              artifactId: retainedConflict.artifactId,
-              message: "POST conflict marker target is unavailable",
-            }),
-          );
-        }
-        const expected = makeStageConflict({
-          artifact: target,
-          completion,
-          inputChecksum: finalizationInputChecksum,
-          ownerRequestChecksum: input.invocation.requestArtifactChecksum,
-          preCompletionChecksum: completionMaterial.completion.checksum,
-          preReportChecksum: report.checksum,
-          preResponseChecksum: responseSha,
-          receipt,
-          report: postReport,
-        });
-        const expectedArtifact: PostArtifact = {
-          artifactId: expected.artifactId,
-          checksum: expected.checksum,
-          kind: "qualification-post-teardown-evaluation-conflict-v1",
-          stage: "conflict",
-          value: expected,
-        };
-        const authenticated = yield* Effect.tryPromise({
-          try: () =>
-            authenticateArtifact(
-              input.bucket,
-              expectedArtifact,
-              identity.executionId,
-              finalizationInputChecksum,
-            ),
-          catch: (cause) =>
-            new QualificationPostTeardownFinalizationUnavailable({
-              cause,
-              operation: "authenticate:conflict",
-            }),
-        });
-        if (authenticated !== "EXACT") {
-          const conflictChecksum = qualificationChecksum({
-            artifactId: retainedConflict.artifactId,
-            executionId: identity.executionId,
-            reason: "POST conflict marker conflicts",
-          });
-          yield* mutationApplied(
-            yield* input.publication.retainConflict(
-              identity,
-              input.claim.claimToken,
-              finalizationInputChecksum,
-              conflictChecksum,
-            ),
-            retainedConflict.artifactId,
-          );
-          return yield* Effect.fail(
-            new QualificationPostTeardownFinalizationConflict({
-              artifactId: retainedConflict.artifactId,
-              message: "POST conflict marker conflicts",
-            }),
-          );
-        }
-        yield* mutationApplied(
-          yield* input.publication.retainConflict(
-            identity,
-            input.claim.claimToken,
-            finalizationInputChecksum,
-            expected.checksum,
-          ),
-          expected.artifactId,
-        );
-        return yield* Effect.fail(
-          new QualificationPostTeardownFinalizationConflict({
-            artifactId: target.artifactId,
-            message: "Retained POST conflict marker dominates replay",
-          }),
-        );
-      }
-
-      const initialStates = new Array<"ABSENT" | "CONFLICT" | "EXACT">();
-      for (const artifact of artifacts)
-        initialStates.push(
-          yield* Effect.tryPromise({
-            try: () =>
-              authenticateArtifact(
-                input.bucket,
-                artifact,
-                identity.executionId,
-                finalizationInputChecksum,
-              ),
-            catch: (cause) =>
-              new QualificationPostTeardownFinalizationUnavailable({
-                cause,
-                operation: `authenticate:${artifact.stage}`,
-              }),
-          }),
-        );
-      const firstAbsent = initialStates.indexOf("ABSENT");
-      const firstConflict = initialStates.indexOf("CONFLICT");
-      const conflictingArtifact = artifacts[firstConflict];
-      if (conflictingArtifact !== undefined) return yield* settleCollision(conflictingArtifact);
-      if (
-        firstAbsent >= 0 &&
-        initialStates.slice(firstAbsent + 1).some((state) => state === "EXACT")
-      ) {
-        const missingPredecessor = artifacts[firstAbsent];
-        if (missingPredecessor !== undefined) return yield* settleCollision(missingPredecessor);
-      }
-      for (const artifact of artifacts) {
-        const result = yield* Effect.tryPromise({
-          try: () =>
-            retainArtifact(input.bucket, artifact, identity.executionId, finalizationInputChecksum),
-          catch: (cause) =>
-            new QualificationPostTeardownFinalizationUnavailable({
-              cause,
-              operation: `retain:${artifact.stage}`,
-            }),
-        });
-        if (result === "EXACT") continue;
-        return yield* settleCollision(artifact);
-      }
       const chainChecksum = qualificationChecksum({
         completionChecksum: completion.checksum,
         reportChecksum: postReport.checksum,
         responseChecksum: qualificationChecksum(postResponse),
         teardownReceiptChecksum: receipt.checksum,
       });
-      yield* mutationApplied(
-        yield* input.publication.publish(
-          identity,
-          input.claim.claimToken,
-          finalizationInputChecksum,
-          chainChecksum,
-        ),
-        qualificationPostTeardownResponseArtifactId(identity.executionId),
-      );
-      return { _tag: "Published", checksum: chainChecksum } as const;
+      return yield* retainPostChain(runtime, {
+        artifacts,
+        chainChecksum,
+        completion,
+        finalizationInputChecksum,
+        preCompletionChecksum: pre.completionChecksum,
+        preReportChecksum: pre.report.checksum,
+        preResponseChecksum: pre.responseSha,
+        receipt,
+        report: postReport,
+      });
     }).pipe(
       Effect.catch((failure) =>
         failure instanceof QualificationPostTeardownFinalizationUnavailable
