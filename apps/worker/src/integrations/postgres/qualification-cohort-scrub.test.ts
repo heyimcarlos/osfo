@@ -333,19 +333,17 @@ it.effect("samples scrub terminal mutation time after its dispatch lock", () =>
     yield* seedCohort(fixture, { adventurer: 1, free: 1 });
     const identity = qualificationCohortScrubDispatchIdentity(cohortId, executionId);
     yield* Effect.promise(() =>
-      fixture.database
-        .insert(qualificationCohortScrubDispatches)
-        .values({
-          claim_token: "old",
-          claimed_at: new Date(),
-          cohort_id: cohortId,
-          dispatch_id: identity.dispatchId,
-          execution_id: executionId,
-          lease_expires_at: new Date(Date.now() + 50),
-          protocol_version: identity.protocolVersion,
-          root_instance_id: identity.rootInstanceId,
-          state: "PENDING",
-        }),
+      fixture.database.insert(qualificationCohortScrubDispatches).values({
+        claim_token: "old",
+        claimed_at: new Date(),
+        cohort_id: cohortId,
+        dispatch_id: identity.dispatchId,
+        execution_id: executionId,
+        lease_expires_at: new Date(Date.now() + 50),
+        protocol_version: identity.protocolVersion,
+        root_instance_id: identity.rootInstanceId,
+        state: "PENDING",
+      }),
     );
     const dispatch = makeQualificationCohortScrubDispatchAuthority(fixture.database);
     const blocked = yield* Effect.promise(async () => {

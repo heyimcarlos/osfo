@@ -111,7 +111,7 @@ export const makeQualificationCohortScrubDispatchAuthority = (database: Database
           ) {
             return new Array<Extract<QualificationCohortScrubDispatchClaim, { _tag: "Claimed" }>>();
           }
-          const clock = await databaseClock(transaction);
+          const selectionClock = await databaseClock(transaction);
           const rows = await transaction
             .select()
             .from(qualificationCohortScrubDispatches)
@@ -120,7 +120,7 @@ export const makeQualificationCohortScrubDispatchAuthority = (database: Database
                 eq(qualificationCohortScrubDispatches.state, "PENDING"),
                 or(
                   isNull(qualificationCohortScrubDispatches.lease_expires_at),
-                  lte(qualificationCohortScrubDispatches.lease_expires_at, clock),
+                  lte(qualificationCohortScrubDispatches.lease_expires_at, selectionClock),
                 ),
               ),
             )
@@ -130,8 +130,9 @@ export const makeQualificationCohortScrubDispatchAuthority = (database: Database
             )
             .limit(limit)
             .for("update", { skipLocked: true });
+          const claimClock = await databaseClock(transaction);
           const leaseExpiresAt = new Date(
-            clock.getTime() + qualificationCohortScrubDispatchLeaseMilliseconds,
+            claimClock.getTime() + qualificationCohortScrubDispatchLeaseMilliseconds,
           );
           const outcomes = await Promise.all(
             rows.map(async (row) => {
@@ -140,14 +141,14 @@ export const makeQualificationCohortScrubDispatchAuthority = (database: Database
                 row.execution_id,
               );
               if (!rowMatches(row, identity)) {
-                await quarantineIdentityConflict(transaction, row, identity, clock);
+                await quarantineIdentityConflict(transaction, row, identity, claimClock);
                 return null;
               }
               const [updated] = await transaction
                 .update(qualificationCohortScrubDispatches)
                 .set({
                   claim_token: claimToken,
-                  claimed_at: clock,
+                  claimed_at: claimClock,
                   lease_expires_at: leaseExpiresAt,
                 })
                 .where(eq(qualificationCohortScrubDispatches.dispatch_id, row.dispatch_id))
