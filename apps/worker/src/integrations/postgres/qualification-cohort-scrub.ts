@@ -6,7 +6,7 @@ import {
   qualificationParticipantAllocations,
   qualificationParticipantProvisions,
 } from "@osfo/db/schema/qualification-cohorts";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, gte, lt, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -17,6 +17,12 @@ import {
   type QualificationCohortScrubPartitionTopology,
   type QualificationCohortScrubPartitionWorkflowPayload,
 } from "../../qualification/cohort-scrub-partition";
+import {
+  qualificationCohortScrubRootPartitionPayload,
+  qualificationCohortScrubRootTopology,
+  type QualificationCohortScrubRootTopology,
+  type QualificationCohortScrubRootWorkflowPayload,
+} from "../../qualification/cohort-scrub-root";
 import { QualificationCohortAuthorityUnavailable } from "./qualification-cohort-error";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle owns these transaction Promise boundaries. */
@@ -156,8 +162,197 @@ export type QualificationScrubPartitionInspection =
       readonly reason: "artifactAuthorityUnavailable" | "productDeletionIncomplete";
     };
 
+export type QualificationScrubRootInspection =
+  | ({ readonly _tag: "Ready" } & QualificationCohortScrubRootTopology)
+  | { readonly _tag: "Conflict" }
+  | {
+      readonly _tag: "Pending";
+      readonly reason: "artifactAuthorityUnavailable" | "productDeletionIncomplete";
+    };
+
+export type QualificationScrubPartitionCompletionInspection =
+  | {
+      readonly _tag: "Ready";
+      readonly pageCount: number;
+      readonly partitionIndex: number;
+      readonly previousPageChecksum: string;
+      readonly terminalPageChecksum: string;
+      readonly terminalPosition: number;
+    }
+  | { readonly _tag: "Conflict" }
+  | { readonly _tag: "Pending"; readonly reason: "partitionPagesIncomplete" };
+
 /** Persistence-only scrub authority. R2 deletion remains outside this adapter. */
 export const makeQualificationCohortScrubAuthority = (database: Database) => {
+  const inspectScrubRoot = Effect.fn("QualificationCohortAuthority.inspectScrubRoot")(
+    (input: QualificationCohortScrubRootWorkflowPayload) =>
+      attempt("inspectScrubRoot", async (): Promise<QualificationScrubRootInspection> => {
+        const [cohort] = await database
+          .select()
+          .from(qualificationCohorts)
+          .where(
+            and(
+              eq(qualificationCohorts.cohort_id, input.cohortId),
+              eq(qualificationCohorts.execution_id, input.executionId),
+            ),
+          )
+          .limit(1);
+        if (cohort === undefined) return conflict;
+        if (cohort.artifact_authority_protocol !== qualificationCohortArtifactProtocol) {
+          return { _tag: "Pending", reason: "artifactAuthorityUnavailable" };
+        }
+        if (!productDeletionComplete(cohort.state)) {
+          return { _tag: "Pending", reason: "productDeletionIncomplete" };
+        }
+        const topology = qualificationCohortScrubRootTopology(input, cohortCounts(cohort));
+        return topology === null ? conflict : { _tag: "Ready", ...topology };
+      }),
+  );
+
+  const inspectScrubPartitionCompletion = Effect.fn(
+    "QualificationCohortAuthority.inspectScrubPartitionCompletion",
+  )((input: QualificationCohortScrubRootWorkflowPayload, partitionIndex: number) =>
+    attempt("inspectScrubPartitionCompletion", () =>
+      database.transaction(
+        async (transaction): Promise<QualificationScrubPartitionCompletionInspection> => {
+          const [cohort] = await transaction
+            .select()
+            .from(qualificationCohorts)
+            .where(
+              and(
+                eq(qualificationCohorts.cohort_id, input.cohortId),
+                eq(qualificationCohorts.execution_id, input.executionId),
+              ),
+            )
+            .limit(1);
+          if (
+            cohort === undefined ||
+            cohort.artifact_authority_protocol !== qualificationCohortArtifactProtocol ||
+            !productDeletionComplete(cohort.state)
+          ) {
+            return conflict;
+          }
+          const counts = cohortCounts(cohort);
+          const rootTopology = qualificationCohortScrubRootTopology(input, counts);
+          if (rootTopology === null) return conflict;
+          const partitionPayload = qualificationCohortScrubRootPartitionPayload(
+            input,
+            rootTopology,
+            partitionIndex,
+          );
+          if (partitionPayload === null) return conflict;
+          const partitionTopology = qualificationCohortScrubPartitionTopology(
+            partitionPayload,
+            counts,
+          );
+          if (partitionTopology === null || partitionTopology.pages.length === 0) return conflict;
+          const firstPosition = partitionTopology.firstPagePosition;
+          const predecessor =
+            firstPosition === 0 ? null : pageIdentityAtPosition(input, counts, firstPosition - 1);
+          const identities =
+            predecessor === null
+              ? partitionTopology.pages
+              : [predecessor, ...partitionTopology.pages];
+          const identityFilter = or(
+            ...identities.map((identity) =>
+              and(
+                eq(qualificationCohortScrubPages.plan, identity.plan),
+                eq(qualificationCohortScrubPages.page_index, identity.pageIndex),
+              ),
+            ),
+          );
+          if (identityFilter === undefined) return conflict;
+          const rows = await transaction
+            .select()
+            .from(qualificationCohortScrubPages)
+            .where(
+              and(
+                eq(qualificationCohortScrubPages.cohort_id, input.cohortId),
+                eq(qualificationCohortScrubPages.execution_id, input.executionId),
+                identityFilter,
+              ),
+            );
+          if (rows.length !== identities.length) {
+            return { _tag: "Pending", reason: "partitionPagesIncomplete" };
+          }
+          const allocationFilter = or(
+            ...identities.map((identity) => {
+              const firstParticipantIndex = identity.pageIndex * pageSize;
+              return and(
+                eq(qualificationParticipantAllocations.plan, identity.plan),
+                gte(qualificationParticipantAllocations.participant_index, firstParticipantIndex),
+                lt(
+                  qualificationParticipantAllocations.participant_index,
+                  firstParticipantIndex + pageSize,
+                ),
+              );
+            }),
+          );
+          if (allocationFilter === undefined) return conflict;
+          const allocations = await transaction
+            .select({
+              deletedAt: qualificationParticipantAllocations.deleted_at,
+              deletionCaseId: qualificationParticipantAllocations.deletion_case_id,
+              deletionReceiptChecksum:
+                qualificationParticipantAllocations.deletion_receipt_checksum,
+              deletionReceiptId: qualificationParticipantAllocations.deletion_receipt_id,
+              index: qualificationParticipantAllocations.participant_index,
+              plan: qualificationParticipantAllocations.plan,
+              state: qualificationParticipantAllocations.state,
+              userId: qualificationParticipantAllocations.user_id,
+            })
+            .from(qualificationParticipantAllocations)
+            .where(
+              and(
+                eq(qualificationParticipantAllocations.cohort_id, input.cohortId),
+                eq(qualificationParticipantAllocations.execution_id, input.executionId),
+                allocationFilter,
+              ),
+            );
+          const rowFor = (identity: { readonly pageIndex: number; readonly plan: Plan }) =>
+            rows.find((row) => row.page_index === identity.pageIndex && row.plan === identity.plan);
+          const predecessorRow = predecessor === null ? null : rowFor(predecessor);
+          if (predecessor !== null && predecessorRow === undefined) {
+            return conflict;
+          }
+          if (
+            predecessorRow !== null &&
+            predecessorRow !== undefined &&
+            !completedPartitionPageIsAuthentic(predecessorRow, counts, allocations)
+          ) {
+            return conflict;
+          }
+          let previousPageChecksum = predecessorRow?.page_checksum ?? noneChecksum;
+          const partitionPreviousPageChecksum = previousPageChecksum;
+          for (const page of partitionTopology.pages) {
+            const row = rowFor(page);
+            if (row === undefined) {
+              return { _tag: "Pending", reason: "partitionPagesIncomplete" };
+            }
+            if (
+              row.previous_page_checksum !== previousPageChecksum ||
+              !completedPartitionPageIsAuthentic(row, counts, allocations)
+            ) {
+              return conflict;
+            }
+            previousPageChecksum = row.page_checksum ?? "";
+          }
+          return previousPageChecksum.length === 0
+            ? conflict
+            : {
+                _tag: "Ready",
+                pageCount: partitionTopology.pageCount,
+                partitionIndex,
+                previousPageChecksum: partitionPreviousPageChecksum,
+                terminalPageChecksum: previousPageChecksum,
+                terminalPosition:
+                  partitionTopology.firstPagePosition + partitionTopology.pageCount - 1,
+              };
+        },
+      ),
+    ),
+  );
+
   const inspectScrubPartition = Effect.fn("QualificationCohortAuthority.inspectScrubPartition")(
     (input: QualificationCohortScrubPartitionWorkflowPayload) =>
       attempt("inspectScrubPartition", async (): Promise<QualificationScrubPartitionInspection> => {
@@ -787,7 +982,9 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
     claimScrubRoot,
     completeScrubPage,
     completeScrubRoot,
+    inspectScrubPartitionCompletion,
     inspectScrubPartition,
+    inspectScrubRoot,
     inspectTeardown,
   } as const;
 };
@@ -816,6 +1013,74 @@ const cohortCounts = (cohort: typeof qualificationCohorts.$inferSelect) => ({
   adventurer: cohort.expected_adventurer_participants,
   free: cohort.expected_free_participants,
 });
+
+const pageIdentityAtPosition = (
+  input: RootIdentity,
+  counts: { readonly adventurer: number; readonly free: number },
+  position: number,
+): PageIdentity => {
+  const freePageCount = pagesFor(counts.free);
+  return position < freePageCount
+    ? { ...input, pageIndex: position, plan: "free" }
+    : { ...input, pageIndex: position - freePageCount, plan: "adventurer" };
+};
+
+type DeletionReceiptRow = Parameters<typeof exactDeletionReceipt>[0];
+
+const completedPartitionPageIsAuthentic = (
+  row: typeof qualificationCohortScrubPages.$inferSelect,
+  counts: { readonly adventurer: number; readonly free: number },
+  allocations: ReadonlyArray<DeletionReceiptRow>,
+) => {
+  if (!completedPageChecksumIsAuthentic(row)) return false;
+  const firstParticipantIndex = row.page_index * pageSize;
+  const participantCount = Math.min(pageSize, counts[row.plan] - firstParticipantIndex);
+  if (participantCount <= 0) return false;
+  const matchingAllocations = allocations.filter(
+    (allocation) =>
+      allocation.plan === row.plan &&
+      allocation.index >= firstParticipantIndex &&
+      allocation.index < firstParticipantIndex + participantCount,
+  );
+  const pageAllocations = Array.from({ length: participantCount }, (_, offset) =>
+    matchingAllocations.find((allocation) => allocation.index === firstParticipantIndex + offset),
+  );
+  if (
+    matchingAllocations.length !== participantCount ||
+    pageAllocations.some(
+      (allocation, offset) =>
+        allocation === undefined ||
+        !exactDeletionReceipt(allocation, row.plan, firstParticipantIndex + offset),
+    )
+  ) {
+    return false;
+  }
+  const exactPageAllocations = pageAllocations.filter(
+    (allocation): allocation is DeletionReceiptRow => allocation !== undefined,
+  );
+  const expectedArtifactIds = qualificationScrubPageArtifactIds(
+    row.execution_id,
+    row.plan,
+    firstParticipantIndex,
+    participantCount,
+    counts.free,
+    row.page_index,
+  );
+  return (
+    row.first_participant_index === firstParticipantIndex &&
+    row.participant_count === participantCount &&
+    row.expected_artifact_count === expectedArtifactIds.length &&
+    row.expected_artifacts_checksum === qualificationChecksum({ expectedArtifactIds }) &&
+    row.deletion_receipts_checksum ===
+      qualificationChecksum({
+        receipts: exactPageAllocations.map((allocation) => ({
+          index: allocation.index,
+          plan: allocation.plan,
+          receiptChecksum: allocation.deletionReceiptChecksum,
+        })),
+      })
+  );
+};
 
 const scrubPageId = (identity: PageIdentity) =>
   qualificationChecksum({

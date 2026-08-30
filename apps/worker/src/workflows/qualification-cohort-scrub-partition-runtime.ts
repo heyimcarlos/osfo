@@ -1,6 +1,6 @@
 /* oxlint-disable effecttsgo/async-function, eslint/no-await-in-loop, eslint/no-underscore-dangle, osfo/no-unknown-parameters -- Cloudflare Workflow, Durable Object, and PostgreSQL ports are Promise-native tagged boundaries; the runner owns payload decoding and pages must execute in authority order. */
 import type { WorkflowStepConfig } from "cloudflare:workers";
-import { Data, Schema } from "effect";
+import { Data, Option, Schema } from "effect";
 
 import type {
   QualificationScrubPageClaim,
@@ -15,6 +15,7 @@ import type {
 import { qualificationCohortArtifactProtocol } from "../qualification/cohort-artifact-authority-contract";
 import { qualificationChecksum } from "../qualification/qualification-checksum";
 import {
+  QualificationCohortScrubPartitionWake,
   decodeQualificationCohortScrubPartitionWorkflowPayload,
   qualificationCohortScrubPageClaimToken,
   qualificationCohortScrubPartitionInstanceId,
@@ -52,13 +53,18 @@ const PartitionResult = Schema.Struct({
   pageCount: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(32)),
   partitionIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   terminalPageChecksum: Schema.String.check(Schema.isMinLength(1)),
-  wake: Schema.Struct({
-    eventId: Schema.String,
-    eventType: Schema.Literal("qualification-cohort-scrub-partition-complete-v1"),
-    rootCoordinatorInstanceId: Schema.String,
-  }),
+  wake: QualificationCohortScrubPartitionWake,
 });
 export type QualificationCohortScrubPartitionResult = typeof PartitionResult.Type;
+
+const decodePartitionResult = Schema.decodeUnknownOption(PartitionResult);
+
+export const decodeQualificationCohortScrubPartitionResult = (
+  input: unknown,
+): QualificationCohortScrubPartitionResult | null => {
+  const decoded = decodePartitionResult(input);
+  return Option.isSome(decoded) ? decoded.value : null;
+};
 
 export interface QualificationCohortScrubPartitionStep {
   readonly do: <Value extends Rpc.Serializable<Value>>(
@@ -109,6 +115,9 @@ export interface QualificationCohortScrubPartitionPorts {
   readonly inspectTopology: (
     payload: QualificationCohortScrubPartitionWorkflowPayload,
   ) => Promise<QualificationScrubPartitionInspection>;
+  readonly notifyRoot: (
+    wake: QualificationCohortScrubPartitionWake,
+  ) => Promise<QualificationCohortScrubPartitionWake>;
   readonly withPageAuthority: <Value>(
     evaluate: (authority: QualificationCohortScrubPageAuthority) => Promise<Value>,
   ) => Promise<Value>;
@@ -342,13 +351,23 @@ export const runQualificationCohortScrubPartition = async (
   }
   const terminalPage = pageResults.at(-1);
   if (terminalPage === undefined) throw terminalError("qualification scrub partition has no pages");
-  return Schema.decodeSync(PartitionResult)({
+  const result = Schema.decodeSync(PartitionResult)({
     cohortId: payload.cohortId,
     executionId: payload.executionId,
     firstPagePosition: inspected.firstPagePosition,
     pageCount: inspected.pageCount,
     partitionIndex: payload.partitionIndex,
     terminalPageChecksum: terminalPage.pageChecksum,
-    wake: qualificationCohortScrubPartitionWake(payload),
+    wake: qualificationCohortScrubPartitionWake(payload, terminalPage.pageChecksum),
   });
+  const notified = await step.do(
+    `notify cohort scrub root partition ${String(payload.partitionIndex).padStart(4, "0")}`,
+    qualificationCohortScrubPartitionStepConfig,
+    () => ports.notifyRoot(result.wake),
+  );
+  const decodedWake = Schema.decodeSync(QualificationCohortScrubPartitionWake)(notified);
+  if (qualificationChecksum(decodedWake) !== qualificationChecksum(result.wake)) {
+    throw terminalError("qualification scrub partition wake identity conflicts");
+  }
+  return result;
 };

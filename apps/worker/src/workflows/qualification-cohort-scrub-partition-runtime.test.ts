@@ -144,14 +144,19 @@ describe("qualification cohort scrub partition runtime", () => {
           calls.push("inspect");
           return Promise.resolve({ _tag: "Ready", ...topology });
         },
+        notifyRoot: (wake) => {
+          calls.push("notify");
+          return Promise.resolve(wake);
+        },
         withPageAuthority: (evaluate) => evaluate(authority(calls)),
       },
     );
 
-    expect(calls).toEqual(["inspect", "claim", "delete", "complete", "seal"]);
+    expect(calls).toEqual(["inspect", "claim", "delete", "complete", "seal", "notify"]);
     expect(step.calls.map(({ name }) => name)).toEqual([
       "authenticate cohort scrub partition topology",
       "scrub cohort artifact page 0000",
+      "notify cohort scrub root partition 0000",
     ]);
     expect(
       step.calls.every(({ config }) => config === qualificationCohortScrubPartitionStepConfig),
@@ -161,7 +166,7 @@ describe("qualification cohort scrub partition runtime", () => {
       pageCount: 1,
       terminalPageChecksum: "page-checksum",
       wake: {
-        eventType: "qualification-cohort-scrub-partition-complete-v1",
+        eventType: "qualification-scrub-partition-0000",
         rootCoordinatorInstanceId: payload.rootCoordinatorInstanceId,
       },
     });
@@ -253,12 +258,13 @@ describe("qualification cohort scrub partition runtime", () => {
       step,
       {
         inspectTopology: () => Promise.resolve({ _tag: "Ready", ...fullTopology }),
+        notifyRoot: (wake) => Promise.resolve(wake),
         withPageAuthority: (evaluate) => evaluate(pageAuthority),
       },
     );
 
     expect(currentPosition).toBe(32);
-    expect(step.calls).toHaveLength(33);
+    expect(step.calls).toHaveLength(34);
     expect(result.terminalPageChecksum).toBe("page-31");
   });
 
@@ -487,6 +493,7 @@ describe("qualification cohort scrub partition runtime", () => {
         new ImmediateStep(2),
         {
           inspectTopology: () => Promise.resolve({ _tag: "Ready", ...topology }),
+          notifyRoot: (wake) => Promise.resolve(wake),
           withPageAuthority: (evaluate) =>
             evaluate(
               authority([], {
@@ -499,5 +506,39 @@ describe("qualification cohort scrub partition runtime", () => {
     const replay = await run();
     expect(replay).toEqual(first);
     expect(replay.wake).toEqual(first.wake);
+  });
+
+  it("replays an applied partition-specific event after the send response is lost", async () => {
+    let delivered = false;
+    let sends = 0;
+    const run = () =>
+      runQualificationCohortScrubPartition(
+        payload,
+        qualificationCohortScrubPartitionInstanceId(payload.executionId, payload.partitionIndex),
+        new ImmediateStep(2),
+        {
+          inspectTopology: () => Promise.resolve({ _tag: "Ready", ...topology }),
+          notifyRoot: (wake) => {
+            sends += 1;
+            delivered = true;
+            return sends === 1
+              ? Promise.reject(new Error("lost sendEvent response"))
+              : Promise.resolve(wake);
+          },
+          withPageAuthority: (evaluate) =>
+            evaluate(
+              authority([], {
+                claim: (claimToken) => Promise.resolve(completedClaim(claimToken)),
+              }),
+            ),
+        },
+      );
+
+    await expect(run()).rejects.toThrow("lost sendEvent response");
+    expect(delivered).toBe(true);
+    await expect(run()).resolves.toMatchObject({
+      wake: { eventType: "qualification-scrub-partition-0000" },
+    });
+    expect(sends).toBe(2);
   });
 });

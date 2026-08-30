@@ -5,11 +5,12 @@ import { expect, it } from "vitest";
 import {
   qualificationCohortScrubPartitionInstanceId,
   qualificationCohortScrubPartitionProtocol,
+  qualificationCohortScrubPartitionWake,
   type QualificationCohortScrubPartitionWorkflowPayload,
 } from "../qualification/cohort-scrub-partition";
 
 interface TestEnv {
-  readonly QUALIFICATION_COHORT_SCRUB_PARTITION_WORKFLOW_TEST: Workflow<QualificationCohortScrubPartitionWorkflowPayload>;
+  readonly QUALIFICATION_COHORT_SCRUB_PARTITION_WORKFLOW: Workflow<QualificationCohortScrubPartitionWorkflowPayload>;
 }
 
 // @ts-expect-error The focused runtime config owns this exact test-only generated binding.
@@ -32,7 +33,7 @@ const terminalStatus = async (instance: WorkflowInstance): Promise<InstanceStatu
 
 it("fails an invalid partition payload non-retryably in the real Workflows host", async () => {
   const executionId = "invalid-scrub-partition-runtime-v1";
-  const instance = await runtimeEnv.QUALIFICATION_COHORT_SCRUB_PARTITION_WORKFLOW_TEST.create({
+  const instance = await runtimeEnv.QUALIFICATION_COHORT_SCRUB_PARTITION_WORKFLOW.create({
     id: qualificationCohortScrubPartitionInstanceId(executionId, 0),
     params: {
       cohortId: "invalid-cohort",
@@ -61,7 +62,7 @@ it("serializes a compact successful partition through the real Workflows host", 
   } as const;
   const instanceId = qualificationCohortScrubPartitionInstanceId(executionId, 0);
   await using introspector = await introspectWorkflowInstance(
-    runtimeEnv.QUALIFICATION_COHORT_SCRUB_PARTITION_WORKFLOW_TEST,
+    runtimeEnv.QUALIFICATION_COHORT_SCRUB_PARTITION_WORKFLOW,
     instanceId,
   );
   await introspector.modify(async (modifier) => {
@@ -87,8 +88,12 @@ it("serializes a compact successful partition through the real Workflows host", 
         proofChecksum: "proof-checksum",
       },
     );
+    await modifier.mockStepResult(
+      { name: "notify cohort scrub root partition 0000" },
+      qualificationCohortScrubPartitionWake(params, "page-checksum"),
+    );
   });
-  await runtimeEnv.QUALIFICATION_COHORT_SCRUB_PARTITION_WORKFLOW_TEST.create({
+  await runtimeEnv.QUALIFICATION_COHORT_SCRUB_PARTITION_WORKFLOW.create({
     id: instanceId,
     params,
   });
@@ -102,7 +107,7 @@ it("serializes a compact successful partition through the real Workflows host", 
     partitionIndex: 0,
     terminalPageChecksum: "page-checksum",
     wake: {
-      eventType: "qualification-cohort-scrub-partition-complete-v1",
+      eventType: "qualification-scrub-partition-0000",
       rootCoordinatorInstanceId: params.rootCoordinatorInstanceId,
     },
   });

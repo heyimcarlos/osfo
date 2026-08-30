@@ -2,6 +2,7 @@ import type { DocumentBuild } from "./services/document-build";
 import type { ResearchReport } from "./services/research-report";
 import type { ScheduledEmail } from "./services/scheduled-email";
 import type { QualificationCohortScrubPartitionWorkflowPayload as ScrubPartitionPayload } from "./qualification/cohort-scrub-partition";
+import type { QualificationCohortScrubRootWorkflowPayload as ScrubRootPayload } from "./qualification/cohort-scrub-root";
 
 /** Public infrastructure contract for the Document Build Workflow binding. */
 export type DocumentBuildWorkflowPayload = DocumentBuild.WorkflowPayload;
@@ -14,6 +15,7 @@ export type ScheduledEmailWorkflowPayload = ScheduledEmail.WorkflowPayload;
 
 /** One compact content-free exact page window in cohort artifact teardown. */
 export type QualificationCohortScrubPartitionWorkflowPayload = ScrubPartitionPayload;
+export type QualificationCohortScrubRootWorkflowPayload = ScrubRootPayload;
 
 /** Compact immutable request passed to the bounded qualification-owner Workflow. */
 export interface QualificationOwnerWorkflowPayload {

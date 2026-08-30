@@ -12,6 +12,7 @@ import {
 } from "../integrations/cloudflare/qualification-cohort-artifacts";
 import { makeQualificationCohortScrubAuthority } from "../integrations/postgres/qualification-cohort-scrub";
 import { decodeQualificationCohortScrubPartitionWorkflowPayload } from "../qualification/cohort-scrub-partition";
+import type { QualificationCohortScrubRootWorkflowPayload } from "../qualification/cohort-scrub-root";
 import type { QualificationCohortScrubPartitionWorkflowPayload } from "../workflow-contracts";
 import {
   runQualificationCohortScrubPartition,
@@ -23,6 +24,7 @@ import {
 interface QualificationCohortScrubPartitionEnv {
   readonly DB: Pick<Hyperdrive, "connectionString">;
   readonly QUALIFICATION_COHORT_ARTIFACT_AUTHORITY: DurableObjectNamespace<QualificationCohortArtifactAuthority>;
+  readonly QUALIFICATION_COHORT_SCRUB_ROOT_WORKFLOW: Workflow<QualificationCohortScrubRootWorkflowPayload>;
 }
 
 const withDatabase = async <Value>(
@@ -43,6 +45,16 @@ const makePorts = (
 ): QualificationCohortScrubPartitionPorts => ({
   inspectTopology: (input) =>
     withDatabase(env, (authority) => Effect.runPromise(authority.inspectScrubPartition(input))),
+  notifyRoot: async (wake) => {
+    const instance = await env.QUALIFICATION_COHORT_SCRUB_ROOT_WORKFLOW.get(
+      wake.rootCoordinatorInstanceId,
+    );
+    if (instance.id !== wake.rootCoordinatorInstanceId) {
+      throw new Error("The cohort scrub root Workflow identity conflicts");
+    }
+    await instance.sendEvent({ payload: wake, type: wake.eventType });
+    return wake;
+  },
   withPageAuthority: (evaluate) =>
     withDatabase(env, async (authority) => {
       const pageAuthority: QualificationCohortScrubPageAuthority = {

@@ -46,9 +46,14 @@
   ],
   "workflows": [
     {
-      "binding": "QUALIFICATION_COHORT_SCRUB_PARTITION_WORKFLOW_TEST",
+      "binding": "QUALIFICATION_COHORT_SCRUB_PARTITION_WORKFLOW",
       "class_name": "QualificationCohortScrubPartitionWorkflow",
       "name": "qualification-cohort-scrub-partition-runtime-test",
+    },
+    {
+      "binding": "QUALIFICATION_COHORT_SCRUB_ROOT_WORKFLOW",
+      "class_name": "QualificationCohortScrubRootWorkflow",
+      "name": "qualification-cohort-scrub-root-runtime-test",
     },
   ],
   "durable_objects": {

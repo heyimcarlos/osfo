@@ -6,6 +6,7 @@ import { Effect } from "effect";
 
 import { qualificationChecksum } from "../../qualification/qualification-checksum";
 import { qualificationCohortScrubPartitionProtocol } from "../../qualification/cohort-scrub-partition";
+import { qualificationCohortScrubRootWorkflowPayload } from "../../qualification/cohort-scrub-root";
 import { makeQualificationCohortAuthority } from "./qualification-cohort";
 
 const cohortId = "qualification-scrub-cohort";
@@ -22,6 +23,7 @@ const partitionPayload = {
   protocolVersion: qualificationCohortScrubPartitionProtocol,
   rootCoordinatorInstanceId: "scrub-root",
 } as const;
+const rootPayload = qualificationCohortScrubRootWorkflowPayload(cohortId, executionId);
 
 const deletionReceipt = (userId: string, deletionCaseId: string) => {
   const receiptId = `postgres:qualification-account-deletion:${deletionCaseId}`;
@@ -159,6 +161,10 @@ it.effect("does not expose scrub work before every product deletion is proven", 
         plan: "free",
       }),
     ).toEqual({ _tag: "Pending", reason: "productDeletionIncomplete" });
+    expect(yield* authority.inspectScrubRoot(rootPayload)).toEqual({
+      _tag: "Pending",
+      reason: "productDeletionIncomplete",
+    });
     expect(yield* authority.inspectTeardown(cohortId)).toMatchObject({
       productDeletion: { deleted: 2, expected: 3, state: "PENDING" },
       scrub: { state: "NOT_STARTED" },
@@ -189,6 +195,94 @@ it.effect("derives the exact partition window from PostgreSQL-owned cohort count
     ).toEqual({ _tag: "Conflict" });
     expect(yield* authority.inspectScrubPartition({ ...partitionPayload, pageCount: 1 })).toEqual({
       _tag: "Conflict",
+    });
+  }),
+);
+
+it.effect("authenticates one exact completed partition chain from PostgreSQL authority", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedCohort(fixture, { adventurer: 1, free: 26 });
+    const authority = makeQualificationCohortAuthority(fixture.database);
+
+    expect(yield* authority.inspectScrubRoot(rootPayload)).toMatchObject({
+      _tag: "Ready",
+      partitionCount: 1,
+      totalPageCount: 3,
+    });
+    expect(yield* authority.inspectScrubPartitionCompletion(rootPayload, 0)).toEqual({
+      _tag: "Pending",
+      reason: "partitionPagesIncomplete",
+    });
+
+    let previousPageChecksum = "NONE";
+    for (const [plan, pageIndex] of [
+      ["free", 0],
+      ["free", 1],
+      ["adventurer", 0],
+    ] as const) {
+      const claimToken = `root-inspection-${plan}-${pageIndex}`;
+      const claimed = yield* authority.claimScrubPage({
+        claimToken,
+        cohortId,
+        executionId,
+        pageIndex,
+        plan,
+      });
+      expect(claimed).toMatchObject({ _tag: "Claimed", previousPageChecksum });
+      if (claimed._tag !== "Claimed") return;
+      const completed = yield* authority.completeScrubPage({
+        artifactAuthorityProofChecksum: `root-proof-${plan}-${pageIndex}`,
+        claimToken,
+        cohortId,
+        deletedArtifactCount: claimed.expectedArtifactCount,
+        deletedArtifactsChecksum: claimed.expectedArtifactsChecksum,
+        executionId,
+        pageIndex,
+        plan,
+      });
+      expect(completed._tag).toBe("Completed");
+      if (completed._tag !== "Completed") return;
+      previousPageChecksum = completed.pageChecksum;
+    }
+
+    expect(yield* authority.inspectScrubPartitionCompletion(rootPayload, 0)).toEqual({
+      _tag: "Ready",
+      pageCount: 3,
+      partitionIndex: 0,
+      previousPageChecksum: "NONE",
+      terminalPageChecksum: previousPageChecksum,
+      terminalPosition: 2,
+    });
+
+    yield* Effect.promise(() =>
+      fixture.client.query(
+        "update qualification_cohort_scrub_pages set previous_page_checksum = 'tampered' where plan = 'adventurer' and page_index = 0",
+      ),
+    );
+    expect(yield* authority.inspectScrubPartitionCompletion(rootPayload, 0)).toEqual({
+      _tag: "Conflict",
+    });
+  }),
+);
+
+it.effect("keeps legacy root topology fail-closed", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedCohort(fixture, {
+      adventurer: 1,
+      artifactAuthorityProtocol: null,
+      free: 1,
+    });
+    const authority = makeQualificationCohortAuthority(fixture.database);
+
+    expect(yield* authority.inspectScrubRoot(rootPayload)).toEqual({
+      _tag: "Pending",
+      reason: "artifactAuthorityUnavailable",
     });
   }),
 );

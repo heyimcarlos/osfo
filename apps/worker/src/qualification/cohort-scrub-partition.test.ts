@@ -115,15 +115,15 @@ describe("qualification cohort scrub partition contract", () => {
     expect(qualificationCohortScrubPartitionInstanceId("execution", 0)).toMatch(
       /^[a-zA-Z0-9_][a-zA-Z0-9-_]*$/u,
     );
-    expect(qualificationCohortScrubPartitionWake(payload(1))).toEqual(
-      qualificationCohortScrubPartitionWake(payload(1)),
+    expect(qualificationCohortScrubPartitionWake(payload(1), "terminal")).toEqual(
+      qualificationCohortScrubPartitionWake(payload(1), "terminal"),
     );
   });
 
   it("pins the 32-page Workflow budget below installed defaults", () => {
-    expect(qualificationCohortScrubPartitionMaximumStepCount).toBe(33);
-    expect(qualificationCohortScrubPartitionMaximumAuthorityCalls).toBe(129);
-    expect(qualificationCohortScrubPartitionMaximumParentSubrequests).toBe(1_067);
+    expect(qualificationCohortScrubPartitionMaximumStepCount).toBe(34);
+    expect(qualificationCohortScrubPartitionMaximumAuthorityCalls).toBe(131);
+    expect(qualificationCohortScrubPartitionMaximumParentSubrequests).toBe(1_089);
     expect(qualificationCohortScrubPartitionMaximumDoR2CallsPerPage).toBe(55);
     expect(qualificationCohortScrubPartitionMaximumStepCount).toBeLessThan(10_000);
     expect(qualificationCohortScrubPartitionMaximumParentSubrequests).toBeLessThan(10_000);

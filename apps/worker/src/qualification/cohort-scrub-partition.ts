@@ -17,12 +17,12 @@ export const qualificationCohortScrubPartitionRetryLimit = 10;
 export const qualificationCohortScrubPartitionRetryDelay = "6 minutes" as const;
 export const qualificationCohortScrubPartitionStepTimeout = "30 minutes" as const;
 export const qualificationCohortScrubPartitionMaximumStepCount =
-  1 + qualificationCohortScrubPartitionPageLimit;
+  2 + qualificationCohortScrubPartitionPageLimit;
 export const qualificationCohortScrubPartitionMaximumAuthorityCalls =
-  1 + qualificationCohortScrubPartitionPageLimit * 4;
+  3 + qualificationCohortScrubPartitionPageLimit * 4;
 export const qualificationCohortScrubPartitionMaximumDoR2CallsPerPage = 27 * 2 + 1;
 export const qualificationCohortScrubPartitionMaximumParentSubrequests =
-  (1 + qualificationCohortScrubPartitionPageLimit * 3) *
+  (3 + qualificationCohortScrubPartitionPageLimit * 3) *
   (qualificationCohortScrubPartitionRetryLimit + 1);
 
 export const QualificationCohortScrubPartitionWorkflowPayload = Schema.Struct({
@@ -39,6 +39,27 @@ export const QualificationCohortScrubPartitionWorkflowPayload = Schema.Struct({
 });
 export type QualificationCohortScrubPartitionWorkflowPayload =
   typeof QualificationCohortScrubPartitionWorkflowPayload.Type;
+
+export const QualificationCohortScrubPartitionWake = Schema.Struct({
+  cohortId: boundedIdentity,
+  eventId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+  eventType: Schema.String.check(
+    Schema.isMaxLength(100),
+    Schema.isPattern(/^qualification-scrub-partition-\d{4}$/u),
+  ),
+  executionId: boundedIdentity,
+  firstPagePosition: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  pageCount: Schema.Int.check(
+    Schema.isGreaterThan(0),
+    Schema.isLessThanOrEqualTo(qualificationCohortScrubPartitionPageLimit),
+  ),
+  partitionIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  protocolVersion: Schema.Literal(qualificationCohortScrubPartitionProtocol),
+  rootCoordinatorInstanceId: boundedWorkflowIdentity,
+  terminalPageChecksum: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(300)),
+});
+export type QualificationCohortScrubPartitionWake =
+  typeof QualificationCohortScrubPartitionWake.Type;
 
 export interface QualificationCohortScrubPageTopology {
   readonly pageIndex: number;
@@ -138,13 +159,36 @@ export const qualificationCohortScrubPageClaimToken = (
 
 export const qualificationCohortScrubPartitionWake = (
   payload: QualificationCohortScrubPartitionWorkflowPayload,
-) => ({
-  eventId: qualificationChecksum({
-    coordinatorInstanceId: payload.rootCoordinatorInstanceId,
+  terminalPageChecksum: string,
+): QualificationCohortScrubPartitionWake => {
+  const identity = {
+    cohortId: payload.cohortId,
+    eventType: qualificationCohortScrubPartitionEventType(payload.partitionIndex),
     executionId: payload.executionId,
-    kind: "qualificationCohortScrubPartitionComplete",
+    firstPagePosition: payload.firstPagePosition,
+    pageCount: payload.pageCount,
     partitionIndex: payload.partitionIndex,
-  }),
-  eventType: "qualification-cohort-scrub-partition-complete-v1" as const,
-  rootCoordinatorInstanceId: payload.rootCoordinatorInstanceId,
-});
+    protocolVersion: payload.protocolVersion,
+    rootCoordinatorInstanceId: payload.rootCoordinatorInstanceId,
+    terminalPageChecksum,
+  };
+  return {
+    ...identity,
+    eventId: qualificationChecksum({
+      ...identity,
+      kind: "qualificationCohortScrubPartitionComplete",
+    }),
+  };
+};
+
+export const qualificationCohortScrubPartitionEventType = (partitionIndex: number) =>
+  `qualification-scrub-partition-${partitionIndex.toString().padStart(4, "0")}`;
+
+const decodeWake = Schema.decodeUnknownOption(QualificationCohortScrubPartitionWake);
+
+export const decodeQualificationCohortScrubPartitionWake = (
+  input: unknown,
+): QualificationCohortScrubPartitionWake | null => {
+  const decoded = decodeWake(input);
+  return Option.isSome(decoded) ? decoded.value : null;
+};
