@@ -1,4 +1,4 @@
-import { Data, Effect, Schema } from "effect";
+import { Data, Effect, Option, Schema } from "effect";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 import type { CostSummaryEvidence } from "../../qualification/cost-evidence";
@@ -21,6 +21,7 @@ import {
   unavailableProductionQualificationReport,
   type ProductionQualificationReport,
 } from "../../qualification/production-qualification";
+import { qualificationOwnerDimensionCoordinatorBudget } from "../../qualification/owner-partitions";
 import {
   makeQualificationExecutionArtifactStore,
   type QualificationExecutionArtifactUnavailable,
@@ -155,11 +156,7 @@ const OwnerDistributedEvaluationResponse = Schema.Struct({
   verdict: Schema.Literals(["FAIL", "MISSING"]),
   version: Schema.Literal("qualification-owner-response-v2"),
 });
-const OwnerTerminalResponse = Schema.Union([
-  OwnerMissingResponse,
-  OwnerFailedResponse,
-  OwnerDistributedEvaluationResponse,
-]);
+const OwnerLegacyTerminalResponse = Schema.Union([OwnerMissingResponse, OwnerFailedResponse]);
 const OwnerReport = Schema.Struct({
   adventurerContributionMargin: Schema.NullOr(Schema.Finite),
   costSummaries: Schema.Array(
@@ -217,7 +214,13 @@ const AuthorityShardMetadata = Schema.Struct({
 });
 const EncodedOwnerBundleDescriptor = Schema.fromJsonString(OwnerBundleDescriptor);
 const EncodedOwnerResponse = Schema.fromJsonString(OwnerResponse);
-const EncodedOwnerTerminalResponse = Schema.fromJsonString(OwnerTerminalResponse);
+const EncodedOwnerLegacyTerminalResponse = Schema.fromJsonString(OwnerLegacyTerminalResponse);
+const EncodedOwnerDistributedEvaluationResponse = Schema.fromJsonString(
+  OwnerDistributedEvaluationResponse,
+);
+const decodeOwnerTerminalVersion = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
+);
 const EncodedOwnerReport = Schema.fromJsonString(OwnerReport);
 
 type OwnerBundleDescriptor = typeof OwnerBundleDescriptor.Type;
@@ -529,6 +532,9 @@ export const runProductionQualification = (
       return yield* ownerConflict("Disposable qualification cohort conflicts with the plan");
     }
     const requestArtifact = ownerRequest(manifest, plan, cohort);
+    const expectedRootCount = plan.runs.reduce((total, run) => total + run.arrivalCount, 0);
+    const expectedDimensionCount =
+      qualificationOwnerDimensionCoordinatorBudget(plan).dimensionCount;
     const requestArtifactId = `qualification/executions/${encodeURIComponent(plan.executionId)}/owner-request.json`;
     yield* retainOwnerRequest(
       composition.artifacts,
@@ -558,7 +564,10 @@ export const runProductionQualification = (
         catch: (cause) => ownerUnavailable("Qualification owner terminal body failed", cause),
         try: () => response.text(),
       });
-      const terminal = yield* decode(EncodedOwnerTerminalResponse, encodedTerminal);
+      const declaredVersion = decodeOwnerTerminalVersion(encodedTerminal);
+      const terminal = Option.isSome(declaredVersion)
+        ? yield* decode(EncodedOwnerDistributedEvaluationResponse, encodedTerminal)
+        : yield* decode(EncodedOwnerLegacyTerminalResponse, encodedTerminal);
       if ("failureCodes" in terminal) {
         return yield* ownerUnavailable(`Qualification owner returned ${response.status}`);
       }
@@ -590,6 +599,8 @@ export const runProductionQualification = (
             bucket: env.ARTIFACTS,
             checksum: terminal.reportChecksum,
             executionId: plan.executionId,
+            expectedDimensionCount,
+            expectedRootCount,
             manifestChecksum: manifest.manifestChecksum,
             planChecksum: plan.planChecksum,
             sourceVersion: manifest.sourceVersion,
@@ -642,6 +653,9 @@ export const runProductionQualification = (
       }
       const correctnessReference = correctnessFamily.references[0];
       if (correctnessReference !== undefined) {
+        if (correctnessReference.kind !== "correctness") {
+          return yield* ownerConflict("Distributed correctness reference kind conflicts");
+        }
         const reference = yield* Effect.tryPromise({
           catch: (cause) =>
             ownerUnavailable("Distributed correctness reference readback failed", cause),
@@ -651,6 +665,8 @@ export const runProductionQualification = (
               bucket: env.ARTIFACTS,
               checksum: correctnessReference.checksum,
               executionId: plan.executionId,
+              expectedAcceptedCount: correctnessReference.acceptedCount,
+              expectedRootCount: correctnessReference.rootCount,
               planChecksum: plan.planChecksum,
               verdict: correctnessFamily.verdict,
             }),
@@ -669,6 +685,9 @@ export const runProductionQualification = (
       }
       const dimensionReference = dimensionFamily.references[0];
       if (dimensionReference !== undefined) {
+        if (dimensionReference.kind !== "dimensions") {
+          return yield* ownerConflict("Distributed dimension reference kind conflicts");
+        }
         const reference = yield* Effect.tryPromise({
           catch: (cause) =>
             ownerUnavailable("Distributed dimension reference readback failed", cause),
@@ -678,6 +697,7 @@ export const runProductionQualification = (
               bucket: env.ARTIFACTS,
               checksum: dimensionReference.checksum,
               executionId: plan.executionId,
+              expectedDimensionCount: dimensionReference.dimensionCount,
               planChecksum: plan.planChecksum,
               verdict: dimensionFamily.verdict,
             }),

@@ -26,11 +26,21 @@ export type QualificationDistributedEvaluationFamilyName =
 export const qualificationDistributedEvaluationUnimplementedFamilies =
   qualificationDistributedEvaluationFamilyNames.slice(3);
 
-export const QualificationDistributedEvaluationAuthorityReference = Schema.Struct({
-  artifactId: Identity,
-  checksum: Identity,
-  kind: Schema.Literals(["correctness", "dimensions"]),
-});
+export const QualificationDistributedEvaluationAuthorityReference = Schema.Union([
+  Schema.Struct({
+    acceptedCount: NonNegativeInteger,
+    artifactId: Identity,
+    checksum: Identity,
+    kind: Schema.Literal("correctness"),
+    rootCount: NonNegativeInteger,
+  }),
+  Schema.Struct({
+    artifactId: Identity,
+    checksum: Identity,
+    dimensionCount: NonNegativeInteger,
+    kind: Schema.Literal("dimensions"),
+  }),
+]);
 
 export const QualificationDistributedEvaluationFamily = Schema.Struct({
   checksum: Identity,
@@ -49,6 +59,8 @@ export const QualificationDistributedEvaluationReport = Schema.Struct({
   artifactId: Identity,
   checksum: Identity,
   executionId: Identity,
+  expectedDimensionCount: NonNegativeInteger,
+  expectedRootCount: NonNegativeInteger,
   failingFamilyCount: NonNegativeInteger,
   families: Schema.Array(QualificationDistributedEvaluationFamily).check(
     Schema.isMinLength(qualificationDistributedEvaluationFamilyNames.length),
@@ -115,6 +127,8 @@ export interface QualificationDistributedEvaluationReportInput {
     | { readonly reason: string; readonly verdict: "FAIL" | "MISSING" };
   readonly dimensions: QualificationDistributedEvaluationDimensionInput;
   readonly executionId: string;
+  readonly expectedDimensionCount: number;
+  readonly expectedRootCount: number;
   readonly manifestChecksum: string;
   readonly planChecksum: string;
   readonly sourceVersion: string;
@@ -173,11 +187,9 @@ const family = (input: {
   readonly family: QualificationDistributedEvaluationFamilyName;
   readonly missingCount: number;
   readonly reason: string;
-  readonly references?: ReadonlyArray<{
-    readonly artifactId: string;
-    readonly checksum: string;
-    readonly kind: "correctness" | "dimensions";
-  }>;
+  readonly references?: ReadonlyArray<
+    typeof QualificationDistributedEvaluationAuthorityReference.Type
+  >;
   readonly verdict: "FAIL" | "MISSING" | "PASS";
 }): typeof QualificationDistributedEvaluationFamily.Type => {
   if (
@@ -203,7 +215,10 @@ const missingFamily = (
   reason = "authority_not_installed_pre_teardown",
 ) => family({ failCount: 0, family: name, missingCount: 1, reason, verdict: "MISSING" });
 
-const correctnessFamily = (input: QualificationDistributedEvaluationReportInput["correctness"]) => {
+const correctnessFamily = (
+  input: QualificationDistributedEvaluationReportInput["correctness"],
+  expectedRootCount: number,
+) => {
   if (!("artifactId" in input)) {
     return family({
       failCount: input.verdict === "FAIL" ? 1 : 0,
@@ -216,17 +231,34 @@ const correctnessFamily = (input: QualificationDistributedEvaluationReportInput[
   if (safeCount(input.acceptedCount) > safeCount(input.rootCount)) {
     throw new Error("Qualification distributed report correctness counts conflict");
   }
+  if (input.verdict === "PASS" && input.acceptedCount !== input.rootCount) {
+    throw new Error("Qualification distributed report PASS omits accepted roots");
+  }
+  if (input.rootCount !== expectedRootCount) {
+    throw new Error("Qualification distributed report correctness inventory conflicts");
+  }
   return family({
     failCount: input.failCount,
     family: "forest_correctness",
     missingCount: input.missingCount,
     reason: "authenticated_correctness_forest",
-    references: [{ artifactId: input.artifactId, checksum: input.checksum, kind: "correctness" }],
+    references: [
+      {
+        acceptedCount: input.acceptedCount,
+        artifactId: input.artifactId,
+        checksum: input.checksum,
+        kind: "correctness",
+        rootCount: input.rootCount,
+      },
+    ],
     verdict: input.verdict,
   });
 };
 
-const dimensionFamily = (input: QualificationDistributedEvaluationReportInput["dimensions"]) => {
+const dimensionFamily = (
+  input: QualificationDistributedEvaluationReportInput["dimensions"],
+  expectedDimensionCount: number,
+) => {
   if (!("artifactId" in input)) {
     return family({
       failCount: input.verdict === "FAIL" ? 1 : 0,
@@ -237,12 +269,22 @@ const dimensionFamily = (input: QualificationDistributedEvaluationReportInput["d
     });
   }
   safeCount(input.dimensionCount);
+  if (input.dimensionCount !== expectedDimensionCount) {
+    throw new Error("Qualification distributed report dimension inventory conflicts");
+  }
   return family({
     failCount: input.failCount,
     family: "numeric_stage_operation_dimensions",
     missingCount: input.missingCount,
     reason: "authenticated_dimension_forest",
-    references: [{ artifactId: input.artifactId, checksum: input.checksum, kind: "dimensions" }],
+    references: [
+      {
+        artifactId: input.artifactId,
+        checksum: input.checksum,
+        dimensionCount: input.dimensionCount,
+        kind: "dimensions",
+      },
+    ],
     verdict: input.verdict,
   });
 };
@@ -251,6 +293,8 @@ const dimensionFamily = (input: QualificationDistributedEvaluationReportInput["d
 export const qualificationDistributedEvaluationReport = (
   input: QualificationDistributedEvaluationReportInput,
 ): QualificationDistributedEvaluationReport => {
+  const expectedDimensionCount = safeCount(input.expectedDimensionCount);
+  const expectedRootCount = safeCount(input.expectedRootCount);
   const families = [
     family({
       failCount: 0,
@@ -259,8 +303,8 @@ export const qualificationDistributedEvaluationReport = (
       reason: "authenticated_frozen_owner_request",
       verdict: "PASS",
     }),
-    correctnessFamily(input.correctness),
-    dimensionFamily(input.dimensions),
+    correctnessFamily(input.correctness, expectedRootCount),
+    dimensionFamily(input.dimensions, expectedDimensionCount),
     missingFamily("semantic_good_root"),
     missingFamily("execution_run_corpus"),
     missingFamily("recovery_reserve_slope"),
@@ -278,6 +322,8 @@ export const qualificationDistributedEvaluationReport = (
     acceptanceLevel: input.acceptanceLevel,
     artifactId,
     executionId: input.executionId,
+    expectedDimensionCount,
+    expectedRootCount,
     failingFamilyCount,
     families,
     manifestChecksum: input.manifestChecksum,

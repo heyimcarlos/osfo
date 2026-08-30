@@ -10,6 +10,8 @@ import {
 const identity = {
   acceptanceLevel: "BoundedBeta" as const,
   executionId: "qualification-report-test",
+  expectedDimensionCount: 153,
+  expectedRootCount: 12,
   manifestChecksum: "manifest-checksum",
   planChecksum: "plan-checksum",
   sourceVersion: "source-v1",
@@ -122,6 +124,57 @@ describe("distributed qualification evaluation report", () => {
     );
   });
 
+  it("rejects zero or incomplete PASS inventories for a nonempty plan", () => {
+    expect(() =>
+      qualificationDistributedEvaluationReport({
+        ...identity,
+        correctness: {
+          acceptedCount: 0,
+          artifactId: "correctness.json",
+          checksum: "correctness-checksum",
+          failCount: 0,
+          missingCount: 0,
+          rootCount: 0,
+          verdict: "PASS",
+        },
+        dimensions: { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
+      }),
+    ).toThrow("Qualification distributed report correctness inventory conflicts");
+
+    expect(() =>
+      qualificationDistributedEvaluationReport({
+        ...identity,
+        correctness: { reason: "qualificationCorrectnessMissing", verdict: "MISSING" },
+        dimensions: {
+          artifactId: "dimensions.json",
+          checksum: "dimension-checksum",
+          dimensionCount: 0,
+          failCount: 0,
+          missingCount: 0,
+          verdict: "PASS",
+        },
+      }),
+    ).toThrow("Qualification distributed report dimension inventory conflicts");
+  });
+
+  it("requires every authenticated correctness PASS root to be accepted", () => {
+    expect(() =>
+      qualificationDistributedEvaluationReport({
+        ...identity,
+        correctness: {
+          acceptedCount: 11,
+          artifactId: "correctness.json",
+          checksum: "correctness-checksum",
+          failCount: 0,
+          missingCount: 0,
+          rootCount: 12,
+          verdict: "PASS",
+        },
+        dimensions: { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
+      }),
+    ).toThrow("Qualification distributed report PASS omits accepted roots");
+  });
+
   it("keeps an authenticated correctness failure ahead of missing families", () => {
     const report = qualificationDistributedEvaluationReport({
       ...identity,
@@ -131,7 +184,7 @@ describe("distributed qualification evaluation report", () => {
         checksum: "correctness-checksum",
         failCount: 2,
         missingCount: 1,
-        rootCount: 10,
+        rootCount: 12,
         verdict: "FAIL",
       },
       dimensions: {
@@ -149,6 +202,8 @@ describe("distributed qualification evaluation report", () => {
     const report = qualificationDistributedEvaluationReport({
       ...identity,
       acceptanceLevel: "ScaleQualifiedPublic",
+      expectedDimensionCount: 431,
+      expectedRootCount: 1_750_422,
       correctness: {
         acceptedCount: 1_750_422,
         artifactId: "correctness.json",

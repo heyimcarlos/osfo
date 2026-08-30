@@ -2,7 +2,14 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import { Schema } from "effect";
 
 import { qualificationAuthoritySources } from "../qualification/authority-sources";
-import { QualificationEvaluationLeafInputReceipt } from "../qualification/qualification-evaluation-reducer";
+import {
+  QualificationEvaluationLeafInputReceipt,
+  qualificationEvaluationGlobalSortedDimensions,
+} from "../qualification/qualification-evaluation-reducer";
+import {
+  isMeasuredStageLane,
+  qualificationStageDimensionCount,
+} from "../qualification/stage-evidence";
 import {
   QualificationProductAuthorityMissing,
   QualificationProductAuthorityPreflight,
@@ -190,7 +197,30 @@ const RetainedManifestIdentity = Schema.Struct({
   sourceVersion: Schema.String,
   topologyVersion: Schema.String,
 });
-const RetainedPlanIdentity = Schema.Struct({ startsAtEpochMs: Schema.Int });
+const RetainedPlanIdentity = Schema.Struct({
+  runs: Schema.Array(
+    Schema.Union([
+      Schema.Struct({
+        arrivalCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+        kind: Schema.Literal("lane"),
+        lane: Schema.Literals([
+          "allCold",
+          "baseline",
+          "dependencyOutageRecovery",
+          "linearRamp",
+          "stress",
+          "target",
+          "zeroToBurst",
+        ]),
+      }),
+      Schema.Struct({
+        arrivalCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+        kind: Schema.Literals(["challenge", "characterization"]),
+      }),
+    ]),
+  ),
+  startsAtEpochMs: Schema.Int,
+});
 const PartitionCompletion = Schema.Struct({
   arrivalArtifactChecksum: Schema.NullOr(Schema.String),
   arrivalArtifactId: Schema.NullOr(Schema.String),
@@ -777,7 +807,7 @@ export const pollQualificationDimensionCoordinator = async (input: {
         if (status.status !== "complete") return { status: "MISSING" as const };
         const artifactId = `${qualificationDimensionCoordinatorArtifactPrefix(input.executionId)}/completion.json`;
         const retained = await input.env.ARTIFACTS.get(artifactId);
-        if (retained === null) return { status: "FAIL" as const };
+        if (retained === null) return { status: "MISSING" as const };
         const completion = await authenticateQualificationDimensionCoordinatorCompletion({
           artifactId,
           bucket: input.env.ARTIFACTS,
@@ -827,6 +857,17 @@ export const runQualificationOwnerWorkflow = async (input: {
     return {
       acceptanceLevel: manifestIdentity.acceptanceLevel,
       authoritySources: [...decoded.authoritySources],
+      expectedDimensionCount:
+        qualificationEvaluationGlobalSortedDimensions.length +
+        planIdentity.runs.reduce(
+          (count, run) =>
+            count +
+            (run.kind === "lane" && isMeasuredStageLane(run.lane)
+              ? qualificationStageDimensionCount(run.lane)
+              : 0),
+          0,
+        ),
+      expectedRootCount: planIdentity.runs.reduce((count, run) => count + run.arrivalCount, 0),
       sourceVersion: manifestIdentity.sourceVersion,
       startsAtEpochMs: planIdentity.startsAtEpochMs,
       topologyVersion: manifestIdentity.topologyVersion,
@@ -1005,6 +1046,8 @@ export const runQualificationOwnerWorkflow = async (input: {
           acceptanceLevel: request.acceptanceLevel,
           correctness: correctnessEvidence,
           dimensions: dimensionEvidence,
+          expectedDimensionCount: request.expectedDimensionCount,
+          expectedRootCount: request.expectedRootCount,
           sourceVersion: request.sourceVersion,
           topologyVersion: request.topologyVersion,
         },

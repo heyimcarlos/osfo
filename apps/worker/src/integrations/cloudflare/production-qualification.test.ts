@@ -18,7 +18,12 @@ import {
   type ProductionQualificationManifest,
 } from "../../qualification/qualification-manifest";
 import { qualificationCohortArtifactId } from "../../qualification/qualification-cohort";
-import { qualificationDistributedEvaluationReport } from "../../qualification/distributed-evaluation-report";
+import {
+  qualificationDistributedEvaluationReport,
+  qualificationDistributedEvaluationReportArtifactId,
+  qualificationDistributedEvaluationReportCompletionArtifactId,
+} from "../../qualification/distributed-evaluation-report";
+import { qualificationOwnerDimensionCoordinatorBudget } from "../../qualification/owner-partitions";
 import {
   qualificationEvaluationCorrectnessReceipt,
   qualificationEvaluationRootAccumulatorReceipt,
@@ -132,21 +137,23 @@ const retainDimensionReference = async (
   storage: ReturnType<typeof memoryBucket>,
   input: {
     readonly artifactId: string;
+    readonly dimensionCount: number;
     readonly executionId: string;
+    readonly numericDimensionCount: number;
     readonly planChecksum: string;
   },
 ) => {
   const content = {
     artifactId: input.artifactId,
-    dimensionCount: 0,
-    evaluationPageCount: 0,
+    dimensionCount: input.dimensionCount,
+    evaluationPageCount: Math.ceil(input.numericDimensionCount / 50),
     executionId: input.executionId,
-    identityDimensionCount: 0,
-    numericDimensionCount: 0,
+    identityDimensionCount: input.dimensionCount - input.numericDimensionCount,
+    numericDimensionCount: input.numericDimensionCount,
     planChecksum: input.planChecksum,
-    rootPageCount: 0,
-    terminalEvaluationPageChecksum: "ZERO",
-    terminalRootPageChecksum: "ZERO",
+    rootPageCount: Math.ceil(input.dimensionCount / 50),
+    terminalEvaluationPageChecksum: "terminal-evaluation",
+    terminalRootPageChecksum: "terminal-root",
     verdict: "PASS" as const,
     version: "qualification-dimension-coordinator-completion-v1" as const,
   };
@@ -157,11 +164,11 @@ const retainDimensionReference = async (
     customMetadata: {
       "osfo-artifact-checksum": completion.checksum,
       "osfo-body-sha256": await sha256Hex(encoded),
-      "osfo-dimension-count": "0",
+      "osfo-dimension-count": String(input.dimensionCount),
       "osfo-execution-id": input.executionId,
       "osfo-kind": "qualification-dimension-coordinator-completion-v1",
       "osfo-plan-checksum": input.planChecksum,
-      "osfo-record-count": "0",
+      "osfo-record-count": String(Math.ceil(input.numericDimensionCount / 50)),
       "osfo-verdict": "PASS",
     },
     httpMetadata: { contentType: "application/json" },
@@ -175,25 +182,26 @@ const retainCorrectnessReference = async (
     readonly artifactId: string;
     readonly executionId: string;
     readonly planChecksum: string;
+    readonly rootCount: number;
   },
 ) => {
   const root = qualificationEvaluationRootAccumulatorReceipt({
-    acceptedCount: 0,
+    acceptedCount: input.rootCount,
     artifactId: `${input.artifactId}/roots.json`,
     artifactPrefix: `${input.artifactId}/roots`,
     executionId: input.executionId,
     firstPartitionIndex: 0,
-    firstRootId: null,
-    firstShardChecksum: "ZERO",
+    firstRootId: "first-root",
+    firstShardChecksum: "first-shard",
     index: 0,
     inputReceiptChecksums: ["leaf-checksum"],
     lastPartitionIndex: 0,
-    lastRootId: null,
+    lastRootId: "last-root",
     level: 0,
     planChecksum: input.planChecksum,
-    rootCount: 0,
-    shardCount: 0,
-    terminalShardChecksum: "ZERO",
+    rootCount: input.rootCount,
+    shardCount: 1,
+    terminalShardChecksum: "terminal-shard",
   });
   if (root === null) throw new Error("Expected correctness root fixture");
   const receipt = qualificationEvaluationCorrectnessReceipt({
@@ -221,7 +229,7 @@ const retainCorrectnessReference = async (
       "osfo-kind": "qualification-evaluation-correctness-receipt-v1",
       "osfo-last-partition-index": "0",
       "osfo-plan-checksum": input.planChecksum,
-      "osfo-record-count": "0",
+      "osfo-record-count": String(input.rootCount),
       "osfo-root-receipt-checksum": receipt.rootAccumulator.checksum,
       "osfo-summary-checksum": receipt.findingSummaryArtifactChecksum,
       "osfo-verdict": "PASS",
@@ -258,6 +266,11 @@ const retainCohort = (
     canonicalQualificationJson({ ...content, artifactChecksum: qualificationChecksum(content) }),
   );
 };
+
+const reportInventory = (plan: QualificationExecutionPlan) => ({
+  expectedDimensionCount: qualificationOwnerDimensionCoordinatorBudget(plan).dimensionCount,
+  expectedRootCount: plan.runs.reduce((total, run) => total + run.arrivalCount, 0),
+});
 
 const retainedOwner = (
   retained: Map<string, string>,
@@ -701,6 +714,59 @@ it("preserves the legacy v1 FAIL response as owner-unavailable MISSING on replay
   }
 });
 
+it.each([
+  ["qualification-owner-response-v2", "productionQualificationOwnerUnavailable", "MISSING"],
+  ["qualification-owner-response-v3", "productionQualificationOwnerConflict", "FAIL"],
+] as const)(
+  "never downgrades a declared %s response through injected legacy fields",
+  async (version, expectedCode, expectedVerdict) => {
+    const manifest = compactManifest();
+    const plan = createQualificationExecutionPlan(manifest, 0, `declared-${version}`);
+    const storage = memoryBucket();
+    retainCohort(storage.retained, manifest, plan);
+    const result = await runProductionQualification(
+      {
+        ARTIFACTS: storage.bucket,
+        QUALIFICATION_OWNER: {
+          fetch: () =>
+            Promise.resolve(
+              Response.json(
+                {
+                  completionArtifactId:
+                    qualificationDistributedEvaluationReportCompletionArtifactId(plan.executionId),
+                  completionChecksum: "absent-completion",
+                  error: "qualificationAuthorityMaterialMissing",
+                  executionId: plan.executionId,
+                  failingFamilies: [],
+                  manifestChecksum: manifest.manifestChecksum,
+                  missingFamilies: ["cohort_teardown"],
+                  missingSources: ["legacy-field-must-not-win"],
+                  phase: "PRE_TEARDOWN",
+                  planChecksum: plan.planChecksum,
+                  reportArtifactId: qualificationDistributedEvaluationReportArtifactId(
+                    plan.executionId,
+                  ),
+                  reportChecksum: "absent-report",
+                  verdict: "MISSING",
+                  version,
+                },
+                { status: 424 },
+              ),
+            ),
+        },
+      },
+      manifest,
+      plan,
+    );
+
+    expect(result).toMatchObject({
+      findings: expect.arrayContaining([expect.objectContaining({ code: expectedCode })]),
+      verdict: expectedVerdict,
+    });
+    expect(storage.listCallCount()).toBe(0);
+  },
+);
+
 it.each([false, true] as const)(
   "authenticates a distributed PRE_TEARDOWN report before returning %s",
   async (tamperMetadata) => {
@@ -713,6 +779,7 @@ it.each([false, true] as const)(
     const { bucket, listCallCount, metadata, retained } = memoryBucket();
     retainCohort(retained, manifest, plan);
     const report = qualificationDistributedEvaluationReport({
+      ...reportInventory(plan),
       acceptanceLevel: manifest.acceptanceLevel,
       correctness: { reason: "qualificationCorrectnessMissing", verdict: "MISSING" },
       dimensions: { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
@@ -786,6 +853,7 @@ it("rejects a self-authentic completion whose family counts disagree with the re
   const storage = memoryBucket();
   retainCohort(storage.retained, manifest, plan);
   const report = qualificationDistributedEvaluationReport({
+    ...reportInventory(plan),
     acceptanceLevel: manifest.acceptanceLevel,
     correctness: { reason: "qualificationCorrectnessMissing", verdict: "MISSING" },
     dimensions: { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
@@ -868,10 +936,13 @@ it.each(["valid", "missing", "metadata", "crossExecution"] as const)(
     const plan = createQualificationExecutionPlan(manifest, 0, `distributed-reference-${scenario}`);
     const storage = memoryBucket();
     retainCohort(storage.retained, manifest, plan);
+    const inventory = qualificationOwnerDimensionCoordinatorBudget(plan);
     const artifactId = `qualification/executions/${plan.executionId}/dimensions/completion.json`;
     const dimension = await retainDimensionReference(storage, {
       artifactId,
+      dimensionCount: inventory.dimensionCount,
       executionId: scenario === "crossExecution" ? "other-execution" : plan.executionId,
+      numericDimensionCount: inventory.numericDimensionCount,
       planChecksum: plan.planChecksum,
     });
     if (scenario === "missing") {
@@ -887,12 +958,13 @@ it.each(["valid", "missing", "metadata", "crossExecution"] as const)(
       });
     }
     const report = qualificationDistributedEvaluationReport({
+      ...reportInventory(plan),
       acceptanceLevel: manifest.acceptanceLevel,
       correctness: { reason: "qualificationCorrectnessMissing", verdict: "MISSING" },
       dimensions: {
         artifactId,
         checksum: dimension.checksum,
-        dimensionCount: 0,
+        dimensionCount: inventory.dimensionCount,
         failCount: 0,
         missingCount: 0,
         verdict: "PASS",
@@ -972,6 +1044,7 @@ it.each(["valid", "missing", "metadata", "crossExecution"] as const)(
       artifactId,
       executionId: scenario === "crossExecution" ? "other-execution" : plan.executionId,
       planChecksum: plan.planChecksum,
+      rootCount: reportInventory(plan).expectedRootCount,
     });
     if (scenario === "missing") {
       storage.retained.delete(artifactId);
@@ -986,14 +1059,15 @@ it.each(["valid", "missing", "metadata", "crossExecution"] as const)(
       });
     }
     const report = qualificationDistributedEvaluationReport({
+      ...reportInventory(plan),
       acceptanceLevel: manifest.acceptanceLevel,
       correctness: {
-        acceptedCount: 0,
+        acceptedCount: reportInventory(plan).expectedRootCount,
         artifactId,
         checksum: correctness.checksum,
         failCount: 0,
         missingCount: 0,
-        rootCount: 0,
+        rootCount: reportInventory(plan).expectedRootCount,
         verdict: "PASS",
       },
       dimensions: { reason: "dimension_authority_missing", verdict: "MISSING" },
@@ -1062,6 +1136,7 @@ it("returns an authenticated distributed FAIL ahead of missing report families",
   const { bucket, retained } = memoryBucket();
   retainCohort(retained, manifest, plan);
   const report = qualificationDistributedEvaluationReport({
+    ...reportInventory(plan),
     acceptanceLevel: manifest.acceptanceLevel,
     correctness: { reason: "correctness_conflict", verdict: "FAIL" },
     dimensions: { reason: "correctness_prerequisite_failed", verdict: "MISSING" },

@@ -5,7 +5,10 @@ import {
   canonicalQualificationJson,
   qualificationChecksum,
 } from "../qualification/qualification-checksum";
-import { qualificationDistributedEvaluationReport } from "../qualification/distributed-evaluation-report";
+import {
+  qualificationDistributedEvaluationReport,
+  qualificationDistributedEvaluationReportCompletionArtifactId,
+} from "../qualification/distributed-evaluation-report";
 import {
   qualificationEvaluationCorrectnessReceipt,
   qualificationEvaluationRootAccumulatorReceipt,
@@ -28,6 +31,8 @@ const report = qualificationDistributedEvaluationReport({
   correctness: { reason: "correctness_missing", verdict: "MISSING" },
   dimensions: { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
   executionId: "report-storage-test",
+  expectedDimensionCount: 153,
+  expectedRootCount: 1,
   manifestChecksum: "manifest-checksum",
   planChecksum: "plan-checksum",
   sourceVersion: "source-v1",
@@ -135,6 +140,8 @@ describe("qualification owner distributed report retention", () => {
       bucket: retained.bucket,
       checksum: receipt.checksum,
       executionId: receipt.executionId,
+      expectedAcceptedCount: 0,
+      expectedRootCount: 0,
       planChecksum: receipt.planChecksum,
       verdict: "PASS" as const,
     };
@@ -240,6 +247,8 @@ describe("qualification owner distributed report retention", () => {
           acceptanceLevel: report.acceptanceLevel,
           correctness,
           dimensions,
+          expectedDimensionCount: report.expectedDimensionCount,
+          expectedRootCount: report.expectedRootCount,
           sourceVersion: report.sourceVersion,
           topologyVersion: report.topologyVersion,
         },
@@ -268,6 +277,8 @@ describe("qualification owner distributed report retention", () => {
         bucket: retained.bucket,
         checksum: report.checksum,
         executionId: report.executionId,
+        expectedDimensionCount: report.expectedDimensionCount,
+        expectedRootCount: report.expectedRootCount,
         manifestChecksum: report.manifestChecksum,
         planChecksum: report.planChecksum,
         sourceVersion: report.sourceVersion,
@@ -300,6 +311,8 @@ describe("qualification owner distributed report retention", () => {
         bucket: retained.bucket,
         checksum: report.checksum,
         executionId: report.executionId,
+        expectedDimensionCount: report.expectedDimensionCount,
+        expectedRootCount: report.expectedRootCount,
         manifestChecksum: report.manifestChecksum,
         planChecksum: report.planChecksum,
         sourceVersion: report.sourceVersion,
@@ -321,6 +334,8 @@ describe("qualification owner distributed report retention", () => {
         bucket: retained.bucket,
         checksum: report.checksum,
         executionId: report.executionId,
+        expectedDimensionCount: report.expectedDimensionCount,
+        expectedRootCount: report.expectedRootCount,
         manifestChecksum: report.manifestChecksum,
         planChecksum: report.planChecksum,
         sourceVersion: report.sourceVersion,
@@ -330,6 +345,48 @@ describe("qualification owner distributed report retention", () => {
     await expect(
       retainQualificationDistributedEvaluationReport(retained.bucket, report),
     ).rejects.toThrow("Retained qualification distributed report artifact conflicts");
+  });
+
+  it("rejects noncanonical report keys before R2 and keeps canonical absence MISSING", async () => {
+    const retained = memoryBucket();
+    await expect(
+      authenticateQualificationDistributedEvaluationReport({
+        acceptanceLevel: report.acceptanceLevel,
+        artifactId: "foreign-report.json",
+        bucket: retained.bucket,
+        checksum: report.checksum,
+        executionId: report.executionId,
+        expectedDimensionCount: report.expectedDimensionCount,
+        expectedRootCount: report.expectedRootCount,
+        manifestChecksum: report.manifestChecksum,
+        planChecksum: report.planChecksum,
+        sourceVersion: report.sourceVersion,
+        topologyVersion: report.topologyVersion,
+      }),
+    ).resolves.toEqual({ status: "FAIL" });
+
+    const completionInput = {
+      artifactId: qualificationDistributedEvaluationReportCompletionArtifactId(report.executionId),
+      bucket: retained.bucket,
+      checksum: "completion-checksum",
+      executionId: report.executionId,
+      failingFamilyCount: report.failingFamilyCount,
+      manifestChecksum: report.manifestChecksum,
+      missingFamilyCount: report.missingFamilyCount,
+      planChecksum: report.planChecksum,
+      reportArtifactId: report.artifactId,
+      reportChecksum: report.checksum,
+      verdict: report.verdict,
+    };
+    await expect(
+      authenticateQualificationDistributedEvaluationReportCompletion({
+        ...completionInput,
+        artifactId: "foreign-completion.json",
+      }),
+    ).resolves.toEqual({ status: "FAIL" });
+    await expect(
+      authenticateQualificationDistributedEvaluationReportCompletion(completionInput),
+    ).resolves.toEqual({ status: "MISSING" });
   });
 
   it.each([
@@ -350,6 +407,8 @@ describe("qualification owner distributed report retention", () => {
         bucket: retained.bucket,
         checksum: report.checksum,
         executionId: report.executionId,
+        expectedDimensionCount: report.expectedDimensionCount,
+        expectedRootCount: report.expectedRootCount,
         manifestChecksum: report.manifestChecksum,
         planChecksum: report.planChecksum,
         sourceVersion: report.sourceVersion,
@@ -377,6 +436,8 @@ describe("qualification owner distributed report retention", () => {
         bucket: retained.bucket,
         checksum: reordered.checksum,
         executionId: report.executionId,
+        expectedDimensionCount: report.expectedDimensionCount,
+        expectedRootCount: report.expectedRootCount,
         manifestChecksum: report.manifestChecksum,
         planChecksum: report.planChecksum,
         sourceVersion: report.sourceVersion,
@@ -407,6 +468,8 @@ describe("qualification owner distributed report retention", () => {
         verdict: "PASS",
       },
       executionId: report.executionId,
+      expectedDimensionCount: report.expectedDimensionCount,
+      expectedRootCount: report.expectedRootCount,
       manifestChecksum: report.manifestChecksum,
       planChecksum: report.planChecksum,
       sourceVersion: report.sourceVersion,
@@ -435,6 +498,8 @@ describe("qualification owner distributed report retention", () => {
         bucket: retained.bucket,
         checksum: changed.checksum,
         executionId: changed.executionId,
+        expectedDimensionCount: changed.expectedDimensionCount,
+        expectedRootCount: changed.expectedRootCount,
         manifestChecksum: changed.manifestChecksum,
         planChecksum: changed.planChecksum,
         sourceVersion: changed.sourceVersion,
@@ -484,6 +549,8 @@ describe("qualification owner distributed report retention", () => {
         acceptanceLevel: report.acceptanceLevel,
         correctness: { reason: "correctness_missing", verdict: "MISSING" },
         dimensions: { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
+        expectedDimensionCount: report.expectedDimensionCount,
+        expectedRootCount: report.expectedRootCount,
         sourceVersion: report.sourceVersion,
         topologyVersion: report.topologyVersion,
       },
@@ -526,6 +593,8 @@ describe("qualification owner distributed report retention", () => {
           acceptanceLevel: report.acceptanceLevel,
           correctness: { reason: "correctness_missing", verdict: "MISSING" },
           dimensions: { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
+          expectedDimensionCount: report.expectedDimensionCount,
+          expectedRootCount: report.expectedRootCount,
           sourceVersion: report.sourceVersion,
           topologyVersion: report.topologyVersion,
         },

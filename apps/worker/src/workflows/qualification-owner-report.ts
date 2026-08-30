@@ -85,6 +85,8 @@ const reportMetadata = (report: QualificationDistributedEvaluationReport, bodySh
   "osfo-artifact-checksum": report.checksum,
   "osfo-body-sha256": bodySha256,
   "osfo-execution-id": report.executionId,
+  "osfo-expected-dimension-count": String(report.expectedDimensionCount),
+  "osfo-expected-root-count": String(report.expectedRootCount),
   "osfo-kind": "qualification-distributed-evaluation-report-v1",
   "osfo-manifest-checksum": report.manifestChecksum,
   "osfo-plan-checksum": report.planChecksum,
@@ -162,11 +164,16 @@ export const authenticateQualificationDistributedEvaluationReport = async (input
   readonly bucket: QualificationOwnerReportReadBucket;
   readonly checksum: string;
   readonly executionId: string;
+  readonly expectedDimensionCount: number;
+  readonly expectedRootCount: number;
   readonly manifestChecksum: string;
   readonly planChecksum: string;
   readonly sourceVersion: string;
   readonly topologyVersion: string;
 }): Promise<QualificationDistributedEvaluationReportMaterial> => {
+  if (input.artifactId !== qualificationDistributedEvaluationReportArtifactId(input.executionId)) {
+    return { status: "FAIL" };
+  }
   const retained = await input.bucket.get(input.artifactId);
   if (retained === null) return { status: "MISSING" };
   const encoded = await retained.text();
@@ -179,6 +186,8 @@ export const authenticateQualificationDistributedEvaluationReport = async (input
     return { status: "FAIL" };
   }
   const { checksum, ...content } = report;
+  const correctnessReference = report.families[1]?.references[0];
+  const dimensionReference = report.families[2]?.references[0];
   const familiesExact =
     report.failingFamilyCount ===
       report.families.filter(({ verdict }) => verdict === "FAIL").length &&
@@ -198,12 +207,23 @@ export const authenticateQualificationDistributedEvaluationReport = async (input
         familyChecksum === qualificationChecksum(familyContent) && familyStructureExact(candidate)
       );
     }) &&
+    (correctnessReference === undefined ||
+      (correctnessReference.kind === "correctness" &&
+        correctnessReference.rootCount === report.expectedRootCount &&
+        correctnessReference.acceptedCount <= correctnessReference.rootCount &&
+        (report.families[1]?.verdict !== "PASS" ||
+          correctnessReference.acceptedCount === correctnessReference.rootCount))) &&
+    (dimensionReference === undefined ||
+      (dimensionReference.kind === "dimensions" &&
+        dimensionReference.dimensionCount === report.expectedDimensionCount)) &&
     report.families[0]?.verdict === "PASS";
   return report.artifactId === input.artifactId &&
     report.artifactId === qualificationDistributedEvaluationReportArtifactId(input.executionId) &&
     report.checksum === input.checksum &&
     checksum === qualificationChecksum(content) &&
     report.executionId === input.executionId &&
+    report.expectedDimensionCount === input.expectedDimensionCount &&
+    report.expectedRootCount === input.expectedRootCount &&
     report.manifestChecksum === input.manifestChecksum &&
     report.planChecksum === input.planChecksum &&
     report.acceptanceLevel === input.acceptanceLevel &&
@@ -234,6 +254,8 @@ export const authenticateQualificationDistributedCorrectnessReference = async (i
   readonly bucket: QualificationOwnerReportReadBucket;
   readonly checksum: string;
   readonly executionId: string;
+  readonly expectedAcceptedCount: number;
+  readonly expectedRootCount: number;
   readonly planChecksum: string;
   readonly verdict: "FAIL" | "MISSING" | "PASS";
 }): Promise<QualificationDistributedEvaluationReferenceMaterial> => {
@@ -253,6 +275,9 @@ export const authenticateQualificationDistributedCorrectnessReference = async (i
     receipt.checksum === input.checksum &&
     checksum === qualificationChecksum(content) &&
     receipt.executionId === input.executionId &&
+    receipt.rootAccumulator.acceptedCount === input.expectedAcceptedCount &&
+    receipt.rootAccumulator.rootCount === input.expectedRootCount &&
+    (input.verdict !== "PASS" || input.expectedAcceptedCount === input.expectedRootCount) &&
     receipt.planChecksum === input.planChecksum &&
     receipt.verdict === input.verdict &&
     retained.httpMetadata?.contentType === "application/json" &&
@@ -280,6 +305,7 @@ export const authenticateQualificationDistributedDimensionReference = async (inp
   readonly bucket: QualificationOwnerReportReadBucket;
   readonly checksum: string;
   readonly executionId: string;
+  readonly expectedDimensionCount: number;
   readonly planChecksum: string;
   readonly verdict: "FAIL" | "MISSING" | "PASS";
 }): Promise<QualificationDistributedEvaluationReferenceMaterial> => {
@@ -299,6 +325,7 @@ export const authenticateQualificationDistributedDimensionReference = async (inp
     completion.checksum === input.checksum &&
     checksum === qualificationChecksum(content) &&
     completion.executionId === input.executionId &&
+    completion.dimensionCount === input.expectedDimensionCount &&
     completion.planChecksum === input.planChecksum &&
     completion.verdict === input.verdict &&
     completion.dimensionCount ===
@@ -335,6 +362,12 @@ export const authenticateQualificationDistributedEvaluationReportCompletion = as
   readonly reportChecksum: string;
   readonly verdict: "FAIL" | "MISSING";
 }): Promise<QualificationDistributedEvaluationReportCompletionMaterial> => {
+  if (
+    input.artifactId !==
+    qualificationDistributedEvaluationReportCompletionArtifactId(input.executionId)
+  ) {
+    return { status: "FAIL" };
+  }
   const retained = await input.bucket.get(input.artifactId);
   if (retained === null) return { status: "MISSING" };
   const encoded = await retained.text();

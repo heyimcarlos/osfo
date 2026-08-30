@@ -64,7 +64,7 @@ const runtime = async (
       topologyVersion: "topology-version",
     },
     manifestChecksum,
-    plan: { startsAtEpochMs },
+    plan: { runs: [{ arrivalCount: 0, kind: "challenge" as const }], startsAtEpochMs },
     planChecksum,
     protocolVersion: "qualification-owner-v1" as const,
     shardRecordLimit: 256 as const,
@@ -569,4 +569,39 @@ it("waits beyond the four reducer horizons for a normally completing dimension c
       planChecksum,
     }),
   ).resolves.toEqual({ status: "FAIL" });
+});
+
+it("keeps a completed dimension child with absent completion material MISSING", async () => {
+  let statusCalls = 0;
+  const result = await pollQualificationDimensionCoordinator({
+    env: {
+      ARTIFACTS: {
+        get: () => Promise.resolve(null),
+        list: () => Promise.resolve({ objects: [], truncated: false }),
+        put: () => Promise.resolve({ etag: "unused" }),
+      },
+      QUALIFICATION_OWNER_DIMENSION_COORDINATOR_WORKFLOW: {
+        create: () => Promise.reject(new Error("Polling does not create")),
+        get: (id) =>
+          Promise.resolve({
+            id,
+            status: () => {
+              statusCalls += 1;
+              return Promise.resolve({ status: "complete" as const });
+            },
+          }),
+      },
+    },
+    executionId: "absent-dimension-completion",
+    launchedAtEpochMs: 0,
+    planChecksum,
+    step: {
+      do: async (_name, callback) => structuredClone(await callback()),
+      sleepUntil: () => Promise.resolve(),
+    },
+    workflowId: "absent-dimension-completion-workflow",
+  });
+
+  expect(statusCalls).toBeGreaterThan(1);
+  expect(result).toEqual({ status: "MISSING" });
 });
