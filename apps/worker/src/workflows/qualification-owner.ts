@@ -39,6 +39,7 @@ import {
 import {
   retainFailedQualificationReport,
   retainQualificationDistributedEvaluationOwnerResponse,
+  retainQualificationExecutionRunCorpusOrConflict,
   retainMissingQualificationReport,
 } from "./qualification-owner-report";
 import {
@@ -1008,9 +1009,10 @@ export const runQualificationOwnerWorkflow = async (input: {
   if (completion.launch === null) {
     throw new Error("Complete qualification partitions omit the leaf launch authority");
   }
+  const leafLaunch = completion.launch;
   const leafCompletion = await runQualificationOwnerLeafFanout({
     env: input.env,
-    launch: completion.launch,
+    launch: leafLaunch,
     payload: input.payload,
     step: input.step,
   });
@@ -1023,6 +1025,25 @@ export const runQualificationOwnerWorkflow = async (input: {
     });
     return { status: "MISSING" };
   }
+  const executionCorpus = await input.step.do(
+    "retain qualification execution run corpus receipt",
+    async () => {
+      return await retainQualificationExecutionRunCorpusOrConflict(
+        input.env.ARTIFACTS,
+        input.payload,
+        {
+          completion: leafCompletion,
+          descriptor: leafLaunch,
+          executionId: input.payload.executionId,
+          expectedRootCount: request.expectedRootCount,
+          manifestChecksum: input.payload.manifestChecksum,
+          planChecksum: input.payload.planChecksum,
+          sourceVersion: request.sourceVersion,
+          topologyVersion: request.topologyVersion,
+        },
+      );
+    },
+  );
   const correctness = await runQualificationOwnerCorrectnessForest({
     env: input.env,
     leaf: leafCompletion,
@@ -1046,6 +1067,17 @@ export const runQualificationOwnerWorkflow = async (input: {
           acceptanceLevel: request.acceptanceLevel,
           correctness: correctnessEvidence,
           dimensions: dimensionEvidence,
+          executionCorpus: {
+            acceptedCount: executionCorpus.acceptedCount,
+            artifactId: executionCorpus.artifactId,
+            checksum: executionCorpus.checksum,
+            completionCount: executionCorpus.completionCount,
+            pageCount: executionCorpus.pageCount,
+            partitionCount: executionCorpus.partitionCount,
+            rootCount: executionCorpus.rootCount,
+            terminalJoinPageChecksum: executionCorpus.terminalJoinPageChecksum,
+            terminalLaunchPageChecksum: executionCorpus.terminalLaunchPageChecksum,
+          },
           expectedDimensionCount: request.expectedDimensionCount,
           expectedRootCount: request.expectedRootCount,
           sourceVersion: request.sourceVersion,

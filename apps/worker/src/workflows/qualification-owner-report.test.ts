@@ -9,6 +9,7 @@ import {
   qualificationDistributedEvaluationReport,
   qualificationDistributedEvaluationReportCompletionArtifactId,
 } from "../qualification/distributed-evaluation-report";
+import { qualificationExecutionRunCorpusReceiptArtifactId } from "../qualification/execution-run-corpus";
 import {
   qualificationEvaluationCorrectnessReceipt,
   qualificationEvaluationRootAccumulatorReceipt,
@@ -21,11 +22,24 @@ import {
   authenticateQualificationDistributedEvaluationReport,
   retainQualificationDistributedEvaluationReport,
   retainQualificationDistributedEvaluationOwnerResponse,
+  retainQualificationExecutionRunCorpusOrConflict,
 } from "./qualification-owner-report";
 
 const sha256Hex = async (encoded: string) => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
+const executionCorpus = {
+  acceptedCount: 1,
+  artifactId: qualificationExecutionRunCorpusReceiptArtifactId("report-storage-test"),
+  checksum: "execution-corpus-checksum",
+  completionCount: 1,
+  pageCount: 1,
+  partitionCount: 1,
+  rootCount: 1,
+  terminalJoinPageChecksum: "join-checksum",
+  terminalLaunchPageChecksum: "launch-checksum",
 };
 
 const report = qualificationDistributedEvaluationReport({
@@ -35,6 +49,7 @@ const report = qualificationDistributedEvaluationReport({
   executionId: "report-storage-test",
   expectedDimensionCount: 153,
   expectedRootCount: 1,
+  executionCorpus,
   manifestChecksum: "manifest-checksum",
   planChecksum: "plan-checksum",
   sourceVersion: "source-v1",
@@ -250,6 +265,7 @@ describe("qualification owner distributed report retention", () => {
           acceptanceLevel: report.acceptanceLevel,
           correctness,
           dimensions,
+          executionCorpus,
           expectedDimensionCount: report.expectedDimensionCount,
           expectedRootCount: report.expectedRootCount,
           sourceVersion: report.sourceVersion,
@@ -471,6 +487,7 @@ describe("qualification owner distributed report retention", () => {
         verdict: "PASS",
       },
       executionId: report.executionId,
+      executionCorpus,
       expectedDimensionCount: report.expectedDimensionCount,
       expectedRootCount: report.expectedRootCount,
       manifestChecksum: report.manifestChecksum,
@@ -552,6 +569,7 @@ describe("qualification owner distributed report retention", () => {
         acceptanceLevel: report.acceptanceLevel,
         correctness: { reason: "correctness_missing", verdict: "MISSING" },
         dimensions: { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
+        executionCorpus,
         expectedDimensionCount: report.expectedDimensionCount,
         expectedRootCount: report.expectedRootCount,
         sourceVersion: report.sourceVersion,
@@ -596,6 +614,7 @@ describe("qualification owner distributed report retention", () => {
           acceptanceLevel: report.acceptanceLevel,
           correctness: { reason: "correctness_missing", verdict: "MISSING" },
           dimensions: { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
+          executionCorpus,
           expectedDimensionCount: report.expectedDimensionCount,
           expectedRootCount: report.expectedRootCount,
           sourceVersion: report.sourceVersion,
@@ -626,6 +645,7 @@ describe("qualification owner distributed report retention", () => {
           reason: "correctness_prerequisite_missing",
           verdict: "MISSING" as const,
         },
+        executionCorpus,
         expectedDimensionCount: report.expectedDimensionCount,
         expectedRootCount: report.expectedRootCount,
         sourceVersion: report.sourceVersion,
@@ -659,4 +679,50 @@ describe("qualification owner distributed report retention", () => {
       ).resolves.toBe("CONFLICT");
     },
   );
+
+  it("routes an execution-corpus collision through the owner conflict marker", async () => {
+    const retained = memoryBucket();
+    retained.values.set(executionCorpus.artifactId, {
+      customMetadata: {},
+      encoded: canonicalQualificationJson({ conflict: "execution-corpus" }),
+      httpMetadata: { contentType: "application/json" },
+    });
+    const payload = {
+      executionId: report.executionId,
+      manifestChecksum: report.manifestChecksum,
+      planChecksum: report.planChecksum,
+      requestArtifactChecksum: "request-checksum",
+      requestArtifactId: "request.json",
+    };
+    await expect(
+      retainQualificationExecutionRunCorpusOrConflict(retained.bucket, payload, {
+        completion: {
+          acceptedCount: 1,
+          completeOutcomeCount: 1,
+          completionCount: 1,
+          failOutcomeCount: 0,
+          missingCompletionCount: 0,
+          outcomeMissingCount: 0,
+          pageCount: 1,
+          rootCount: 1,
+          terminalPageChecksum: "join-checksum",
+        },
+        descriptor: { partitionCount: 1, terminalPageChecksum: "launch-checksum" },
+        executionId: report.executionId,
+        expectedRootCount: 1,
+        manifestChecksum: report.manifestChecksum,
+        planChecksum: report.planChecksum,
+        sourceVersion: report.sourceVersion,
+        topologyVersion: report.topologyVersion,
+      }),
+    ).rejects.toThrow("Retained qualification execution/run corpus receipt conflicts");
+    await expect(
+      authenticateQualificationDistributedEvaluationConflict({
+        bucket: retained.bucket,
+        executionId: report.executionId,
+        manifestChecksum: report.manifestChecksum,
+        planChecksum: report.planChecksum,
+      }),
+    ).resolves.toBe("CONFLICT");
+  });
 });

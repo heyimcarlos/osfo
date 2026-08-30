@@ -23,8 +23,16 @@ export const qualificationDistributedEvaluationFamilyNames = [
 export type QualificationDistributedEvaluationFamilyName =
   (typeof qualificationDistributedEvaluationFamilyNames)[number];
 
-export const qualificationDistributedEvaluationUnimplementedFamilies =
-  qualificationDistributedEvaluationFamilyNames.slice(3);
+export const qualificationDistributedEvaluationUnimplementedFamilies = [
+  "semantic_good_root",
+  "recovery_reserve_slope",
+  "resource_headroom",
+  "cost_economics",
+  "memory_semantics",
+  "external_gates_public_promotion",
+  "cohort_teardown",
+  "evidence_retention",
+] as const satisfies ReadonlyArray<QualificationDistributedEvaluationFamilyName>;
 
 export const QualificationDistributedEvaluationAuthorityReference = Schema.Union([
   Schema.Struct({
@@ -39,6 +47,18 @@ export const QualificationDistributedEvaluationAuthorityReference = Schema.Union
     checksum: Identity,
     dimensionCount: NonNegativeInteger,
     kind: Schema.Literal("dimensions"),
+  }),
+  Schema.Struct({
+    acceptedCount: NonNegativeInteger,
+    artifactId: Identity,
+    checksum: Identity,
+    completionCount: NonNegativeInteger,
+    kind: Schema.Literal("executionCorpus"),
+    pageCount: NonNegativeInteger,
+    partitionCount: NonNegativeInteger,
+    rootCount: NonNegativeInteger,
+    terminalJoinPageChecksum: Identity,
+    terminalLaunchPageChecksum: Identity,
   }),
 ]);
 
@@ -127,6 +147,17 @@ export interface QualificationDistributedEvaluationReportInput {
     | { readonly reason: string; readonly verdict: "FAIL" | "MISSING" };
   readonly dimensions: QualificationDistributedEvaluationDimensionInput;
   readonly executionId: string;
+  readonly executionCorpus: {
+    readonly acceptedCount: number;
+    readonly artifactId: string;
+    readonly checksum: string;
+    readonly completionCount: number;
+    readonly pageCount: number;
+    readonly partitionCount: number;
+    readonly rootCount: number;
+    readonly terminalJoinPageChecksum: string;
+    readonly terminalLaunchPageChecksum: string;
+  };
   readonly expectedDimensionCount: number;
   readonly expectedRootCount: number;
   readonly manifestChecksum: string;
@@ -289,6 +320,27 @@ const dimensionFamily = (
   });
 };
 
+const executionCorpusFamily = (
+  input: QualificationDistributedEvaluationReportInput["executionCorpus"],
+  expectedRootCount: number,
+) => {
+  if (
+    input.rootCount !== expectedRootCount ||
+    input.completionCount !== input.partitionCount ||
+    input.acceptedCount !== input.rootCount
+  ) {
+    throw new Error("Qualification distributed report execution corpus conflicts");
+  }
+  return family({
+    failCount: 0,
+    family: "execution_run_corpus",
+    missingCount: 0,
+    reason: "authenticated_execution_run_corpus",
+    references: [{ ...input, kind: "executionCorpus" }],
+    verdict: "PASS",
+  });
+};
+
 /** Assemble the bounded report without upgrading any unimplemented production gate. */
 export const qualificationDistributedEvaluationReport = (
   input: QualificationDistributedEvaluationReportInput,
@@ -306,7 +358,7 @@ export const qualificationDistributedEvaluationReport = (
     correctnessFamily(input.correctness, expectedRootCount),
     dimensionFamily(input.dimensions, expectedDimensionCount),
     missingFamily("semantic_good_root"),
-    missingFamily("execution_run_corpus"),
+    executionCorpusFamily(input.executionCorpus, expectedRootCount),
     missingFamily("recovery_reserve_slope"),
     missingFamily("resource_headroom"),
     missingFamily("cost_economics"),

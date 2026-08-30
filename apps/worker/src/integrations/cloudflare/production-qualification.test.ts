@@ -1,6 +1,6 @@
 /* oxlint-disable effecttsgo/async-function, vitest/no-standalone-expect -- Promise fakes model Cloudflare boundaries; Effect Vitest assertions execute inside generator-backed tests. */
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { hexToBytes } from "@noble/hashes/utils.js";
 
 import { compactManifest, manifestVersions } from "../../../test/support/qualification-fixtures";
@@ -19,6 +19,10 @@ import {
 } from "../../qualification/qualification-manifest";
 import { qualificationCohortArtifactId } from "../../qualification/qualification-cohort";
 import {
+  QualificationExecutionRunCorpusReceipt,
+  qualificationExecutionRunCorpusReceipt,
+} from "../../qualification/execution-run-corpus";
+import {
   qualificationDistributedEvaluationReport,
   qualificationDistributedEvaluationReportArtifactId,
   qualificationDistributedEvaluationReportCompletionArtifactId,
@@ -32,6 +36,7 @@ import {
   qualificationEvaluationRootAccumulatorReceipt,
 } from "../../qualification/qualification-evaluation-reducer";
 import { retainQualificationDistributedEvaluationReport } from "../../workflows/qualification-owner-report";
+import { retainQualificationExecutionRunCorpusReceipt } from "../../workflows/qualification-execution-run-corpus";
 import { qualificationDimensionCoordinatorCompletionArtifactId } from "../../workflows/qualification-owner-dimensions";
 import type {
   QualificationExecutionListedObject,
@@ -111,20 +116,16 @@ const memoryBucket = () => {
           : { objects, truncated: false as const },
       );
     },
-    put: (
-      key: string,
-      value: string,
-      options: {
-        readonly customMetadata: Readonly<Record<string, string>>;
-        readonly httpMetadata: { readonly contentType: string };
-        readonly onlyIf: { readonly etagDoesNotMatch: string };
-      },
-    ) => {
+    put: (key: string, value: string, options: R2PutOptions) => {
       if (retained.has(key)) return Promise.resolve(null);
       retained.set(key, value);
+      const contentType =
+        options.httpMetadata instanceof Headers
+          ? options.httpMetadata.get("content-type")
+          : options.httpMetadata?.contentType;
       metadata.set(key, {
-        customMetadata: options.customMetadata,
-        httpMetadata: options.httpMetadata,
+        customMetadata: options.customMetadata ?? {},
+        httpMetadata: { contentType: contentType ?? "application/octet-stream" },
       });
       return Promise.resolve({ etag: qualificationChecksum({ value }) });
     },
@@ -271,10 +272,79 @@ const retainCohort = (
   );
 };
 
-const reportInventory = (plan: QualificationExecutionPlan) => ({
-  expectedDimensionCount: qualificationOwnerDimensionCoordinatorBudget(plan).dimensionCount,
-  expectedRootCount: plan.runs.reduce((total, run) => total + run.arrivalCount, 0),
-});
+const reportInventory = (plan: QualificationExecutionPlan) => {
+  const expectedRootCount = plan.runs.reduce((total, run) => total + run.arrivalCount, 0);
+  const partitionCount = plan.runs.reduce(
+    (total, run) => total + Math.ceil(run.arrivalCount / 256),
+    0,
+  );
+  const executionCorpusReceipt = qualificationExecutionRunCorpusReceipt({
+    acceptedCount: expectedRootCount,
+    completeOutcomeCount: partitionCount,
+    completionCount: partitionCount,
+    executionId: plan.executionId,
+    expectedRootCount,
+    failOutcomeCount: 0,
+    manifestChecksum: plan.manifestChecksum,
+    missingCompletionCount: 0,
+    outcomeMissingCount: 0,
+    pageCount: Math.ceil(partitionCount / 50),
+    partitionCount,
+    planChecksum: plan.planChecksum,
+    rootCount: expectedRootCount,
+    sourceVersion: plan.sourceVersion,
+    terminalJoinPageChecksum: "join-page-checksum",
+    terminalLaunchPageChecksum: "launch-page-checksum",
+    topologyVersion: plan.topologyVersion,
+  });
+  return {
+    executionCorpus: {
+      acceptedCount: executionCorpusReceipt.acceptedCount,
+      artifactId: executionCorpusReceipt.artifactId,
+      checksum: executionCorpusReceipt.checksum,
+      completionCount: executionCorpusReceipt.completionCount,
+      pageCount: executionCorpusReceipt.pageCount,
+      partitionCount: executionCorpusReceipt.partitionCount,
+      rootCount: executionCorpusReceipt.rootCount,
+      terminalJoinPageChecksum: executionCorpusReceipt.terminalJoinPageChecksum,
+      terminalLaunchPageChecksum: executionCorpusReceipt.terminalLaunchPageChecksum,
+    },
+    executionCorpusReceipt,
+    expectedDimensionCount: qualificationOwnerDimensionCoordinatorBudget(plan).dimensionCount,
+    expectedRootCount,
+  };
+};
+
+const retainExecutionCorpus = (
+  bucket: ReturnType<typeof memoryBucket>["bucket"],
+  plan: QualificationExecutionPlan,
+) => {
+  const { executionCorpusReceipt } = reportInventory(plan);
+  return retainQualificationExecutionRunCorpusReceipt({
+    bucket,
+    completion: {
+      acceptedCount: executionCorpusReceipt.acceptedCount,
+      completeOutcomeCount: executionCorpusReceipt.completeOutcomeCount,
+      completionCount: executionCorpusReceipt.completionCount,
+      failOutcomeCount: executionCorpusReceipt.failOutcomeCount,
+      missingCompletionCount: executionCorpusReceipt.missingCompletionCount,
+      outcomeMissingCount: executionCorpusReceipt.outcomeMissingCount,
+      pageCount: executionCorpusReceipt.pageCount,
+      rootCount: executionCorpusReceipt.rootCount,
+      terminalPageChecksum: executionCorpusReceipt.terminalJoinPageChecksum,
+    },
+    descriptor: {
+      partitionCount: executionCorpusReceipt.partitionCount,
+      terminalPageChecksum: executionCorpusReceipt.terminalLaunchPageChecksum,
+    },
+    executionId: executionCorpusReceipt.executionId,
+    expectedRootCount: executionCorpusReceipt.expectedRootCount,
+    manifestChecksum: executionCorpusReceipt.manifestChecksum,
+    planChecksum: executionCorpusReceipt.planChecksum,
+    sourceVersion: executionCorpusReceipt.sourceVersion,
+    topologyVersion: executionCorpusReceipt.topologyVersion,
+  });
+};
 
 const retainedOwner = (
   retained: Map<string, string>,
@@ -806,19 +876,67 @@ it.each([
   },
 );
 
-it.each([false, true] as const)(
+it.each([
+  "valid",
+  "reportMetadata",
+  "corpusMissing",
+  "corpusMetadata",
+  "corpusChecksum",
+  "corpusTerminal",
+  "corpusCount",
+  "corpusCrossExecution",
+  "corpusReferenceTerminal",
+  "corpusSubstitutedKey",
+] as const)(
   "authenticates a distributed PRE_TEARDOWN report before returning %s",
-  async (tamperMetadata) => {
+  async (scenario) => {
     const manifest = compactManifest();
-    const plan = createQualificationExecutionPlan(
-      manifest,
-      0,
-      tamperMetadata ? "tampered-distributed-report" : "distributed-report",
-    );
+    const plan = createQualificationExecutionPlan(manifest, 0, `distributed-report-${scenario}`);
     const { bucket, listCallCount, metadata, retained } = memoryBucket();
     retainCohort(retained, manifest, plan);
+    await retainExecutionCorpus(bucket, plan);
+    const inventory = reportInventory(plan);
+    const corpusId = inventory.executionCorpus.artifactId;
+    const corpusEncoded = retained.get(corpusId);
+    const corpusMetadata = metadata.get(corpusId);
+    if (corpusEncoded === undefined || corpusMetadata === undefined) {
+      throw new Error("Expected execution corpus fixture");
+    }
+    if (scenario === "corpusMissing") {
+      retained.delete(corpusId);
+      metadata.delete(corpusId);
+    } else if (scenario === "corpusMetadata") {
+      metadata.set(corpusId, {
+        ...corpusMetadata,
+        customMetadata: { ...corpusMetadata.customMetadata, "osfo-root-count": "0" },
+      });
+    } else if (
+      scenario.startsWith("corpus") &&
+      scenario !== "corpusSubstitutedKey" &&
+      scenario !== "corpusReferenceTerminal"
+    ) {
+      const decoded = Schema.decodeSync(
+        Schema.fromJsonString(QualificationExecutionRunCorpusReceipt),
+      )(corpusEncoded);
+      const altered =
+        scenario === "corpusChecksum"
+          ? { ...decoded, checksum: "forged" }
+          : scenario === "corpusTerminal"
+            ? { ...decoded, terminalJoinPageChecksum: "substituted" }
+            : scenario === "corpusCount"
+              ? { ...decoded, acceptedCount: 0 }
+              : { ...decoded, executionId: "other-execution" };
+      retained.set(corpusId, canonicalQualificationJson(altered));
+    }
+    const executionCorpus =
+      scenario === "corpusSubstitutedKey"
+        ? { ...inventory.executionCorpus, artifactId: `${corpusId}.copied` }
+        : scenario === "corpusReferenceTerminal"
+          ? { ...inventory.executionCorpus, terminalJoinPageChecksum: "substituted-reference" }
+          : inventory.executionCorpus;
     const report = qualificationDistributedEvaluationReport({
-      ...reportInventory(plan),
+      ...inventory,
+      executionCorpus,
       acceptanceLevel: manifest.acceptanceLevel,
       correctness: { reason: "qualificationCorrectnessMissing", verdict: "MISSING" },
       dimensions: { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
@@ -834,7 +952,7 @@ it.each([false, true] as const)(
         QUALIFICATION_OWNER: {
           fetch: async () => {
             const completion = await retainQualificationDistributedEvaluationReport(bucket, report);
-            if (tamperMetadata) {
+            if (scenario === "reportMetadata") {
               const current = metadata.get(report.artifactId);
               if (current === undefined) throw new Error("Expected report metadata fixture");
               metadata.set(report.artifactId, {
@@ -875,12 +993,15 @@ it.each([false, true] as const)(
     expect(result).toMatchObject({
       findings: expect.arrayContaining([
         expect.objectContaining({
-          code: tamperMetadata
-            ? "productionQualificationOwnerConflict"
-            : "productionQualificationDistributedReportMissing",
+          code:
+            scenario === "valid"
+              ? "productionQualificationDistributedReportMissing"
+              : scenario === "corpusMissing"
+                ? "productionQualificationOwnerUnavailable"
+                : "productionQualificationOwnerConflict",
         }),
       ]),
-      verdict: tamperMetadata ? "FAIL" : "MISSING",
+      verdict: scenario === "valid" || scenario === "corpusMissing" ? "MISSING" : "FAIL",
     });
     expect(listCallCount()).toBe(0);
   },
@@ -891,6 +1012,7 @@ it("rejects a self-authentic completion whose family counts disagree with the re
   const plan = createQualificationExecutionPlan(manifest, 0, "altered-completion-counts");
   const storage = memoryBucket();
   retainCohort(storage.retained, manifest, plan);
+  await retainExecutionCorpus(storage.bucket, plan);
   const report = qualificationDistributedEvaluationReport({
     ...reportInventory(plan),
     acceptanceLevel: manifest.acceptanceLevel,
@@ -975,6 +1097,7 @@ it.each(["valid", "missing", "metadata", "crossExecution", "substitutedKey"] as 
     const plan = createQualificationExecutionPlan(manifest, 0, `distributed-reference-${scenario}`);
     const storage = memoryBucket();
     retainCohort(storage.retained, manifest, plan);
+    await retainExecutionCorpus(storage.bucket, plan);
     const inventory = qualificationOwnerDimensionCoordinatorBudget(plan);
     const artifactId =
       scenario === "substitutedKey"
@@ -1081,6 +1204,7 @@ it.each(["valid", "missing", "metadata", "crossExecution", "substitutedKey"] as 
     );
     const storage = memoryBucket();
     retainCohort(storage.retained, manifest, plan);
+    await retainExecutionCorpus(storage.bucket, plan);
     const partitionCount = plan.runs.reduce(
       (total, run) => total + Math.ceil(run.arrivalCount / 256),
       0,
@@ -1186,6 +1310,7 @@ it("returns an authenticated distributed FAIL ahead of missing report families",
   const plan = createQualificationExecutionPlan(manifest, 0, "distributed-fail-report");
   const { bucket, retained } = memoryBucket();
   retainCohort(retained, manifest, plan);
+  await retainExecutionCorpus(bucket, plan);
   const report = qualificationDistributedEvaluationReport({
     ...reportInventory(plan),
     acceptanceLevel: manifest.acceptanceLevel,

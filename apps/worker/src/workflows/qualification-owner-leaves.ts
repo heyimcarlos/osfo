@@ -89,6 +89,7 @@ export const QualificationEvaluationLeafCompletionJoinPage = Schema.Struct({
 export interface QualificationOwnerLeafBucket {
   readonly get: (key: string) => Promise<{
     readonly customMetadata?: Readonly<Record<string, string>>;
+    readonly httpMetadata?: { readonly contentType?: string };
     readonly text: () => Promise<string>;
   } | null>;
   readonly list: (options: {

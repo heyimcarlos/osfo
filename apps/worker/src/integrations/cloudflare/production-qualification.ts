@@ -33,6 +33,7 @@ import {
   authenticateQualificationDistributedEvaluationReport,
   authenticateQualificationDistributedEvaluationReportCompletion,
 } from "../../workflows/qualification-owner-report";
+import { authenticateQualificationExecutionRunCorpusReceipt } from "../../workflows/qualification-execution-run-corpus";
 
 const authorityStreamComponents = [
   "arrivals",
@@ -723,6 +724,49 @@ export const runProductionQualification = (
             ? ownerConflict("Distributed dimension reference conflicts with its report")
             : ownerUnavailable("Distributed dimension reference is missing");
         }
+      }
+      const corpusFamily = material.report.families.find(
+        ({ family }) => family === "execution_run_corpus",
+      );
+      const corpusReference = corpusFamily?.references[0];
+      if (
+        corpusFamily?.verdict !== "PASS" ||
+        corpusFamily.references.length !== 1 ||
+        corpusReference?.kind !== "executionCorpus"
+      ) {
+        return yield* ownerConflict("Distributed execution corpus reference conflicts");
+      }
+      const corpus = yield* Effect.tryPromise({
+        catch: (cause) => ownerUnavailable("Distributed execution corpus readback failed", cause),
+        try: () =>
+          authenticateQualificationExecutionRunCorpusReceipt({
+            artifactId: corpusReference.artifactId,
+            bucket: env.ARTIFACTS,
+            checksum: corpusReference.checksum,
+            executionId: plan.executionId,
+            expectedRootCount,
+            manifestChecksum: manifest.manifestChecksum,
+            partitionCount,
+            planChecksum: plan.planChecksum,
+            sourceVersion: manifest.sourceVersion,
+            topologyVersion: manifest.topologyVersion,
+          }),
+      });
+      if (corpus.status !== "COMPLETE") {
+        return yield* corpus.status === "FAIL"
+          ? ownerConflict("Distributed execution corpus conflicts with its report")
+          : ownerUnavailable("Distributed execution corpus is missing");
+      }
+      if (
+        corpus.receipt.acceptedCount !== corpusReference.acceptedCount ||
+        corpus.receipt.completionCount !== corpusReference.completionCount ||
+        corpus.receipt.pageCount !== corpusReference.pageCount ||
+        corpus.receipt.partitionCount !== corpusReference.partitionCount ||
+        corpus.receipt.rootCount !== corpusReference.rootCount ||
+        corpus.receipt.terminalJoinPageChecksum !== corpusReference.terminalJoinPageChecksum ||
+        corpus.receipt.terminalLaunchPageChecksum !== corpusReference.terminalLaunchPageChecksum
+      ) {
+        return yield* ownerConflict("Distributed execution corpus summary conflicts");
       }
       const failingFamilies = material.report.families
         .filter(({ verdict }) => verdict === "FAIL")

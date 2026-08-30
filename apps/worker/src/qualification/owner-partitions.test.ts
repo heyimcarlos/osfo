@@ -7,6 +7,7 @@ import {
 import { createQualificationExecutionPlan } from "./execution";
 import {
   qualificationOwnerPartitions,
+  qualificationDistributedEvaluationReportMaximumSubrequests,
   qualificationOwnerLeafFanoutBudget,
   qualificationOwnerCorrectnessForestBudget,
   qualificationOwnerDimensionCoordinatorBudget,
@@ -22,6 +23,15 @@ import {
 import { manifestVersions } from "../../test/support/qualification-fixtures";
 
 describe("qualification owner partitions", () => {
+  it("budgets five corpus collision retries and five report collision retries exactly", () => {
+    const corpusAndMarkerCalls = 5 * (2 + 2);
+    const reportAndMarkerCalls = 40;
+    expect(qualificationDistributedEvaluationReportMaximumSubrequests).toBe(
+      corpusAndMarkerCalls + reportAndMarkerCalls,
+    );
+    expect(corpusAndMarkerCalls / 5).toBeLessThanOrEqual(169);
+  });
+
   it.each([
     ["bounded beta", createBoundedBetaManifest(manifestVersions), 613, 613],
     ["scale-qualified public", createScaleQualifiedPublicManifest(manifestVersions), 6_894, 6_894],
@@ -71,8 +81,8 @@ describe("qualification owner partitions", () => {
         launchPageCount: 320,
         levelWidths: [918, 181, 14],
         maximumCoordinatorSubrequests: 9_904,
-        maximumReportSubrequests: 40,
-        maximumRootOwnerSubrequests: 13_828,
+        maximumReportSubrequests: 60,
+        maximumRootOwnerSubrequests: 13_848,
         numericDimensionCount: 145,
         reducerCount: 1_113,
         selectedShardReadCount: 580,
@@ -87,8 +97,8 @@ describe("qualification owner partitions", () => {
         launchPageCount: 1_002,
         levelWidths: [9_946, 795, 28, 14],
         maximumCoordinatorSubrequests: 71_781,
-        maximumReportSubrequests: 40,
-        maximumRootOwnerSubrequests: 148_331,
+        maximumReportSubrequests: 60,
+        maximumRootOwnerSubrequests: 148_351,
         numericDimensionCount: 423,
         reducerCount: 10_783,
         selectedShardReadCount: 1_692,

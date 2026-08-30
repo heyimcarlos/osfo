@@ -23,8 +23,8 @@ export const qualificationDimensionParentPollCount =
 export const qualificationDimensionLaunchPageSize = 50;
 export const qualificationDimensionRootOwnerSubrequestBudget =
   2 * qualificationDimensionParentPollCount + 40;
-/** Five attempts including immutable response conflict and lost conflict-marker reconciliation. */
-export const qualificationDistributedEvaluationReportMaximumSubrequests = 40;
+/** Corpus collision+marker (20) plus report/response/conflict-marker retention (40), over five attempts. */
+export const qualificationDistributedEvaluationReportMaximumSubrequests = 60;
 
 export interface QualificationPartitionChunk {
   readonly chunkIndex: number;

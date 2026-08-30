@@ -5,6 +5,7 @@ import {
   qualificationDistributedEvaluationDimensionTerminalEvidence,
   qualificationDistributedEvaluationFamilyNames,
   qualificationDistributedEvaluationReport,
+  qualificationDistributedEvaluationUnimplementedFamilies,
 } from "./distributed-evaluation-report";
 
 const identity = {
@@ -12,6 +13,17 @@ const identity = {
   executionId: "qualification-report-test",
   expectedDimensionCount: 153,
   expectedRootCount: 12,
+  executionCorpus: {
+    acceptedCount: 12,
+    artifactId: "execution-corpus.json",
+    checksum: "execution-corpus-checksum",
+    completionCount: 2,
+    pageCount: 1,
+    partitionCount: 2,
+    rootCount: 12,
+    terminalJoinPageChecksum: "join-checksum",
+    terminalLaunchPageChecksum: "launch-checksum",
+  },
   manifestChecksum: "manifest-checksum",
   planChecksum: "plan-checksum",
   sourceVersion: "source-v1",
@@ -114,7 +126,17 @@ describe("distributed qualification evaluation report", () => {
       qualificationDistributedEvaluationFamilyNames,
     );
     expect(report.verdict).toBe("MISSING");
-    expect(report.missingFamilyCount).toBe(9);
+    expect(report.missingFamilyCount).toBe(8);
+    expect(qualificationDistributedEvaluationUnimplementedFamilies).toEqual([
+      "semantic_good_root",
+      "recovery_reserve_slope",
+      "resource_headroom",
+      "cost_economics",
+      "memory_semantics",
+      "external_gates_public_promotion",
+      "cohort_teardown",
+      "evidence_retention",
+    ]);
     expect(report.failingFamilyCount).toBe(0);
     expect(report.families.find(({ family }) => family === "cohort_teardown")?.verdict).toBe(
       "MISSING",
@@ -204,6 +226,14 @@ describe("distributed qualification evaluation report", () => {
       acceptanceLevel: "ScaleQualifiedPublic",
       expectedDimensionCount: 431,
       expectedRootCount: 1_750_422,
+      executionCorpus: {
+        ...identity.executionCorpus,
+        acceptedCount: 1_750_422,
+        completionCount: 6_894,
+        pageCount: 138,
+        partitionCount: 6_894,
+        rootCount: 1_750_422,
+      },
       correctness: {
         acceptedCount: 1_750_422,
         artifactId: "correctness.json",
@@ -224,7 +254,7 @@ describe("distributed qualification evaluation report", () => {
     });
 
     expect(canonicalQualificationJson(report).length).toBeLessThan(32_768);
-    expect(report.families.flatMap(({ references }) => references)).toHaveLength(2);
+    expect(report.families.flatMap(({ references }) => references)).toHaveLength(3);
     expect(report.verdict).toBe("MISSING");
   });
 });

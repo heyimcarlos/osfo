@@ -17,6 +17,7 @@ import {
   qualificationDistributedEvaluationReport,
   type QualificationDistributedEvaluationReportInput,
 } from "../qualification/distributed-evaluation-report";
+import { qualificationExecutionRunCorpusReceiptArtifactId } from "../qualification/execution-run-corpus";
 import type { QualificationOwnerWorkflowPayload } from "../workflow-contracts";
 import {
   QualificationDimensionCoordinatorCompletion,
@@ -24,6 +25,10 @@ import {
   qualificationDimensionPageSize,
 } from "./qualification-owner-dimensions";
 import { qualificationCorrectnessRootReceiptArtifactId } from "../qualification/owner-partitions";
+import {
+  QualificationExecutionRunCorpusRetentionConflict,
+  retainQualificationExecutionRunCorpusReceipt,
+} from "./qualification-execution-run-corpus";
 
 interface QualificationOwnerReportReadBucket {
   readonly get: (key: string) => Promise<{
@@ -97,6 +102,13 @@ const familyStructureExact = (
       family.references.every(({ kind }) => kind === "dimensions")
     );
   }
+  if (family.family === "execution_run_corpus") {
+    return (
+      family.verdict === "PASS" &&
+      family.references.length === 1 &&
+      family.references[0]?.kind === "executionCorpus"
+    );
+  }
   return family.references.length === 0;
 };
 
@@ -152,7 +164,7 @@ const retainImmutable = async (input: {
   }
 };
 
-const retainConflictMarker = async (
+export const retainQualificationDistributedEvaluationConflict = async (
   bucket: QualificationOwnerResponseBucket,
   payload: QualificationOwnerWorkflowPayload,
   conflictingArtifactId: string,
@@ -184,6 +196,20 @@ const retainConflictMarker = async (
   });
 };
 
+export const retainQualificationExecutionRunCorpusOrConflict = async (
+  bucket: QualificationOwnerResponseBucket,
+  payload: QualificationOwnerWorkflowPayload,
+  input: Omit<Parameters<typeof retainQualificationExecutionRunCorpusReceipt>[0], "bucket">,
+) => {
+  try {
+    return await retainQualificationExecutionRunCorpusReceipt({ ...input, bucket });
+  } catch (cause) {
+    if (!(cause instanceof QualificationExecutionRunCorpusRetentionConflict)) throw cause;
+    await retainQualificationDistributedEvaluationConflict(bucket, payload, cause.artifactId);
+    throw cause;
+  }
+};
+
 export const authenticateQualificationDistributedEvaluationConflict = async (input: {
   readonly bucket: QualificationOwnerReportReadBucket;
   readonly executionId: string;
@@ -202,6 +228,7 @@ export const authenticateQualificationDistributedEvaluationConflict = async (inp
     const canonicalConflicts = new Set([
       qualificationDistributedEvaluationReportArtifactId(input.executionId),
       qualificationDistributedEvaluationReportCompletionArtifactId(input.executionId),
+      qualificationExecutionRunCorpusReceiptArtifactId(input.executionId),
       responseArtifactId(input.executionId),
     ]);
     if (
@@ -586,7 +613,7 @@ export const retainQualificationDistributedEvaluationOwnerResponse = async (
     return await retainDistributedEvaluationOwnerResponse(bucket, payload, input);
   } catch (cause) {
     if (!(cause instanceof DistributedEvaluationRetentionConflict)) throw cause;
-    await retainConflictMarker(bucket, payload, cause.artifactId);
+    await retainQualificationDistributedEvaluationConflict(bucket, payload, cause.artifactId);
     throw cause;
   }
 };
