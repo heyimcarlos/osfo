@@ -316,6 +316,7 @@ export const make = Effect.gen(function* () {
         format: admitted.request.format,
         intentDigest,
         owner: ownerFor(admitted),
+        ...qualificationContextFields(admitted.qualificationContext),
         retention: "pending",
         userId: admitted.userId,
       };
@@ -480,7 +481,27 @@ const sameIdentity = (
   artifact.allowancePeriodId === build.allowancePeriodId &&
   artifact.intentDigest === intentDigest &&
   artifact.format === build.request.format &&
+  sameQualificationContext(artifact.qualificationContext, build.qualificationContext) &&
   DocumentArtifact.sameOwner(artifact.owner, ownerFor(build));
+
+const sameQualificationContext = (
+  left: StoredArtifactMetadata["qualificationContext"],
+  right: DocumentBuild.Record["qualificationContext"],
+) =>
+  left === undefined || right === undefined
+    ? left === right
+    : left.attemptId === right.attemptId &&
+      left.executionId === right.executionId &&
+      left.journey === right.journey &&
+      left.offeredAtEpochMs === right.offeredAtEpochMs &&
+      left.planChecksum === right.planChecksum &&
+      left.region === right.region &&
+      left.rootId === right.rootId &&
+      left.runId === right.runId;
+
+const qualificationContextFields = (
+  qualificationContext: DocumentBuild.Record["qualificationContext"],
+) => (qualificationContext === undefined ? {} : { qualificationContext });
 
 const digestIntent = (build: DocumentBuild.Record) =>
   Schema.encodeEffect(

@@ -1,8 +1,10 @@
 import { Effect, Schema } from "effect";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import { AllowancePeriodId, UserId } from "../../domain";
 import type { ContentId } from "../../domain/client-content";
 import { DocumentArtifact } from "../../domain/document-artifact";
+import { QualificationContext } from "../../domain/qualification-context";
 import { DocumentArtifactValidation } from "./document-artifact-validation";
 import {
   ArtifactIntegrityFailure,
@@ -35,6 +37,7 @@ const Metadata = Schema.fromJsonString(
     format: DocumentArtifact.DocumentFormat,
     intentDigest: DocumentIntentDigest,
     owner: DocumentArtifact.DocumentOwner,
+    qualificationContext: Schema.optionalKey(QualificationContext),
     retention: Schema.Literals(["accounted", "pending"]),
     userId: UserId,
   }),
@@ -61,6 +64,7 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
       const accounted = yield* attempt("account", () =>
         bucket.put(contentKeyFor(contentId), bytes, {
           customMetadata: {
+            ...qualificationMetadata(metadata),
             osfo: encodeMetadata({
               ...metadata,
               bytes,
@@ -69,6 +73,7 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
           },
           httpMetadata: { contentType: metadata.artifact.content.mediaType },
           onlyIf: { etagMatches: object.etag },
+          sha256: hexToBytes(metadata.artifact.content.sha256),
         }),
       );
       if (accounted === null) {
@@ -84,6 +89,17 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
           return yield* integrityFailure(
             contentId,
             "Retained Client Content accounting did not complete",
+          );
+        }
+      } else {
+        const currentMetadata = yield* decodeMetadata(accounted, contentId);
+        if (
+          currentMetadata.retention !== "accounted" ||
+          !sameStoredArtifact(currentMetadata, metadata)
+        ) {
+          return yield* integrityFailure(
+            contentId,
+            "Retained Client Content accounting returned changed authority",
           );
         }
       }
@@ -110,10 +126,13 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
       );
       const result = yield* attempt("put", () =>
         bucket.put(contentKeyFor(content.contentId), stored.bytes, {
-          customMetadata: { osfo: encodeMetadata(stored) },
+          customMetadata: {
+            ...qualificationMetadata(stored),
+            osfo: encodeMetadata(stored),
+          },
           httpMetadata: { contentType: content.mediaType },
           onlyIf: { etagDoesNotMatch: "*" },
-          sha256: content.sha256,
+          sha256: hexToBytes(content.sha256),
         }),
       );
       if (result === null) {
@@ -127,6 +146,8 @@ export const make = (bucket: R2Bucket): ArtifactStore => ({
             message: "R2 already contains different Client Content for the owning identity",
           });
         }
+      } else {
+        yield* decodeMetadata(result, content.contentId);
       }
       return undefined;
     }),
@@ -160,6 +181,12 @@ const decodeMetadata = (object: R2Object, contentId: ContentId) =>
       return yield* integrityFailure(
         contentId,
         "The retained Client Content identity or bounded length does not match",
+      );
+    }
+    if (!qualificationObjectMatches(object, metadata)) {
+      return yield* integrityFailure(
+        contentId,
+        "The retained Client Content qualification identity or SHA-256 does not match",
       );
     }
     return metadata satisfies StoredArtifactMetadata;
@@ -228,6 +255,7 @@ const encodeMetadata = (stored: StoredArtifact) =>
     format: stored.format,
     intentDigest: stored.intentDigest,
     owner: stored.owner,
+    ...qualificationContextFields(stored.qualificationContext),
     retention: stored.retention,
     userId: stored.userId,
   });
@@ -253,6 +281,7 @@ const sameStoredArtifact = (left: StoredArtifactMetadata, right: StoredArtifactM
   left.artifact.content.sha256 === right.artifact.content.sha256 &&
   left.intentDigest === right.intentDigest &&
   left.userId === right.userId &&
+  sameQualificationContext(left.qualificationContext, right.qualificationContext) &&
   DocumentArtifact.sameOwner(left.owner, right.owner) &&
   sameCost(left.cost, right.cost);
 
@@ -266,5 +295,55 @@ const sameCost = (left: CostEvidence, right: CostEvidence) =>
       left.basis === right.basis &&
       left.providerOperationId === right.providerOperationId &&
       left.usdMicros === right.usdMicros);
+
+const qualificationMetadata = (stored: StoredArtifactMetadata) => {
+  const context = stored.qualificationContext;
+  if (context === undefined) return {};
+  return {
+    "osfo-sha256": stored.artifact.content.sha256,
+    osfoAttemptId: context.attemptId,
+    osfoExecutionId: context.executionId,
+    osfoObjectId: stored.artifact.content.contentId,
+    osfoPlanChecksum: context.planChecksum,
+    osfoRootId: context.rootId,
+    osfoRunId: context.runId,
+  };
+};
+
+const qualificationContextFields = (
+  qualificationContext: StoredArtifactMetadata["qualificationContext"],
+) => (qualificationContext === undefined ? {} : { qualificationContext });
+
+const qualificationObjectMatches = (object: R2Object, stored: StoredArtifactMetadata) => {
+  const context = stored.qualificationContext;
+  if (context === undefined) return true;
+  const metadata = object.customMetadata;
+  return (
+    object.checksums.sha256 !== undefined &&
+    bytesToHex(new Uint8Array(object.checksums.sha256)) === stored.artifact.content.sha256 &&
+    metadata?.["osfo-sha256"] === stored.artifact.content.sha256 &&
+    metadata.osfoAttemptId === context.attemptId &&
+    metadata.osfoExecutionId === context.executionId &&
+    metadata.osfoObjectId === stored.artifact.content.contentId &&
+    metadata.osfoPlanChecksum === context.planChecksum &&
+    metadata.osfoRootId === context.rootId &&
+    metadata.osfoRunId === context.runId
+  );
+};
+
+const sameQualificationContext = (
+  left: StoredArtifactMetadata["qualificationContext"],
+  right: StoredArtifactMetadata["qualificationContext"],
+) =>
+  left === undefined || right === undefined
+    ? left === right
+    : left.attemptId === right.attemptId &&
+      left.executionId === right.executionId &&
+      left.journey === right.journey &&
+      left.offeredAtEpochMs === right.offeredAtEpochMs &&
+      left.planChecksum === right.planChecksum &&
+      left.region === right.region &&
+      left.rootId === right.rootId &&
+      left.runId === right.runId;
 
 export * as DocumentArtifacts from "./document-artifacts";

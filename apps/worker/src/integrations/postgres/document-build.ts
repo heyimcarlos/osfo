@@ -37,6 +37,7 @@ import { ActionId } from "../../domain/action-execution";
 import { RecordedAllowanceUse } from "../../domain/allowance";
 import { ChannelAuthorId, ChannelId } from "../../domain/channel-link";
 import { ManagedModelRoute } from "../../domain/model-access-policy";
+import { QualificationContext } from "../../domain/qualification-context";
 import { DocumentBuild } from "../../services/document-build";
 import {
   AuthorizationContext,
@@ -71,6 +72,7 @@ const rowSelection = {
   modelRoute: documentBuilds.model_route,
   originatingAuthorityJson: documentBuilds.originating_authority_json,
   planPolicyVersion: documentBuilds.plan_policy_version,
+  qualificationContextJson: documentBuilds.qualification_context_json,
   previewStoredAt: documentBuilds.preview_stored_at,
   providerCostRecordedAt: documentBuilds.provider_cost_recorded_at,
   publicationCommittedAt: documentBuilds.publication_committed_at,
@@ -107,6 +109,7 @@ interface Row {
   readonly modelRoute: string;
   readonly originatingAuthorityJson: string;
   readonly planPolicyVersion: string;
+  readonly qualificationContextJson: string | null;
   readonly previewStoredAt: Date | null;
   readonly providerCostRecordedAt: Date | null;
   readonly publicationCommittedAt: Date | null;
@@ -153,6 +156,7 @@ const EncodedRecord = Schema.Struct({
   modelRoute: ManagedModelRoute,
   originatingAuthority: OriginatingAuthority,
   planPolicyVersion: PlanPolicyVersion,
+  qualificationContext: Schema.optionalKey(QualificationContext),
   previewStoredAt: Schema.NullOr(Schema.Date),
   providerCostRecordedAt: Schema.NullOr(Schema.Date),
   publicationCommittedAt: Schema.NullOr(Schema.Date),
@@ -227,6 +231,7 @@ export const make = (database: Database): DocumentBuild.PortInterface["persisten
           model_route: record.modelRoute,
           originating_authority_json: encodeAuthority(record.originatingAuthority),
           plan_policy_version: record.planPolicyVersion,
+          qualification_context_json: encodeQualificationContext(record.qualificationContext),
           preview_stored_at: record.previewStoredAt,
           provider_cost_recorded_at: record.providerCostRecordedAt,
           publication_committed_at: record.publicationCommittedAt,
@@ -279,7 +284,9 @@ export const make = (database: Database): DocumentBuild.PortInterface["persisten
             );
           return decodeRow(outcome.row).pipe(
             Effect.flatMap((build) =>
-              build.inputDigest === record.inputDigest && build.userId === record.userId
+              build.inputDigest === record.inputDigest &&
+              build.userId === record.userId &&
+              sameQualificationContext(build.qualificationContext, record.qualificationContext)
                 ? Effect.succeed({ _tag: outcome._tag, build } as const)
                 : Effect.fail(
                     conflict(
@@ -1243,10 +1250,20 @@ const decodeRow = (row: Row): Effect.Effect<DocumentBuild.Record, DocumentBuild.
             unavailable("decode", "Stored Document Build cost evidence is invalid", cause),
           ),
         );
+    const qualificationContext = yield* row.qualificationContextJson === null
+      ? Effect.succeed(null)
+      : Schema.decodeEffect(Schema.fromJsonString(QualificationContext))(
+          row.qualificationContextJson,
+        ).pipe(
+          Effect.mapError((cause) =>
+            unavailable("decode", "Stored Document Build qualification identity is invalid", cause),
+          ),
+        );
     return yield* Schema.decodeEffect(EncodedRecord)({
       ...row,
       costEvidence,
       originatingAuthority,
+      ...qualificationContextFields(qualificationContext),
       request,
     }).pipe(
       Effect.mapError((cause) =>
@@ -1263,6 +1280,29 @@ const encodeRequest = (request: DocumentBuild.StoredRequest) =>
 
 const encodeCost = (cost: CostEvidence | null) =>
   cost === null ? null : Schema.encodeSync(Schema.fromJsonString(CostEvidenceSchema))(cost);
+
+const encodeQualificationContext = (context: QualificationContext | undefined) =>
+  context === undefined
+    ? null
+    : Schema.encodeSync(Schema.fromJsonString(QualificationContext))(context);
+
+const sameQualificationContext = (
+  left: QualificationContext | undefined,
+  right: QualificationContext | undefined,
+) =>
+  left === undefined || right === undefined
+    ? left === right
+    : left.attemptId === right.attemptId &&
+      left.executionId === right.executionId &&
+      left.journey === right.journey &&
+      left.offeredAtEpochMs === right.offeredAtEpochMs &&
+      left.planChecksum === right.planChecksum &&
+      left.region === right.region &&
+      left.rootId === right.rootId &&
+      left.runId === right.runId;
+
+const qualificationContextFields = (qualificationContext: QualificationContext | null) =>
+  qualificationContext === null ? {} : { qualificationContext };
 
 const lock = (
   transaction: Parameters<Parameters<Database["transaction"]>[0]>[0],

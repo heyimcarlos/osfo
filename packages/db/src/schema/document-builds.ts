@@ -37,6 +37,7 @@ export const documentBuilds = pgTable(
     route_id: text().notNull(),
     session_id: text().notNull(),
     originating_authority_json: text().notNull(),
+    qualification_context_json: text(),
     input_digest: text().notNull(),
     request_json: text().notNull(),
     state: text({ enum: documentBuildStates }).notNull(),
@@ -82,6 +83,10 @@ export const documentBuilds = pgTable(
     uniqueIndex("document_builds_timer_instance_unique").on(table.cloudflare_timer_instance_id),
     index("document_builds_user_state_index").on(table.user_id, table.state),
     index("document_builds_deadline_index").on(table.state, table.deadline_at),
+    index("document_builds_qualification_root_index").on(
+      sql`(${table.qualification_context_json}::jsonb ->> 'executionId')`,
+      sql`(${table.qualification_context_json}::jsonb ->> 'rootId')`,
+    ),
     check(
       "document_builds_identity_check",
       sql`length(btrim(${table.workflow_id})) > 0
@@ -107,6 +112,7 @@ export const documentBuilds = pgTable(
       "document_builds_json_check",
       sql`jsonb_typeof(${table.originating_authority_json}::jsonb) = 'object'
         and jsonb_typeof(${table.request_json}::jsonb) = 'object'
+        and (${table.qualification_context_json} is null or jsonb_typeof(${table.qualification_context_json}::jsonb) = 'object')
         and (${table.cost_evidence_json} is null or jsonb_typeof(${table.cost_evidence_json}::jsonb) = 'object')`,
     ),
     check(

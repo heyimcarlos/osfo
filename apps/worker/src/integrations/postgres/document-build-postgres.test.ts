@@ -45,6 +45,17 @@ const admittedAt = new Date("2099-08-28T12:00:00.000Z");
 const userId = UserId.make("document-build-user");
 const allowancePeriodId = AllowancePeriodId.make("document-build-period");
 
+const qualificationContext = {
+  attemptId: "document-build-attempt",
+  executionId: "document-build-execution",
+  journey: "documentBuild" as const,
+  offeredAtEpochMs: admittedAt.getTime(),
+  planChecksum: "document-build-plan",
+  region: "americas" as const,
+  rootId: "document-build-root",
+  runId: "document-build-run",
+};
+
 it.effect("retains one exact request and serializes preview publication against cancellation", () =>
   Effect.gen(function* () {
     const fixture = yield* makeTestDatabase;
@@ -210,6 +221,7 @@ it.effect("retains one exact request and serializes preview publication against 
         user_id: userId,
       }),
     );
+
     expect(
       yield* DocumentBuildPostgres.quiesceForAccountDeletion(
         fixture.database,
@@ -231,6 +243,32 @@ it.effect("retains one exact request and serializes preview publication against 
         new Date("2099-08-28T12:00:10.000Z"),
       ),
     ).toMatchObject({ _tag: "Ready" });
+  }).pipe(Effect.scoped),
+);
+
+it.effect("retains immutable qualification identity and rejects changed-root replay", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedUser(fixture.database);
+    const persistence = DocumentBuildPostgres.make(fixture.database);
+    const exact = { ...record("e", "qualified"), qualificationContext };
+
+    expect(yield* persistence.admit(exact, 3n)).toMatchObject({
+      build: { qualificationContext },
+    });
+    expect(
+      yield* persistence
+        .admit(
+          {
+            ...exact,
+            qualificationContext: { ...qualificationContext, rootId: "different-root" },
+          },
+          3n,
+        )
+        .pipe(Effect.result),
+    ).toMatchObject({ failure: { _tag: "DocumentBuildConflict" } });
   }).pipe(Effect.scoped),
 );
 

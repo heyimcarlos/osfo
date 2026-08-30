@@ -14,6 +14,7 @@ import type {
   UsageConflict,
 } from "../domain/allowance";
 import { DocumentArtifact } from "../domain/document-artifact";
+import type { QualificationContext } from "../domain/qualification-context";
 import type { PlanPolicyNotFound } from "../domain/plan-policy";
 import type { AuthorizationContext, Denied, Interface as Authorization } from "./authorization";
 
@@ -128,6 +129,8 @@ export interface StoredArtifactMetadata {
   readonly format: DocumentArtifact.DocumentFormat;
   readonly intentDigest: DocumentIntentDigest;
   readonly owner: DocumentArtifact.DocumentOwner;
+  /** Server-owned qualification identity retained on the actual content object. */
+  readonly qualificationContext?: QualificationContext;
   /** Accounting state fences retained bytes until allowance evidence is durable. */
   readonly retention: "accounted" | "pending";
   readonly userId: UserId;

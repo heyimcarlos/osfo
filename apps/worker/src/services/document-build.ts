@@ -17,6 +17,7 @@ import { DocumentArtifact } from "../domain/document-artifact";
 import { FileDigest, FileMediaType } from "../domain/file-content";
 import { FileId } from "../domain/file";
 import type { ManagedModelRoute } from "../domain/model-access-policy";
+import type { QualificationContext } from "../domain/qualification-context";
 import {
   launchModelAccessPolicy,
   selectManagedRoute,
@@ -149,6 +150,7 @@ export interface Record {
   readonly routeId: ConversationRouteId;
   readonly sessionId: SessionId;
   readonly originatingAuthority: typeof OriginatingAuthority.Type;
+  readonly qualificationContext?: QualificationContext;
   readonly inputDigest: InputDigest;
   readonly request: StoredRequest;
   readonly state: State;
@@ -181,6 +183,7 @@ export interface StartInput {
   readonly actionId: ActionId;
   readonly agentId: AgentId;
   readonly authorization: AuthorizationContext;
+  readonly qualificationContext?: QualificationContext;
   readonly request: Request;
   readonly routeId: ConversationRouteId;
   readonly sessionId: SessionId;
@@ -890,6 +893,7 @@ export const make = Effect.gen(function* () {
       routeId: input.routeId,
       sessionId: input.sessionId,
       originatingAuthority: input.authorization.originatingAuthority,
+      ...qualificationContextFields(input.qualificationContext),
       inputDigest,
       request,
       state: "admitted",
@@ -1124,6 +1128,9 @@ type StartFailure = Conflict | Denied | NotFound | SourceRejected | Unavailable;
 const isWorkflowAcknowledgementFailure = (failure: StartFailure) =>
   Schema.is(Unavailable)(failure) &&
   (failure.operation === "workflow.create" || failure.operation === "workflow.reconcileCreate");
+
+const qualificationContextFields = (qualificationContext: QualificationContext | undefined) =>
+  qualificationContext === undefined ? {} : { qualificationContext };
 
 const digest = (value: string) =>
   Effect.promise(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))).pipe(
