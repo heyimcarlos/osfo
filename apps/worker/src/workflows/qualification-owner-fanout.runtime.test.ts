@@ -7,10 +7,12 @@ import {
   qualificationChecksum,
 } from "../qualification/qualification-checksum";
 import type {
+  QualificationEvaluationCorrectnessReducerWorkflowPayload,
   QualificationEvaluationLeafWorkflowPayload,
   QualificationOwnerPartitionWorkflowPayload,
 } from "../workflow-contracts";
 import { runQualificationOwnerWorkflow } from "./qualification-owner";
+import { runQualificationEvaluationCorrectnessReducer } from "./qualification-evaluation-correctness-reducer";
 
 const executionId = "owner-leaf-integration";
 const manifestChecksum = "manifest-checksum";
@@ -22,7 +24,10 @@ const sha256Hex = async (encoded: string) => {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 };
 
-const runtime = async (omitLeafCompletion: boolean) => {
+const runtime = async (
+  omitLeafCompletion: boolean,
+  partitionCreateResponse?: "partial" | "wrong",
+) => {
   const retained = new Map<
     string,
     { readonly customMetadata: Record<string, string>; readonly value: string }
@@ -107,6 +112,11 @@ const runtime = async (omitLeafCompletion: boolean) => {
   };
   const partitionPayloads = new Array<QualificationOwnerPartitionWorkflowPayload>();
   const leafPayloads = new Array<QualificationEvaluationLeafWorkflowPayload>();
+  const correctnessPayloads = new Array<QualificationEvaluationCorrectnessReducerWorkflowPayload>();
+  const correctnessInstances = new Map<
+    string,
+    { readonly id: string; readonly status: () => Promise<{ readonly status: "complete" }> }
+  >();
   const result = await runQualificationOwnerWorkflow({
     env: {
       ARTIFACTS: bucket,
@@ -170,6 +180,33 @@ const runtime = async (omitLeafCompletion: boolean) => {
           return batch.map(({ id }) => ({ id }));
         },
         get: (id) => Promise.resolve({ id }),
+      },
+      QUALIFICATION_EVALUATION_CORRECTNESS_REDUCER_WORKFLOW: {
+        createBatch: async (batch) => {
+          for (const { id, params } of batch) {
+            correctnessPayloads.push(params);
+            await runQualificationEvaluationCorrectnessReducer({
+              env: { ARTIFACTS: bucket },
+              payload: params,
+              step: { do: async (_name, callback) => structuredClone(await callback()) },
+            });
+            correctnessInstances.set(id, {
+              id,
+              status: () => Promise.resolve({ status: "complete" }),
+            });
+          }
+          return batch.map(({ id }) => {
+            const instance = correctnessInstances.get(id);
+            if (instance === undefined) throw new Error("Correctness instance is missing");
+            return instance;
+          });
+        },
+        get: (id) => {
+          const instance = correctnessInstances.get(id);
+          return instance === undefined
+            ? Promise.reject(new Error("Correctness instance is missing"))
+            : Promise.resolve(instance);
+        },
       },
       QUALIFICATION_OWNER_PARTITION_WORKFLOW: {
         createBatch: async (batch) => {
@@ -241,7 +278,10 @@ const runtime = async (omitLeafCompletion: boolean) => {
               "osfo-record-count": "1",
             });
           }
-          return batch.map(({ id }) => ({ id }));
+          const created = batch.map(({ id }) => ({ id }));
+          if (partitionCreateResponse === "partial") return created.slice(1);
+          if (partitionCreateResponse === "wrong") return [{ id: "foreign-partition-instance" }];
+          return created;
         },
         get: (id) => Promise.resolve({ id }),
       },
@@ -252,13 +292,14 @@ const runtime = async (omitLeafCompletion: boolean) => {
       sleepUntil: () => Promise.resolve(),
     },
   });
-  return { leafPayloads, partitionPayloads, result, retained };
+  return { correctnessPayloads, leafPayloads, partitionPayloads, result, retained };
 };
 
 it("fans authenticated partition inputs into leaves before stopping at the missing reducer", async () => {
   const result = await runtime(false);
   expect(result.partitionPayloads).toHaveLength(1);
   expect(result.leafPayloads).toHaveLength(1);
+  expect(result.correctnessPayloads).toHaveLength(1);
   expect(result.result).toEqual({ status: "MISSING" });
   expect(
     result.retained.get(`qualification/executions/${executionId}/owner-response.json`)?.value,
@@ -272,3 +313,12 @@ it("reports absent leaf completion material distinctly from the unbuilt reducer"
     result.retained.get(`qualification/executions/${executionId}/owner-response.json`)?.value,
   ).toContain('"missingSources":["qualification_evaluation_leaf_completions"]');
 });
+
+it.each(["partial", "wrong"] as const)(
+  "rejects a %s partition createBatch response",
+  async (partitionCreateResponse) => {
+    await expect(runtime(false, partitionCreateResponse)).rejects.toThrow(
+      "Qualification partition create response conflicts",
+    );
+  },
+);

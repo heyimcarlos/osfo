@@ -224,6 +224,13 @@ const retainedOwner = (
         executionId,
         manifestChecksum,
         planChecksum,
+        productAuthorityStreams: authoritySources.map((source) => ({
+          artifactPrefix: `qualification/executions/${executionId}/product-authority/${source}`,
+          chunkCount: 1,
+          recordCount: 1,
+          source,
+          terminalChecksum: qualificationChecksum({ executionId, source }),
+        })),
         streams,
       });
       const evaluationInputChecksum =
@@ -253,6 +260,13 @@ const retainedOwner = (
         manifestChecksum,
         ownerIdentity: "osfo-qualification-owner-v1" as const,
         planChecksum,
+        productAuthorityStreams: authoritySources.map((source) => ({
+          artifactPrefix: `qualification/executions/${executionId}/product-authority/${source}`,
+          chunkCount: 1,
+          recordCount: 1,
+          source,
+          terminalChecksum: qualificationChecksum({ executionId, source }),
+        })),
         reportArtifactChecksum: qualificationChecksum({ encodedReport }),
         reportArtifactId,
         streams,

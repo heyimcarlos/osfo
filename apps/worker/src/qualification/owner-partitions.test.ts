@@ -8,6 +8,9 @@ import { createQualificationExecutionPlan } from "./execution";
 import {
   qualificationOwnerPartitions,
   qualificationOwnerLeafFanoutBudget,
+  qualificationOwnerCorrectnessForestBudget,
+  qualificationOwnerCorrectnessLevelCounts,
+  qualificationOwnerPartitionPhaseBudget,
   qualificationLeafCompletionHorizonMs,
   qualificationLeafFanoutMaximumDurationMs,
   qualificationPartitionChunkLimit,
@@ -88,6 +91,54 @@ describe("qualification owner partitions", () => {
       expect(qualificationLeafFanoutMaximumDurationMs + qualificationLeafCompletionHorizonMs).toBe(
         20 * 60_000,
       );
+    },
+  );
+
+  it.each([
+    ["bounded beta", 613, [39, 3, 1], 5, 43, 6_525, 423, 780, 13_508],
+    ["scale-qualified public", 6_894, [431, 27, 2, 1], 31, 461, 69_687, 2_705, 4_933, 148_011],
+  ] as const)(
+    "keeps the exact %s correctness forest within owner limits",
+    (
+      _,
+      partitionCount,
+      levels,
+      launchPageCount,
+      reducerCount,
+      maximumSubrequests,
+      maximumDurableSteps,
+      maximumWorkflowOperations,
+      maximumCumulativeOwnerSubrequests,
+    ) => {
+      expect(qualificationOwnerCorrectnessLevelCounts(partitionCount)).toEqual(levels);
+      expect(qualificationOwnerCorrectnessForestBudget(partitionCount)).toEqual({
+        deadlineMs: 24 * 60 * 60_000,
+        launchPageCount,
+        levelCounts: levels,
+        maximumCumulativeOwnerSubrequests,
+        maximumDurableSteps,
+        maximumSubrequests,
+        maximumWorkflowOperations,
+        pollCount: 72,
+        pollIntervalMs: 20 * 60_000,
+        reducerCount,
+      });
+      expect(maximumSubrequests).toBeLessThanOrEqual(250_000 * 0.7);
+      expect(maximumCumulativeOwnerSubrequests).toBeLessThanOrEqual(250_000 * 0.7);
+      expect(maximumDurableSteps).toBeLessThan(10_000);
+    },
+  );
+
+  it.each([
+    ["bounded beta", 613, 13, 2_532],
+    ["scale-qualified public", 6_894, 138, 28_406],
+  ] as const)(
+    "freezes the complete %s pre-leaf owner budget",
+    (_, partitions, batches, maximum) => {
+      expect(qualificationOwnerPartitionPhaseBudget(partitions)).toEqual({
+        batchCount: batches,
+        maximumSubrequests: maximum,
+      });
     },
   );
 });

@@ -65,6 +65,23 @@ interface VerifiedChild {
   readonly root: RootDescriptor;
 }
 
+export interface AuthenticatedQualificationEvaluationCorrectnessReceipt {
+  readonly acceptedCount: number;
+  readonly artifactId: string;
+  readonly checksum: string;
+  readonly firstPartitionIndex: number;
+  readonly index: number;
+  readonly inputReceiptChainDigest: string;
+  readonly lastPartitionIndex: number;
+  readonly level: number;
+  readonly rootCount: number;
+  readonly rootReceiptArtifactId: string;
+  readonly rootReceiptChecksum: string;
+  readonly summaryArtifactId: string;
+  readonly summaryChecksum: string;
+  readonly verdict: "FAIL" | "MISSING" | "PASS";
+}
+
 interface RootCursor {
   readonly consumedCount: number;
   readonly previousRootId: string | null;
@@ -586,6 +603,44 @@ const readCorrectnessChild = async (input: {
     firstPartitionIndex: receipt.firstPartitionIndex,
     lastPartitionIndex: receipt.lastPartitionIndex,
     root: rootDescriptor,
+  };
+};
+
+/** Authenticate a retained correctness node and its compact root/summary authority. */
+export const authenticateQualificationEvaluationCorrectnessReceipt = async (input: {
+  readonly bucket: QualificationEvaluationArtifactBucket;
+  readonly executionId: string;
+  readonly expectedLevel: number;
+  readonly planChecksum: string;
+  readonly reference: QualificationEvaluationCorrectnessReducerWorkflowPayload["inputs"][number];
+}): Promise<AuthenticatedQualificationEvaluationCorrectnessReceipt | null> => {
+  const child = await readCorrectnessChild(input);
+  if (child === null) return null;
+  const retained = await input.bucket.get(input.reference.artifactId);
+  if (retained === null) return null;
+  let receipt: typeof QualificationEvaluationCorrectnessReceipt.Type;
+  try {
+    receipt = Schema.decodeSync(Schema.fromJsonString(QualificationEvaluationCorrectnessReceipt))(
+      await retained.text(),
+    );
+  } catch {
+    return null;
+  }
+  return {
+    acceptedCount: receipt.rootAccumulator.acceptedCount,
+    artifactId: receipt.artifactId,
+    checksum: receipt.checksum,
+    firstPartitionIndex: receipt.firstPartitionIndex,
+    index: receipt.index,
+    inputReceiptChainDigest: receipt.inputReceiptChainDigest,
+    lastPartitionIndex: receipt.lastPartitionIndex,
+    level: receipt.level,
+    rootCount: receipt.rootAccumulator.rootCount,
+    rootReceiptArtifactId: receipt.rootAccumulator.artifactId,
+    rootReceiptChecksum: receipt.rootAccumulator.checksum,
+    summaryArtifactId: receipt.findingSummaryArtifactId,
+    summaryChecksum: receipt.findingSummaryArtifactChecksum,
+    verdict: receipt.verdict,
   };
 };
 

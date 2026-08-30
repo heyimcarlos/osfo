@@ -17,6 +17,7 @@ import {
   qualificationChecksum,
 } from "../qualification/qualification-checksum";
 import type {
+  QualificationEvaluationCorrectnessReducerWorkflowPayload,
   QualificationEvaluationLeafWorkflowPayload,
   QualificationOwnerPartitionWorkflowPayload,
   QualificationOwnerWorkflowPayload,
@@ -29,6 +30,10 @@ import {
   retainQualificationEvaluationLeafLaunchPage,
   runQualificationOwnerLeafFanout,
 } from "./qualification-owner-leaves";
+import {
+  createOrReconcileQualificationWorkflowBatch,
+  runQualificationOwnerCorrectnessForest,
+} from "./qualification-owner-correctness";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-await-in-loop, eslint/no-underscore-dangle -- Cloudflare Workflow APIs are Promise-only host boundaries; source polling must run as ordered, durable, uniquely named tagged steps. */
 
@@ -52,6 +57,45 @@ interface QualificationOwnerWorkflowEnv {
       }>,
     ) => Promise<ReadonlyArray<{ readonly id: string }>>;
     readonly get: (id: string) => Promise<{ readonly id: string }>;
+  };
+  readonly QUALIFICATION_EVALUATION_CORRECTNESS_REDUCER_WORKFLOW: {
+    readonly createBatch: (
+      batch: ReadonlyArray<{
+        readonly id: string;
+        readonly params: QualificationEvaluationCorrectnessReducerWorkflowPayload;
+      }>,
+    ) => Promise<
+      ReadonlyArray<{
+        readonly id: string;
+        readonly status: () => Promise<{
+          readonly status:
+            | "complete"
+            | "errored"
+            | "paused"
+            | "queued"
+            | "running"
+            | "terminated"
+            | "unknown"
+            | "waiting"
+            | "waitingForPause";
+        }>;
+      }>
+    >;
+    readonly get: (id: string) => Promise<{
+      readonly id: string;
+      readonly status: () => Promise<{
+        readonly status:
+          | "complete"
+          | "errored"
+          | "paused"
+          | "queued"
+          | "running"
+          | "terminated"
+          | "unknown"
+          | "waiting"
+          | "waitingForPause";
+      }>;
+    }>;
   };
 }
 
@@ -737,16 +781,17 @@ export const runQualificationOwnerWorkflow = async (input: {
           sourceVersion: request.sourceVersion,
         },
       }));
-      try {
-        await input.env.QUALIFICATION_OWNER_PARTITION_WORKFLOW.createBatch(instances);
-      } catch (cause) {
-        try {
-          await Promise.all(
-            instances.map(({ id }) => input.env.QUALIFICATION_OWNER_PARTITION_WORKFLOW.get(id)),
-          );
-        } catch {
-          throw cause;
-        }
+      const created = await createOrReconcileQualificationWorkflowBatch({
+        batch: instances,
+        createBatch: input.env.QUALIFICATION_OWNER_PARTITION_WORKFLOW.createBatch.bind(
+          input.env.QUALIFICATION_OWNER_PARTITION_WORKFLOW,
+        ),
+        get: input.env.QUALIFICATION_OWNER_PARTITION_WORKFLOW.get.bind(
+          input.env.QUALIFICATION_OWNER_PARTITION_WORKFLOW,
+        ),
+      });
+      if (created.status === "CONFLICT") {
+        throw new Error("Qualification partition create response conflicts");
       }
       return { count: instances.length };
     });
@@ -813,6 +858,28 @@ export const runQualificationOwnerWorkflow = async (input: {
     await input.step.do("retain missing qualification leaf completions", async () => {
       await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
         "qualification_evaluation_leaf_completions",
+      ]);
+      return { retained: true };
+    });
+    return { status: "MISSING" };
+  }
+  const correctness = await runQualificationOwnerCorrectnessForest({
+    env: input.env,
+    leaf: leafCompletion,
+    payload: input.payload,
+    step: input.step,
+  });
+  if (correctness.status === "FAIL") {
+    await input.step.do("retain failed qualification correctness forest", async () => {
+      await retainFailedQualificationReport(input.env.ARTIFACTS, input.payload, [correctness.code]);
+      return { retained: true };
+    });
+    return { status: "COMPLETE", verdict: "FAIL" };
+  }
+  if (correctness.status === "MISSING") {
+    await input.step.do("retain missing qualification correctness forest", async () => {
+      await retainMissingQualificationReport(input.env.ARTIFACTS, input.payload, [
+        correctness.code,
       ]);
       return { retained: true };
     });

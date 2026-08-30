@@ -173,10 +173,12 @@ const completionPrefix = (executionId: string) =>
   `qualification/executions/${encodeURIComponent(executionId)}/evaluation-leaf-completions`;
 const completionArtifactId = (executionId: string, partitionIndex: number) =>
   `${completionPrefix(executionId)}/${padded(partitionIndex)}.json`;
-const joinPagePrefix = (executionId: string) =>
+export const qualificationEvaluationLeafJoinPagePrefix = (executionId: string) =>
   `qualification/executions/${encodeURIComponent(executionId)}/evaluation-leaf-completion-pages`;
-const joinPageArtifactId = (executionId: string, pageIndex: number) =>
-  `${joinPagePrefix(executionId)}/${padded(pageIndex)}.json`;
+export const qualificationEvaluationLeafJoinPageArtifactId = (
+  executionId: string,
+  pageIndex: number,
+) => `${qualificationEvaluationLeafJoinPagePrefix(executionId)}/${padded(pageIndex)}.json`;
 
 const sha256Hex = async (encoded: string) => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
@@ -507,7 +509,10 @@ const joinPage = async (input: {
       (total, reference) => total + reference.acceptedCount,
       0,
     ),
-    artifactId: joinPageArtifactId(input.payload.executionId, input.pageIndex),
+    artifactId: qualificationEvaluationLeafJoinPageArtifactId(
+      input.payload.executionId,
+      input.pageIndex,
+    ),
     completeOutcomeCount: input.references.filter(({ outcome }) => outcome === "COMPLETE").length,
     executionId: input.payload.executionId,
     expectedFirstPartitionIndex: input.launchPage.firstPartitionIndex,
@@ -546,6 +551,78 @@ const joinPage = async (input: {
       "osfo-record-count": String(page.references.length),
     },
   });
+  return page;
+};
+
+/** Authenticate one exact leaf-completion join page before any reducer is launched. */
+export const authenticateQualificationEvaluationLeafJoinPage = async (input: {
+  readonly bucket: QualificationOwnerLeafBucket;
+  readonly expectedPreviousChecksum: string;
+  readonly pageIndex: number;
+  readonly payload: QualificationOwnerWorkflowPayload;
+}) => {
+  const artifactId = qualificationEvaluationLeafJoinPageArtifactId(
+    input.payload.executionId,
+    input.pageIndex,
+  );
+  const retained = await input.bucket.get(artifactId);
+  if (retained === null) return null;
+  const encoded = await retained.text();
+  let page: typeof QualificationEvaluationLeafCompletionJoinPage.Type;
+  try {
+    page = Schema.decodeSync(Schema.fromJsonString(QualificationEvaluationLeafCompletionJoinPage))(
+      encoded,
+    );
+  } catch {
+    return null;
+  }
+  const expectedCount = page.expectedLastPartitionIndex - page.expectedFirstPartitionIndex + 1;
+  if (
+    !authenticChecksum(page) ||
+    page.artifactId !== artifactId ||
+    page.executionId !== input.payload.executionId ||
+    page.manifestChecksum !== input.payload.manifestChecksum ||
+    page.pageIndex !== input.pageIndex ||
+    page.planChecksum !== input.payload.planChecksum ||
+    page.previousPageChecksum !== input.expectedPreviousChecksum ||
+    !Number.isSafeInteger(expectedCount) ||
+    expectedCount <= 0 ||
+    page.references.length + page.missingCompletionCount !== expectedCount ||
+    page.references.some(
+      ({ partitionIndex }, index) =>
+        partitionIndex < page.expectedFirstPartitionIndex ||
+        partitionIndex > page.expectedLastPartitionIndex ||
+        (index > 0 && partitionIndex <= (page.references[index - 1]?.partitionIndex ?? -1)),
+    ) ||
+    page.acceptedCount !==
+      page.references.reduce((total, reference) => total + reference.acceptedCount, 0) ||
+    page.rootCount !==
+      page.references.reduce((total, reference) => total + reference.rootCount, 0) ||
+    page.completeOutcomeCount !==
+      page.references.filter(({ outcome }) => outcome === "COMPLETE").length ||
+    page.failOutcomeCount !== page.references.filter(({ outcome }) => outcome === "FAIL").length ||
+    page.outcomeMissingCount !==
+      page.references.filter(({ outcome }) => outcome === "MISSING").length ||
+    page.observedFirstPartitionIndex !== (page.references[0]?.partitionIndex ?? null) ||
+    page.observedLastPartitionIndex !== (page.references.at(-1)?.partitionIndex ?? null) ||
+    !exactMetadata(retained.customMetadata, {
+      "osfo-artifact-checksum": page.checksum,
+      "osfo-body-sha256": await sha256Hex(encoded),
+      "osfo-execution-id": input.payload.executionId,
+      "osfo-expected-first-partition-index": String(page.expectedFirstPartitionIndex),
+      "osfo-expected-last-partition-index": String(page.expectedLastPartitionIndex),
+      "osfo-index": String(input.pageIndex),
+      "osfo-kind": "qualification-evaluation-leaf-completion-page-v1",
+      "osfo-launch-page-checksum": page.launchPageChecksum,
+      "osfo-manifest-checksum": input.payload.manifestChecksum,
+      "osfo-missing-completion-count": String(page.missingCompletionCount),
+      "osfo-plan-checksum": input.payload.planChecksum,
+      "osfo-previous-checksum": input.expectedPreviousChecksum,
+      "osfo-record-count": String(page.references.length),
+    })
+  ) {
+    return null;
+  }
   return page;
 };
 
