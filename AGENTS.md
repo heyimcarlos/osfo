@@ -40,9 +40,6 @@ Repositories under `.reference/` are read-only reference material.
 - `packages/db`: private PostgreSQL schema, migrations, Drizzle construction,
   and database test support. Keep Cloudflare bindings, Effect integration,
   typed application failures, and product operations in `apps/worker`.
-- `packages/model-quality`: framework-neutral deterministic model-quality policy
-  exposed through its supported facade. Callers supply time, configuration,
-  evidence, and provider results; the package performs no provider I/O.
 - `apps/worker`: Osfo product behavior, Cloudflare runtime composition, provider
   adapters, and authority-specific PostgreSQL, Agent SQLite, and R2 modules.
 - `apps/web`: Osfo-specific web behavior and the browser composition root.
