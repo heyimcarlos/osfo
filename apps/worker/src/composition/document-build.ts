@@ -1,4 +1,4 @@
-import { DateTime, Effect, Layer, Schema } from "effect";
+import { Clock, DateTime, Effect, Layer, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
@@ -416,6 +416,12 @@ const makePendingArtifactDiscarder = (
   Effect.fn("DocumentBuildComposition.discardPendingArtifact")(function* (build) {
     const contentId = ContentId.make(`document:workflow:${build.workflowId}`);
     const artifacts = DocumentArtifacts.make(bucket);
+    const qualificationIntentDigest =
+      build.qualificationContext === undefined
+        ? undefined
+        : yield* DocumentBuildDocument.qualificationDocumentIntentDigest(build);
+    const qualificationSettledAtEpochMs =
+      build.qualificationContext === undefined ? undefined : yield* Clock.currentTimeMillis;
     const { DocumentCompute } = yield* Effect.promise(
       () => import("../integrations/cloudflare/document-compute"),
     );
@@ -429,6 +435,16 @@ const makePendingArtifactDiscarder = (
           bucket,
           contentId,
           build.userId,
+          build.qualificationContext === undefined ||
+            qualificationIntentDigest === undefined ||
+            qualificationSettledAtEpochMs === undefined
+            ? undefined
+            : {
+                claimedAtEpochMs: qualificationSettledAtEpochMs,
+                context: build.qualificationContext,
+                intentDigest: qualificationIntentDigest,
+                workflowId: build.workflowId,
+              },
         ).pipe(
           Effect.mapError((cause) => documentBuildUnavailable("artifact.discard.attempt", cause)),
         ),
@@ -451,7 +467,10 @@ interface PendingArtifactCleanupPorts {
   readonly deleteArtifactBytes: (
     artifact: StoredArtifactMetadata,
   ) => Effect.Effect<void, DocumentBuild.Unavailable>;
-  readonly settleAttempt: () => Effect.Effect<"discarded" | "preserved", DocumentBuild.Unavailable>;
+  readonly settleAttempt: () => Effect.Effect<
+    "discarded" | "notRequired" | "preserved",
+    DocumentBuild.Unavailable
+  >;
   readonly dispose: () => Effect.Effect<void, DocumentBuild.Unavailable>;
   readonly inspectArtifact: () => Effect.Effect<
     StoredArtifactMetadata | null,

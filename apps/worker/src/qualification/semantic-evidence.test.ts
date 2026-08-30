@@ -1,8 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
+import { Option, Schema } from "effect";
 
 import { qualificationChecksum } from "./qualification-checksum";
 import {
   assessSemanticEvidence,
+  ProductAuthorityExportBoundary,
+  productEvidenceFromAuthorityExport,
   type ProductAuthorityExport,
   type RootSemanticTrace,
   type SemanticEvidenceInput,
@@ -39,6 +42,108 @@ const authorityExport = (
     sourceVersion,
   };
 };
+
+it("accepts direct Document Build compute without inventing a scheduled task correlation", () => {
+  const artifact = authorityExport("task_compute_receipts", [
+    {
+      effectReceipts: [],
+      executionStatus: "completed",
+      occurredAt: "2026-08-17T12:00:00.010Z",
+      productFactId: "document-compute:document:workflow:workflow-1:completed",
+      rootId: "message-1",
+      stageOccurrences: [],
+      taskExecutionId: "document-compute:document:workflow:workflow-1",
+      taskKind: "directDocumentBuild",
+      taskOutcomeId: "document-compute:workflow-1:completed",
+      usageFacts: [],
+      workflowId: "workflow-1",
+    },
+  ]);
+
+  const decoded = Schema.decodeOption(ProductAuthorityExportBoundary)(artifact);
+  expect(Option.isSome(decoded)).toBe(true);
+  expect(productEvidenceFromAuthorityExport(artifact)).toEqual([
+    expect.objectContaining({
+      component: "TaskCompute",
+      correlations: {},
+      terminalFact: true,
+    }),
+  ]);
+});
+
+it("retains an explicit direct Document Build no-compute obligation as terminal failure evidence", () => {
+  const artifact = authorityExport("task_compute_receipts", [
+    {
+      effectReceipts: [],
+      occurredAt: "2026-08-17T12:00:00.010Z",
+      productFactId: "document-compute:document:workflow:workflow-1:not-required",
+      rootId: "message-1",
+      stageOccurrences: [],
+      taskKind: "directDocumentBuild",
+      taskObligation: "notRequired",
+      taskOutcomeId: "document-compute:workflow-1:not-required",
+      terminalStatus: "aborted",
+      usageFacts: [],
+      workflowId: "workflow-1",
+    },
+  ]);
+
+  const decoded = Schema.decodeOption(ProductAuthorityExportBoundary)(artifact);
+  expect(Option.isSome(decoded)).toBe(true);
+  expect(productEvidenceFromAuthorityExport(artifact)).toEqual([
+    expect.objectContaining({
+      component: "TaskCompute",
+      correlations: {},
+      terminalFact: false,
+    }),
+  ]);
+});
+
+it("keeps the Model Access outcome authoritative beside direct Document Build compute", () => {
+  const modelAccess = authorityExport("model_access_receipts", [
+    {
+      costReconciliationId: "cost-1",
+      effectReceipts: [],
+      modelRequestId: "model-request-1",
+      occurredAt: "2026-08-17T12:00:00.010Z",
+      outcomeId: "model-outcome-1",
+      priceBookId: "price-book-1",
+      productFactId: "model-fact-1",
+      requestStatus: "completed",
+      rootId: "message-1",
+      stageOccurrences: [],
+      usageFacts: [],
+    },
+  ]);
+  const taskCompute = authorityExport("task_compute_receipts", [
+    {
+      effectReceipts: [],
+      executionStatus: "completed",
+      occurredAt: "2026-08-17T12:00:00.020Z",
+      productFactId: "document-compute-fact-1",
+      rootId: "message-1",
+      stageOccurrences: [],
+      taskExecutionId: "document-compute-execution-1",
+      taskKind: "directDocumentBuild",
+      taskOutcomeId: "document-compute-outcome-1",
+      usageFacts: [],
+      workflowId: "document-workflow-1",
+    },
+  ]);
+
+  const records = [modelAccess, taskCompute].flatMap(productEvidenceFromAuthorityExport);
+  expect(records.map(({ component, correlations }) => ({ component, correlations }))).toEqual([
+    {
+      component: "ModelAccess",
+      correlations: {
+        costReconciliationId: "cost-1",
+        outcomeId: "model-outcome-1",
+        priceBookId: "price-book-1",
+      },
+    },
+    { component: "TaskCompute", correlations: {} },
+  ]);
+});
 
 type UnitAuthority =
   | "provider_delivery_receipts"

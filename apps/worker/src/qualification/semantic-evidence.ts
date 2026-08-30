@@ -344,6 +344,20 @@ type ProductAuthorityExportRecord =
       readonly scheduledTaskId: string;
       readonly taskExecutionId: string;
       readonly executionStatus: "completed" | "failed";
+    })
+  | (ProductExportRecordBase & {
+      readonly taskExecutionId: string;
+      readonly taskKind: "directDocumentBuild";
+      readonly taskOutcomeId: string;
+      readonly workflowId: string;
+      readonly executionStatus: "completed" | "failed";
+    })
+  | (ProductExportRecordBase & {
+      readonly taskKind: "directDocumentBuild";
+      readonly taskObligation: "notRequired";
+      readonly taskOutcomeId: string;
+      readonly terminalStatus: "aborted" | "error";
+      readonly workflowId: string;
     });
 
 /** Immutable authority-specific export retained from one owning production component. */
@@ -557,13 +571,31 @@ export const ProductAuthorityExportBoundary = Schema.Union([
   ),
   productAuthorityExportBoundary(
     "task_compute_receipts",
-    Schema.Struct({
-      ...ProductExportRecordBaseBoundary,
-      outcomeId: QualificationId,
-      scheduledTaskId: QualificationId,
-      taskExecutionId: QualificationId,
-      executionStatus: Schema.Literals(["completed", "failed"]),
-    }),
+    Schema.Union([
+      Schema.Struct({
+        ...ProductExportRecordBaseBoundary,
+        outcomeId: QualificationId,
+        scheduledTaskId: QualificationId,
+        taskExecutionId: QualificationId,
+        executionStatus: Schema.Literals(["completed", "failed"]),
+      }),
+      Schema.Struct({
+        ...ProductExportRecordBaseBoundary,
+        taskExecutionId: QualificationId,
+        taskKind: Schema.Literal("directDocumentBuild"),
+        taskOutcomeId: QualificationId,
+        workflowId: QualificationId,
+        executionStatus: Schema.Literals(["completed", "failed"]),
+      }),
+      Schema.Struct({
+        ...ProductExportRecordBaseBoundary,
+        taskKind: Schema.Literal("directDocumentBuild"),
+        taskObligation: Schema.Literal("notRequired"),
+        taskOutcomeId: QualificationId,
+        terminalStatus: Schema.Literals(["aborted", "error"]),
+        workflowId: QualificationId,
+      }),
+    ]),
   ),
 ]);
 
@@ -853,13 +885,17 @@ export const productEvidenceFromAuthorityExport = (
         );
     case "task_compute_receipts":
       return artifact.records
-        .filter((record) => "taskExecutionId" in record)
+        .filter((record) => "taskExecutionId" in record || "taskObligation" in record)
         .map((record) =>
-          base(
-            record,
-            { outcomeId: record.outcomeId, scheduledTaskId: record.scheduledTaskId },
-            record.executionStatus === "completed",
-          ),
+          "taskObligation" in record
+            ? base(record, {}, false)
+            : "scheduledTaskId" in record
+              ? base(
+                  record,
+                  { outcomeId: record.outcomeId, scheduledTaskId: record.scheduledTaskId },
+                  record.executionStatus === "completed",
+                )
+              : base(record, {}, record.executionStatus === "completed"),
         );
   }
   return [];

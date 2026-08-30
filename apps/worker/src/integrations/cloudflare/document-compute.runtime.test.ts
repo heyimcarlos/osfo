@@ -56,6 +56,7 @@ it.effect("rechecks protected-effect authority before every attempt-evidence R2 
       events.push("complete");
       return true;
     },
+    fail: async () => true,
     inspect: async () => null,
     reclaim: async () => null,
     start: async () => {
@@ -122,6 +123,7 @@ it.effect("reports proven no use when authority ends before the atomic start tra
       return { _tag: "Claimed", created: true, evidence, revision: "revision-1" };
     },
     complete: async () => true,
+    fail: async () => true,
     inspect: async () => null,
     reclaim: async () => null,
     start: async () => {
@@ -361,6 +363,11 @@ const recoveryFixture = (
       if (options.completeLoses === true) return false;
       evidence = completed;
       revision = "revision-completed";
+      return true;
+    },
+    fail: async (_contentId, failed) => {
+      evidence = failed;
+      revision = "revision-failed";
       return true;
     },
     inspect: async () => evidence,

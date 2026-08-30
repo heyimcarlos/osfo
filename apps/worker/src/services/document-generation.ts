@@ -258,6 +258,10 @@ export interface DisposableCompute {
     readonly contentId: ContentId;
     readonly format: DocumentArtifact.DocumentFormat;
     readonly intentDigest: DocumentIntentDigest;
+    readonly qualification?: {
+      readonly context: QualificationContext;
+      readonly workflowId: string;
+    };
     readonly authorizeWrite: Effect.Effect<void, Denied | DocumentAuthorizationUnavailable>;
     readonly source: DocumentSource;
     readonly supportingVisuals: ReadonlyArray<{

@@ -158,7 +158,7 @@ export const make = Effect.gen(function* () {
     const contentId = contentIdFor(build);
     const existing = yield* inspect(ports, contentId);
     if (existing !== null) {
-      if (!sameIdentity(existing, build, yield* digestIntent(build))) {
+      if (!sameIdentity(existing, build, yield* qualificationDocumentIntentDigest(build))) {
         return yield* unavailable(
           "inspect",
           "The canceled Document Build artifact owns different immutable facts",
@@ -175,7 +175,7 @@ export const make = Effect.gen(function* () {
     admitted: DocumentBuild.Record,
   ) {
     const contentId = contentIdFor(admitted);
-    const intentDigest = yield* digestIntent(admitted);
+    const intentDigest = yield* qualificationDocumentIntentDigest(admitted);
     const existing = yield* inspect(ports, contentId);
     if (existing !== null) {
       if (!sameIdentity(existing, admitted, intentDigest)) {
@@ -215,7 +215,7 @@ export const make = Effect.gen(function* () {
             }),
         ),
       );
-      const computed = yield* ports.compute.generate({
+      const computeInput = {
         allowancePeriodId: admitted.allowancePeriodId,
         authorizeWrite,
         contentId,
@@ -224,7 +224,18 @@ export const make = Effect.gen(function* () {
         source: admitted.request.source,
         supportingVisuals: [],
         userId: admitted.userId,
-      });
+      };
+      const computed = yield* ports.compute.generate(
+        admitted.qualificationContext === undefined
+          ? computeInput
+          : {
+              ...computeInput,
+              qualification: {
+                context: admitted.qualificationContext,
+                workflowId: admitted.workflowId,
+              },
+            },
+      );
       if (Predicate.isTagged(computed, "AuthorizationFailure")) {
         if (computed.cost._tag === "Incurred") {
           yield* ports.recordProviderCost(admitted, contentId, computed.cost);
@@ -366,7 +377,7 @@ export const make = Effect.gen(function* () {
         "recoveryPending",
       );
     }
-    if (!sameIdentity(existing, build, yield* digestIntent(build))) {
+    if (!sameIdentity(existing, build, yield* qualificationDocumentIntentDigest(build))) {
       return yield* unavailable(
         "inspect",
         "The published Document Build artifact owns changed immutable facts",
@@ -503,7 +514,8 @@ const qualificationContextFields = (
   qualificationContext: DocumentBuild.Record["qualificationContext"],
 ) => (qualificationContext === undefined ? {} : { qualificationContext });
 
-const digestIntent = (build: DocumentBuild.Record) =>
+/** Canonical immutable input identity shared with the qualification compute authority. */
+export const qualificationDocumentIntentDigest = (build: DocumentBuild.Record) =>
   Schema.encodeEffect(
     Schema.fromJsonString(
       Schema.Struct({

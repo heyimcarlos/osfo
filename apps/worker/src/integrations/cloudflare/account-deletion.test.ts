@@ -675,6 +675,37 @@ it.effect("rechecks authority after R2 discovery and before delete", () => {
     );
 });
 
+it.effect("discovers qualification no-compute evidence from its embedded User identity", () => {
+  const deleted: Array<string> = [];
+  const userId = UserId.make("qualification-no-compute-user");
+  const contentId = ContentId.make("document:workflow:qualification-no-compute");
+  const attemptKey = attemptKeyFor(contentId);
+  const files = bucketStub({ deleted });
+  const artifacts = bucketStub({
+    deleted,
+    objectsByPrefix: {
+      [documentAttemptPrefix]: [
+        {
+          customMetadata: {
+            osfo: JSON.stringify({
+              cost: { _tag: "ProvenNoUse" },
+              intentDigest: "a".repeat(64),
+              qualification: { context: { rootId: "qualification-root" } },
+              status: "notRequired",
+              userId,
+            }),
+          },
+          key: attemptKey,
+        },
+      ],
+    },
+  });
+
+  return make(files, artifacts, () => deletionEvidence())
+    .remove(userId, Effect.void)
+    .pipe(Effect.tap(() => Effect.sync(() => expect(deleted).toEqual([attemptKey]))));
+});
+
 const bucketStub = (options: {
   readonly bodiesByKey?: Readonly<Record<string, string>>;
   readonly deleted: Array<string>;

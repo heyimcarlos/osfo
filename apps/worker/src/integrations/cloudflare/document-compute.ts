@@ -6,6 +6,9 @@ import { Clock, Effect, Random, Result, Schema } from "effect";
 import { ContentId } from "../../domain/client-content";
 import { AllowancePeriodId, UserId } from "../../domain";
 import { DocumentArtifact } from "../../domain/document-artifact";
+import { QualificationContext, sameQualificationContext } from "../../domain/qualification-context";
+import type { QualificationContext as QualificationContextValue } from "../../domain/qualification-context";
+import { qualificationChecksum } from "../../qualification/qualification-checksum";
 import type { Denied } from "../../services/authorization";
 import {
   DocumentSource,
@@ -27,8 +30,34 @@ export interface ActiveAttemptEvidence {
   /** Digest of the immutable document intent that owns this attempt. */
   readonly intentDigest: DocumentIntentDigest;
   readonly renderedPageCount: number | null;
-  readonly status: "claimed" | "recovery" | "started" | "completed";
+  readonly status: "claimed" | "recovery" | "started" | "completed" | "failed";
+  readonly qualification?: QualificationAttemptEvidence;
   readonly userId?: UserId;
+}
+
+/** Exact producer identity retained only for qualification-owned Document Compute work. */
+export interface QualificationAttemptEvidence {
+  readonly artifactChecksum: string;
+  readonly claimedAtEpochMs: number;
+  readonly completedAtEpochMs: number | null;
+  readonly contentId: ContentId;
+  readonly context: QualificationContextValue;
+  readonly evidenceVersion: "document-compute-attempt-v2";
+  readonly failedAtEpochMs: number | null;
+  readonly startedAtEpochMs: number | null;
+  readonly taskExecutionId: string;
+  readonly taskOutcomeId: string | null;
+  readonly workflowId: string;
+}
+
+export interface QualificationAttemptInput {
+  readonly claimedAtEpochMs: number;
+  readonly context: QualificationContextValue;
+  readonly workflowId: string;
+}
+
+export interface QualificationNoComputeInput extends QualificationAttemptInput {
+  readonly intentDigest: DocumentIntentDigest;
 }
 
 export interface DiscardedAttemptEvidence {
@@ -37,7 +66,23 @@ export interface DiscardedAttemptEvidence {
   readonly userId: UserId;
 }
 
-export type AttemptEvidence = ActiveAttemptEvidence | DiscardedAttemptEvidence;
+export interface NoComputeAttemptEvidence {
+  readonly cost: Extract<CostEvidence, { _tag: "ProvenNoUse" }>;
+  readonly intentDigest: DocumentIntentDigest;
+  readonly qualification: QualificationAttemptEvidence & {
+    readonly completedAtEpochMs: null;
+    readonly failedAtEpochMs: null;
+    readonly startedAtEpochMs: null;
+    readonly taskOutcomeId: string;
+  };
+  readonly status: "notRequired";
+  readonly userId: UserId;
+}
+
+export type AttemptEvidence =
+  | ActiveAttemptEvidence
+  | DiscardedAttemptEvidence
+  | NoComputeAttemptEvidence;
 
 /** Expected failure when durable attempt evidence cannot be reconciled. */
 export class DocumentAttemptEvidenceUnavailable extends Schema.TaggedError<DocumentAttemptEvidenceUnavailable>()(
@@ -53,6 +98,7 @@ export interface AttemptEvidenceStore {
     cost: ActiveAttemptEvidence["cost"],
     executionLeaseExpiresAt: number,
     userId: UserId,
+    qualification?: QualificationAttemptInput,
   ) => Promise<
     | {
         readonly _tag: "Claimed";
@@ -62,6 +108,10 @@ export interface AttemptEvidenceStore {
       }
     | { readonly _tag: "Discarded" }
     | { readonly _tag: "IntentConflict" }
+    | {
+        readonly _tag: "Terminal";
+        readonly evidence: ActiveAttemptEvidence | NoComputeAttemptEvidence;
+      }
   >;
   readonly complete: (
     contentId: ContentId,
@@ -72,6 +122,11 @@ export interface AttemptEvidenceStore {
     revision: string,
   ) => Promise<boolean>;
   readonly inspect: (contentId: ContentId) => Promise<AttemptEvidence | null>;
+  readonly fail: (
+    contentId: ContentId,
+    evidence: ActiveAttemptEvidence & { readonly status: "failed" },
+    revision: string,
+  ) => Promise<boolean>;
   readonly reclaim: (
     contentId: ContentId,
     evidence: ActiveAttemptEvidence & { readonly status: "recovery" },
@@ -192,7 +247,9 @@ export const makeWithSandbox = (
     }).pipe(
       Effect.flatMap((evidence) => {
         if (evidence === null) return Effect.succeed(null);
-        if (evidence.status === "discarded") return Effect.succeed(null);
+        if (evidence.status === "discarded" || evidence.status === "notRequired") {
+          return Effect.succeed(null);
+        }
         if (evidence.intentDigest !== intentDigest) {
           return Effect.fail(
             new DocumentIntentConflict({
@@ -216,6 +273,10 @@ const render = async (
     readonly contentId: ContentId;
     readonly format: DocumentArtifact.DocumentFormat;
     readonly intentDigest: DocumentIntentDigest;
+    readonly qualification?: {
+      readonly context: QualificationContextValue;
+      readonly workflowId: string;
+    };
     readonly source: DocumentSource;
     readonly supportingVisuals: ReadonlyArray<{
       readonly bytes: Uint8Array;
@@ -247,12 +308,20 @@ const render = async (
       providerOperationId,
       conservativeVendorUsdMicros,
     );
+    const claimedAtEpochMs = currentTimeMillis();
     const claimed = await attempts.claim(
       input.contentId,
       input.intentDigest,
       proposedCost,
-      currentTimeMillis() + executionLeaseMs,
+      claimedAtEpochMs + executionLeaseMs,
       input.userId,
+      input.qualification === undefined
+        ? undefined
+        : {
+            claimedAtEpochMs,
+            context: input.qualification.context,
+            workflowId: input.qualification.workflowId,
+          },
     );
     // oxlint-disable-next-line eslint/no-underscore-dangle -- Persisted outcomes use _tag.
     if (claimed._tag === "IntentConflict") {
@@ -265,6 +334,17 @@ const render = async (
         cost: { _tag: "ProvenNoUse" },
         evidence: "The terminal Workflow discarded its unused compute claim",
       };
+    }
+    // oxlint-disable-next-line eslint/no-underscore-dangle -- Persisted outcomes use _tag.
+    if (claimed._tag === "Terminal") {
+      if (claimed.evidence.status === "notRequired") {
+        return {
+          _tag: "AttemptUnavailable",
+          cost: { _tag: "ProvenNoUse" },
+          evidence: "Document Compute retained an explicit no-work obligation",
+        };
+      }
+      return interrupted(claimed.evidence.cost, "Document Compute retained a terminal failure");
     }
     durableAttemptClaimed = true;
     providerOperationId = claimed.evidence.cost.providerOperationId;
@@ -284,11 +364,14 @@ const render = async (
       providerUsePossible = true;
       const cachedOutput = await withDeadline(sandbox.exists(outputPath), deadlines.rpcMs);
       if (cachedOutput.exists) {
-        const completedEvidence = {
-          ...claimed.evidence,
-          renderedPageCount: input.source.pages.length,
-          status: "completed" as const,
-        };
+        const completedEvidence = transitionQualificationAttemptEvidence(
+          {
+            ...claimed.evidence,
+            renderedPageCount: input.source.pages.length,
+            status: "completed" as const,
+          },
+          { completedAtEpochMs: currentTimeMillis() },
+        );
         const completed = await withDeadline(
           attempts.complete(input.contentId, completedEvidence, claimed.revision),
           deadlines.rpcMs,
@@ -303,12 +386,15 @@ const render = async (
         evidence = completedEvidence;
         renderedPageCount = completedEvidence.renderedPageCount;
       } else {
-        const reclaimedEvidence = {
-          ...claimed.evidence,
-          executionLeaseExpiresAt: currentTimeMillis() + executionLeaseMs,
-          renderedPageCount: null,
-          status: "recovery" as const,
-        };
+        const reclaimedEvidence = transitionQualificationAttemptEvidence(
+          {
+            ...claimed.evidence,
+            executionLeaseExpiresAt: currentTimeMillis() + executionLeaseMs,
+            renderedPageCount: null,
+            status: "recovery" as const,
+          },
+          {},
+        );
         const reclaimed = await withDeadline(
           attempts.reclaim(input.contentId, reclaimedEvidence, claimed.revision),
           deadlines.rpcMs,
@@ -337,11 +423,11 @@ const render = async (
           failure: startAuthorizationFailure,
         };
       }
-      const started = await attempts.start(
-        input.contentId,
-        { ...evidence, status: "started" },
-        revision,
+      const startedEvidence = transitionQualificationAttemptEvidence(
+        { ...evidence, status: "started" as const },
+        { startedAtEpochMs: currentTimeMillis() },
       );
+      const started = await attempts.start(input.contentId, startedEvidence, revision);
       if (started === null) {
         return {
           _tag: "AttemptPending",
@@ -349,7 +435,7 @@ const render = async (
           evidence: "Another caller owns the atomic Sandbox execution transition",
         };
       }
-      evidence = { ...evidence, status: "started" };
+      evidence = startedEvidence;
       revision = started;
     }
     if (
@@ -393,6 +479,20 @@ const render = async (
         deadlines.execMs,
       );
       if (!result.success) {
+        const failedEvidence = transitionQualificationAttemptEvidence(
+          { ...evidence, status: "failed" as const },
+          { failedAtEpochMs: currentTimeMillis() },
+        );
+        if (failedEvidence.qualification !== undefined) {
+          const failed = await attempts.fail(input.contentId, failedEvidence, revision);
+          if (!failed) {
+            return {
+              _tag: "AttemptPending",
+              cost,
+              evidence: "Another caller owns the atomic Sandbox failure transition",
+            };
+          }
+        }
         return interrupted(cost, `The document renderer exited with code ${result.exitCode}`);
       }
       renderedPageCount = decodeRenderedPageCount(result.stdout);
@@ -400,12 +500,12 @@ const render = async (
       if (completionAuthorizationFailure !== null) {
         return { _tag: "AuthorizationFailure", cost, failure: completionAuthorizationFailure };
       }
+      const completedEvidence = transitionQualificationAttemptEvidence(
+        { ...evidence, renderedPageCount, status: "completed" as const },
+        { completedAtEpochMs: currentTimeMillis() },
+      );
       const completed = await withDeadline(
-        attempts.complete(
-          input.contentId,
-          { ...evidence, renderedPageCount, status: "completed" },
-          revision,
-        ),
+        attempts.complete(input.contentId, completedEvidence, revision),
         deadlines.rpcMs,
       );
       if (!completed) {
@@ -466,6 +566,25 @@ const AttemptEvidenceMetadata = Schema.fromJsonString(
       userId: UserId,
     }),
     Schema.Struct({
+      cost: Schema.TaggedStruct("ProvenNoUse", {}),
+      intentDigest: DocumentIntentDigest,
+      qualification: Schema.Struct({
+        artifactChecksum: Schema.String.check(Schema.isPattern(/^sha256:[0-9a-f]{64}$/)),
+        claimedAtEpochMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+        completedAtEpochMs: Schema.Null,
+        contentId: ContentId,
+        context: QualificationContext,
+        evidenceVersion: Schema.Literal("document-compute-attempt-v2"),
+        failedAtEpochMs: Schema.Null,
+        startedAtEpochMs: Schema.Null,
+        taskExecutionId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
+        taskOutcomeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
+        workflowId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
+      }),
+      status: Schema.Literal("notRequired"),
+      userId: UserId,
+    }),
+    Schema.Struct({
       cost: Schema.TaggedStruct("Incurred", {
         allowancePeriodId: AllowancePeriodId,
         basis: Schema.Literals(["conservative", "observed"]),
@@ -474,10 +593,27 @@ const AttemptEvidenceMetadata = Schema.fromJsonString(
       }),
       executionLeaseExpiresAt: Schema.Int,
       intentDigest: DocumentIntentDigest,
+      qualification: Schema.optionalKey(
+        Schema.Struct({
+          artifactChecksum: Schema.String.check(Schema.isPattern(/^sha256:[0-9a-f]{64}$/)),
+          claimedAtEpochMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+          completedAtEpochMs: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+          contentId: ContentId,
+          context: QualificationContext,
+          evidenceVersion: Schema.Literal("document-compute-attempt-v2"),
+          failedAtEpochMs: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+          startedAtEpochMs: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+          taskExecutionId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
+          taskOutcomeId: Schema.NullOr(
+            Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
+          ),
+          workflowId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
+        }),
+      ),
       renderedPageCount: Schema.NullOr(
         Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(20)),
       ),
-      status: Schema.Literals(["claimed", "recovery", "started", "completed"]),
+      status: Schema.Literals(["claimed", "recovery", "started", "completed", "failed"]),
       userId: Schema.optionalKey(UserId),
     }),
   ]),
@@ -498,7 +634,7 @@ const RendererOutput = Schema.fromJsonString(
   }),
 );
 
-const decodeAttemptEvidence = Schema.decodeSync(AttemptEvidenceMetadata);
+const decodeAttemptEvidenceBoundary = Schema.decodeSync(AttemptEvidenceMetadata);
 const encodeAttemptEvidence = Schema.encodeSync(AttemptEvidenceMetadata);
 const decodeRenderedPageCount = (output: string) =>
   Schema.decodeSync(RendererOutput)(output.trim()).renderedPageCount;
@@ -549,17 +685,21 @@ const interrupted = (cost: ActiveAttemptEvidence["cost"], evidence: string): Com
 /** Construct durable R2-backed execution identity evidence. */
 export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore => ({
   // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
-  claim: async (contentId, intentDigest, cost, executionLeaseExpiresAt, userId) => {
+  claim: async (contentId, intentDigest, cost, executionLeaseExpiresAt, userId, qualification) => {
     await DocumentOwnershipIndex.ensure(bucket, userId, contentId);
     const key = attemptKeyFor(contentId);
-    const proposed = {
-      cost,
-      executionLeaseExpiresAt,
-      intentDigest,
-      renderedPageCount: null,
-      status: "claimed" as const,
-      userId,
-    };
+    const proposed = qualificationAttemptEvidence(
+      {
+        cost,
+        executionLeaseExpiresAt,
+        intentDigest,
+        renderedPageCount: null,
+        status: "claimed" as const,
+        userId,
+      },
+      contentId,
+      qualification,
+    );
     const created = await bucket.put(key, new Uint8Array(), {
       customMetadata: { osfo: encodeAttemptEvidence(proposed) },
       onlyIf: { etagDoesNotMatch: "*" },
@@ -582,8 +722,22 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
       await bucket.delete(ownerKeyFor(userId, contentId));
       return evidence.userId === userId ? { _tag: "Discarded" } : { _tag: "IntentConflict" };
     }
-    if (evidence.intentDigest !== intentDigest) {
+    if (evidence.status === "notRequired") {
+      return evidence.intentDigest === intentDigest &&
+        evidence.userId === userId &&
+        sameQualificationIdentity(evidence.qualification, proposed.qualification)
+        ? { _tag: "Terminal", evidence }
+        : { _tag: "IntentConflict" };
+    }
+    if (
+      evidence.intentDigest !== intentDigest ||
+      evidence.userId !== userId ||
+      !sameQualificationAttempt(evidence, proposed)
+    ) {
       return { _tag: "IntentConflict" };
+    }
+    if (evidence.status === "failed") {
+      return { _tag: "Terminal", evidence };
     }
     return {
       _tag: "Claimed",
@@ -599,6 +753,14 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
       onlyIf: { etagMatches: revision },
     });
     return completed !== null;
+  },
+  // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
+  fail: async (contentId, evidence, revision) => {
+    const failed = await bucket.put(attemptKeyFor(contentId), new Uint8Array(), {
+      customMetadata: { osfo: encodeAttemptEvidence(evidence) },
+      onlyIf: { etagMatches: revision },
+    });
+    return failed !== null;
   },
   // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
   inspect: async (contentId) => {
@@ -626,6 +788,182 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
   },
 });
 
+const qualificationAttemptEvidence = (
+  evidence: ActiveAttemptEvidence,
+  contentId: ContentId,
+  input: QualificationAttemptInput | undefined,
+): ActiveAttemptEvidence => {
+  if (input === undefined) return evidence;
+  return transitionQualificationAttemptEvidence(
+    {
+      ...evidence,
+      qualification: {
+        artifactChecksum: `sha256:${"0".repeat(64)}`,
+        claimedAtEpochMs: input.claimedAtEpochMs,
+        completedAtEpochMs: null,
+        contentId,
+        context: input.context,
+        evidenceVersion: "document-compute-attempt-v2",
+        failedAtEpochMs: null,
+        startedAtEpochMs: null,
+        taskExecutionId: `document-compute:${contentId}`,
+        taskOutcomeId: null,
+        workflowId: input.workflowId,
+      },
+    },
+    {},
+  );
+};
+
+/** Recompute the body-authenticated identity after an owned CAS state transition. */
+export const transitionQualificationAttemptEvidence = <Evidence extends ActiveAttemptEvidence>(
+  evidence: Evidence,
+  timestamps: {
+    readonly completedAtEpochMs?: number;
+    readonly failedAtEpochMs?: number;
+    readonly startedAtEpochMs?: number;
+  },
+) => {
+  const retained = evidence.qualification;
+  if (retained === undefined) return evidence;
+  const qualification = {
+    ...retained,
+    completedAtEpochMs: timestamps.completedAtEpochMs ?? retained.completedAtEpochMs,
+    failedAtEpochMs: timestamps.failedAtEpochMs ?? retained.failedAtEpochMs,
+    startedAtEpochMs: timestamps.startedAtEpochMs ?? retained.startedAtEpochMs,
+    taskOutcomeId:
+      evidence.status === "completed"
+        ? `${retained.taskExecutionId}:completed`
+        : evidence.status === "failed"
+          ? `${retained.taskExecutionId}:failed`
+          : retained.taskOutcomeId,
+  };
+  const { artifactChecksum: _artifactChecksum, ...qualificationContent } = qualification;
+  return {
+    ...evidence,
+    qualification: {
+      ...qualificationContent,
+      artifactChecksum: qualificationChecksum({ ...evidence, qualification: qualificationContent }),
+    },
+  };
+};
+
+const sameQualificationAttempt = (
+  existing: ActiveAttemptEvidence,
+  proposed: ActiveAttemptEvidence,
+) => {
+  const left = existing.qualification;
+  const right = proposed.qualification;
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    left.contentId === right.contentId &&
+    left.evidenceVersion === right.evidenceVersion &&
+    left.taskExecutionId === right.taskExecutionId &&
+    left.workflowId === right.workflowId &&
+    sameQualificationContext(left.context, right.context) &&
+    existing.cost.allowancePeriodId === proposed.cost.allowancePeriodId &&
+    existing.cost.basis === proposed.cost.basis &&
+    existing.cost.usdMicros === proposed.cost.usdMicros
+  );
+};
+
+const sameQualificationIdentity = (
+  left: QualificationAttemptEvidence | undefined,
+  right: QualificationAttemptEvidence | undefined,
+) => {
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    left.contentId === right.contentId &&
+    left.evidenceVersion === right.evidenceVersion &&
+    left.taskExecutionId === right.taskExecutionId &&
+    left.workflowId === right.workflowId &&
+    sameQualificationContext(left.context, right.context)
+  );
+};
+
+const decodeAttemptEvidence = (encoded: string): AttemptEvidence => {
+  const evidence = decodeAttemptEvidenceBoundary(encoded);
+  if (evidence.status === "discarded") return evidence;
+  if (evidence.status === "notRequired") {
+    const { artifactChecksum, ...qualification } = evidence.qualification;
+    if (
+      artifactChecksum !== qualificationChecksum({ ...evidence, qualification }) ||
+      qualification.taskOutcomeId !== `${qualification.taskExecutionId}:not-required`
+    ) {
+      throw new Error("Qualification no-compute evidence does not match its retained body");
+    }
+    return evidence;
+  }
+  if (evidence.status === "failed" && evidence.qualification === undefined) {
+    throw new Error("Only qualification-owned Document Compute can retain terminal failure");
+  }
+  if (evidence.qualification === undefined) return evidence;
+  const { artifactChecksum, ...qualification } = evidence.qualification;
+  if (artifactChecksum !== qualificationChecksum({ ...evidence, qualification })) {
+    throw new Error("Qualification document attempt checksum does not match its retained body");
+  }
+  const terminalTimes = [qualification.completedAtEpochMs, qualification.failedAtEpochMs].filter(
+    (timestamp) => timestamp !== null,
+  );
+  const validStatus =
+    (evidence.status === "claimed" &&
+      qualification.startedAtEpochMs === null &&
+      terminalTimes.length === 0 &&
+      qualification.taskOutcomeId === null) ||
+    ((evidence.status === "started" || evidence.status === "recovery") &&
+      qualification.startedAtEpochMs !== null &&
+      terminalTimes.length === 0 &&
+      qualification.taskOutcomeId === null) ||
+    (evidence.status === "completed" &&
+      qualification.startedAtEpochMs !== null &&
+      qualification.completedAtEpochMs !== null &&
+      qualification.failedAtEpochMs === null &&
+      qualification.taskOutcomeId === `${qualification.taskExecutionId}:completed`) ||
+    (evidence.status === "failed" &&
+      qualification.startedAtEpochMs !== null &&
+      qualification.completedAtEpochMs === null &&
+      qualification.failedAtEpochMs !== null &&
+      qualification.taskOutcomeId === `${qualification.taskExecutionId}:failed`);
+  if (!validStatus) {
+    throw new Error("Qualification document attempt state does not match its retained timeline");
+  }
+  return evidence;
+};
+
+const qualificationNoComputeEvidence = (
+  contentId: ContentId,
+  userId: UserId,
+  input: QualificationNoComputeInput,
+): NoComputeAttemptEvidence => {
+  const taskExecutionId = `document-compute:${contentId}`;
+  const qualification = {
+    claimedAtEpochMs: input.claimedAtEpochMs,
+    completedAtEpochMs: null,
+    contentId,
+    context: input.context,
+    evidenceVersion: "document-compute-attempt-v2" as const,
+    failedAtEpochMs: null,
+    startedAtEpochMs: null,
+    taskExecutionId,
+    taskOutcomeId: `${taskExecutionId}:not-required`,
+    workflowId: input.workflowId,
+  };
+  const content = {
+    cost: { _tag: "ProvenNoUse" as const },
+    intentDigest: input.intentDigest,
+    qualification,
+    status: "notRequired" as const,
+    userId,
+  };
+  return {
+    ...content,
+    qualification: {
+      ...qualification,
+      artifactChecksum: qualificationChecksum(content),
+    },
+  };
+};
+
 /**
  * Remove only proven no-use ownership after terminal cleanup. Recovery, started, and completed
  * attempts remain durable until the scheduled allowance reconciler has consumed their incurred cost.
@@ -635,6 +973,7 @@ export const settleAttemptEvidenceForTerminalCleanup = (
   bucket: R2Bucket,
   contentId: ContentId,
   userId: UserId,
+  qualification?: QualificationNoComputeInput,
 ) =>
   Effect.tryPromise({
     // oxlint-disable-next-line effecttsgo/async-function -- R2 ownership checks and deletion share one Promise boundary.
@@ -657,19 +996,23 @@ export const settleAttemptEvidenceForTerminalCleanup = (
           }
         }
         if (attempt === null) {
+          const terminalEvidence =
+            qualification === undefined
+              ? {
+                  cost: { _tag: "ProvenNoUse" as const },
+                  status: "discarded" as const,
+                  userId,
+                }
+              : qualificationNoComputeEvidence(contentId, userId, qualification);
           const discarded = await bucket.put(attemptKey, new Uint8Array(), {
             customMetadata: {
-              osfo: encodeAttemptEvidence({
-                cost: { _tag: "ProvenNoUse" },
-                status: "discarded",
-                userId,
-              }),
+              osfo: encodeAttemptEvidence(terminalEvidence),
             },
             onlyIf: { etagDoesNotMatch: "*" },
           });
           if (discarded === null) continue;
-          await bucket.delete(ownerKey);
-          return "discarded" as const;
+          if (qualification === undefined) await bucket.delete(ownerKey);
+          return qualification === undefined ? ("discarded" as const) : ("notRequired" as const);
         }
         const encoded = attempt.customMetadata?.osfo;
         const evidence = encoded === undefined ? null : decodeAttemptEvidence(encoded);
@@ -679,27 +1022,63 @@ export const settleAttemptEvidenceForTerminalCleanup = (
         if (
           evidence.status === "recovery" ||
           evidence.status === "started" ||
-          evidence.status === "completed"
+          evidence.status === "completed" ||
+          evidence.status === "failed"
         ) {
           return "preserved" as const;
+        }
+        if (evidence.status === "notRequired") {
+          if (
+            qualification !== undefined &&
+            (!sameQualificationContext(evidence.qualification.context, qualification.context) ||
+              evidence.qualification.workflowId !== qualification.workflowId ||
+              evidence.intentDigest !== qualification.intentDigest)
+          ) {
+            throw new Error("Qualification no-compute identity conflicts with terminal cleanup");
+          }
+          return "notRequired" as const;
         }
         if (evidence.status === "discarded") {
           await bucket.delete(ownerKey);
           return "discarded" as const;
         }
+        if (evidence.qualification !== undefined) {
+          if (
+            qualification === undefined ||
+            !sameQualificationContext(evidence.qualification.context, qualification.context) ||
+            evidence.qualification.workflowId !== qualification.workflowId ||
+            evidence.intentDigest !== qualification.intentDigest
+          ) {
+            throw new Error(
+              "Document attempt qualification identity conflicts with terminal cleanup",
+            );
+          }
+          // A durable claim is already producer truth, even before provider start. Do not replace
+          // its original cost, claim timestamp, or execution identity with a no-work assertion.
+          return "preserved" as const;
+        }
+        if (qualification !== undefined) {
+          throw new Error(
+            "Document attempt qualification identity conflicts with terminal cleanup",
+          );
+        }
+        const terminalEvidence =
+          qualification === undefined
+            ? {
+                cost: { _tag: "ProvenNoUse" as const },
+                status: "discarded" as const,
+                userId,
+              }
+            : qualificationNoComputeEvidence(contentId, userId, qualification);
         const discarded = await bucket.put(attemptKey, new Uint8Array(), {
           customMetadata: {
-            osfo: encodeAttemptEvidence({
-              cost: { _tag: "ProvenNoUse" },
-              status: "discarded",
-              userId,
-            }),
+            osfo: encodeAttemptEvidence(terminalEvidence),
           },
           onlyIf: { etagMatches: attempt.etag },
         });
         if (discarded !== null) {
           await bucket.delete(ownerKey);
-          return "discarded" as const;
+          return qualification === undefined ? ("discarded" as const) : ("notRequired" as const);
         }
         // A compute claimant won the revision race. Re-read before deciding whether evidence is
         // incurred and must be retained, or remains an unused claim that can be tombstoned.

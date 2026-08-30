@@ -22,6 +22,7 @@ import { DocumentArtifact } from "../domain/document-artifact";
 import { FileDigest } from "../domain/file-content";
 import { FileId } from "../domain/file";
 import { ManagedModelRoute } from "../domain/model-access-policy";
+import type { QualificationContext } from "../domain/qualification-context";
 import { DocumentBuild } from "./document-build";
 import { DocumentBuildDocument } from "./document-build-document";
 import {
@@ -60,6 +61,29 @@ it.effect("keeps one validated artifact pending until evidence and publication a
       "cleanup",
       "success",
     ]);
+  }).pipe(Effect.provide(fixture.layer));
+});
+
+it.effect("passes exact server-owned qualification identity into Document Compute", () => {
+  const qualificationContext = {
+    attemptId: "document-compute-attempt",
+    executionId: "document-compute-execution",
+    journey: "documentBuild",
+    offeredAtEpochMs: 1_788_000_000_000,
+    planChecksum: "document-compute-plan",
+    region: "americas",
+    rootId: "document-compute-root",
+    runId: "document-compute-run",
+  } as const satisfies QualificationContext;
+  const fixture = publicationFixture({ qualificationContext });
+  return Effect.gen(function* () {
+    const documents = yield* DocumentBuildDocument.Service;
+    yield* documents.generate(fixture.build());
+
+    expect(fixture.computeQualification()).toEqual({
+      context: qualificationContext,
+      workflowId: fixture.build().workflowId,
+    });
   }).pipe(Effect.provide(fixture.layer));
 });
 
@@ -191,12 +215,22 @@ const publicationFixture = (
     readonly denyAuthorization?: boolean;
     readonly generatedDocumentFailures?: number;
     readonly invalidValidation?: boolean;
+    readonly qualificationContext?: QualificationContext;
     readonly successFailures?: number;
   } = {},
 ) => {
-  let current = buildRecord();
+  let current =
+    options.qualificationContext === undefined
+      ? buildRecord()
+      : { ...buildRecord(), qualificationContext: options.qualificationContext };
   let retained: StoredArtifactMetadata | null = null;
   let computeCalls = 0;
+  let computeQualification:
+    | {
+        readonly context: QualificationContext;
+        readonly workflowId: string;
+      }
+    | undefined;
   let accountFailures = options.accountFailures ?? 0;
   let cleanupFailures = options.cleanupFailures ?? 0;
   let generatedDocumentFailures = options.generatedDocumentFailures ?? 0;
@@ -305,10 +339,11 @@ const publicationFixture = (
             });
           }
         }),
-      generate: () =>
+      generate: (input) =>
         Effect.sync(() => {
           events.push("compute");
           computeCalls += 1;
+          computeQualification = input.qualification;
           if (options.computeOutageFirst === true && computeCalls === 1) {
             return {
               _tag: "AttemptUnavailable" as const,
@@ -410,6 +445,7 @@ const publicationFixture = (
   return {
     build: () => current,
     computeCalls: () => computeCalls,
+    computeQualification: () => computeQualification,
     events: () => events,
     layer: DocumentBuildDocument.layerWithoutDependencies.pipe(
       Layer.provide(Layer.succeed(DocumentBuildDocument.Port, port)),
