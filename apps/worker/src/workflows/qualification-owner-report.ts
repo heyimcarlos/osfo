@@ -565,6 +565,8 @@ const retainDistributedEvaluationOwnerResponse = async (
       "osfo-body-sha256": await sha256Hex(encoded),
       "osfo-execution-id": payload.executionId,
       "osfo-kind": "qualification-owner-response-v2",
+      "osfo-manifest-checksum": payload.manifestChecksum,
+      "osfo-plan-checksum": payload.planChecksum,
       "osfo-report-checksum": report.checksum,
       "osfo-verdict": report.verdict,
     },

@@ -6,6 +6,10 @@ import {
   canonicalQualificationJson,
   qualificationChecksum,
 } from "./qualification/qualification-checksum";
+import {
+  qualificationDistributedEvaluationReportArtifactId,
+  qualificationDistributedEvaluationReportCompletionArtifactId,
+} from "./qualification/distributed-evaluation-report";
 import owner from "./qualification-owner-worker";
 import { qualificationDistributedEvaluationConflictArtifactId } from "./workflows/qualification-owner-report";
 
@@ -15,7 +19,16 @@ const sha256Hex = async (encoded: string) => {
 };
 
 const completedResponseFixture = async (
-  tamper: "bodyHash" | "bytes" | "contentType" | "metadata" | null,
+  tamper:
+    | "bodyHash"
+    | "bytes"
+    | "completionKey"
+    | "contentType"
+    | "manifest"
+    | "metadata"
+    | "plan"
+    | "reportKey"
+    | null,
 ) => {
   const executionId = "completed-response-execution";
   const requestContent = {
@@ -36,16 +49,23 @@ const completedResponseFixture = async (
     artifactChecksum: requestChecksum,
   });
   const body = {
-    completionArtifactId: "completion.json",
+    completionArtifactId:
+      tamper === "completionKey"
+        ? "substituted-completion.json"
+        : qualificationDistributedEvaluationReportCompletionArtifactId(executionId),
     completionChecksum: "completion-checksum",
     error: "qualificationAuthorityMaterialMissing" as const,
     executionId,
     failingFamilies: [],
-    manifestChecksum: requestContent.manifestChecksum,
+    manifestChecksum:
+      tamper === "manifest" ? "sha256:substituted-manifest" : requestContent.manifestChecksum,
     missingFamilies: ["cohort_teardown"],
     phase: "PRE_TEARDOWN" as const,
-    planChecksum: requestContent.planChecksum,
-    reportArtifactId: "report.json",
+    planChecksum: tamper === "plan" ? "sha256:substituted-plan" : requestContent.planChecksum,
+    reportArtifactId:
+      tamper === "reportKey"
+        ? "substituted-report.json"
+        : qualificationDistributedEvaluationReportArtifactId(executionId),
     reportChecksum: "report-checksum",
     verdict: "MISSING" as const,
     version: "qualification-owner-response-v2" as const,
@@ -72,6 +92,8 @@ const completedResponseFixture = async (
           tamper === "bodyHash" ? "tampered-body-hash" : await sha256Hex(canonicalResponse),
         "osfo-execution-id": executionId,
         "osfo-kind": "qualification-owner-response-v2",
+        "osfo-manifest-checksum": body.manifestChecksum,
+        "osfo-plan-checksum": body.planChecksum,
         "osfo-report-checksum":
           tamper === "metadata" ? "other-report-checksum" : body.reportChecksum,
         "osfo-verdict": body.verdict,
@@ -137,7 +159,17 @@ it.effect("rejects a valid retained request replayed under another execution ide
   }),
 );
 
-const rejectsV2ResponseTamper = (tamper: "bodyHash" | "bytes" | "contentType" | "metadata") =>
+const rejectsV2ResponseTamper = (
+  tamper:
+    | "bodyHash"
+    | "bytes"
+    | "completionKey"
+    | "contentType"
+    | "manifest"
+    | "metadata"
+    | "plan"
+    | "reportKey",
+) =>
   Effect.gen(function* () {
     const fixture = yield* Effect.promise(() => completedResponseFixture(tamper));
     const response = yield* Effect.promise(() =>
@@ -188,6 +220,12 @@ it.effect("rejects a retained v2 response with a conflicting body hash", () =>
 
 it.effect("rejects noncanonical v2 response bytes with copied metadata", () =>
   rejectsV2ResponseTamper("bytes"),
+);
+
+// oxlint-disable-next-line vitest/expect-expect -- The shared Effect assertion executes through Effect.runPromise.
+it.each(["manifest", "plan", "reportKey", "completionKey"] as const)(
+  "rejects a v2 response with substituted invocation identity: %s",
+  async (tamper) => Effect.runPromise(rejectsV2ResponseTamper(tamper)),
 );
 
 it.each([null, 2, { injected: true }, "qualification-owner-response-v3"])(

@@ -1,6 +1,10 @@
 import { Option, Schema } from "effect";
 
 import {
+  qualificationDistributedEvaluationReportArtifactId,
+  qualificationDistributedEvaluationReportCompletionArtifactId,
+} from "./qualification/distributed-evaluation-report";
+import {
   canonicalQualificationJson,
   qualificationChecksum,
 } from "./qualification/qualification-checksum";
@@ -124,8 +128,13 @@ const sha256Hex = async (encoded: string): Promise<string> => {
 // oxlint-disable-next-line effecttsgo/async-function -- Cloudflare R2 is a Promise-native boundary.
 const completedResponse = async (
   env: QualificationOwnerEnv,
-  executionId: string,
+  expected: {
+    readonly executionId: string;
+    readonly manifestChecksum: string;
+    readonly planChecksum: string;
+  },
 ): Promise<Response | null> => {
+  const { executionId } = expected;
   const artifactId = `qualification/executions/${encodeURIComponent(executionId)}/owner-response.json`;
   const artifact = await env.ARTIFACTS.get(artifactId);
   if (artifact === null) return null;
@@ -140,6 +149,12 @@ const completedResponse = async (
         : "qualificationAuthorityMaterialMissing";
     if (
       response.body.executionId !== executionId ||
+      response.body.manifestChecksum !== expected.manifestChecksum ||
+      response.body.planChecksum !== expected.planChecksum ||
+      response.body.reportArtifactId !==
+        qualificationDistributedEvaluationReportArtifactId(executionId) ||
+      response.body.completionArtifactId !==
+        qualificationDistributedEvaluationReportCompletionArtifactId(executionId) ||
       response.body.error !== expectedError ||
       response.status !== expectedStatus ||
       encoded !== canonicalQualificationJson(response) ||
@@ -148,6 +163,8 @@ const completedResponse = async (
         "osfo-body-sha256": await sha256Hex(encoded),
         "osfo-execution-id": executionId,
         "osfo-kind": "qualification-owner-response-v2",
+        "osfo-manifest-checksum": expected.manifestChecksum,
+        "osfo-plan-checksum": expected.planChecksum,
         "osfo-report-checksum": response.body.reportChecksum,
         "osfo-verdict": response.body.verdict,
       })
@@ -203,7 +220,7 @@ export default {
     ) {
       return Response.json({ error: "qualificationRequestArtifactConflict" }, { status: 409 });
     }
-    const completed = await completedResponse(env, invocation.executionId);
+    const completed = await completedResponse(env, invocation);
     const conflict = await authenticateQualificationDistributedEvaluationConflict({
       bucket: env.ARTIFACTS,
       executionId: invocation.executionId,
@@ -225,7 +242,7 @@ export default {
     }
     const status = await instance.status();
     if (status.status === "complete") {
-      const settled = await completedResponse(env, invocation.executionId);
+      const settled = await completedResponse(env, invocation);
       const settlementConflict = await authenticateQualificationDistributedEvaluationConflict({
         bucket: env.ARTIFACTS,
         executionId: invocation.executionId,
