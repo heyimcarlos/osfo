@@ -26,6 +26,7 @@ import {
   qualificationChecksum,
 } from "./qualification/qualification-checksum";
 import { qualificationWorkflowSubrequestHardLimit } from "./qualification/qualification-evaluation-limits";
+import { qualificationCohortProvisionArtifactPageSize } from "./qualification/cohort-artifact-layout";
 import {
   createQualificationExecutionPlan,
   type QualificationExecutionPlan,
@@ -63,7 +64,10 @@ const ProvisionPage = Schema.Struct({
   action: Schema.Literal("provisionPage"),
   executionId: Schema.String.check(Schema.isMinLength(1)),
   pageIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  participants: Schema.Array(Participant).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
+  participants: Schema.Array(Participant).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(qualificationCohortProvisionArtifactPageSize),
+  ),
 });
 const FinalizePage = Schema.Struct({
   action: Schema.Literal("finalizePage"),
@@ -240,14 +244,17 @@ const exactParticipantPage = (
   const positions = new Set(participants.map(({ index, plan }) => `${plan}:${index}`));
   const phones = new Set(participants.map(({ verifiedPhoneNumber }) => verifiedPhoneNumber));
   const totalParticipants = cohort.participantCounts.free + cohort.participantCounts.adventurer;
-  const expectedLength = Math.min(50, totalParticipants - pageIndex * 50);
+  const expectedLength = Math.min(
+    qualificationCohortProvisionArtifactPageSize,
+    totalParticipants - pageIndex * qualificationCohortProvisionArtifactPageSize,
+  );
   return (
     expectedLength > 0 &&
     participants.length === expectedLength &&
     positions.size === participants.length &&
     phones.size === participants.length &&
     participants.every(({ index, plan }, offset) => {
-      const globalPosition = pageIndex * 50 + offset;
+      const globalPosition = pageIndex * qualificationCohortProvisionArtifactPageSize + offset;
       const freeCount = cohort.participantCounts.free;
       const expectedPlan = globalPosition < freeCount ? "free" : "adventurer";
       const expectedIndex = expectedPlan === "free" ? globalPosition : globalPosition - freeCount;

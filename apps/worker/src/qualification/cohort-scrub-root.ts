@@ -2,6 +2,7 @@
 import { Option, Schema } from "effect";
 
 import { qualificationChecksum } from "./qualification-checksum";
+import { qualificationCohortArtifactLayoutRecordCount } from "./cohort-artifact-layout";
 import {
   qualificationCohortScrubPartitionPageLimit,
   qualificationCohortScrubPartitionProtocol,
@@ -17,7 +18,7 @@ export const qualificationCohortScrubRootEventTimeout = "7 days" as const;
 export const qualificationCohortScrubRootMaximumStepCount =
   2 + qualificationCohortScrubRootMaximumPartitionCount * 3;
 export const qualificationCohortScrubRootMaximumExternalCalls =
-  2 + qualificationCohortScrubRootMaximumPartitionCount * 7;
+  3 + qualificationCohortScrubRootMaximumPartitionCount * 7;
 
 export const QualificationCohortScrubRootWorkflowPayload = Schema.Struct({
   cohortId: boundedIdentity,
@@ -36,6 +37,15 @@ export interface QualificationCohortScrubRootTopology {
   readonly totalPageCount: number;
   readonly totalParticipantCount: number;
 }
+
+/** Exact record ledger shared by the cohort writer, PostgreSQL pages, and scrub root. */
+export const qualificationCohortArtifactRecordCount = (
+  topology: QualificationCohortScrubRootTopology,
+) =>
+  qualificationCohortArtifactLayoutRecordCount({
+    finalizePageCount: topology.totalPageCount,
+    participantCount: topology.totalParticipantCount,
+  });
 
 const decodePayload = Schema.decodeUnknownOption(QualificationCohortScrubRootWorkflowPayload);
 

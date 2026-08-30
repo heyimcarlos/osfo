@@ -12,6 +12,7 @@ import { Effect } from "effect";
 import type { Database } from "@osfo/db";
 import { qualificationChecksum } from "../../qualification/qualification-checksum";
 import { qualificationCohortArtifactProtocol } from "../../qualification/cohort-artifact-authority-contract";
+import { qualificationCohortProvisionArtifactPageSize } from "../../qualification/cohort-artifact-layout";
 import {
   qualificationCohortScrubPartitionTopology,
   type QualificationCohortScrubPartitionTopology,
@@ -28,7 +29,6 @@ import { QualificationCohortAuthorityUnavailable } from "./qualification-cohort-
 /* oxlint-disable effecttsgo/async-function -- Drizzle owns these transaction Promise boundaries. */
 
 const pageSize = 25;
-const provisionPageSize = 50;
 const leaseMilliseconds = 5 * 60_000;
 const noneChecksum = "NONE";
 
@@ -173,6 +173,7 @@ export type QualificationScrubRootInspection =
 export type QualificationScrubPartitionCompletionInspection =
   | {
       readonly _tag: "Ready";
+      readonly deletedArtifactCount: number;
       readonly pageCount: number;
       readonly partitionIndex: number;
       readonly previousPageChecksum: string;
@@ -324,6 +325,7 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
           }
           let previousPageChecksum = predecessorRow?.page_checksum ?? noneChecksum;
           const partitionPreviousPageChecksum = previousPageChecksum;
+          let deletedArtifactCount = 0;
           for (const page of partitionTopology.pages) {
             const row = rowFor(page);
             if (row === undefined) {
@@ -335,12 +337,17 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
             ) {
               return conflict;
             }
+            deletedArtifactCount += row.expected_artifact_count;
+            if (!Number.isSafeInteger(deletedArtifactCount) || deletedArtifactCount <= 0) {
+              return conflict;
+            }
             previousPageChecksum = row.page_checksum ?? "";
           }
           return previousPageChecksum.length === 0
             ? conflict
             : {
                 _tag: "Ready",
+                deletedArtifactCount,
                 pageCount: partitionTopology.pageCount,
                 partitionIndex,
                 previousPageChecksum: partitionPreviousPageChecksum,
@@ -1280,9 +1287,9 @@ export const qualificationScrubPageArtifactIds = (
   for (let offset = 0; offset < participantCount; offset += 1) {
     const index = firstParticipantIndex + offset;
     const globalPosition = plan === "free" ? index : freeParticipants + index;
-    if (globalPosition % provisionPageSize === 0) {
+    if (globalPosition % qualificationCohortProvisionArtifactPageSize === 0) {
       artifactIds.push(
-        `${prefix}/provision-pages/${String(globalPosition / provisionPageSize).padStart(8, "0")}.json`,
+        `${prefix}/provision-pages/${String(globalPosition / qualificationCohortProvisionArtifactPageSize).padStart(8, "0")}.json`,
       );
     }
   }

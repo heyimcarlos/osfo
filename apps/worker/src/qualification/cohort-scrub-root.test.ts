@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   decodeQualificationCohortScrubRootWorkflowPayload,
+  qualificationCohortArtifactRecordCount,
   qualificationCohortScrubRootInstanceId,
   qualificationCohortScrubRootMaximumExternalCalls,
   qualificationCohortScrubRootMaximumStepCount,
@@ -44,6 +45,18 @@ describe("qualification cohort scrub root contract", () => {
       partitionCount: 125,
       totalPageCount: 4_000,
     });
+    if (topology === null) throw new Error("The Public topology must be valid");
+    expect(qualificationCohortArtifactRecordCount(topology)).toBe(106_002);
+  });
+
+  it("pins the exact two-partition cohort artifact ledger", () => {
+    const topology = qualificationCohortScrubRootTopology(payload, {
+      adventurer: 0,
+      free: 825,
+    });
+    if (topology === null) throw new Error("The two-partition topology must be valid");
+    expect(topology.totalPageCount).toBe(33);
+    expect(qualificationCohortArtifactRecordCount(topology)).toBe(877);
   });
 
   it("rejects zero, unsafe, overflow, and malformed root authority", () => {
@@ -80,7 +93,7 @@ describe("qualification cohort scrub root contract", () => {
 
   it("pins the Public root budget below installed paid defaults", () => {
     expect(qualificationCohortScrubRootMaximumStepCount).toBe(377);
-    expect(qualificationCohortScrubRootMaximumExternalCalls).toBe(877);
+    expect(qualificationCohortScrubRootMaximumExternalCalls).toBe(878);
     expect(qualificationCohortScrubRootMaximumStepCount).toBeLessThan(10_000);
     expect(qualificationCohortScrubRootMaximumExternalCalls).toBeLessThan(10_000);
   });

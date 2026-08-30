@@ -55,6 +55,13 @@ const makePorts = (
         payload.executionId,
       ),
     ),
+  inspectFenceArtifacts: () =>
+    Effect.runPromise(
+      inspectQualificationCohortArtifacts(
+        env.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY,
+        payload.executionId,
+      ),
+    ),
   inspectArtifacts: () =>
     Effect.runPromise(
       inspectQualificationCohortArtifacts(

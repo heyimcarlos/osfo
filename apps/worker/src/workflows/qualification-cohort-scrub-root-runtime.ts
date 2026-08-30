@@ -22,6 +22,7 @@ import {
   type QualificationCohortScrubPartitionWorkflowPayload,
 } from "../qualification/cohort-scrub-partition";
 import {
+  qualificationCohortArtifactRecordCount,
   qualificationCohortScrubRootEventTimeout,
   qualificationCohortScrubRootInstanceId,
   qualificationCohortScrubRootPartitionPayload,
@@ -69,6 +70,7 @@ export interface QualificationCohortScrubChildSnapshot {
 
 export interface QualificationCohortScrubRootPorts {
   readonly fence: () => Promise<QualificationCohortArtifactFenceOutcome>;
+  readonly inspectFenceArtifacts: () => Promise<QualificationCohortArtifactInspection>;
   readonly inspectArtifacts: (
     child: QualificationCohortScrubPartitionWorkflowPayload,
   ) => Promise<QualificationCohortArtifactInspection>;
@@ -205,12 +207,14 @@ const verifyPartitionAuthority = (
   output: QualificationCohortScrubPartitionResult,
   pg: QualificationScrubPartitionCompletionInspection,
   artifacts: QualificationCohortArtifactInspection,
-  finalPartition: boolean,
+  previousArtifactRecordCount: number,
   previousPageChecksum: string,
 ) => {
   if (pg._tag === "Pending") return terminal("partition PostgreSQL authority is incomplete");
   if (pg._tag === "Conflict") return terminal("partition PostgreSQL authority conflicts");
   if (
+    !Number.isSafeInteger(pg.deletedArtifactCount) ||
+    pg.deletedArtifactCount <= 0 ||
     pg.pageCount !== child.pageCount ||
     pg.partitionIndex !== child.partitionIndex ||
     pg.previousPageChecksum !== previousPageChecksum ||
@@ -219,22 +223,42 @@ const verifyPartitionAuthority = (
   ) {
     return terminal("partition PostgreSQL authority is substituted");
   }
+  const expectedArtifactRecordCount = previousArtifactRecordCount - pg.deletedArtifactCount;
+  if (!Number.isSafeInteger(expectedArtifactRecordCount) || expectedArtifactRecordCount < 2) {
+    return terminal("partition artifact deletion count conflicts with the root ledger");
+  }
+  verifyArtifactAuthorityState(
+    artifacts,
+    expectedArtifactRecordCount,
+    child.firstPagePosition + child.pageCount,
+  );
+  return {
+    artifactRecordCount: expectedArtifactRecordCount,
+    terminalPageChecksum: pg.terminalPageChecksum,
+  };
+};
+
+const verifyArtifactAuthorityState = (
+  artifacts: QualificationCohortArtifactInspection,
+  expectedArtifactRecordCount: number,
+  expectedSealedPageCount: number,
+) => {
   if (artifacts._tag === "Missing") return terminal("artifact authority is missing");
-  if (artifacts._tag === "Conflict")
+  if (artifacts._tag === "Conflict") {
     return terminal(`artifact authority conflicts: ${artifacts.code}`);
+  }
   if (artifacts._tag === "Scrubbed") return terminal("artifact authority was prematurely scrubbed");
   if (
     artifacts.lifecycle !== "FENCED" ||
     !Number.isSafeInteger(artifacts.artifactRecordCount) ||
-    artifacts.artifactRecordCount < 2 ||
-    (finalPartition && artifacts.artifactRecordCount !== 2) ||
+    artifacts.artifactRecordCount !== expectedArtifactRecordCount ||
     artifacts.pendingDeleteScope !== null ||
     artifacts.provenDeleteScope !== null ||
-    artifacts.sealedPageCount !== child.firstPagePosition + child.pageCount
+    artifacts.sealedPageCount !== expectedSealedPageCount
   ) {
-    return terminal("artifact authority partition state conflicts");
+    return terminal("artifact authority ledger conflicts");
   }
-  return pg.terminalPageChecksum;
+  return true;
 };
 
 export const runQualificationCohortScrubRoot = async (
@@ -256,6 +280,10 @@ export const runQualificationCohortScrubRoot = async (
       ports.inspectTopology,
     ),
   );
+  const initialArtifactRecordCount = qualificationCohortArtifactRecordCount(topology);
+  if (initialArtifactRecordCount === null) {
+    return terminal("root artifact ledger is invalid");
+  }
   await step.do(
     "fence cohort artifact authority",
     qualificationCohortScrubRootStepConfig,
@@ -270,11 +298,24 @@ export const runQualificationCohortScrubRoot = async (
       if (fenced.protocolVersion !== qualificationCohortArtifactProtocol) {
         throw terminalError("artifact fence protocol conflicts");
       }
+      try {
+        verifyArtifactAuthorityState(
+          await ports.inspectFenceArtifacts(),
+          initialArtifactRecordCount,
+          0,
+        );
+      } catch (error) {
+        if (error instanceof QualificationCohortScrubRootTerminal) {
+          throw terminalError(error.message);
+        }
+        throw error;
+      }
       return true;
     },
   );
 
   let previousPageChecksum = "NONE";
+  let remainingArtifactRecordCount = initialArtifactRecordCount;
   for (let partitionIndex = 0; partitionIndex < topology.partitionCount; partitionIndex += 1) {
     const child = qualificationCohortScrubRootPartitionPayload(payload, topology, partitionIndex);
     if (child === null) return terminal("root partition topology conflicts");
@@ -319,7 +360,7 @@ export const runQualificationCohortScrubRoot = async (
             childOutput,
             pg,
             artifacts,
-            partitionIndex === topology.partitionCount - 1,
+            remainingArtifactRecordCount,
             previousPageChecksum,
           );
         } catch (error) {
@@ -330,7 +371,11 @@ export const runQualificationCohortScrubRoot = async (
         }
       },
     );
-    previousPageChecksum = verified;
+    remainingArtifactRecordCount = verified.artifactRecordCount;
+    previousPageChecksum = verified.terminalPageChecksum;
+  }
+  if (remainingArtifactRecordCount !== 2) {
+    return terminal("root artifact ledger did not retain exactly two root records");
   }
   return {
     cohortId: payload.cohortId,

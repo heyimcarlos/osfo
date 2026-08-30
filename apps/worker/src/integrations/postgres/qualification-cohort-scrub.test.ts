@@ -250,6 +250,7 @@ it.effect("authenticates one exact completed partition chain from PostgreSQL aut
 
     expect(yield* authority.inspectScrubPartitionCompletion(rootPayload, 0)).toEqual({
       _tag: "Ready",
+      deletedArtifactCount: 31,
       pageCount: 3,
       partitionIndex: 0,
       previousPageChecksum: "NONE",

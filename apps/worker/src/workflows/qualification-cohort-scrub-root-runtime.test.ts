@@ -9,6 +9,7 @@ import {
   type QualificationCohortScrubPartitionWorkflowPayload,
 } from "../qualification/cohort-scrub-partition";
 import {
+  qualificationCohortArtifactRecordCount,
   qualificationCohortScrubRootInstanceId,
   qualificationCohortScrubRootPartitionPayload,
   qualificationCohortScrubRootTopology,
@@ -28,6 +29,8 @@ import {
 const payload = qualificationCohortScrubRootWorkflowPayload("scrub-cohort", "scrub-execution");
 const topology = qualificationCohortScrubRootTopology(payload, { adventurer: 0, free: 825 });
 if (topology === null) throw new Error("The root topology fixture must be valid");
+const initialArtifactRecordCount = qualificationCohortArtifactRecordCount(topology);
+if (initialArtifactRecordCount === null) throw new Error("The root ledger fixture must be valid");
 
 const childPayload = (partitionIndex: number) => {
   const child = qualificationCohortScrubRootPartitionPayload(payload, topology, partitionIndex);
@@ -79,6 +82,7 @@ class ImmediateRootStep implements QualificationCohortScrubRootStep {
 
 const readyPg = (child: QualificationCohortScrubPartitionWorkflowPayload) => ({
   _tag: "Ready" as const,
+  deletedArtifactCount: child.partitionIndex === 0 ? 848 : 27,
   pageCount: child.pageCount,
   partitionIndex: child.partitionIndex,
   previousPageChecksum:
@@ -110,11 +114,22 @@ const ports = (
     calls.push(`do:${child.partitionIndex}`);
     return Promise.resolve({
       _tag: "Present",
-      artifactRecordCount: child.partitionIndex === 1 ? 2 : 3,
+      artifactRecordCount: child.partitionIndex === 1 ? 2 : 29,
       lifecycle: "FENCED",
       pendingDeleteScope: null,
       provenDeleteScope: null,
       sealedPageCount: child.firstPagePosition + child.pageCount,
+    });
+  },
+  inspectFenceArtifacts: () => {
+    calls.push("fence-do");
+    return Promise.resolve({
+      _tag: "Present",
+      artifactRecordCount: initialArtifactRecordCount,
+      lifecycle: "FENCED",
+      pendingDeleteScope: null,
+      provenDeleteScope: null,
+      sealedPageCount: 0,
     });
   },
   inspectChild: (child) => {
@@ -163,6 +178,7 @@ describe("qualification cohort scrub root runtime", () => {
     expect(calls).toEqual([
       "topology",
       "fence",
+      "fence-do",
       "launch:0",
       "child:0",
       "pg:0",
@@ -209,6 +225,17 @@ describe("qualification cohort scrub root runtime", () => {
               sealedPageCount: child.firstPagePosition + child.pageCount,
             }),
           inspectTopology: () => Promise.resolve({ _tag: "Ready", ...oneTopology }),
+          inspectFenceArtifacts: () =>
+            Promise.resolve({
+              _tag: "Present",
+              artifactRecordCount: 29,
+              lifecycle: "FENCED",
+              pendingDeleteScope: null,
+              provenDeleteScope: null,
+              sealedPageCount: 0,
+            }),
+          inspectPartitionCompletion: (child) =>
+            Promise.resolve({ ...readyPg(child), deletedArtifactCount: 27 }),
           launchChild: (child) => Promise.resolve(completedSnapshot(child)),
         }),
       ),
@@ -235,6 +262,39 @@ describe("qualification cohort scrub root runtime", () => {
               qualificationCohortScrubRootInstanceId(payload.executionId),
               step,
               ports([], { fence: () => Promise.resolve(fenced) }),
+            ),
+          ).rejects.toBeInstanceOf(QualificationCohortScrubRootTerminal),
+      ),
+    );
+  });
+
+  it("rejects missing, extra, or unsettled records at the exact fence baseline", async () => {
+    const step = new ImmediateRootStep(() => Promise.reject(new Error("unexpected event")));
+    await Promise.all(
+      [
+        { artifactRecordCount: initialArtifactRecordCount - 1 },
+        { artifactRecordCount: initialArtifactRecordCount + 1 },
+        { pendingDeleteScope: "page" as const },
+        { sealedPageCount: 1 },
+      ].map(
+        async (change) =>
+          await expect(
+            runQualificationCohortScrubRoot(
+              payload,
+              qualificationCohortScrubRootInstanceId(payload.executionId),
+              step,
+              ports([], {
+                inspectFenceArtifacts: () =>
+                  Promise.resolve({
+                    _tag: "Present",
+                    artifactRecordCount: initialArtifactRecordCount,
+                    lifecycle: "FENCED",
+                    pendingDeleteScope: null,
+                    provenDeleteScope: null,
+                    sealedPageCount: 0,
+                    ...change,
+                  }),
+              }),
             ),
           ).rejects.toBeInstanceOf(QualificationCohortScrubRootTerminal),
       ),
@@ -279,6 +339,17 @@ describe("qualification cohort scrub root runtime", () => {
           sealedPageCount: 1,
         }),
       inspectTopology: () => Promise.resolve({ _tag: "Ready" as const, ...oneTopology }),
+      inspectFenceArtifacts: () =>
+        Promise.resolve({
+          _tag: "Present" as const,
+          artifactRecordCount: 29,
+          lifecycle: "FENCED" as const,
+          pendingDeleteScope: null,
+          provenDeleteScope: null,
+          sealedPageCount: 0,
+        }),
+      inspectPartitionCompletion: (partition: QualificationCohortScrubPartitionWorkflowPayload) =>
+        Promise.resolve({ ...readyPg(partition), deletedArtifactCount: 27 }),
       launchChild: () => Promise.resolve(completedSnapshot(child)),
     };
     await expect(
@@ -290,6 +361,18 @@ describe("qualification cohort scrub root runtime", () => {
           ...base,
           inspectPartitionCompletion: () =>
             Promise.resolve({ _tag: "Pending", reason: "partitionPagesIncomplete" }),
+        }),
+      ),
+    ).rejects.toBeInstanceOf(QualificationCohortScrubRootTerminal);
+    await expect(
+      runQualificationCohortScrubRoot(
+        payload,
+        qualificationCohortScrubRootInstanceId(payload.executionId),
+        step,
+        ports([], {
+          ...base,
+          inspectPartitionCompletion: (input) =>
+            Promise.resolve({ ...readyPg(input), deletedArtifactCount: 26 }),
         }),
       ),
     ).rejects.toBeInstanceOf(QualificationCohortScrubRootTerminal);
@@ -351,6 +434,18 @@ describe("qualification cohort scrub root runtime", () => {
         params: child,
       }),
     ).resolves.toEqual({ id: expectedId, status: "waiting" });
+  });
+
+  it("replays an exact completed two-partition ledger byte-for-byte", async () => {
+    const run = () =>
+      runQualificationCohortScrubRoot(
+        payload,
+        qualificationCohortScrubRootInstanceId(payload.executionId),
+        new ImmediateRootStep(() => Promise.reject(new Error("unexpected event"))),
+        ports([], { launchChild: (child) => Promise.resolve(completedSnapshot(child)) }),
+      );
+    const first = await run();
+    await expect(run()).resolves.toEqual(first);
   });
 
   it("rejects partial create responses and structural child statuses", async () => {
