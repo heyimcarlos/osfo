@@ -141,7 +141,7 @@ _Avoid_: Mutable Skill body, latest Skill pointer, model completion
 
 **Skill Learning**:
 Company-funded, bounded post-turn work that may create or revise a Personal Skill
-only after a Good Root Outcome commits and trusted reusable evidence exists. It
+only after the direct User's completed root turn commits and trusted reusable evidence exists. It
 is failure-isolated from the root task, excludes untrusted uploaded or fetched
 content, and keeps minor non-changes quiet.
 _Avoid_: Memory ingestion, whole-Session reflection, model self-approval

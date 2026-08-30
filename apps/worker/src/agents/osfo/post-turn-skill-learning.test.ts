@@ -2,21 +2,10 @@
 /* oxlint-disable typescript/no-misused-spread -- Test fixtures copy decoded immutable schema values intentionally. */
 
 import { describe, expect, it } from "@effect/vitest";
-import { Option, Result, Schema } from "effect";
+import { Option, Schema } from "effect";
 
-import { AssistantMessageId, ThinkSubmissionId, UserId } from "../../domain";
-import {
-  PersonalSkillId,
-  PersonalSkillVersionId,
-  retainedGoodRootAssertionReceiptIds,
-  retainedGoodRootTraceVersion,
-} from "../../domain/personal-skill";
-import {
-  finalizeSkillLearningCandidate,
-  projectSkillLearningDraft,
-  proposeConfirmedSkillChange,
-  SkillLearningModelDecision,
-} from "./post-turn-skill-learning";
+import { UserId } from "../../domain";
+import { projectSkillLearningDraft, SkillLearningModelDecision } from "./post-turn-skill-learning";
 
 const draft = {
   availableCapabilityIds: ["document-generation" as const],
@@ -28,15 +17,6 @@ const draft = {
   submissionId: "submission-1",
   taskDescription: "Going forward, put the summary first in every weekly report.",
 };
-const goodRootOutcome = {
-  assertionReceiptIds: retainedGoodRootAssertionReceiptIds,
-  assistantMessageId: AssistantMessageId.make("assistant-1"),
-  evaluatedAtEpochMillis: 1_788_000_000_000,
-  evaluationDeadlineEpochMillis: 1_788_000_001_000,
-  referenceTraceVersion: retainedGoodRootTraceVersion,
-  submissionId: ThinkSubmissionId.make("submission-1"),
-  userId: UserId.make("user-1"),
-} as const;
 
 describe("post-turn Skill Learning", () => {
   it("admits only explicit lasting safe direct User guidance", () => {
@@ -55,106 +35,6 @@ describe("post-turn Skill Learning", () => {
           ...draft,
           taskDescription: "Going forward, use Authorization: Bearer malicious-secret.",
         }),
-      ),
-    ).toBe(true);
-  });
-
-  it("finalizes after root commit and proposes a safe immutable revision", () => {
-    const candidate = finalizeSkillLearningCandidate(draft, goodRootOutcome, 1_788_000_000_000);
-    expect(Result.isSuccess(candidate)).toBe(true);
-    if (Result.isFailure(candidate)) return;
-    expect(candidate.success.rootOutcomeReferenceId).toContain(
-      `good-root:${retainedGoodRootTraceVersion}`,
-    );
-
-    const created = proposeConfirmedSkillChange({
-      candidate: candidate.success,
-      priorVersion: null,
-    });
-    expect(created._tag).toBe("Change");
-    if (created._tag !== "Change") return;
-    expect(created.version.taskKinds).toEqual(["document"]);
-    expect(created.version.capabilityIds).toEqual(["document-generation"]);
-
-    const revisionCandidate = {
-      ...candidate.success,
-      candidateId: candidate.success.candidateId,
-      priorSkillId: created.version.skillId,
-      priorSkillVersion: created.version.skillVersion,
-    };
-    const revised = proposeConfirmedSkillChange({
-      candidate: revisionCandidate,
-      priorVersion: created.version,
-    });
-    expect(revised._tag).toBe("NoChange");
-
-    expect(PersonalSkillId.make(created.version.skillId)).toBe(created.version.skillId);
-    expect(PersonalSkillVersionId.make(created.version.skillVersion)).toBe(
-      created.version.skillVersion,
-    );
-  });
-
-  it("keeps an accepted presentation as owned identity evidence and scopes the Skill", () => {
-    const presentationDraft = {
-      ...draft,
-      availableCapabilityIds: ["presentation-generation" as const],
-      taskDescription: "Going forward, use concise source notes in every presentation.",
-    };
-    const candidate = finalizeSkillLearningCandidate(
-      presentationDraft,
-      {
-        ...goodRootOutcome,
-        ownedArtifactContentIds: ["artifact:toolCall:presentation-2"],
-      },
-      1_788_000_000_000,
-    );
-    expect(Result.isSuccess(candidate)).toBe(true);
-    if (Result.isFailure(candidate)) return;
-    expect(candidate.success.evidence).toContainEqual({
-      _tag: "OwnedArtifact",
-      referenceId: "artifact:toolCall:presentation-2",
-    });
-    expect(candidate.success).not.toHaveProperty("slides");
-
-    const proposal = proposeConfirmedSkillChange({
-      candidate: candidate.success,
-      priorVersion: null,
-    });
-    expect(proposal._tag).toBe("Change");
-    if (proposal._tag !== "Change") return;
-    expect(proposal.version.capabilityIds).toEqual(["presentation-generation"]);
-    expect(proposal.version.capabilityIds).not.toContain("document-generation");
-  });
-
-  it("rejects expired or mismatched Good Root Outcome receipts", () => {
-    expect(
-      Result.isFailure(
-        finalizeSkillLearningCandidate(
-          draft,
-          {
-            ...goodRootOutcome,
-            evaluatedAtEpochMillis: goodRootOutcome.evaluationDeadlineEpochMillis + 1,
-          },
-          1_788_000_000_000,
-        ),
-      ),
-    ).toBe(true);
-    expect(
-      Result.isFailure(
-        finalizeSkillLearningCandidate(
-          draft,
-          { ...goodRootOutcome, submissionId: ThinkSubmissionId.make("submission-other") },
-          1_788_000_000_000,
-        ),
-      ),
-    ).toBe(true);
-    expect(
-      Result.isFailure(
-        finalizeSkillLearningCandidate(
-          draft,
-          { ...goodRootOutcome, userId: UserId.make("user-other") },
-          1_788_000_000_000,
-        ),
       ),
     ).toBe(true);
   });

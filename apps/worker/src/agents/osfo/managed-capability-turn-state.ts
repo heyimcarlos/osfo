@@ -98,7 +98,7 @@ const previousManagedTurn = (
 
 /** Decode only server-owned managed-turn metadata from one persisted User message. */
 export const readManagedTurn = (
-  message: UIMessage | undefined,
+  message: { readonly metadata?: unknown; readonly role?: unknown } | undefined,
 ): ManagedTurnMetadata | undefined => {
   if (message?.role !== "user") return undefined;
   return Option.getOrUndefined(

@@ -35,7 +35,6 @@ import type {
   FileUploadId,
 } from "../../../domain/file";
 import type {
-  GoodRootOutcomeEvaluationId,
   PersonalSkillId,
   PersonalSkillVersionId,
   SkillLearningCandidateId,
@@ -94,10 +93,6 @@ const fileAnalysisState = customType<{ data: FileAnalysisState; driverData: stri
 const personalSkillId = customType<{ data: PersonalSkillId; driverData: string }>({
   dataType: () => "text",
 });
-const goodRootOutcomeEvaluationId = customType<{
-  data: GoodRootOutcomeEvaluationId;
-  driverData: string;
-}>({ dataType: () => "text" });
 const personalSkillVersionId = customType<{
   data: PersonalSkillVersionId;
   driverData: string;
@@ -503,23 +498,6 @@ export const personalSkillLearningModelAttempts = sqliteTable(
       sql`${table.model_input_tokens} >= 0 AND ${table.model_output_tokens} >= 0 AND ${table.vendor_usd_micros} >= 0`,
     ),
     index("osfo_personal_skill_learning_model_attempts_by_candidate").on(table.candidate_id),
-  ],
-);
-
-/** Immutable PASS receipts minted by the retained Good Root evaluator authority. */
-export const goodRootOutcomeEvaluations = sqliteTable(
-  "osfo_good_root_outcome_evaluations",
-  {
-    evaluation_id: goodRootOutcomeEvaluationId().primaryKey(),
-    owner_user_id: userId().notNull(),
-    receipt_json: text().notNull(),
-    retained_at_epoch_millis: integer().notNull(),
-  },
-  (table) => [
-    index("osfo_good_root_outcome_evaluations_by_owner").on(
-      table.owner_user_id,
-      table.retained_at_epoch_millis,
-    ),
   ],
 );
 

@@ -83,6 +83,67 @@ it("includes every generated Agent migration in the runtime manifest", () => {
   expect(imports.every((match) => referencedSql.has(match[1] ?? ""))).toBe(true);
 });
 
+it.effect("drops obsolete Good Root evaluation state when an Agent wakes after migration 18", () =>
+  withEmptyDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      yield* applyMigrationChain(
+        asDurableObjectStorage(storage),
+        agentMigrations.filter(({ version }) => version <= 18),
+      );
+      database
+        .prepare(
+          `INSERT INTO osfo_good_root_outcome_evaluations
+            (evaluation_id, owner_user_id, receipt_json, retained_at_epoch_millis)
+            VALUES (?, ?, ?, ?)`,
+        )
+        .run("obsolete-evaluation", "user-1", "{}", 1_788_000_000_000);
+
+      const result = yield* applyAgentMigrations(asDurableObjectStorage(storage));
+
+      expect(result).toEqual({ appliedVersions: [19], currentVersion: 19 });
+      expect(
+        database
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'osfo_good_root_outcome_evaluations'",
+          )
+          .get(),
+      ).toBeUndefined();
+    }),
+  ),
+);
+
+it.effect("reads a bounded chronological committed-turn replay window", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      seedSession(database);
+      const insert = database.prepare(
+        `INSERT INTO osfo_committed_turns
+          (assistant_message_id, observed_at, session_id, source, think_request_id)
+          VALUES (?, ?, 'session-1', 'hook', ?)`,
+      );
+      insert.run("assistant-before", "2026-08-27 11:59:59", "request-before");
+      insert.run("assistant-boundary", "2026-08-27 12:00:00", "request-boundary");
+      insert.run("assistant-middle", "2026-08-27 12:00:01", "request-middle");
+      insert.run("assistant-latest", "2026-08-27 12:00:02", "request-latest");
+      insert.run("assistant-future", "2026-08-27 12:00:03", "request-future");
+
+      const turns = yield* makeAgentStore(
+        makeAgentDb(asDurableObjectStorage(storage)),
+      ).readCommittedTurnWindow({
+        limit: 2,
+        observedAfter: "2026-08-27 12:00:00",
+        observedAtOrBefore: "2026-08-27 12:00:02",
+      });
+
+      expect(turns.map(({ assistantMessageId }) => assistantMessageId)).toEqual([
+        "assistant-middle",
+        "assistant-latest",
+      ]);
+      expect(turns.map(({ observationSequence }) => observationSequence)).toEqual([3, 4]);
+    }),
+  ),
+);
+
 it.effect("activates an Agent that slept before the conversation processing migration", () =>
   withEmptyDatabase(({ database, storage }) =>
     Effect.gen(function* () {
@@ -125,8 +186,8 @@ it.effect("activates an Agent that slept before the conversation processing migr
       const result = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
       expect(result).toEqual({
-        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
-        currentVersion: 18,
+        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+        currentVersion: 19,
       });
       expect(
         database

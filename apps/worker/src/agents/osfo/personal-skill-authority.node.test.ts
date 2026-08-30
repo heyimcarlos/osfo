@@ -8,7 +8,7 @@ import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from "node:sqli
 
 import { describe, expect, it } from "@effect/vitest";
 import type { UIMessage } from "ai";
-import { Effect, Exit, Option, Schema } from "effect";
+import { Effect, Exit, Schema } from "effect";
 
 import {
   AssistantMessageId,
@@ -25,10 +25,8 @@ import {
   SkillLearningModelAttemptId,
 } from "../../domain/personal-skill";
 import { CommittedTurnReceipt } from "./db/store";
-import { makeGoodRootOutcomeEvaluator } from "./good-root-outcome-evaluator";
 import { CommittedTurnTerminal, withCommittedTurnTerminal } from "./committed-turn-terminal";
 import {
-  makeGoodRootOutcomeEvaluatorAuthority,
   makePersonalSkillAuthority,
   type PersonalSkillAuthorityStorage,
 } from "./personal-skill-authority";
@@ -38,8 +36,10 @@ import { Capabilities } from "../../services/capabilities";
 import { makePersonalSkillTools, SkillManageInput } from "./personal-skill-tools";
 import { makePersonalSkillControl } from "./personal-skill-control";
 import {
-  ingestGoodRootEvaluation,
+  ingestCompletedSkillLearningTurn,
+  maximumSkillLearningReplayTurns,
   recoverPersonalSkillLearning,
+  replayCommittedSkillLearningTurns,
   selectPersonalSkillsForTurn,
 } from "./personal-skill-runtime";
 
@@ -287,6 +287,33 @@ describe("PersonalSkillAuthority", () => {
         const candidate = learningCandidate();
         expect((yield* authority.enqueueLearning(candidate))._tag).toBe("Queued");
         expect((yield* authority.enqueueLearning(candidate))._tag).toBe("AlreadyQueued");
+        expect(
+          (yield* authority.enqueueLearning({
+            ...candidate,
+            evidence: candidate.evidence.map((reference) =>
+              reference._tag === "ConfirmedRootOutcome"
+                ? { _tag: "CompletedDirectUserTurn" as const, referenceId: reference.referenceId }
+                : reference,
+            ),
+          }))._tag,
+        ).toBe("AlreadyQueued");
+        expect(
+          (yield* authority.enqueueLearning({
+            ...candidate,
+            candidateBytes: candidate.candidateBytes + 1n,
+            createdAtEpochMillis: candidate.createdAtEpochMillis + 1,
+          }))._tag,
+        ).toBe("AlreadyQueued");
+        expect(
+          Exit.isFailure(
+            yield* Effect.exit(
+              authority.enqueueLearning({
+                ...candidate,
+                corrections: ["Use a different procedure."],
+              }),
+            ),
+          ),
+        ).toBe(true);
 
         const first = yield* authority.claimLearning({
           candidateId: candidate.candidateId,
@@ -360,6 +387,10 @@ describe("PersonalSkillAuthority", () => {
       Effect.gen(function* () {
         const authority = makePersonalSkillAuthority(storage);
         const candidate = learningCandidate("candidate-atomic");
+        expect(candidate.evidence).toContainEqual({
+          _tag: "ConfirmedRootOutcome",
+          referenceId: candidate.rootOutcomeReferenceId,
+        });
         yield* authority.enqueueLearning(candidate);
         yield* authority.claimLearning({
           candidateId: candidate.candidateId,
@@ -471,11 +502,16 @@ describe("PersonalSkillAuthority", () => {
     withDatabase((storage) =>
       Effect.gen(function* () {
         const authority = makePersonalSkillAuthority(storage);
-        expect(authority).not.toHaveProperty("retainGoodRootEvaluation");
         const submissionId = ThinkSubmissionId.make("submission-journey");
         const assistantMessageId = AssistantMessageId.make("assistant-journey");
         const requestId = ThinkRequestId.make("request-journey");
-        const messages = journeyMessages({ assistantMessageId, requestId, submissionId });
+        const learningNowEpochMillis = Date.UTC(2026, 7, 27, 0, 0, 0, 100);
+        const messages = journeyMessages({
+          assistantMessageId,
+          ownedPresentationContentId: "artifact:toolCall:presentation-journey",
+          requestId,
+          submissionId,
+        });
         const committed = yield* Schema.decodeEffect(CommittedTurnReceipt)({
           assistantMessageId,
           observationSequence: 1,
@@ -484,29 +520,34 @@ describe("PersonalSkillAuthority", () => {
           source: "hook",
           thinkRequestId: requestId,
         });
-        const evaluation = yield* makeGoodRootOutcomeEvaluator({
-          authority: makeGoodRootOutcomeEvaluatorAuthority(storage),
-          facts: {
-            readCommittedTurns: Effect.succeed([committed]),
-            readMessages: () => messages,
-          },
-        }).evaluate({
-          assistantMessageId,
-          evaluatedAtEpochMillis: 1_788_000_000_100,
-        });
-        expect(Option.isSome(evaluation)).toBe(true);
-        if (Option.isNone(evaluation)) return;
-        const ingested = yield* ingestGoodRootEvaluation({
+        const ingested = yield* ingestCompletedSkillLearningTurn({
           authority,
+          assistantMessageId,
           committedTurns: [committed],
           messages,
-          nowEpochMillis: 1_788_000_000_100,
-          reference: evaluation.value,
         });
         expect(ingested._tag).toBe("SkillLearningQueued");
         if (ingested._tag !== "SkillLearningQueued") return;
+        expect(ingested.candidate.evidence).toContainEqual({
+          _tag: "OwnedArtifact",
+          referenceId: "artifact:toolCall:presentation-journey",
+        });
+        expect(ingested.candidate.evidence).toContainEqual({
+          _tag: "CompletedDirectUserTurn",
+          referenceId: "good-root:personal-skill-learning-v1:submission-journey:assistant-journey",
+        });
+        const duplicate = yield* ingestCompletedSkillLearningTurn({
+          authority: makePersonalSkillAuthority(storage),
+          assistantMessageId,
+          committedTurns: [committed],
+          messages,
+        });
+        expect(duplicate).toMatchObject({
+          _tag: "SkillLearningAlreadyQueued",
+          candidateId: ingested.candidateId,
+        });
 
-        const recovered = yield* recoverPersonalSkillLearning(authority, 1_788_000_000_101);
+        const recovered = yield* recoverPersonalSkillLearning(authority, learningNowEpochMillis);
         expect(recovered.map(({ candidateId }) => candidateId)).toEqual([
           ingested.candidate.candidateId,
         ]);
@@ -530,8 +571,8 @@ describe("PersonalSkillAuthority", () => {
             requirements: ["personal-agent"],
           },
           candidate: recovered[0] ?? ingested.candidate,
-          load: yield* authority.learningLoad(userId, 1_788_000_000_100),
-          nowEpochMillis: 1_788_000_000_100,
+          load: yield* authority.learningLoad(userId, learningNowEpochMillis),
+          nowEpochMillis: learningNowEpochMillis,
         });
         expect(outcome._tag).toBe("Learned");
 
@@ -596,7 +637,112 @@ describe("PersonalSkillAuthority", () => {
     ),
   );
 
-  it.effect("rejects cross-turn, unsuccessful, and uncommitted evaluator PASS pairings", () =>
+  it.effect(
+    "replays a committed direct User turn after the enqueue crash window exactly once",
+    () =>
+      withDatabase((storage) =>
+        Effect.gen(function* () {
+          const authority = makePersonalSkillAuthority(storage);
+          const assistantMessageId = AssistantMessageId.make("assistant-replay");
+          const requestId = ThinkRequestId.make("request-replay");
+          const sessionId = "session-replay";
+          const submissionId = ThinkSubmissionId.make("submission-replay");
+          const committed = yield* Schema.decodeEffect(CommittedTurnReceipt)({
+            assistantMessageId,
+            observationSequence: 1,
+            observedAt: "2026-08-27 00:00:00",
+            sessionId,
+            source: "hook",
+            thinkRequestId: requestId,
+          });
+          const messages = journeyMessages({
+            assistantMessageId,
+            requestId,
+            sessionId,
+            submissionId,
+          });
+          const replay = () =>
+            replayCommittedSkillLearningTurns({
+              authority,
+              committedTurns: [committed],
+              nowEpochMillis: Date.UTC(2026, 7, 27, 0, 0, 1),
+              readSessionHistory: (requestedSessionId) => {
+                expect(requestedSessionId).toBe(sessionId);
+                return Effect.succeed(messages);
+              },
+            });
+
+          expect(yield* replay()).toMatchObject([{ _tag: "SkillLearningQueued" }]);
+          expect(yield* replay()).toMatchObject([{ _tag: "SkillLearningAlreadyQueued" }]);
+          expect(
+            (yield* recoverPersonalSkillLearning(authority, Date.UTC(2026, 7, 27, 0, 0, 1))).map(
+              ({ candidateId }) => candidateId,
+            ),
+          ).toEqual(["turn-submission-replay"]);
+        }),
+      ),
+  );
+
+  it.effect("bounds replay to recent turns and does not enqueue recent ineligible turns", () =>
+    withDatabase((storage) =>
+      Effect.gen(function* () {
+        const nowEpochMillis = Date.UTC(2026, 7, 27, 0, 0, 1);
+        const stale = yield* Schema.decodeEffect(CommittedTurnReceipt)({
+          assistantMessageId: "assistant-stale",
+          observationSequence: 1,
+          observedAt: "2026-08-25 00:00:00",
+          sessionId: "session-stale",
+          source: "hook",
+          thinkRequestId: "request-stale",
+        });
+        const recent = yield* Effect.forEach(
+          Array.from({ length: maximumSkillLearningReplayTurns + 1 }, (_, index) => index + 2),
+          (observationSequence) =>
+            Schema.decodeEffect(CommittedTurnReceipt)({
+              assistantMessageId: `assistant-ineligible-${observationSequence}`,
+              observationSequence,
+              observedAt: "2026-08-27 00:00:00",
+              sessionId: `session-ineligible-${observationSequence}`,
+              source: "hook",
+              thinkRequestId: `request-ineligible-${observationSequence}`,
+            }),
+        );
+        const readSessionIds: Array<string> = [];
+        const outcomes = yield* replayCommittedSkillLearningTurns({
+          authority: makePersonalSkillAuthority(storage),
+          committedTurns: [stale, ...recent],
+          nowEpochMillis,
+          readSessionHistory: (sessionId) => {
+            readSessionIds.push(sessionId);
+            const observationSequence = Number(sessionId.slice("session-ineligible-".length));
+            return Effect.succeed(
+              journeyMessages({
+                assistantMessageId: AssistantMessageId.make(
+                  `assistant-ineligible-${observationSequence}`,
+                ),
+                includeLearningDraft: false,
+                requestId: ThinkRequestId.make(`request-ineligible-${observationSequence}`),
+                sessionId,
+                submissionId: ThinkSubmissionId.make(
+                  `submission-ineligible-${observationSequence}`,
+                ),
+              }),
+            );
+          },
+        });
+
+        expect(readSessionIds).toHaveLength(maximumSkillLearningReplayTurns);
+        expect(readSessionIds).not.toContain("session-stale");
+        expect(readSessionIds).not.toContain("session-ineligible-2");
+        expect(outcomes.every(({ _tag }) => _tag === "NoReusableLearning")).toBe(true);
+        expect(
+          yield* recoverPersonalSkillLearning(makePersonalSkillAuthority(storage), nowEpochMillis),
+        ).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("rejects ineligible, mismatched, unsuccessful, and uncommitted completed turns", () =>
     withDatabase((storage) =>
       Effect.gen(function* () {
         const submissionId = ThinkSubmissionId.make("submission-bound");
@@ -610,42 +756,42 @@ describe("PersonalSkillAuthority", () => {
           source: "hook",
           thinkRequestId: requestId,
         });
-        const evaluate = (messages: ReadonlyArray<UIMessage>, receipts = [committed]) =>
-          makeGoodRootOutcomeEvaluator({
-            authority: makeGoodRootOutcomeEvaluatorAuthority(storage),
-            facts: {
-              readCommittedTurns: Effect.succeed(receipts),
-              readMessages: () => messages,
-            },
-          }).evaluate({
+        const ingest = (messages: ReadonlyArray<UIMessage>, receipts = [committed]) =>
+          ingestCompletedSkillLearningTurn({
+            authority: makePersonalSkillAuthority(storage),
             assistantMessageId,
-            evaluatedAtEpochMillis: 1_788_000_000_100,
+            committedTurns: receipts,
+            messages,
           });
 
         expect(
-          Option.isNone(
-            yield* evaluate(
-              journeyMessages({
-                assistantMessageId,
-                requestId,
-                submissionId,
-                terminalSubmissionId: ThinkSubmissionId.make("submission-other"),
-              }),
-            ),
+          yield* ingest(
+            journeyMessages({
+              assistantMessageId,
+              requestId,
+              submissionId,
+              terminalSubmissionId: ThinkSubmissionId.make("submission-other"),
+            }),
           ),
-        ).toBe(true);
+        ).toMatchObject({ _tag: "SkillLearningRejected" });
         expect(
-          Option.isNone(
-            yield* evaluate(
-              journeyMessages({ assistantMessageId, requestId, status: "error", submissionId }),
-            ),
+          yield* ingest(
+            journeyMessages({ assistantMessageId, requestId, status: "error", submissionId }),
           ),
-        ).toBe(true);
+        ).toMatchObject({ _tag: "SkillLearningRejected" });
         expect(
-          Option.isNone(
-            yield* evaluate(journeyMessages({ assistantMessageId, requestId, submissionId }), []),
+          yield* ingest(journeyMessages({ assistantMessageId, requestId, submissionId }), []),
+        ).toMatchObject({ _tag: "SkillLearningRejected", reason: "rootNotCommitted" });
+        expect(
+          yield* ingest(
+            journeyMessages({
+              assistantMessageId,
+              includeLearningDraft: false,
+              requestId,
+              submissionId,
+            }),
           ),
-        ).toBe(true);
+        ).toMatchObject({ _tag: "NoReusableLearning", submissionId });
       }),
     ),
   );
@@ -894,33 +1040,6 @@ describe("PersonalSkillAuthority", () => {
         } as const;
         yield* authority.recordLearningCost(costEvidence);
         yield* authority.recordLearningCost(costEvidence);
-        const deletionAssistantId = AssistantMessageId.make("assistant-account-delete");
-        const deletionRequestId = ThinkRequestId.make("request-account-delete");
-        const deletionSubmissionId = ThinkSubmissionId.make("submission-account-delete");
-        const deletionCommit = yield* Schema.decodeEffect(CommittedTurnReceipt)({
-          assistantMessageId: deletionAssistantId,
-          observationSequence: 2,
-          observedAt: "2026-08-27 00:00:01",
-          sessionId: "session-journey",
-          source: "hook",
-          thinkRequestId: deletionRequestId,
-        });
-        const deletionMessages = journeyMessages({
-          assistantMessageId: deletionAssistantId,
-          requestId: deletionRequestId,
-          submissionId: deletionSubmissionId,
-        });
-        const deletionEvaluation = yield* makeGoodRootOutcomeEvaluator({
-          authority: makeGoodRootOutcomeEvaluatorAuthority(storage),
-          facts: {
-            readCommittedTurns: Effect.succeed([deletionCommit]),
-            readMessages: () => deletionMessages,
-          },
-        }).evaluate({
-          assistantMessageId: deletionAssistantId,
-          evaluatedAtEpochMillis: 1_788_000_000_250,
-        });
-        expect(Option.isSome(deletionEvaluation)).toBe(true);
         expect(
           Exit.isFailure(
             yield* Effect.exit(
@@ -959,13 +1078,6 @@ describe("PersonalSkillAuthority", () => {
             )
             .one().count,
         ).toBe(0);
-        expect(
-          storage.sql
-            .exec<{ count: number }>(
-              "SELECT COUNT(*) AS count FROM osfo_good_root_outcome_evaluations",
-            )
-            .one().count,
-        ).toBe(0);
       }),
     ),
   );
@@ -973,18 +1085,24 @@ describe("PersonalSkillAuthority", () => {
 
 const journeyMessages = ({
   assistantMessageId,
+  includeLearningDraft = true,
+  ownedPresentationContentId,
   requestId,
+  sessionId = "session-journey",
   status = "completed",
   submissionId,
   terminalSubmissionId = submissionId,
 }: {
   readonly assistantMessageId: AssistantMessageId;
+  readonly includeLearningDraft?: boolean;
+  readonly ownedPresentationContentId?: string;
   readonly requestId: ThinkRequestId;
+  readonly sessionId?: string;
   readonly status?: "aborted" | "completed" | "error";
   readonly submissionId: ThinkSubmissionId;
   readonly terminalSubmissionId?: ThinkSubmissionId;
 }): ReadonlyArray<UIMessage> => {
-  const turnMetadata = Schema.decodeUnknownSync(ManagedTurnMetadata)({
+  const turnMetadata = Schema.decodeSync(ManagedTurnMetadata)({
     _tag: "OsfoManagedTurn",
     allowancePeriodId: "allowance-journey",
     authorityIdentity: {
@@ -998,16 +1116,13 @@ const journeyMessages = ({
       initialized: true,
       loadedSkillReceipts: [],
       pendingFileAnalyses: [],
-      skillLearningDraft: {
-        availableCapabilityIds: ["document-generation"],
-        availableRequirements: ["personal-agent"],
-        origin: "authSession",
-        ownerUserId: userId,
-        priorSkillId: null,
-        priorSkillVersion: null,
-        submissionId,
-        taskDescription: "Always put the summary first in every weekly report.",
-      },
+      skillLearningDraft: includeLearningDraft
+        ? {
+            availableCapabilityIds: ["document-generation"],
+            availableRequirements: ["personal-agent"],
+            taskDescription: "Always put the summary first in every weekly report.",
+          }
+        : null,
     },
     conservativeVendorUsdMicros: 100,
     coreMemoryAuthorization: {
@@ -1033,7 +1148,7 @@ const journeyMessages = ({
     planPolicyVersion: "launch-v1",
     route: "@cf/test/model",
     routeId: "route-journey",
-    sessionId: "session-journey",
+    sessionId,
     submissionId,
     targetInputTokens: 18_000,
   });
@@ -1048,6 +1163,19 @@ const journeyMessages = ({
     status,
     submissionId: terminalSubmissionId,
   });
+  const assistantParts: UIMessage["parts"] = [{ text: "The report is ready.", type: "text" }];
+  if (ownedPresentationContentId !== undefined) {
+    assistantParts.push({
+      input: {},
+      output: {
+        artifactRole: { _tag: "GeneratedPresentationV1" },
+        content: { contentId: ownedPresentationContentId },
+      },
+      state: "output-available",
+      toolCallId: "presentation-journey",
+      type: "tool-generatePresentation",
+    });
+  }
   return [
     {
       id: `user-${submissionId}`,
@@ -1058,7 +1186,7 @@ const journeyMessages = ({
     {
       id: assistantMessageId,
       metadata: withCommittedTurnTerminal({}, terminal),
-      parts: [{ text: "The report is ready.", type: "text" }],
+      parts: assistantParts,
       role: "assistant",
     },
   ];
@@ -1111,12 +1239,6 @@ const withDatabase = <A, E>(
         outcome TEXT NOT NULL CHECK (outcome IN ('failure', 'success')),
         recorded_at_epoch_millis INTEGER NOT NULL,
         vendor_usd_micros INTEGER NOT NULL CHECK (vendor_usd_micros >= 0)
-      ) STRICT`);
-      database.exec(`CREATE TABLE osfo_good_root_outcome_evaluations (
-        evaluation_id TEXT PRIMARY KEY,
-        owner_user_id TEXT NOT NULL,
-        receipt_json TEXT NOT NULL,
-        retained_at_epoch_millis INTEGER NOT NULL
       ) STRICT`);
       return { database, storage: nodeStorage(database) };
     }),

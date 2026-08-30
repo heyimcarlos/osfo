@@ -1,4 +1,18 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, max, ne, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  max,
+  ne,
+  sql,
+} from "drizzle-orm";
 import { DateTime, Effect, Option, Schema } from "effect";
 
 import { DbTimestamp } from "../../../db";
@@ -292,6 +306,13 @@ export const CommittedTurnReceipt = Schema.Struct({
 
 /** Durable Osfo receipt for one observed committed Think turn. */
 export type CommittedTurnReceipt = typeof CommittedTurnReceipt.Type;
+
+/** Inclusive durable-time window for bounded committed-turn recovery. */
+export interface CommittedTurnWindow {
+  readonly limit: number;
+  readonly observedAfter: string;
+  readonly observedAtOrBefore: string;
+}
 
 const AgentInitializationRecord = Schema.Struct({
   agentId: AgentId,
@@ -834,6 +855,30 @@ export const makeAgentStore = (db: AgentDb) => {
     ),
   );
 
+  const readCommittedTurnWindow = (window: CommittedTurnWindow) =>
+    execute("readCommittedTurns", () =>
+      db
+        .select(committedTurnReceiptFields)
+        .from(committedTurns)
+        .where(
+          and(
+            gte(committedTurns.observed_at, window.observedAfter),
+            lte(committedTurns.observed_at, window.observedAtOrBefore),
+          ),
+        )
+        .orderBy(desc(committedTurns.observation_sequence))
+        .limit(window.limit)
+        .all(),
+    ).pipe(
+      Effect.flatMap((rows) =>
+        Effect.forEach(rows, (row) => decodeCommittedTurnReceipt("readCommittedTurns", row)),
+      ),
+      Effect.map((rows) =>
+        // oxlint-disable-next-line unicorn/no-array-sort -- The Worker target lacks ES2023 toSorted; this fresh decoded array is safe to mutate.
+        rows.sort((left, right) => left.observationSequence - right.observationSequence),
+      ),
+    );
+
   const deleteHistoricalSession = Effect.fn("AgentStore.deleteHistoricalSession")(function* (
     input: DeleteHistoricalSessionInput,
   ) {
@@ -1059,6 +1104,7 @@ export const makeAgentStore = (db: AgentDb) => {
     inspect,
     ownsSession,
     readCommittedTurns,
+    readCommittedTurnWindow,
     readPrimarySessionId,
     readRoute,
     readRouteSessionPage,

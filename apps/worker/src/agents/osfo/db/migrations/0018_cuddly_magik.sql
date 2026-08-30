@@ -1,0 +1,1 @@
+DROP TABLE `osfo_good_root_outcome_evaluations`;

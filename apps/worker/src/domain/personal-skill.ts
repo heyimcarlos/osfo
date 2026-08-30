@@ -1,8 +1,9 @@
-import { Effect, Result, Schema } from "effect";
+import { Result, Schema } from "effect";
 
 /* oxlint-disable osfo/no-unknown-parameters -- These exported decoders are the owning trust boundary for persistence and Capability inputs. */
 
-import { AssistantMessageId, ThinkSubmissionId, UserId } from "../domain";
+import { AssistantMessageId, UserId } from "../domain";
+import type { ThinkSubmissionId } from "../domain";
 import { CapabilityId, currentCapabilityCatalog, maximumCapabilityIds } from "./capability-catalog";
 
 const maximumVersionBytes = Number(currentCapabilityCatalog.skillLearning.skillVersionBytes);
@@ -86,16 +87,12 @@ export const SkillLearningModelAttemptId = boundedText(200).pipe(
 /** Stable identity of one company-funded Skill Learning model attempt. */
 export type SkillLearningModelAttemptId = typeof SkillLearningModelAttemptId.Type;
 
-/** Unguessable identity of one PASS retained by the evaluator authority. */
-export const GoodRootOutcomeEvaluationId = boundedText(200).pipe(
-  Schema.brand("GoodRootOutcomeEvaluationId"),
-);
-
-/** Unguessable identity of one PASS retained by the evaluator authority. */
-export type GoodRootOutcomeEvaluationId = typeof GoodRootOutcomeEvaluationId.Type;
-
-/** Closed trusted evidence references. Content stays in its owning store. */
+/**
+ * Closed trusted evidence references. Content stays in its owning store.
+ * ConfirmedRootOutcome remains only for historical candidate and version compatibility.
+ */
 export const SkillEvidenceReference = Schema.TaggedUnion({
+  CompletedDirectUserTurn: { referenceId: boundedText(200) },
   ConfirmedEffect: { referenceId: boundedText(200) },
   ConfirmedRootOutcome: { referenceId: boundedText(200) },
   ExplicitUserCorrection: { referenceId: boundedText(200) },
@@ -116,57 +113,13 @@ export const SkillOutcomeFacts = Schema.Struct({
 /** Confirmed outcome facts retained without provider payloads or Session content. */
 export type SkillOutcomeFacts = typeof SkillOutcomeFacts.Type;
 
-/** Active retained Reference Workload Trace for personal Skill Learning. */
-export const retainedGoodRootTraceVersion = "personal-skill-learning-v1";
-export const retainedGoodRootAssertionReceiptIds = [
-  "root-assistant-committed",
-  "root-terminal-completed",
-  "reusable-correction-accepted",
-] as const;
-
-const GoodRootAssertionReceiptId = Schema.Literals(retainedGoodRootAssertionReceiptIds);
-
-/** Trusted PASS emitted only by the retained Reference Workload Trace evaluator. */
-export const GoodRootOutcomeReceipt = Schema.Struct({
-  assertionReceiptIds: Schema.Array(GoodRootAssertionReceiptId).check(
-    Schema.makeFilter(
-      (ids) =>
-        retainedGoodRootAssertionReceiptIds.every((id) => ids.includes(id)) &&
-        ids.length === retainedGoodRootAssertionReceiptIds.length,
-    ),
-  ),
-  assistantMessageId: AssistantMessageId,
-  evaluatedAtEpochMillis: nonNegativeInteger,
-  evaluationDeadlineEpochMillis: nonNegativeInteger,
-  ownedArtifactContentIds: Schema.Array(boundedText(200))
-    .check(Schema.isMaxLength(4))
-    .pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
-  referenceTraceVersion: Schema.Literal(retainedGoodRootTraceVersion),
+/** Stable evidence identity for one completed turn admitted to Skill Learning. */
+export const completedSkillLearningTurnReferenceId = (
   submissionId: ThinkSubmissionId,
-  userId: UserId,
-}).check(
-  Schema.makeFilter(
-    (receipt) =>
-      receipt.evaluatedAtEpochMillis <= receipt.evaluationDeadlineEpochMillis ||
-      "A Good Root Outcome must pass before its Evaluation Deadline",
-  ),
-);
-
-/** Trusted PASS emitted only by a versioned Reference Workload Trace evaluator. */
-export type GoodRootOutcomeReceipt = typeof GoodRootOutcomeReceipt.Type;
-
-/** Public Agent input references retained evaluator authority rather than carrying a PASS. */
-export const GoodRootOutcomeEvaluationReference = Schema.Struct({
-  evaluationId: GoodRootOutcomeEvaluationId,
-  userId: UserId,
-});
-
-/** Public Agent input references retained evaluator authority rather than carrying a PASS. */
-export type GoodRootOutcomeEvaluationReference = typeof GoodRootOutcomeEvaluationReference.Type;
-
-/** Stable evidence identity for one accepted Good Root Outcome. */
-export const goodRootOutcomeReferenceId = (receipt: GoodRootOutcomeReceipt): string =>
-  `good-root:${receipt.referenceTraceVersion}:${receipt.submissionId}:${receipt.assistantMessageId}`;
+  assistantMessageId: AssistantMessageId,
+): string =>
+  // Existing candidates retain this opaque identity. Nothing parses its historical segments.
+  `good-root:personal-skill-learning-v1:${submissionId}:${assistantMessageId}`;
 
 export const SkillInstructionText = Schema.String.check(
   Schema.isMinLength(1),

@@ -63,7 +63,6 @@ import {
   currentCapabilityCatalog,
 } from "../../domain/capability-catalog";
 import {
-  type GoodRootOutcomeEvaluationReference,
   PersonalSkillId,
   PersonalSkillVersion,
   PersonalSkillVersionId,
@@ -129,9 +128,11 @@ import {
   withCommittedTurnTerminal,
 } from "./committed-turn-terminal";
 import {
-  ingestGoodRootEvaluation,
+  ingestCompletedSkillLearningTurn,
   recoverPersonalSkillLearning,
+  replayCommittedSkillLearningTurns,
   selectPersonalSkillsForTurn,
+  skillLearningReplayWindow,
 } from "./personal-skill-runtime";
 import { makePersonalSkillControl, PersonalSkillApprovalInvalid } from "./personal-skill-control";
 import {
@@ -332,11 +333,9 @@ import { DocumentBuildFileResolution } from "./document-build-file-resolution";
 import { FileAnalysisReconciliation } from "./file-analysis-reconciliation";
 import { ManagedCapabilityState } from "./managed-capability-turn-state";
 import {
-  makeGoodRootOutcomeEvaluatorAuthority,
   makePersonalSkillAuthority,
   type PersonalSkillAvailability,
 } from "./personal-skill-authority";
-import { makeGoodRootOutcomeEvaluator } from "./good-root-outcome-evaluator";
 import {
   makePersonalSkillTools,
   SkillInspectInput,
@@ -1024,13 +1023,6 @@ export class OsfoAgent extends Think<Env> {
   readonly #promptAssembly = PromptAssembly.makeRetainedPromptAssembly();
   readonly #store = makeAgentStore(this.#db);
   readonly #personalSkillAuthority = makePersonalSkillAuthority(this.ctx.storage);
-  readonly #goodRootOutcomeEvaluator = makeGoodRootOutcomeEvaluator({
-    authority: makeGoodRootOutcomeEvaluatorAuthority(this.ctx.storage),
-    facts: {
-      readCommittedTurns: this.#store.readCommittedTurns,
-      readMessages: () => this.messages,
-    },
-  });
   readonly #personalSkillTools = makePersonalSkillTools({
     authority: this.#personalSkillAuthority,
     availability: () => this.#personalSkillAvailability,
@@ -3255,36 +3247,41 @@ export class OsfoAgent extends Think<Env> {
     await Effect.runPromise(this.#reminders.exposeSources(userId, committed));
   }
 
-  async #recordGoodRootOutcome(input: GoodRootOutcomeEvaluationReference) {
+  async #enqueueSkillLearning(assistantMessageId: AssistantMessageId): Promise<void> {
     const committed = await Effect.runPromise(this.#store.readCommittedTurns);
     const outcome = await Effect.runPromise(
-      ingestGoodRootEvaluation({
+      ingestCompletedSkillLearningTurn({
         authority: this.#personalSkillAuthority,
+        assistantMessageId,
         committedTurns: committed,
         messages: this.messages,
-        nowEpochMillis: Date.now(),
-        reference: input,
       }),
     );
-    if (outcome._tag !== "SkillLearningQueued") return outcome;
+    if (outcome._tag !== "SkillLearningQueued") return;
     this.ctx.waitUntil(this.#runSkillLearning(outcome.candidate));
-    return { _tag: outcome._tag, candidateId: outcome.candidateId } as const;
-  }
-
-  async #evaluateGoodRootOutcome(assistantMessageId: AssistantMessageId): Promise<void> {
-    const evaluation = await Effect.runPromise(
-      this.#goodRootOutcomeEvaluator.evaluate({
-        assistantMessageId,
-        evaluatedAtEpochMillis: Date.now(),
-      }),
-    );
-    if (Option.isNone(evaluation)) return;
-    await this.#recordGoodRootOutcome(evaluation.value);
   }
 
   async #recoverSkillLearning(): Promise<void> {
+    const nowEpochMillis = Date.now();
+    await Effect.runPromise(
+      this.#store.readCommittedTurnWindow(skillLearningReplayWindow(nowEpochMillis)).pipe(
+        Effect.flatMap((committedTurns) =>
+          replayCommittedSkillLearningTurns({
+            authority: this.#personalSkillAuthority,
+            committedTurns,
+            nowEpochMillis,
+            readSessionHistory: (sessionId) => readThinkHistory(Session.create(this), sessionId),
+          }),
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Committed personal Skill Learning could not be replayed").pipe(
+            Effect.annotateLogs({ cause: Cause.pretty(cause) }),
+          ),
+        ),
+      ),
+    );
     const recoverable = await Effect.runPromise(
-      recoverPersonalSkillLearning(this.#personalSkillAuthority, Date.now()),
+      recoverPersonalSkillLearning(this.#personalSkillAuthority, nowEpochMillis),
     );
     await Promise.all(recoverable.map((candidate) => this.#runSkillLearning(candidate)));
     await this.#deliverPendingSkillLearningNotifications();
@@ -6553,13 +6550,13 @@ export class OsfoAgent extends Think<Env> {
       this.ctx.waitUntil(
         Effect.runPromise(
           Effect.tryPromise({
-            try: () => this.#evaluateGoodRootOutcome(assistantMessageId),
-            catch: (cause) => ({ _tag: "GoodRootEvaluationUnavailable" as const, cause }),
+            try: () => this.#enqueueSkillLearning(assistantMessageId),
+            catch: (cause) => ({ _tag: "SkillLearningUnavailable" as const, cause }),
           }).pipe(
             Effect.catch((failure) =>
-              Effect.logWarning("Good Root evaluation was isolated from the committed turn").pipe(
-                Effect.annotateLogs({ failure: failure._tag }),
-              ),
+              Effect.logWarning(
+                "Post-turn Skill Learning was isolated from the committed turn",
+              ).pipe(Effect.annotateLogs({ failure: failure._tag })),
             ),
           ),
         ),
