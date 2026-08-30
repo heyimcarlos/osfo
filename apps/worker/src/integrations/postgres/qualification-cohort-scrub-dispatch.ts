@@ -133,13 +133,16 @@ export const makeQualificationCohortScrubDispatchAuthority = (database: Database
           const leaseExpiresAt = new Date(
             clock.getTime() + qualificationCohortScrubDispatchLeaseMilliseconds,
           );
-          return await Promise.all(
+          const outcomes = await Promise.all(
             rows.map(async (row) => {
               const identity = qualificationCohortScrubDispatchIdentity(
                 row.cohort_id,
                 row.execution_id,
               );
-              if (!rowMatches(row, identity)) throw new Error("Scrub dispatch identity conflicts");
+              if (!rowMatches(row, identity)) {
+                await quarantineIdentityConflict(transaction, row, identity, clock);
+                return null;
+              }
               const [updated] = await transaction
                 .update(qualificationCohortScrubDispatches)
                 .set({
@@ -153,6 +156,7 @@ export const makeQualificationCohortScrubDispatchAuthority = (database: Database
               return claimed(updated, identity, claimToken);
             }),
           );
+          return outcomes.flatMap((outcome) => (outcome === null ? [] : [outcome]));
         }),
       ),
   );
@@ -323,12 +327,44 @@ const claimed = (
 const databaseClock = async (database: Database) => {
   const [row] = await database
     .select({ now: sql<string>`clock_timestamp()::text` })
-    .from(qualificationCohortScrubDispatches)
-    .limit(1);
+    .from(sql`(values (1)) as database_clock`);
   if (row === undefined) throw new Error("Database clock unavailable");
   const epochMilliseconds = Date.parse(row.now);
   if (!Number.isFinite(epochMilliseconds)) throw new Error("Database clock is invalid");
   return new Date(epochMilliseconds);
+};
+
+const quarantineIdentityConflict = async (
+  database: Database,
+  row: DispatchRow,
+  identity: QualificationCohortScrubDispatchIdentity,
+  clock: Date,
+) => {
+  const failureChecksum = qualificationChecksum({
+    dispatchId: identity.dispatchId,
+    failure: "qualificationCohortScrubDispatchIdentityConflict",
+    protocolVersion: qualificationCohortScrubDispatchProtocol,
+  });
+  const [updated] = await database
+    .update(qualificationCohortScrubDispatches)
+    .set({
+      claim_token: null,
+      claimed_at: null,
+      last_observed_at: clock,
+      last_status: "identityConflict",
+      last_status_checksum: failureChecksum,
+      lease_expires_at: null,
+      restart_applied_at: null,
+      restart_generation: 0,
+      restart_intent_checksum: null,
+      restart_reserved_at: null,
+      settled_at: clock,
+      state: "CONFLICT",
+      terminal_failure_checksum: failureChecksum,
+    })
+    .where(eq(qualificationCohortScrubDispatches.dispatch_id, row.dispatch_id))
+    .returning({ dispatchId: qualificationCohortScrubDispatches.dispatch_id });
+  if (updated === undefined) throw new Error("Scrub dispatch quarantine disappeared");
 };
 
 const lockedDispatch = (database: Database, dispatchId: string) =>

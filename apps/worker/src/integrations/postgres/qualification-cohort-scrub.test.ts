@@ -1,14 +1,19 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/global-date-in-effect, eslint/no-underscore-dangle -- PostgreSQL test setup is Promise-native, timestamps are fixed, and outcomes use the canonical _tag discriminator. */
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside Effect generators. */
 import { expect, it } from "@effect/vitest";
-import { qualificationCohortScrubDispatches } from "@osfo/db/schema/qualification-cohorts";
+import {
+  qualificationCohorts,
+  qualificationCohortScrubDispatches,
+} from "@osfo/db/schema/qualification-cohorts";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
+import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 
 import { qualificationChecksum } from "../../qualification/qualification-checksum";
 import { qualificationCohortScrubPartitionProtocol } from "../../qualification/cohort-scrub-partition";
 import { qualificationCohortScrubDispatchIdentity } from "../../qualification/cohort-scrub-dispatch";
 import { qualificationCohortScrubRootWorkflowPayload } from "../../qualification/cohort-scrub-root";
+import { settleScheduledBranches } from "../../scheduled-lifecycle";
 import { makeQualificationCohortAuthority } from "./qualification-cohort";
 import { makeQualificationCohortScrubDispatchAuthority } from "./qualification-cohort-scrub-dispatch";
 
@@ -764,6 +769,107 @@ it.effect(
         claimToken: "claim-2",
       });
     }),
+);
+
+it("keeps hourly maintenance successful when no scrub dispatch is pending", async () => {
+  const fixture = Effect.runSync(makeTestDatabase);
+  try {
+    await Effect.runPromise(applyMigrations(fixture.client));
+    const authority = makeQualificationCohortScrubDispatchAuthority(fixture.database);
+
+    await settleScheduledBranches([
+      () => Effect.runPromise(authority.claimBatch("empty-hourly-claim")).then(() => undefined),
+    ]);
+    await expect(Effect.runPromise(authority.claimBatch("empty-direct-claim"))).resolves.toEqual(
+      [],
+    );
+  } finally {
+    await Effect.runPromise(closeTestDatabase(fixture));
+  }
+});
+
+it.effect("quarantines a malformed dispatch without starving later authentic work", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedCohort(fixture, { adventurer: 1, free: 1 });
+    const laterCohortId = "qualification-scrub-cohort-later";
+    const laterExecutionId = "qualification-scrub-execution-later";
+    yield* Effect.promise(() =>
+      fixture.database.insert(qualificationCohorts).values({
+        artifact_authority_protocol: "qualification-cohort-artifacts-v1",
+        artifact_checksum: "later-cohort-checksum",
+        artifact_id: `qualification/executions/${laterExecutionId}/cohort/manifest.json`,
+        activated_at: new Date(activatedAt),
+        cohort_id: laterCohortId,
+        created_at: new Date("2099-08-29T16:58:30.000Z"),
+        created_for_qualification: true,
+        execution_id: laterExecutionId,
+        expected_adventurer_participants: 1,
+        expected_free_participants: 1,
+        expires_at: new Date("2099-09-30T17:00:00.000Z"),
+        manifest_checksum: "later-manifest-checksum",
+        not_before: new Date(activatedAt),
+        plan_checksum: "later-plan-checksum",
+        source_version: "source-version",
+        state: "PRODUCT_DELETED",
+        teardown_policy: "permanentAccountDeletion",
+      }),
+    );
+    const malformed = qualificationCohortScrubDispatchIdentity(cohortId, executionId);
+    const authentic = qualificationCohortScrubDispatchIdentity(laterCohortId, laterExecutionId);
+    yield* Effect.promise(() =>
+      fixture.database.insert(qualificationCohortScrubDispatches).values([
+        {
+          cohort_id: cohortId,
+          created_at: new Date("2099-08-30T17:00:00.000Z"),
+          dispatch_id: malformed.dispatchId,
+          execution_id: executionId,
+          protocol_version: "qualification-cohort-scrub-dispatch-corrupt",
+          root_instance_id: malformed.rootInstanceId,
+          state: "PENDING",
+        },
+        {
+          cohort_id: laterCohortId,
+          created_at: new Date("2099-08-30T17:00:01.000Z"),
+          dispatch_id: authentic.dispatchId,
+          execution_id: laterExecutionId,
+          protocol_version: authentic.protocolVersion,
+          root_instance_id: authentic.rootInstanceId,
+          state: "PENDING",
+        },
+      ]),
+    );
+    const authority = makeQualificationCohortScrubDispatchAuthority(fixture.database);
+    const failureChecksum = qualificationChecksum({
+      dispatchId: malformed.dispatchId,
+      failure: "qualificationCohortScrubDispatchIdentityConflict",
+      protocolVersion: malformed.protocolVersion,
+    });
+
+    expect(yield* authority.claimBatch("quarantine-claim")).toEqual([
+      expect.objectContaining({
+        _tag: "Claimed",
+        claimToken: "quarantine-claim",
+        dispatchId: authentic.dispatchId,
+      }),
+    ]);
+    const [quarantined] = yield* Effect.promise(() =>
+      fixture.database
+        .select()
+        .from(qualificationCohortScrubDispatches)
+        .where(eq(qualificationCohortScrubDispatches.dispatch_id, malformed.dispatchId)),
+    );
+    expect(quarantined).toMatchObject({
+      claim_token: null,
+      last_status: "identityConflict",
+      last_status_checksum: failureChecksum,
+      lease_expires_at: null,
+      state: "CONFLICT",
+      terminal_failure_checksum: failureChecksum,
+    });
+  }),
 );
 
 it.effect("persists one bounded restart generation and exact settled replay", () =>
