@@ -14,7 +14,9 @@ const sha256Hex = async (encoded: string) => {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 };
 
-const completedResponseFixture = (tamper: "contentType" | "metadata" | null) => {
+const completedResponseFixture = async (
+  tamper: "bodyHash" | "bytes" | "contentType" | "metadata" | null,
+) => {
   const executionId = "completed-response-execution";
   const requestContent = {
     authoritySources: ["worker_admission_receipts"],
@@ -48,7 +50,9 @@ const completedResponseFixture = (tamper: "contentType" | "metadata" | null) => 
     verdict: "MISSING" as const,
     version: "qualification-owner-response-v2" as const,
   };
-  const response = canonicalQualificationJson({ body, status: 424 });
+  const canonicalResponse = canonicalQualificationJson({ body, status: 424 });
+  const response =
+    tamper === "bytes" ? JSON.stringify({ status: 424, body }, null, 2) : canonicalResponse;
   const invocation = canonicalQualificationJson({
     executionId,
     manifestChecksum: requestContent.manifestChecksum,
@@ -64,6 +68,8 @@ const completedResponseFixture = (tamper: "contentType" | "metadata" | null) => 
     response,
     responseMetadata: {
       customMetadata: {
+        "osfo-body-sha256":
+          tamper === "bodyHash" ? "tampered-body-hash" : await sha256Hex(canonicalResponse),
         "osfo-execution-id": executionId,
         "osfo-kind": "qualification-owner-response-v2",
         "osfo-report-checksum":
@@ -131,9 +137,9 @@ it.effect("rejects a valid retained request replayed under another execution ide
   }),
 );
 
-const rejectsV2ResponseTamper = (tamper: "contentType" | "metadata") =>
+const rejectsV2ResponseTamper = (tamper: "bodyHash" | "bytes" | "contentType" | "metadata") =>
   Effect.gen(function* () {
-    const fixture = completedResponseFixture(tamper);
+    const fixture = yield* Effect.promise(() => completedResponseFixture(tamper));
     const response = yield* Effect.promise(() =>
       owner.fetch(
         new Request("https://qualification-owner.internal/v1/executions", {
@@ -176,10 +182,18 @@ it.effect("rejects a retained v2 response with conflicting content type", () =>
   rejectsV2ResponseTamper("contentType"),
 );
 
+it.effect("rejects a retained v2 response with a conflicting body hash", () =>
+  rejectsV2ResponseTamper("bodyHash"),
+);
+
+it.effect("rejects noncanonical v2 response bytes with copied metadata", () =>
+  rejectsV2ResponseTamper("bytes"),
+);
+
 it.each([null, 2, { injected: true }, "qualification-owner-response-v3"])(
   "rejects a legacy-shaped retained response with a declared version: %j",
   async (version) => {
-    const fixture = completedResponseFixture(null);
+    const fixture = await completedResponseFixture(null);
     const encoded = canonicalQualificationJson({
       body: {
         error: "qualificationAuthorityMaterialMissing",
@@ -221,12 +235,16 @@ it.each([null, 2, { injected: true }, "qualification-owner-response-v3"])(
 );
 
 it.each([
-  [true, 409, "qualificationOwnerWorkflowConflict"],
-  [false, 500, "qualificationOwnerWorkflowFailed"],
+  ["present", "errored", false, 409, "qualificationOwnerWorkflowConflict"],
+  ["present", "running", false, 409, "qualificationOwnerWorkflowConflict"],
+  ["present", "running", true, 409, "qualificationOwnerWorkflowConflict"],
+  ["afterStatus", "running", false, 409, "qualificationOwnerWorkflowConflict"],
+  ["afterStatus", "complete", false, 409, "qualificationOwnerWorkflowConflict"],
+  ["absent", "errored", false, 500, "qualificationOwnerWorkflowFailed"],
 ] as const)(
-  "distinguishes an authenticated immutable collision marker from transient failure: %s",
-  async (withMarker, expectedStatus, expectedError) => {
-    const fixture = completedResponseFixture(null);
+  "gives an authenticated collision marker precedence: marker=%s status=%s response=%s",
+  async (markerMode, workflowStatus, withResponse, expectedStatus, expectedError) => {
+    const fixture = await completedResponseFixture(null);
     const markerArtifactId = qualificationDistributedEvaluationConflictArtifactId(
       fixture.executionId,
     );
@@ -240,6 +258,7 @@ it.each([
     };
     const marker = { ...markerContent, checksum: qualificationChecksum(markerContent) };
     const encodedMarker = canonicalQualificationJson(marker);
+    let markerReads = 0;
     const response = await owner.fetch(
       new Request("https://qualification-owner.internal/v1/executions", {
         body: fixture.invocation,
@@ -250,25 +269,34 @@ it.each([
           get: async (key) =>
             key.endsWith("owner-request.json")
               ? { text: () => Promise.resolve(fixture.request) }
-              : withMarker && key === markerArtifactId
-                ? {
-                    customMetadata: {
-                      "osfo-artifact-checksum": marker.checksum,
-                      "osfo-body-sha256": await sha256Hex(encodedMarker),
-                      "osfo-conflicting-artifact-id": marker.conflictingArtifactId,
-                      "osfo-execution-id": marker.executionId,
-                      "osfo-kind": marker.version,
-                      "osfo-manifest-checksum": marker.manifestChecksum,
-                      "osfo-plan-checksum": marker.planChecksum,
-                    },
-                    httpMetadata: { contentType: "application/json" },
-                    text: () => Promise.resolve(encodedMarker),
-                  }
-                : null,
+              : key === markerArtifactId
+                ? ((markerReads += 1),
+                  markerMode === "present" || (markerMode === "afterStatus" && markerReads > 1))
+                  ? {
+                      customMetadata: {
+                        "osfo-artifact-checksum": marker.checksum,
+                        "osfo-body-sha256": await sha256Hex(encodedMarker),
+                        "osfo-conflicting-artifact-id": marker.conflictingArtifactId,
+                        "osfo-execution-id": marker.executionId,
+                        "osfo-kind": marker.version,
+                        "osfo-manifest-checksum": marker.manifestChecksum,
+                        "osfo-plan-checksum": marker.planChecksum,
+                      },
+                      httpMetadata: { contentType: "application/json" },
+                      text: () => Promise.resolve(encodedMarker),
+                    }
+                  : null
+                : withResponse && key.endsWith("owner-response.json")
+                  ? {
+                      ...fixture.responseMetadata,
+                      text: () => Promise.resolve(fixture.response),
+                    }
+                  : null,
         },
         QUALIFICATION_OWNER_WORKFLOW: {
-          create: () => Promise.resolve({ status: () => Promise.resolve({ status: "errored" }) }),
-          get: () => Promise.resolve({ status: () => Promise.resolve({ status: "errored" }) }),
+          create: () =>
+            Promise.resolve({ status: () => Promise.resolve({ status: workflowStatus }) }),
+          get: () => Promise.resolve({ status: () => Promise.resolve({ status: workflowStatus }) }),
         },
       },
     );
@@ -278,9 +306,45 @@ it.each([
   },
 );
 
+it.effect("serves an exact canonical v2 response", () =>
+  Effect.gen(function* () {
+    const fixture = yield* Effect.promise(() => completedResponseFixture(null));
+    const response = yield* Effect.promise(() =>
+      owner.fetch(
+        new Request("https://qualification-owner.internal/v1/executions", {
+          body: fixture.invocation,
+          method: "POST",
+        }),
+        {
+          ARTIFACTS: {
+            get: (key) =>
+              Promise.resolve(
+                key.endsWith("owner-request.json")
+                  ? { text: () => Promise.resolve(fixture.request) }
+                  : key.endsWith("owner-response.json")
+                    ? {
+                        ...fixture.responseMetadata,
+                        text: () => Promise.resolve(fixture.response),
+                      }
+                    : null,
+              ),
+          },
+          QUALIFICATION_OWNER_WORKFLOW: {
+            create: () => Promise.resolve({ status: () => Promise.resolve({ status: "running" }) }),
+            get: () => Promise.resolve({ status: () => Promise.resolve({ status: "running" }) }),
+          },
+        },
+      ),
+    );
+
+    expect(response.status).toBe(424);
+    expect(yield* Effect.promise(() => response.json())).toEqual(fixture.body);
+  }),
+);
+
 it.effect("continues to serve an exact legacy v1 terminal response", () =>
   Effect.gen(function* () {
-    const fixture = completedResponseFixture(null);
+    const fixture = yield* Effect.promise(() => completedResponseFixture(null));
     const legacy = canonicalQualificationJson({
       body: {
         error: "qualificationAuthorityMaterialMissing",
