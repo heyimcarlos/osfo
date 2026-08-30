@@ -18,26 +18,26 @@ ALTER TABLE "qualification_cohort_scrub_dispatches" ADD CONSTRAINT "qualificatio
           and "qualification_cohort_scrub_dispatches"."publication_conflict_checksum" is null and "qualification_cohort_scrub_dispatches"."publication_input_checksum" is null
           and "qualification_cohort_scrub_dispatches"."publication_lease_expires_at" is null and "qualification_cohort_scrub_dispatches"."publication_next_attempt_at" is null
           and "qualification_cohort_scrub_dispatches"."publication_settled_at" is null and "qualification_cohort_scrub_dispatches"."publication_artifact_checksum" is null)
-        or ("qualification_cohort_scrub_dispatches"."state" in ('SETTLED', 'CONFLICT') and "qualification_cohort_scrub_dispatches"."publication_state" = 'PENDING'
-          and "qualification_cohort_scrub_dispatches"."publication_attempt_count" >= 0 and "qualification_cohort_scrub_dispatches"."publication_next_attempt_at" is not null
+        or ("qualification_cohort_scrub_dispatches"."state" in ('SETTLED', 'CONFLICT') and "qualification_cohort_scrub_dispatches"."publication_state" is not null and "qualification_cohort_scrub_dispatches"."publication_state" = 'PENDING'
+          and "qualification_cohort_scrub_dispatches"."publication_attempt_count" is not null and "qualification_cohort_scrub_dispatches"."publication_attempt_count" >= 0 and "qualification_cohort_scrub_dispatches"."publication_next_attempt_at" is not null
           and "qualification_cohort_scrub_dispatches"."publication_claim_token" is null and "qualification_cohort_scrub_dispatches"."publication_lease_expires_at" is null
           and "qualification_cohort_scrub_dispatches"."publication_settled_at" is null and "qualification_cohort_scrub_dispatches"."publication_artifact_checksum" is null
           and "qualification_cohort_scrub_dispatches"."publication_conflict_checksum" is null)
-        or ("qualification_cohort_scrub_dispatches"."state" in ('SETTLED', 'CONFLICT') and "qualification_cohort_scrub_dispatches"."publication_state" = 'CLAIMED'
-          and "qualification_cohort_scrub_dispatches"."publication_attempt_count" > 0 and "qualification_cohort_scrub_dispatches"."publication_next_attempt_at" is not null
+        or ("qualification_cohort_scrub_dispatches"."state" in ('SETTLED', 'CONFLICT') and "qualification_cohort_scrub_dispatches"."publication_state" is not null and "qualification_cohort_scrub_dispatches"."publication_state" = 'CLAIMED'
+          and "qualification_cohort_scrub_dispatches"."publication_attempt_count" is not null and "qualification_cohort_scrub_dispatches"."publication_attempt_count" > 0 and "qualification_cohort_scrub_dispatches"."publication_next_attempt_at" is not null
           and "qualification_cohort_scrub_dispatches"."publication_claim_token" is not null and "qualification_cohort_scrub_dispatches"."publication_lease_expires_at" is not null
           and "qualification_cohort_scrub_dispatches"."publication_settled_at" is null and "qualification_cohort_scrub_dispatches"."publication_artifact_checksum" is null
           and "qualification_cohort_scrub_dispatches"."publication_conflict_checksum" is null)
-        or ("qualification_cohort_scrub_dispatches"."state" in ('SETTLED', 'CONFLICT') and "qualification_cohort_scrub_dispatches"."publication_state" in ('PUBLISHED', 'INELIGIBLE')
-          and "qualification_cohort_scrub_dispatches"."publication_attempt_count" >= 0 and "qualification_cohort_scrub_dispatches"."publication_input_checksum" is not null
+        or ("qualification_cohort_scrub_dispatches"."state" in ('SETTLED', 'CONFLICT') and "qualification_cohort_scrub_dispatches"."publication_state" is not null and "qualification_cohort_scrub_dispatches"."publication_state" in ('PUBLISHED', 'INELIGIBLE')
+          and "qualification_cohort_scrub_dispatches"."publication_attempt_count" is not null and "qualification_cohort_scrub_dispatches"."publication_attempt_count" >= 0 and "qualification_cohort_scrub_dispatches"."publication_input_checksum" is not null
           and "qualification_cohort_scrub_dispatches"."publication_next_attempt_at" is null
           and "qualification_cohort_scrub_dispatches"."publication_settled_at" is not null and "qualification_cohort_scrub_dispatches"."publication_artifact_checksum" is not null
           and "qualification_cohort_scrub_dispatches"."publication_claim_token" is null and "qualification_cohort_scrub_dispatches"."publication_lease_expires_at" is null
           and "qualification_cohort_scrub_dispatches"."publication_conflict_checksum" is null)
-        or ("qualification_cohort_scrub_dispatches"."state" in ('SETTLED', 'CONFLICT') and "qualification_cohort_scrub_dispatches"."publication_state" = 'CONFLICT'
-          and "qualification_cohort_scrub_dispatches"."publication_attempt_count" >= 0 and "qualification_cohort_scrub_dispatches"."publication_input_checksum" is not null
+        or ("qualification_cohort_scrub_dispatches"."state" in ('SETTLED', 'CONFLICT') and "qualification_cohort_scrub_dispatches"."publication_state" is not null and "qualification_cohort_scrub_dispatches"."publication_state" = 'CONFLICT'
+          and "qualification_cohort_scrub_dispatches"."publication_attempt_count" is not null and "qualification_cohort_scrub_dispatches"."publication_attempt_count" >= 0 and "qualification_cohort_scrub_dispatches"."publication_input_checksum" is not null
           and "qualification_cohort_scrub_dispatches"."publication_next_attempt_at" is null
           and "qualification_cohort_scrub_dispatches"."publication_settled_at" is not null and "qualification_cohort_scrub_dispatches"."publication_artifact_checksum" is null
           and "qualification_cohort_scrub_dispatches"."publication_claim_token" is null and "qualification_cohort_scrub_dispatches"."publication_lease_expires_at" is null
           and "qualification_cohort_scrub_dispatches"."publication_conflict_checksum" is not null));--> statement-breakpoint
-ALTER TABLE "qualification_cohort_scrub_dispatches" ADD CONSTRAINT "qualification_cohort_scrub_dispatches_publication_lease_check" CHECK ("qualification_cohort_scrub_dispatches"."publication_lease_expires_at" is null or "qualification_cohort_scrub_dispatches"."publication_next_attempt_at" < "qualification_cohort_scrub_dispatches"."publication_lease_expires_at");
+ALTER TABLE "qualification_cohort_scrub_dispatches" ADD CONSTRAINT "qualification_cohort_scrub_dispatches_publication_lease_check" CHECK (("qualification_cohort_scrub_dispatches"."publication_lease_expires_at" is null or ("qualification_cohort_scrub_dispatches"."publication_next_attempt_at" is not null and "qualification_cohort_scrub_dispatches"."publication_lease_expires_at" is not null and "qualification_cohort_scrub_dispatches"."publication_next_attempt_at" < "qualification_cohort_scrub_dispatches"."publication_lease_expires_at")) is true);

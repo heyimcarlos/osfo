@@ -106,7 +106,7 @@ export const makeQualificationPostTeardownPublicationAuthority = (database: Data
             limit > qualificationCohortScrubDispatchBatchLimit
           )
             return [];
-          const clock = await databaseClock(transaction);
+          const selectionClock = await databaseClock(transaction);
           const rows = await transaction
             .select()
             .from(qualificationCohortScrubDispatches)
@@ -114,11 +114,17 @@ export const makeQualificationPostTeardownPublicationAuthority = (database: Data
               or(
                 and(
                   eq(qualificationCohortScrubDispatches.publication_state, "PENDING"),
-                  lte(qualificationCohortScrubDispatches.publication_next_attempt_at, clock),
+                  lte(
+                    qualificationCohortScrubDispatches.publication_next_attempt_at,
+                    selectionClock,
+                  ),
                 ),
                 and(
                   eq(qualificationCohortScrubDispatches.publication_state, "CLAIMED"),
-                  lte(qualificationCohortScrubDispatches.publication_lease_expires_at, clock),
+                  lte(
+                    qualificationCohortScrubDispatches.publication_lease_expires_at,
+                    selectionClock,
+                  ),
                 ),
               ),
             )
@@ -129,8 +135,9 @@ export const makeQualificationPostTeardownPublicationAuthority = (database: Data
             )
             .limit(limit)
             .for("update", { skipLocked: true });
+          const claimClock = await databaseClock(transaction);
           const leaseExpiresAt = new Date(
-            clock.getTime() + qualificationPostTeardownPublicationLeaseMilliseconds,
+            claimClock.getTime() + qualificationPostTeardownPublicationLeaseMilliseconds,
           );
           const claimed = [];
           for (const row of rows) {
@@ -143,6 +150,7 @@ export const makeQualificationPostTeardownPublicationAuthority = (database: Data
                 publication_attempt_count: (row.publication_attempt_count ?? 0) + 1,
                 publication_claim_token: claimToken,
                 publication_lease_expires_at: leaseExpiresAt,
+                publication_next_attempt_at: claimClock,
                 publication_state: "CLAIMED",
               })
               .where(eq(qualificationCohortScrubDispatches.dispatch_id, row.dispatch_id))
@@ -159,13 +167,13 @@ export const makeQualificationPostTeardownPublicationAuthority = (database: Data
       attempt("claimExact", () =>
         database.transaction(
           async (transaction): Promise<QualificationPostTeardownPublicationClaim> => {
-            const clock = await databaseClock(transaction);
             const [row] = await transaction
               .select()
               .from(qualificationCohortScrubDispatches)
               .where(eq(qualificationCohortScrubDispatches.dispatch_id, identity.dispatchId))
               .limit(1)
               .for("update");
+            const clock = await databaseClock(transaction);
             if (row === undefined) return { _tag: "Missing" };
             if (row.cohort_id !== identity.cohortId || row.execution_id !== identity.executionId)
               return { _tag: "Conflict" };
@@ -511,13 +519,13 @@ const mutateClaim = (
   attempt(operation, () =>
     database.transaction(
       async (transaction): Promise<QualificationPostTeardownPublicationMutation> => {
-        const clock = await databaseClock(transaction);
         const [row] = await transaction
           .select()
           .from(qualificationCohortScrubDispatches)
           .where(eq(qualificationCohortScrubDispatches.dispatch_id, identity.dispatchId))
           .limit(1)
           .for("update");
+        const clock = await databaseClock(transaction);
         if (
           row === undefined ||
           row.cohort_id !== identity.cohortId ||

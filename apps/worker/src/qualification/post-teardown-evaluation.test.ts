@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { qualificationDistributedEvaluationReport } from "./distributed-evaluation-report";
+import {
+  qualificationDistributedEvaluationReport,
+  qualificationDistributedEvaluationReportCompletionArtifactId,
+} from "./distributed-evaluation-report";
+import { canonicalQualificationJson, qualificationChecksum } from "./qualification-checksum";
 import {
   qualificationPostTeardownCompletion,
   qualificationPostTeardownConflict,
@@ -9,44 +13,50 @@ import {
   qualificationPostTeardownResponse,
 } from "./post-teardown-evaluation";
 
-const pre = qualificationDistributedEvaluationReport({
-  acceptanceLevel: "BoundedBeta",
-  correctness: {
-    acceptedCount: 2,
-    artifactId: "correctness",
-    checksum: "correctness-checksum",
-    failCount: 0,
-    missingCount: 0,
-    rootCount: 2,
-    verdict: "PASS",
-  },
-  dimensions: {
-    artifactId: "dimensions",
-    checksum: "dimensions-checksum",
-    dimensionCount: 153,
-    failCount: 0,
-    missingCount: 0,
-    verdict: "PASS",
-  },
-  executionCorpus: {
-    acceptedCount: 2,
-    artifactId: "corpus",
-    checksum: "corpus-checksum",
-    completionCount: 1,
-    pageCount: 1,
-    partitionCount: 1,
-    rootCount: 2,
-    terminalJoinPageChecksum: "join",
-    terminalLaunchPageChecksum: "launch",
-  },
-  executionId: "post-test",
-  expectedDimensionCount: 153,
-  expectedRootCount: 2,
-  manifestChecksum: "manifest",
-  planChecksum: "plan",
-  sourceVersion: "source",
-  topologyVersion: "topology",
-});
+const makePre = (executionId: string) =>
+  qualificationDistributedEvaluationReport({
+    acceptanceLevel: "BoundedBeta",
+    correctness: {
+      acceptedCount: 2,
+      artifactId: "correctness",
+      checksum: "correctness-checksum",
+      failCount: 0,
+      missingCount: 0,
+      rootCount: 2,
+      verdict: "PASS",
+    },
+    dimensions: {
+      artifactId: "dimensions",
+      checksum: "dimensions-checksum",
+      dimensionCount: 153,
+      failCount: 0,
+      missingCount: 0,
+      verdict: "PASS",
+    },
+    executionCorpus: {
+      acceptedCount: 2,
+      artifactId: "corpus",
+      checksum: "corpus-checksum",
+      completionCount: 1,
+      pageCount: 1,
+      partitionCount: 1,
+      rootCount: 2,
+      terminalJoinPageChecksum: "join",
+      terminalLaunchPageChecksum: "launch",
+    },
+    executionId,
+    expectedDimensionCount: 153,
+    expectedRootCount: 2,
+    manifestChecksum: "manifest",
+    planChecksum: "plan",
+    sourceVersion: "source",
+    topologyVersion: "topology",
+  });
+const pre = makePre("post-test");
+const preCompletionId = qualificationDistributedEvaluationReportCompletionArtifactId(
+  pre.executionId,
+);
+const preResponseId = `qualification/executions/${encodeURIComponent(pre.executionId)}/owner-response.json`;
 
 const receipt = qualificationPostTeardownReceipt({
   allocationIdentityCount: 0,
@@ -64,11 +74,8 @@ const receipt = qualificationPostTeardownReceipt({
   manifestChecksum: pre.manifestChecksum,
   ownerRequestChecksum: "owner",
   planChecksum: pre.planChecksum,
-  preTeardownCompletionArtifactId: "pre-completion",
   preTeardownCompletionChecksum: "pre-completion-checksum",
-  preTeardownReportArtifactId: pre.artifactId,
   preTeardownReportChecksum: pre.checksum,
-  preTeardownResponseArtifactId: "pre-response",
   preTeardownResponseChecksum: "pre-response-checksum",
   provisionIdentityCount: 0,
   qualificationRootAttemptCount: 0,
@@ -82,10 +89,10 @@ describe("POST teardown evaluation contracts", () => {
   it("preserves every PRE family and mutates only cohort teardown", () => {
     const report = qualificationPostTeardownReport({
       ownerRequestChecksum: "owner",
-      preTeardownCompletionArtifactId: "pre-completion",
+      preTeardownCompletionArtifactId: preCompletionId,
       preTeardownCompletionChecksum: "pre-completion-checksum",
       preTeardownReport: pre,
-      preTeardownResponseArtifactId: "pre-response",
+      preTeardownResponseArtifactId: preResponseId,
       preTeardownResponseChecksum: "pre-response-checksum",
       teardownReceipt: receipt,
     });
@@ -112,10 +119,10 @@ describe("POST teardown evaluation contracts", () => {
     expect(() =>
       qualificationPostTeardownReport({
         ownerRequestChecksum: "changed",
-        preTeardownCompletionArtifactId: "pre-completion",
+        preTeardownCompletionArtifactId: preCompletionId,
         preTeardownCompletionChecksum: "pre-completion-checksum",
         preTeardownReport: pre,
-        preTeardownResponseArtifactId: "pre-response",
+        preTeardownResponseArtifactId: preResponseId,
         preTeardownResponseChecksum: "pre-response-checksum",
         teardownReceipt: receipt,
       }),
@@ -128,11 +135,8 @@ describe("POST teardown evaluation contracts", () => {
         manifestChecksum: pre.manifestChecksum,
         ownerRequestChecksum: "owner",
         planChecksum: pre.planChecksum,
-        preTeardownCompletionArtifactId: "pre-completion",
         preTeardownCompletionChecksum: "pre-completion-checksum",
-        preTeardownReportArtifactId: pre.artifactId,
         preTeardownReportChecksum: pre.checksum,
-        preTeardownResponseArtifactId: "pre-response",
         preTeardownResponseChecksum: "pre-response-checksum",
         stage: "receipt",
       }),
@@ -145,11 +149,8 @@ describe("POST teardown evaluation contracts", () => {
         manifestChecksum: pre.manifestChecksum,
         ownerRequestChecksum: "owner",
         planChecksum: pre.planChecksum,
-        preTeardownCompletionArtifactId: "pre-completion",
         preTeardownCompletionChecksum: "pre-completion-checksum",
-        preTeardownReportArtifactId: pre.artifactId,
         preTeardownReportChecksum: pre.checksum,
-        preTeardownResponseArtifactId: "pre-response",
         preTeardownResponseChecksum: "pre-response-checksum",
         stage: "receipt",
       }),
@@ -166,21 +167,18 @@ describe("POST teardown evaluation contracts", () => {
       manifestChecksum: pre.manifestChecksum,
       ownerRequestChecksum: "owner",
       planChecksum: pre.planChecksum,
-      preTeardownCompletionArtifactId: "pre-completion",
       preTeardownCompletionChecksum: "pre-completion-checksum",
-      preTeardownReportArtifactId: pre.artifactId,
       preTeardownReportChecksum: pre.checksum,
-      preTeardownResponseArtifactId: "pre-response",
       preTeardownResponseChecksum: "pre-response-checksum",
       sourceVersion: pre.sourceVersion,
       teardownVerdict: "FAIL",
     });
     const report = qualificationPostTeardownReport({
       ownerRequestChecksum: "owner",
-      preTeardownCompletionArtifactId: "pre-completion",
+      preTeardownCompletionArtifactId: preCompletionId,
       preTeardownCompletionChecksum: "pre-completion-checksum",
       preTeardownReport: pre,
-      preTeardownResponseArtifactId: "pre-response",
+      preTeardownResponseArtifactId: preResponseId,
       preTeardownResponseChecksum: "pre-response-checksum",
       teardownReceipt: failed,
     });
@@ -192,5 +190,112 @@ describe("POST teardown evaluation contracts", () => {
     expect(
       qualificationPostTeardownResponse(report, qualificationPostTeardownCompletion(report)),
     ).toMatchObject({ status: 409, body: { teardownVerdict: "FAIL", verdict: "FAIL" } });
+  });
+
+  it("keeps worst-case compact artifacts bounded and checksums exact after stripping extras", () => {
+    const longPre = makePre("x".repeat(500));
+    const longReceiptInput = {
+      allocationIdentityCount: 0,
+      artifactAuthorityProofChecksum: "p",
+      artifactAuthorityProtocol: "p",
+      cohortArtifactChecksum: "c",
+      cohortArtifactId: "c",
+      cohortId: "c",
+      dispatchId: "d",
+      dispatchProtocolVersion: "d",
+      executionId: longPre.executionId,
+      expectedPageCount: 1,
+      expectedParticipantCount: 1,
+      failureChecksum: "opposite-branch-extra",
+      finalPageChecksum: "f",
+      manifestChecksum: longPre.manifestChecksum,
+      ownerRequestChecksum: "o",
+      planChecksum: longPre.planChecksum,
+      preTeardownCompletionChecksum: "pc",
+      preTeardownReportChecksum: longPre.checksum,
+      preTeardownResponseChecksum: "pr",
+      provisionIdentityCount: 0,
+      qualificationRootAttemptCount: 0,
+      rootChecksum: "r",
+      rootInstanceId: "r",
+      sourceVersion: longPre.sourceVersion,
+      teardownVerdict: "PASS",
+    } as const;
+    const longReceipt = qualificationPostTeardownReceipt(longReceiptInput);
+    expect("failureChecksum" in longReceipt).toBe(false);
+    const { checksum: receiptChecksum, ...receiptContent } = longReceipt;
+    expect(receiptChecksum).toBe(qualificationChecksum(receiptContent));
+    expect(
+      new TextEncoder().encode(canonicalQualificationJson(longReceipt)).byteLength,
+    ).toBeLessThanOrEqual(4_095);
+    const longReport = qualificationPostTeardownReport({
+      ownerRequestChecksum: "o",
+      preTeardownCompletionArtifactId: qualificationDistributedEvaluationReportCompletionArtifactId(
+        longPre.executionId,
+      ),
+      preTeardownCompletionChecksum: "pc",
+      preTeardownReport: longPre,
+      preTeardownResponseArtifactId: `qualification/executions/${encodeURIComponent(longPre.executionId)}/owner-response.json`,
+      preTeardownResponseChecksum: "pr",
+      teardownReceipt: longReceipt,
+    });
+    const completion = qualificationPostTeardownCompletion(longReport);
+    const response = qualificationPostTeardownResponse(longReport, completion);
+    expect(
+      new TextEncoder().encode(canonicalQualificationJson(completion)).byteLength,
+    ).toBeLessThanOrEqual(4_095);
+    expect(
+      new TextEncoder().encode(canonicalQualificationJson(response)).byteLength,
+    ).toBeLessThanOrEqual(4_095);
+    const common = {
+      conflictingArtifactId: "",
+      executionId: longPre.executionId,
+      finalizationInputChecksum: "i",
+      manifestChecksum: longPre.manifestChecksum,
+      ownerRequestChecksum: "o",
+      planChecksum: longPre.planChecksum,
+      preTeardownCompletionChecksum: "pc",
+      preTeardownReportChecksum: longPre.checksum,
+      preTeardownResponseChecksum: "pr",
+    };
+    const receiptConflictInput = {
+      ...common,
+      conflictingArtifactId: `qualification/executions/${encodeURIComponent(longPre.executionId)}/distributed-report/post-teardown-v1/cohort-teardown.json`,
+      reportChecksum: "later-extra",
+      stage: "receipt",
+    } as const;
+    const receiptConflict = qualificationPostTeardownConflict(receiptConflictInput);
+    const conflicts = [
+      receiptConflict,
+      qualificationPostTeardownConflict({
+        ...common,
+        conflictingArtifactId: `qualification/executions/${encodeURIComponent(longPre.executionId)}/distributed-report/post-teardown-v1/report.json`,
+        stage: "report",
+        teardownReceiptChecksum: longReceipt.checksum,
+      }),
+      qualificationPostTeardownConflict({
+        ...common,
+        conflictingArtifactId: `qualification/executions/${encodeURIComponent(longPre.executionId)}/distributed-report/post-teardown-v1/completion.json`,
+        reportChecksum: longReport.checksum,
+        stage: "completion",
+        teardownReceiptChecksum: longReceipt.checksum,
+      }),
+      qualificationPostTeardownConflict({
+        ...common,
+        completionChecksum: completion.checksum,
+        conflictingArtifactId: `qualification/executions/${encodeURIComponent(longPre.executionId)}/distributed-report/post-teardown-v1/owner-response.json`,
+        reportChecksum: longReport.checksum,
+        stage: "response",
+        teardownReceiptChecksum: longReceipt.checksum,
+      }),
+    ];
+    expect("reportChecksum" in receiptConflict).toBe(false);
+    for (const conflict of conflicts) {
+      const { checksum, ...content } = conflict;
+      expect(checksum).toBe(qualificationChecksum(content));
+      expect(
+        new TextEncoder().encode(canonicalQualificationJson(conflict)).byteLength,
+      ).toBeLessThanOrEqual(4_095);
+    }
   });
 });

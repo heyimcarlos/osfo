@@ -1,4 +1,4 @@
-/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/global-date-in-effect, eslint/no-underscore-dangle -- PostgreSQL test setup is Promise-native, timestamps are fixed, and outcomes use the canonical _tag discriminator. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/global-date-in-effect, effecttsgo/run-effect-inside-effect, eslint/no-underscore-dangle -- PostgreSQL test setup is Promise-native, timestamps are fixed, outcomes use the canonical _tag discriminator, and the lock-wait test deliberately starts a concurrent Effect across the Promise transaction boundary. */
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside Effect generators. */
 import { expect, it } from "@effect/vitest";
 import {
@@ -208,10 +208,25 @@ it.effect("claims and reclaims due POST teardown publication work", () =>
     expect(claimed).toMatchObject({ _tag: "Claimed", attemptCount: 1 });
     yield* Effect.promise(() =>
       fixture.client.query(
-        `update qualification_cohort_scrub_dispatches set publication_lease_expires_at = clock_timestamp() - interval '1 second' where dispatch_id = $1`,
+        `update qualification_cohort_scrub_dispatches set publication_lease_expires_at = clock_timestamp() + interval '50 milliseconds' where dispatch_id = $1`,
         [identity.dispatchId],
       ),
     );
+    const blockedMutation = yield* Effect.promise(async () => {
+      let pending: Promise<unknown> | undefined;
+      await fixture.database.transaction(async (transaction) => {
+        await transaction
+          .select()
+          .from(qualificationCohortScrubDispatches)
+          .where(eq(qualificationCohortScrubDispatches.dispatch_id, identity.dispatchId))
+          .for("update");
+        pending = Effect.runPromise(authority.pinInput(identity, "first", "input"));
+        await Effect.runPromise(Effect.sleep("100 millis"));
+      });
+      if (pending === undefined) throw new Error("Concurrent publication mutation did not start");
+      return pending;
+    });
+    expect(blockedMutation).toMatchObject({ _tag: "LeaseExpired" });
     expect(yield* authority.claimExact(identity, "first")).toMatchObject({ _tag: "LeaseExpired" });
     expect(yield* authority.claimBatch("first")).toEqual([]);
     const [reclaimed] = yield* authority.claimBatch("second");
@@ -284,7 +299,25 @@ it.effect("rejects nullable and stale POST publication state combinations", () =
       ).rejects.toThrow("publication_check");
       await expect(
         fixture.client.query(
-          `update qualification_cohort_scrub_dispatches set state = 'SETTLED', settled_at = clock_timestamp(), root_checksum = 'root', publication_state = 'PENDING', publication_attempt_count = 0 where dispatch_id = $1`,
+          `update qualification_cohort_scrub_dispatches set state = 'SETTLED', settled_at = clock_timestamp(), root_checksum = 'root', publication_state = null, publication_attempt_count = 0, publication_next_attempt_at = clock_timestamp() where dispatch_id = $1`,
+          [identity.dispatchId],
+        ),
+      ).rejects.toThrow("publication_check");
+      await expect(
+        fixture.client.query(
+          `update qualification_cohort_scrub_dispatches set state = 'SETTLED', settled_at = clock_timestamp(), root_checksum = 'root', publication_state = 'PENDING', publication_attempt_count = null, publication_next_attempt_at = clock_timestamp() where dispatch_id = $1`,
+          [identity.dispatchId],
+        ),
+      ).rejects.toThrow("publication_check");
+      await expect(
+        fixture.client.query(
+          `update qualification_cohort_scrub_dispatches set state = 'SETTLED', settled_at = clock_timestamp(), root_checksum = 'root', publication_state = 'CLAIMED', publication_attempt_count = null, publication_claim_token = 'claim', publication_next_attempt_at = clock_timestamp(), publication_lease_expires_at = clock_timestamp() + interval '5 minutes' where dispatch_id = $1`,
+          [identity.dispatchId],
+        ),
+      ).rejects.toThrow("publication_check");
+      await expect(
+        fixture.client.query(
+          `update qualification_cohort_scrub_dispatches set state = 'SETTLED', settled_at = clock_timestamp(), root_checksum = 'root', publication_state = 'PUBLISHED', publication_attempt_count = null, publication_input_checksum = 'input', publication_artifact_checksum = 'artifact', publication_settled_at = clock_timestamp() where dispatch_id = $1`,
           [identity.dispatchId],
         ),
       ).rejects.toThrow("publication_check");
