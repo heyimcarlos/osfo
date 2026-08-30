@@ -3,14 +3,21 @@ import type { WorkflowStepConfig } from "cloudflare:workers";
 import { Data } from "effect";
 
 import type {
+  QualificationScrubRootClaim,
+  QualificationScrubRootCompletion,
+  QualificationScrubRootCompletionInspection,
   QualificationScrubPartitionCompletionInspection,
   QualificationScrubRootInspection,
 } from "../integrations/postgres/qualification-cohort-scrub";
 import type {
+  QualificationCohortArtifactDeleteOutcome,
   QualificationCohortArtifactFenceOutcome,
   QualificationCohortArtifactInspection,
+  QualificationCohortArtifactSealRootOutcome,
 } from "../qualification/cohort-artifact-authority-contract";
 import { qualificationCohortArtifactProtocol } from "../qualification/cohort-artifact-authority-contract";
+import { qualificationChecksum } from "../qualification/qualification-checksum";
+import { qualificationCohortRootArtifactKeys } from "../qualification/cohort-artifact-layout";
 import {
   decodeQualificationCohortScrubPartitionResult,
   type QualificationCohortScrubPartitionResult,
@@ -23,6 +30,7 @@ import {
 } from "../qualification/cohort-scrub-partition";
 import {
   qualificationCohortArtifactRecordCount,
+  qualificationCohortScrubRootClaimToken,
   qualificationCohortScrubRootEventTimeout,
   qualificationCohortScrubRootInstanceId,
   qualificationCohortScrubRootPartitionPayload,
@@ -36,11 +44,16 @@ export const qualificationCohortScrubRootStepConfig = {
   timeout: "30 minutes",
 } as const satisfies WorkflowStepConfig;
 
+export const qualificationCohortScrubRootFinalizationStepConfig = {
+  retries: { backoff: "constant", delay: "6 minutes", limit: 10 },
+  timeout: "30 minutes",
+} as const satisfies WorkflowStepConfig;
+
 export interface QualificationCohortScrubRootStep {
   readonly do: <Value extends Rpc.Serializable<Value>>(
     name: string,
     config: WorkflowStepConfig,
-    callback: () => Promise<Value>,
+    callback: (context: { readonly attempt: number }) => Promise<Value>,
   ) => Promise<Value>;
   readonly waitForEvent: (
     name: string,
@@ -71,6 +84,7 @@ export interface QualificationCohortScrubChildSnapshot {
 export interface QualificationCohortScrubRootPorts {
   readonly fence: () => Promise<QualificationCohortArtifactFenceOutcome>;
   readonly inspectFenceArtifacts: () => Promise<QualificationCohortArtifactInspection>;
+  readonly inspectFinalArtifacts: () => Promise<QualificationCohortArtifactInspection>;
   readonly inspectArtifacts: (
     child: QualificationCohortScrubPartitionWorkflowPayload,
   ) => Promise<QualificationCohortArtifactInspection>;
@@ -80,16 +94,46 @@ export interface QualificationCohortScrubRootPorts {
   readonly inspectPartitionCompletion: (
     child: QualificationCohortScrubPartitionWorkflowPayload,
   ) => Promise<QualificationScrubPartitionCompletionInspection>;
+  readonly inspectRootCompletion: () => Promise<QualificationScrubRootCompletionInspection>;
   readonly inspectTopology: () => Promise<QualificationScrubRootInspection>;
   readonly launchChild: (
     child: QualificationCohortScrubPartitionWorkflowPayload,
   ) => Promise<QualificationCohortScrubChildSnapshot>;
+  readonly withRootAuthority: <Value>(
+    evaluate: (authority: QualificationCohortScrubRootAuthority) => Promise<Value>,
+  ) => Promise<Value>;
+}
+
+export interface QualificationCohortScrubRootAuthority {
+  readonly claim: (claimToken: string) => Promise<QualificationScrubRootClaim>;
+  readonly complete: (input: {
+    readonly artifactAuthorityProofChecksum: string;
+    readonly claimToken: string;
+    readonly deletedArtifactCount: number;
+    readonly deletedArtifactsChecksum: string;
+  }) => Promise<QualificationScrubRootCompletion>;
+  readonly deleteRoot: (input: {
+    readonly executionId: string;
+    readonly expectedArtifactKeys: ReadonlyArray<string>;
+    readonly expectedArtifactsChecksum: string;
+    readonly expectedPageCount: number;
+    readonly finalPageChecksum: string;
+    readonly protocolVersion: typeof qualificationCohortArtifactProtocol;
+  }) => Promise<QualificationCohortArtifactDeleteOutcome>;
+  readonly sealRoot: (input: {
+    readonly executionId: string;
+    readonly proofChecksum: string;
+    readonly protocolVersion: typeof qualificationCohortArtifactProtocol;
+    readonly rootChecksum: string;
+  }) => Promise<QualificationCohortArtifactSealRootOutcome>;
 }
 
 export interface QualificationCohortScrubRootResult {
   readonly cohortId: string;
   readonly executionId: string;
   readonly finalPageChecksum: string;
+  readonly rootChecksum: string;
+  readonly state: "SCRUBBED";
   readonly totalPageCount: number;
   readonly totalPartitionCount: number;
 }
@@ -261,6 +305,169 @@ const verifyArtifactAuthorityState = (
   return true;
 };
 
+const exactRootArtifacts = (
+  payload: QualificationCohortScrubRootWorkflowPayload,
+  topology: QualificationCohortScrubRootTopology,
+  finalPageChecksum: string,
+  claim: Extract<QualificationScrubRootClaim, { readonly _tag: "Claimed" | "Completed" }>,
+) => {
+  const keys = qualificationCohortRootArtifactKeys(payload.executionId);
+  const expectedArtifactsChecksum = qualificationChecksum({ expectedArtifactIds: keys });
+  if (
+    claim.cohortId !== payload.cohortId ||
+    claim.executionId !== payload.executionId ||
+    claim.expectedArtifactCount !== keys.length ||
+    claim.expectedArtifactsChecksum !== expectedArtifactsChecksum ||
+    claim.expectedPageCount !== topology.totalPageCount ||
+    claim.expectedParticipantCount !== topology.totalParticipantCount ||
+    claim.finalPageChecksum !== finalPageChecksum ||
+    (claim._tag === "Claimed" &&
+      (claim.expectedArtifactIds.length !== keys.length ||
+        claim.expectedArtifactIds.some((key, index) => key !== keys[index])))
+  ) {
+    return null;
+  }
+  return { expectedArtifactsChecksum, keys };
+};
+
+const sealExactRoot = async (
+  authority: QualificationCohortScrubRootAuthority,
+  executionId: string,
+  proofChecksum: string,
+  rootChecksum: string,
+) => {
+  const sealed = await authority.sealRoot({
+    executionId,
+    proofChecksum,
+    protocolVersion: qualificationCohortArtifactProtocol,
+    rootChecksum,
+  });
+  if (sealed._tag === "Busy") return retryable("artifact authority is busy while sealing root");
+  if (sealed._tag === "Missing") return terminal(`artifact root seal missing: ${sealed.code}`);
+  if (sealed._tag === "Conflict") return terminal(`artifact root seal conflicts: ${sealed.code}`);
+  if (sealed.rootChecksum !== rootChecksum) {
+    return terminal("artifact root seal returned a substituted checksum");
+  }
+  return { artifactAuthorityProofChecksum: proofChecksum, rootChecksum };
+};
+
+export const advanceQualificationCohortScrubRoot = async (
+  authority: QualificationCohortScrubRootAuthority,
+  payload: QualificationCohortScrubRootWorkflowPayload,
+  topology: QualificationCohortScrubRootTopology,
+  finalPageChecksum: string,
+  attempt: number,
+) => {
+  if (!Number.isSafeInteger(attempt) || attempt <= 0) return terminal("invalid Workflow attempt");
+  const claimToken = qualificationCohortScrubRootClaimToken(payload, attempt);
+  const claim = await authority.claim(claimToken);
+  if (claim._tag === "Busy" || claim._tag === "LeaseExpired") {
+    return retryable(`PostgreSQL root claim is ${claim._tag}`);
+  }
+  if (claim._tag === "Pending") {
+    return terminal(`PostgreSQL root authority missing: ${claim.reason}`);
+  }
+  if (claim._tag === "Conflict") return terminal("PostgreSQL root authority conflicts");
+  const exact = exactRootArtifacts(payload, topology, finalPageChecksum, claim);
+  if (exact === null) return terminal("PostgreSQL root descriptor conflicts with topology");
+  if (claim._tag === "Completed") {
+    if (claim.artifactAuthorityProofChecksum.length === 0 || claim.rootChecksum.length === 0) {
+      return terminal("completed PostgreSQL root authority is incomplete");
+    }
+    return await sealExactRoot(
+      authority,
+      payload.executionId,
+      claim.artifactAuthorityProofChecksum,
+      claim.rootChecksum,
+    );
+  }
+  const deleted = await authority.deleteRoot({
+    executionId: payload.executionId,
+    expectedArtifactKeys: exact.keys,
+    expectedArtifactsChecksum: exact.expectedArtifactsChecksum,
+    expectedPageCount: topology.totalPageCount,
+    finalPageChecksum,
+    protocolVersion: qualificationCohortArtifactProtocol,
+  });
+  if (deleted._tag === "Busy" || deleted._tag === "Retryable") {
+    return retryable(`artifact root deletion is ${deleted._tag}`);
+  }
+  if (deleted._tag === "Missing") {
+    return terminal(`artifact root deletion authority missing: ${deleted.code}`);
+  }
+  if (deleted._tag === "Conflict") {
+    return terminal(`artifact root deletion authority conflicts: ${deleted.code}`);
+  }
+  if (
+    deleted.scope !== "root" ||
+    deleted.expectedArtifactCount !== claim.expectedArtifactCount ||
+    deleted.expectedArtifactsChecksum !== claim.expectedArtifactsChecksum ||
+    deleted.artifactRecordsChecksum.length === 0 ||
+    deleted.operationId.length === 0 ||
+    deleted.proofChecksum.length === 0
+  ) {
+    return terminal("artifact root deletion proof conflicts with PostgreSQL authority");
+  }
+  const completed = await authority.complete({
+    artifactAuthorityProofChecksum: deleted.proofChecksum,
+    claimToken,
+    deletedArtifactCount: deleted.expectedArtifactCount,
+    deletedArtifactsChecksum: deleted.expectedArtifactsChecksum,
+  });
+  if (completed._tag === "LeaseExpired") {
+    return retryable("PostgreSQL root completion lease expired");
+  }
+  if (completed._tag === "Conflict") return terminal("PostgreSQL root completion conflicts");
+  if (
+    completed.artifactAuthorityProofChecksum !== deleted.proofChecksum ||
+    completed.rootChecksum.length === 0
+  ) {
+    return terminal("PostgreSQL root completion substituted authority");
+  }
+  return await sealExactRoot(
+    authority,
+    payload.executionId,
+    completed.artifactAuthorityProofChecksum,
+    completed.rootChecksum,
+  );
+};
+
+const verifyFinalAgreement = (
+  payload: QualificationCohortScrubRootWorkflowPayload,
+  topology: QualificationCohortScrubRootTopology,
+  finalPageChecksum: string,
+  finalized: { readonly artifactAuthorityProofChecksum: string; readonly rootChecksum: string },
+  pg: QualificationScrubRootCompletionInspection,
+  artifacts: QualificationCohortArtifactInspection,
+) => {
+  if (pg._tag === "Missing") return terminal(`PostgreSQL root completion missing: ${pg.reason}`);
+  if (pg._tag === "Conflict") return terminal("PostgreSQL root completion conflicts");
+  if (
+    pg.cohortId !== payload.cohortId ||
+    pg.executionId !== payload.executionId ||
+    pg.expectedPageCount !== topology.totalPageCount ||
+    pg.expectedParticipantCount !== topology.totalParticipantCount ||
+    pg.finalPageChecksum !== finalPageChecksum ||
+    pg.allocationIdentityCount !== 0 ||
+    pg.provisionIdentityCount !== 0 ||
+    pg.artifactAuthorityProofChecksum !== finalized.artifactAuthorityProofChecksum ||
+    pg.rootChecksum !== finalized.rootChecksum
+  ) {
+    return terminal("PostgreSQL final root authority is substituted");
+  }
+  if (artifacts._tag === "Missing") return terminal("final artifact authority is missing");
+  if (artifacts._tag === "Conflict") {
+    return terminal(`final artifact authority conflicts: ${artifacts.code}`);
+  }
+  if (artifacts._tag === "Present") {
+    return terminal("final artifact authority is not scrubbed");
+  }
+  if (artifacts.rootChecksum !== finalized.rootChecksum) {
+    return terminal("PostgreSQL and artifact root checksums disagree");
+  }
+  return finalized.rootChecksum;
+};
+
 export const runQualificationCohortScrubRoot = async (
   payload: QualificationCohortScrubRootWorkflowPayload,
   instanceId: string,
@@ -377,10 +584,55 @@ export const runQualificationCohortScrubRoot = async (
   if (remainingArtifactRecordCount !== 2) {
     return terminal("root artifact ledger did not retain exactly two root records");
   }
+  const finalized = await step.do(
+    "delete and seal cohort artifact root",
+    qualificationCohortScrubRootFinalizationStepConfig,
+    async (context) => {
+      try {
+        return await ports.withRootAuthority((authority) =>
+          advanceQualificationCohortScrubRoot(
+            authority,
+            payload,
+            topology,
+            previousPageChecksum,
+            context.attempt,
+          ),
+        );
+      } catch (error) {
+        if (error instanceof QualificationCohortScrubRootTerminal) {
+          throw terminalError(error.message);
+        }
+        throw error;
+      }
+    },
+  );
+  const rootChecksum = await step.do(
+    "authenticate scrubbed cohort root agreement",
+    qualificationCohortScrubRootStepConfig,
+    async () => {
+      try {
+        return verifyFinalAgreement(
+          payload,
+          topology,
+          previousPageChecksum,
+          finalized,
+          await ports.inspectRootCompletion(),
+          await ports.inspectFinalArtifacts(),
+        );
+      } catch (error) {
+        if (error instanceof QualificationCohortScrubRootTerminal) {
+          throw terminalError(error.message);
+        }
+        throw error;
+      }
+    },
+  );
   return {
     cohortId: payload.cohortId,
     executionId: payload.executionId,
     finalPageChecksum: previousPageChecksum,
+    rootChecksum,
+    state: "SCRUBBED",
     totalPageCount: topology.totalPageCount,
     totalPartitionCount: topology.partitionCount,
   };

@@ -16,9 +16,9 @@ export const qualificationCohortScrubRootMaximumPageCount = 4_000;
 export const qualificationCohortScrubRootMaximumPartitionCount = 125;
 export const qualificationCohortScrubRootEventTimeout = "7 days" as const;
 export const qualificationCohortScrubRootMaximumStepCount =
-  2 + qualificationCohortScrubRootMaximumPartitionCount * 3;
+  4 + qualificationCohortScrubRootMaximumPartitionCount * 3;
 export const qualificationCohortScrubRootMaximumExternalCalls =
-  3 + qualificationCohortScrubRootMaximumPartitionCount * 7;
+  9 + qualificationCohortScrubRootMaximumPartitionCount * 7;
 
 export const QualificationCohortScrubRootWorkflowPayload = Schema.Struct({
   cohortId: boundedIdentity,
@@ -64,6 +64,17 @@ export const qualificationCohortScrubRootWorkflowPayload = (
   executionId,
   protocolVersion: qualificationCohortScrubRootProtocol,
 });
+
+export const qualificationCohortScrubRootClaimToken = (
+  payload: QualificationCohortScrubRootWorkflowPayload,
+  attempt: number,
+) =>
+  qualificationChecksum({
+    attempt,
+    executionId: payload.executionId,
+    kind: "qualificationCohortScrubRootClaim",
+    protocolVersion: payload.protocolVersion,
+  });
 
 const pageCountFor = (participantCount: number) => Math.ceil(participantCount / 25);
 

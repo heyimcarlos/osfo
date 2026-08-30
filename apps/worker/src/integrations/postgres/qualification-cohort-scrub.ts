@@ -12,7 +12,10 @@ import { Effect } from "effect";
 import type { Database } from "@osfo/db";
 import { qualificationChecksum } from "../../qualification/qualification-checksum";
 import { qualificationCohortArtifactProtocol } from "../../qualification/cohort-artifact-authority-contract";
-import { qualificationCohortProvisionArtifactPageSize } from "../../qualification/cohort-artifact-layout";
+import {
+  qualificationCohortProvisionArtifactPageSize,
+  qualificationCohortRootArtifactKeys,
+} from "../../qualification/cohort-artifact-layout";
 import {
   qualificationCohortScrubPartitionTopology,
   type QualificationCohortScrubPartitionTopology,
@@ -51,12 +54,12 @@ export interface QualificationScrubPageCompletionInput extends QualificationScru
   readonly deletedArtifactsChecksum: string;
 }
 
-interface RootIdentity {
+export interface QualificationScrubRootIdentity {
   readonly cohortId: string;
   readonly executionId: string;
 }
 
-export interface QualificationScrubRootClaimInput extends RootIdentity {
+export interface QualificationScrubRootClaimInput extends QualificationScrubRootIdentity {
   readonly claimToken: string;
 }
 
@@ -78,7 +81,7 @@ interface PageDescriptor extends PageIdentity {
   readonly previousPageChecksum: string;
 }
 
-interface RootDescriptor extends RootIdentity {
+interface RootDescriptor extends QualificationScrubRootIdentity {
   readonly claimToken: string;
   readonly expectedArtifactCount: number;
   readonly expectedArtifactIds: ReadonlyArray<string>;
@@ -139,6 +142,7 @@ export type QualificationScrubRootCompletion =
       readonly completedAt: Date;
       readonly rootChecksum: string;
     }
+  | { readonly _tag: "LeaseExpired"; readonly leaseExpiresAt: Date }
   | { readonly _tag: "Conflict" };
 
 export interface QualificationTeardownInspection {
@@ -182,6 +186,22 @@ export type QualificationScrubPartitionCompletionInspection =
     }
   | { readonly _tag: "Conflict" }
   | { readonly _tag: "Pending"; readonly reason: "partitionPagesIncomplete" };
+
+export type QualificationScrubRootCompletionInspection =
+  | {
+      readonly _tag: "Ready";
+      readonly allocationIdentityCount: 0;
+      readonly artifactAuthorityProofChecksum: string;
+      readonly cohortId: string;
+      readonly executionId: string;
+      readonly expectedPageCount: number;
+      readonly expectedParticipantCount: number;
+      readonly finalPageChecksum: string;
+      readonly provisionIdentityCount: 0;
+      readonly rootChecksum: string;
+    }
+  | { readonly _tag: "Conflict" }
+  | { readonly _tag: "Missing"; readonly reason: "rootCompletionMissing" };
 
 /** Persistence-only scrub authority. R2 deletion remains outside this adapter. */
 export const makeQualificationCohortScrubAuthority = (database: Database) => {
@@ -735,7 +755,7 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
           ) {
             return conflict;
           }
-          const expectedArtifactIds = rootArtifactIds(input.executionId);
+          const expectedArtifactIds = qualificationCohortRootArtifactKeys(input.executionId);
           const expectedArtifactsChecksum = qualificationChecksum({ expectedArtifactIds });
           const descriptor = {
             claimToken: input.claimToken,
@@ -861,7 +881,10 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
           if (root.artifact_authority_proof_checksum !== null) return conflict;
           if (cohort.state !== "SCRUBBING") return conflict;
           const clock = await readDatabaseClock(transaction);
-          if (clock === null || root.lease_expires_at <= clock) return conflict;
+          if (clock === null) return conflict;
+          if (root.lease_expires_at <= clock) {
+            return { _tag: "LeaseExpired", leaseExpiresAt: root.lease_expires_at };
+          }
           const content = {
             artifactAuthorityProofChecksum: input.artifactAuthorityProofChecksum,
             cohortId: input.cohortId,
@@ -919,6 +942,93 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
           return rootCompletion(completed);
         }),
       ),
+  );
+
+  const inspectScrubRootCompletion = Effect.fn(
+    "QualificationCohortAuthority.inspectScrubRootCompletion",
+  )((input: QualificationScrubRootIdentity) =>
+    attempt("inspectScrubRootCompletion", () =>
+      database.transaction(
+        async (transaction): Promise<QualificationScrubRootCompletionInspection> => {
+          const [cohort] = await transaction
+            .select()
+            .from(qualificationCohorts)
+            .where(
+              and(
+                eq(qualificationCohorts.cohort_id, input.cohortId),
+                eq(qualificationCohorts.execution_id, input.executionId),
+              ),
+            )
+            .limit(1);
+          const [root] = await transaction
+            .select()
+            .from(qualificationCohortScrubRoots)
+            .where(
+              and(
+                eq(qualificationCohortScrubRoots.cohort_id, input.cohortId),
+                eq(qualificationCohortScrubRoots.execution_id, input.executionId),
+              ),
+            )
+            .limit(1);
+          if (cohort === undefined || root === undefined) {
+            return { _tag: "Missing", reason: "rootCompletionMissing" };
+          }
+          if (root.completed_at === null || root.root_checksum === null) {
+            return cohort.state === "SCRUBBING"
+              ? { _tag: "Missing", reason: "rootCompletionMissing" }
+              : conflict;
+          }
+          const counts = cohortCounts(cohort);
+          const expectedPageCount = pagesFor(counts.free) + pagesFor(counts.adventurer);
+          const expectedParticipantCount = counts.free + counts.adventurer;
+          const expectedArtifactIds = qualificationCohortRootArtifactKeys(input.executionId);
+          const expectedArtifactsChecksum = qualificationChecksum({ expectedArtifactIds });
+          if (
+            cohort.state !== "SCRUBBED" ||
+            cohort.artifact_authority_protocol !== qualificationCohortArtifactProtocol ||
+            root.expected_artifact_count !== expectedArtifactIds.length ||
+            root.expected_artifacts_checksum !== expectedArtifactsChecksum ||
+            root.expected_page_count !== expectedPageCount ||
+            root.expected_participant_count !== expectedParticipantCount ||
+            !completedRootRowIsAuthentic(root) ||
+            root.artifact_authority_proof_checksum === null
+          ) {
+            return conflict;
+          }
+          const [allocationCount] = await transaction
+            .select({ count: sql<number>`count(*)::int` })
+            .from(qualificationParticipantAllocations)
+            .where(
+              and(
+                eq(qualificationParticipantAllocations.cohort_id, input.cohortId),
+                eq(qualificationParticipantAllocations.execution_id, input.executionId),
+              ),
+            );
+          const [provisionCount] = await transaction
+            .select({ count: sql<number>`count(*)::int` })
+            .from(qualificationParticipantProvisions)
+            .where(
+              and(
+                eq(qualificationParticipantProvisions.cohort_id, input.cohortId),
+                eq(qualificationParticipantProvisions.execution_id, input.executionId),
+              ),
+            );
+          if (allocationCount?.count !== 0 || provisionCount?.count !== 0) return conflict;
+          return {
+            _tag: "Ready",
+            allocationIdentityCount: 0,
+            artifactAuthorityProofChecksum: root.artifact_authority_proof_checksum,
+            cohortId: root.cohort_id,
+            executionId: root.execution_id,
+            expectedPageCount: root.expected_page_count,
+            expectedParticipantCount: root.expected_participant_count,
+            finalPageChecksum: root.final_page_checksum,
+            provisionIdentityCount: 0,
+            rootChecksum: root.root_checksum,
+          };
+        },
+      ),
+    ),
   );
 
   const inspectTeardown = Effect.fn("QualificationCohortAuthority.inspectTeardown")(
@@ -992,6 +1102,7 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
     inspectScrubPartitionCompletion,
     inspectScrubPartition,
     inspectScrubRoot,
+    inspectScrubRootCompletion,
     inspectTeardown,
   } as const;
 };
@@ -1022,7 +1133,7 @@ const cohortCounts = (cohort: typeof qualificationCohorts.$inferSelect) => ({
 });
 
 const pageIdentityAtPosition = (
-  input: RootIdentity,
+  input: QualificationScrubRootIdentity,
   counts: { readonly adventurer: number; readonly free: number },
   position: number,
 ): PageIdentity => {
@@ -1098,7 +1209,7 @@ const scrubPageId = (identity: PageIdentity) =>
     plan: identity.plan,
   });
 
-const scrubRootId = (identity: RootIdentity) =>
+const scrubRootId = (identity: QualificationScrubRootIdentity) =>
   qualificationChecksum({
     cohortId: identity.cohortId,
     executionId: identity.executionId,
@@ -1296,11 +1407,6 @@ export const qualificationScrubPageArtifactIds = (
   // oxlint-disable-next-line unicorn/no-array-sort -- ES2022 has no toSorted and this fresh list needs a canonical order.
   artifactIds.sort((left, right) => left.localeCompare(right));
   return artifactIds;
-};
-
-const rootArtifactIds = (executionId: string) => {
-  const prefix = `qualification/executions/${encodeURIComponent(executionId)}/cohort`;
-  return [`${prefix}/inventory-receipt.json`, `${prefix}/manifest.json`];
 };
 
 const pageRowMatches = (

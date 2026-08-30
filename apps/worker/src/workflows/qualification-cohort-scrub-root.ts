@@ -7,8 +7,10 @@ import postgres from "postgres";
 
 import type { QualificationCohortArtifactAuthority } from "../qualification-cohort-artifact-authority";
 import {
+  deleteQualificationCohortArtifactRoot,
   fenceQualificationCohortArtifacts,
   inspectQualificationCohortArtifacts,
+  sealQualificationCohortArtifactRoot,
 } from "../integrations/cloudflare/qualification-cohort-artifacts";
 import { makeQualificationCohortScrubAuthority } from "../integrations/postgres/qualification-cohort-scrub";
 import { decodeQualificationCohortScrubRootWorkflowPayload } from "../qualification/cohort-scrub-root";
@@ -62,6 +64,13 @@ const makePorts = (
         payload.executionId,
       ),
     ),
+  inspectFinalArtifacts: () =>
+    Effect.runPromise(
+      inspectQualificationCohortArtifacts(
+        env.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY,
+        payload.executionId,
+      ),
+    ),
   inspectArtifacts: () =>
     Effect.runPromise(
       inspectQualificationCohortArtifacts(
@@ -78,6 +87,15 @@ const makePorts = (
     withDatabase(env, (authority) =>
       Effect.runPromise(authority.inspectScrubPartitionCompletion(payload, child.partitionIndex)),
     ),
+  inspectRootCompletion: () =>
+    withDatabase(env, (authority) =>
+      Effect.runPromise(
+        authority.inspectScrubRootCompletion({
+          cohortId: payload.cohortId,
+          executionId: payload.executionId,
+        }),
+      ),
+    ),
   inspectTopology: () =>
     withDatabase(env, (authority) => Effect.runPromise(authority.inspectScrubRoot(payload))),
   launchChild: (child) =>
@@ -87,12 +105,43 @@ const makePorts = (
       id: childInstanceId(child),
       params: child,
     }),
+  withRootAuthority: (evaluate) =>
+    evaluate({
+      claim: (claimToken) =>
+        withDatabase(env, (authority) =>
+          Effect.runPromise(
+            authority.claimScrubRoot({
+              claimToken,
+              cohortId: payload.cohortId,
+              executionId: payload.executionId,
+            }),
+          ),
+        ),
+      complete: (input) =>
+        withDatabase(env, (authority) =>
+          Effect.runPromise(
+            authority.completeScrubRoot({
+              ...input,
+              cohortId: payload.cohortId,
+              executionId: payload.executionId,
+            }),
+          ),
+        ),
+      deleteRoot: (input) =>
+        Effect.runPromise(
+          deleteQualificationCohortArtifactRoot(env.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY, input),
+        ),
+      sealRoot: (input) =>
+        Effect.runPromise(
+          sealQualificationCohortArtifactRoot(env.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY, input),
+        ),
+    }),
 });
 
 const childInstanceId = (child: QualificationCohortScrubPartitionWorkflowPayload) =>
   qualificationCohortScrubPartitionInstanceId(child.executionId, child.partitionIndex);
 
-/** Coordinates exact-order scrub pages only. Final root artifact deletion remains a later authority. */
+/** Coordinates exact-order pages and returns only after PostgreSQL and the artifact DO agree. */
 export class QualificationCohortScrubRootWorkflow extends WorkflowEntrypoint<
   QualificationCohortScrubRootEnv,
   QualificationCohortScrubRootWorkflowPayload

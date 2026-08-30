@@ -557,7 +557,7 @@ it.effect("chains every plan page before one root scrub completion", () =>
         deletedArtifactsChecksum: root.expectedArtifactsChecksum,
         executionId,
       }),
-    ).toEqual({ _tag: "Conflict" });
+    ).toMatchObject({ _tag: "LeaseExpired" });
     const reclaimedRoot = yield* authority.claimScrubRoot({
       claimToken: "root-claim-reclaimed",
       cohortId,
@@ -607,6 +607,22 @@ it.effect("chains every plan page before one root scrub completion", () =>
       ),
     );
     expect(retainedIdentities.rows[0]).toEqual({ allocations: 0, provisions: 0 });
+    expect(yield* authority.inspectScrubRootCompletion({ cohortId, executionId })).toMatchObject({
+      _tag: "Ready",
+      artifactAuthorityProofChecksum: "proof-root",
+      allocationIdentityCount: 0,
+      provisionIdentityCount: 0,
+      rootChecksum: completedRoot.rootChecksum,
+    });
+    yield* Effect.promise(() =>
+      fixture.client.query(
+        "update qualification_cohort_scrub_roots set artifact_authority_proof_checksum = 'substituted-proof' where cohort_id = $1",
+        [cohortId],
+      ),
+    );
+    expect(yield* authority.inspectScrubRootCompletion({ cohortId, executionId })).toEqual({
+      _tag: "Conflict",
+    });
   }),
 );
 

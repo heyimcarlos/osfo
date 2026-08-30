@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { qualificationCohortRootArtifactKeys } from "./cohort-artifact-layout";
 import {
   decodeQualificationCohortScrubRootWorkflowPayload,
   qualificationCohortArtifactRecordCount,
+  qualificationCohortScrubRootClaimToken,
   qualificationCohortScrubRootInstanceId,
   qualificationCohortScrubRootMaximumExternalCalls,
   qualificationCohortScrubRootMaximumStepCount,
@@ -59,6 +61,19 @@ describe("qualification cohort scrub root contract", () => {
     expect(qualificationCohortArtifactRecordCount(topology)).toBe(877);
   });
 
+  it("derives one stable root claim token per Workflow attempt", () => {
+    const first = qualificationCohortScrubRootClaimToken(payload, 1);
+    expect(qualificationCohortScrubRootClaimToken(payload, 1)).toBe(first);
+    expect(qualificationCohortScrubRootClaimToken(payload, 2)).not.toBe(first);
+  });
+
+  it("pins the exact two root artifact keys", () => {
+    expect(qualificationCohortRootArtifactKeys("execution/with space")).toEqual([
+      "qualification/executions/execution%2Fwith%20space/cohort/inventory-receipt.json",
+      "qualification/executions/execution%2Fwith%20space/cohort/manifest.json",
+    ]);
+  });
+
   it("rejects zero, unsafe, overflow, and malformed root authority", () => {
     expect(qualificationCohortScrubRootTopology(payload, { adventurer: 0, free: 0 })).toBeNull();
     expect(
@@ -92,8 +107,8 @@ describe("qualification cohort scrub root contract", () => {
   });
 
   it("pins the Public root budget below installed paid defaults", () => {
-    expect(qualificationCohortScrubRootMaximumStepCount).toBe(377);
-    expect(qualificationCohortScrubRootMaximumExternalCalls).toBe(878);
+    expect(qualificationCohortScrubRootMaximumStepCount).toBe(379);
+    expect(qualificationCohortScrubRootMaximumExternalCalls).toBe(884);
     expect(qualificationCohortScrubRootMaximumStepCount).toBeLessThan(10_000);
     expect(qualificationCohortScrubRootMaximumExternalCalls).toBeLessThan(10_000);
   });

@@ -2,6 +2,11 @@
 export const qualificationCohortProvisionArtifactPageSize = 50;
 export const qualificationCohortRootArtifactRecordCount = 2;
 
+export const qualificationCohortRootArtifactKeys = (executionId: string) => {
+  const prefix = `qualification/executions/${encodeURIComponent(executionId)}/cohort`;
+  return [`${prefix}/inventory-receipt.json`, `${prefix}/manifest.json`];
+};
+
 export const qualificationCohortArtifactLayoutRecordCount = (input: {
   readonly finalizePageCount: number;
   readonly participantCount: number;
