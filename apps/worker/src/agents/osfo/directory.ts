@@ -159,6 +159,21 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     );
   }
 
+  /** Read exact Session-bound activation authority from one registered Agent. */
+  async readQualificationActivationReceipts(
+    agentId: string,
+    executionId: string,
+    sessionId: string,
+  ) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) {
+      return { _tag: "QualificationAgentNotFound" as const };
+    }
+    return (await this.subAgent(OsfoAgent, agentId)).readQualificationActivationReceipts(
+      executionId,
+      sessionId,
+    );
+  }
+
   /** Read terminal qualification facts from their exact serialized Agent authority. */
   async readQualificationTurnAuthority(agentId: string, executionId: string, sessionId: string) {
     if (!this.hasSubAgent(OsfoAgent, agentId)) {

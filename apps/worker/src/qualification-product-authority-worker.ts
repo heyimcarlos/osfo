@@ -5,6 +5,7 @@ import { Clock, Data, Duration, Effect, Exit, Option, Predicate, Schema } from "
 
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/directory";
 import type { OsfoDirectory } from "./agents/osfo/directory";
+import { QualificationActivationReceipt } from "./agents/osfo/db/qualification-activations";
 import { BillingDb } from "./db/billing";
 import { AgentId, AllowancePeriodId, ThinkSubmissionId, UserId } from "./domain";
 import { QualificationContext } from "./domain/qualification-context";
@@ -801,13 +802,17 @@ const attemptOwnedSources = async (
 const coverageMissingSources = (
   manifest: ProductionQualificationManifest,
 ): ReadonlyArray<MissingSource> =>
-  qualificationAuthorityCoverageGaps(manifest).map(({ component, journey, source }) => ({
-    detail:
-      journey === null
-        ? `No production-owned ${source} adapter covers the frozen ${component} authority`
-        : `No production-owned ${source} adapter covers ${journey}/${component}`,
-    source,
-  }));
+  qualificationAuthorityCoverageGaps(manifest).map(
+    ({ activationCause, component, journey, source }) => ({
+      detail:
+        activationCause !== undefined
+          ? `No production-owned ${source} adapter proves the ${activationCause} activation cause`
+          : journey === null
+            ? `No production-owned ${source} adapter covers the frozen ${component} authority`
+            : `No production-owned ${source} adapter covers ${journey}/${component}`,
+      source,
+    }),
+  );
 
 const canonicalMissingSources = (
   missing: ReadonlyArray<MissingSource>,
@@ -1460,6 +1465,98 @@ const retainArrivalDerivedAuthority = async (
   return workerRetained && thinkRetained;
 };
 
+interface QualificationActivationCorrelationIdentity {
+  readonly attemptId: string;
+  readonly rootId: string;
+  readonly sessionId: string;
+  readonly submissionId: string;
+}
+
+type QualificationActivationAuthorityOutcome =
+  | { readonly _tag: "Conflict" }
+  | { readonly _tag: "Missing" }
+  | {
+      readonly _tag: "Ready";
+      readonly records: ReadonlyArray<QualificationAuthorityRecord>;
+    };
+
+/** Join decoded Agent activation authority to one exact accepted arrival chunk. */
+export const qualificationActivationAuthorityRecords = (input: {
+  readonly acceptedAdmissions: ReadonlyArray<QualificationAdmissionReceipt>;
+  readonly executionId: string;
+  readonly identities: ReadonlyArray<QualificationActivationCorrelationIdentity>;
+  readonly planChecksum: string;
+  readonly receipts: unknown;
+  readonly region: "americas" | "asiaPacific" | "europe";
+  readonly runId: string;
+}): QualificationActivationAuthorityOutcome => {
+  const decodedReceipts = Schema.decodeUnknownOption(Schema.Array(QualificationActivationReceipt))(
+    input.receipts,
+  );
+  if (Option.isNone(decodedReceipts)) return { _tag: "Conflict" };
+  const correlated = input.acceptedAdmissions.map((admissionReceipt) => {
+    const identity = input.identities.find(
+      (candidate) => candidate.rootId === admissionReceipt.rootId,
+    );
+    const matches = decodedReceipts.value.filter(
+      (candidate) => candidate.rootId === admissionReceipt.rootId,
+    );
+    return { admissionReceipt, identity, matches };
+  });
+  if (
+    correlated.some(({ admissionReceipt, identity, matches }) => {
+      const receipt = matches[0];
+      if (receipt === undefined || matches.length !== 1 || identity === undefined) return true;
+      const { artifactChecksum, ...content } = receipt;
+      return (
+        receipt.attemptId !== identity.attemptId ||
+        receipt.attemptId !== admissionReceipt.attemptId ||
+        receipt.executionId !== input.executionId ||
+        receipt.planChecksum !== input.planChecksum ||
+        receipt.runId !== input.runId ||
+        receipt.requestId !== identity.submissionId ||
+        receipt.requestId !== admissionReceipt.thinkSubmissionId ||
+        receipt.sessionId !== identity.sessionId ||
+        receipt.region !== input.region ||
+        artifactChecksum !== qualificationChecksum(content)
+      );
+    })
+  ) {
+    return { _tag: "Conflict" };
+  }
+  if (
+    correlated.some(({ matches }) => {
+      const receipt = matches[0];
+      return receipt?.cause === null || receipt?.classification === null;
+    })
+  ) {
+    return { _tag: "Missing" };
+  }
+  return {
+    _tag: "Ready",
+    records: correlated.flatMap(({ matches }) => {
+      const receipt = matches[0];
+      if (receipt === undefined || receipt.cause === null || receipt.classification === null) {
+        return [];
+      }
+      return [
+        {
+          activationId: receipt.activationId,
+          cause: receipt.cause,
+          classification: receipt.classification,
+          effectReceipts: [],
+          occurredAt: receipt.occurredAt,
+          productFactId: receipt.productFactId,
+          region: receipt.region,
+          rootId: receipt.rootId,
+          stageOccurrences: [],
+          usageFacts: [],
+        },
+      ];
+    }),
+  };
+};
+
 type QualificationMemoryOutcome =
   | {
       readonly _tag: "NoMemoryObligation";
@@ -2068,6 +2165,90 @@ const collectAgentSourceChunk = async (
       );
     }
     const directory = await getAgentByName(env.OSFO_DIRECTORY, OSFO_DIRECTORY_NAME);
+    if (source === "osfo_agent_activation_log") {
+      const authority = await mapQualificationAuthorityConnections(
+        [...new Set(identities.map(({ agentId, sessionId }) => `${agentId}\u0000${sessionId}`))],
+        async (identity) => {
+          const [agentId, sessionId] = identity.split("\u0000");
+          if (agentId === undefined || sessionId === undefined) {
+            return { _tag: "QualificationActivationAuthorityConflict" as const };
+          }
+          return directory.readQualificationActivationReceipts(
+            agentId,
+            frozen.plan.executionId,
+            sessionId,
+          );
+        },
+      );
+      if (authority.some((result) => result._tag === "QualificationActivationAuthorityConflict")) {
+        return Response.json(
+          { error: "qualificationActivationAuthorityConflict" },
+          { status: 409 },
+        );
+      }
+      if (authority.some((result) => result._tag !== "QualificationActivationAuthority")) {
+        return Response.json(
+          {
+            missingSources: [
+              {
+                detail: `Agent activation authority is unavailable for arrival chunk ${streamChunkIndex}`,
+                source,
+              },
+            ],
+            status: "MISSING",
+          },
+          { status: 424 },
+        );
+      }
+      const receipts = authority.flatMap((result) =>
+        result._tag === "QualificationActivationAuthority" ? result.receipts : [],
+      );
+      const run = frozen.plan.runs.find((candidate) => candidate.runId === runId);
+      if (run === undefined) {
+        return Response.json(
+          { error: "qualificationActivationAuthorityConflict" },
+          { status: 409 },
+        );
+      }
+      const activation = qualificationActivationAuthorityRecords({
+        acceptedAdmissions: acceptedRecords.map(({ admissionReceipt }) => admissionReceipt),
+        executionId: frozen.plan.executionId,
+        identities,
+        planChecksum: frozen.plan.planChecksum,
+        receipts,
+        region: run.region,
+        runId,
+      });
+      if (activation._tag === "Conflict") {
+        return Response.json(
+          { error: "qualificationActivationAuthorityConflict" },
+          { status: 409 },
+        );
+      }
+      if (activation._tag === "Missing") {
+        return Response.json(
+          {
+            missingSources: [
+              {
+                detail: `Agent activation cause is not authoritative for every accepted root in arrival chunk ${streamChunkIndex}`,
+                source,
+              },
+            ],
+            status: "MISSING",
+          },
+          { status: 424 },
+        );
+      }
+      const records = activation.records;
+      return (await retainProductAuthorityShard(env, frozen, source, streamChunkIndex, records))
+        ? Response.json({
+            recordCount: records.length,
+            source,
+            status: "COMPLETE",
+            streamChunkIndex,
+          })
+        : Response.json({ error: "qualificationAuthorityShardConflict" }, { status: 409 });
+    }
     const roots = (
       await mapQualificationAuthorityConnections(
         [...new Set(identities.map(({ agentId, sessionId }) => `${agentId}\u0000${sessionId}`))],

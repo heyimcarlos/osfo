@@ -89,6 +89,14 @@ export const qualificationAuthorityAdapterRegistry = [
     source: "model_access_receipts",
   },
   {
+    activationCauses: ["deployment", "firstUse", "warm"],
+    component: "AgentActivation",
+    journeys: allJourneys,
+    mode: "agentPostgresCollector",
+    requirements: ["artifactBucket", "attemptIndexTable", "directoryBinding", "postgresBinding"],
+    source: "osfo_agent_activation_log",
+  },
+  {
     component: "AgentSQLite",
     journeys: allJourneys,
     mode: "agentPostgresCollector",
@@ -132,6 +140,9 @@ export const qualificationAuthorityAdapterRegistry = [
   },
 ] as const satisfies ReadonlyArray<{
   readonly component: SemanticComponent;
+  readonly activationCauses?: ReadonlyArray<
+    "deployment" | "faultRecovery" | "firstUse" | "idleEviction" | "warm"
+  >;
   readonly journeys: ReadonlyArray<ReferenceJourney>;
   readonly mode: "agentPostgresCollector" | "arrivalReadback";
   readonly requirements: ReadonlyArray<QualificationAuthorityAdapterRequirement>;
@@ -187,6 +198,7 @@ export const qualificationAuthoritySourcesRequiring = (
   );
 
 export interface QualificationAuthorityCoverageGap {
+  readonly activationCause?: "faultRecovery" | "idleEviction";
   readonly component: SemanticComponent | "FaultController";
   readonly journey: ReferenceJourney | null;
   readonly source: QualificationAuthoritySource;
@@ -222,6 +234,17 @@ export const qualificationAuthorityCoverageGaps = (
     }
     const component = sourceComponents[source];
     if (component === undefined) continue;
+    if (source === "osfo_agent_activation_log") {
+      const adapter = qualificationAuthorityAdapterFor(source);
+      const coveredCauses =
+        adapter !== undefined && "activationCauses" in adapter ? adapter.activationCauses : [];
+      const coveredCauseSet = new Set<string>(coveredCauses);
+      for (const activationCause of ["idleEviction", "faultRecovery"] as const) {
+        if (!coveredCauseSet.has(activationCause)) {
+          gaps.push({ activationCause, component, journey: null, source });
+        }
+      }
+    }
     const coveredJourneys = qualificationAuthorityAdapterFor(source)?.journeys ?? [];
     for (const { journey, percentage } of manifest.journeyMix) {
       if (

@@ -356,6 +356,146 @@ export const qualificationAdmissions = sqliteTable(
   ],
 );
 
+/** One observed Cloudflare runtime activation, retained when Agent onStart runs. */
+export const qualificationRuntimeActivations = sqliteTable(
+  "osfo_qualification_runtime_activations",
+  {
+    activation_id: text().primaryKey(),
+    deployment_version_id: text(),
+    started_at: text()
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("osfo_qualification_runtime_activations_started").on(table.started_at)],
+);
+
+/** Completeness marker and preceding admitted request facts for activation classification. */
+export const qualificationActivationState = sqliteTable(
+  "osfo_qualification_activation_state",
+  {
+    first_use_eligible: integer({ mode: "boolean" }).notNull(),
+    last_activation_id: text(),
+    last_deployment_version_id: text(),
+    request_count: integer().notNull(),
+    singleton_key: text().primaryKey(),
+  },
+  (table) => [
+    check("osfo_qualification_activation_state_singleton", sql`${table.singleton_key} = 'agent'`),
+    check(
+      "osfo_qualification_activation_state_first_use_boolean",
+      sql`${table.first_use_eligible} IN (0, 1)`,
+    ),
+    check("osfo_qualification_activation_state_request_count", sql`${table.request_count} >= 0`),
+  ],
+);
+
+/** Append-only observation of every request admitted before product execution. */
+export const qualificationAdmittedRequestActivations = sqliteTable(
+  "osfo_qualification_admitted_request_activations",
+  {
+    activation_id: text()
+      .notNull()
+      .references(() => qualificationRuntimeActivations.activation_id, {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      }),
+    cause: text({ enum: ["deployment", "firstUse", "warm"] }),
+    classification: text({ enum: ["cold", "warm"] }),
+    deployment_version_id: text(),
+    observed_at: text()
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    request_id: text().notNull().unique(),
+    request_sequence: integer().primaryKey({ autoIncrement: true }),
+    session_id: sessionId()
+      .notNull()
+      .references(() => sessionOwnership.session_id, {
+        onDelete: "cascade",
+        onUpdate: "restrict",
+      }),
+  },
+  (table) => [
+    check(
+      "osfo_qualification_admitted_request_activation_cause",
+      sql`${table.cause} IS NULL OR ${table.cause} IN ('deployment', 'firstUse', 'warm')`,
+    ),
+    check(
+      "osfo_qualification_admitted_request_activation_classification",
+      sql`${table.classification} IS NULL OR ${table.classification} IN ('cold', 'warm')`,
+    ),
+    check(
+      "osfo_qualification_admitted_request_activation_pair",
+      sql`(${table.cause} IS NULL AND ${table.classification} IS NULL) OR (${table.cause} IS NOT NULL AND ${table.classification} IS NOT NULL)`,
+    ),
+    index("osfo_qualification_admitted_requests_by_session").on(
+      table.session_id,
+      table.request_sequence,
+    ),
+  ],
+);
+
+/** Exact qualification-root projection of the owning admitted-request activation fact. */
+export const qualificationActivationReceipts = sqliteTable(
+  "osfo_qualification_activation_receipts",
+  {
+    activation_id: text()
+      .notNull()
+      .references(() => qualificationRuntimeActivations.activation_id, {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      }),
+    artifact_checksum: text().notNull(),
+    attempt_id: text().primaryKey(),
+    cause: text({ enum: ["deployment", "firstUse", "warm"] }),
+    classification: text({ enum: ["cold", "warm"] }),
+    deployment_version_id: text(),
+    execution_id: text().notNull(),
+    occurred_at: text().notNull(),
+    plan_checksum: text().notNull(),
+    product_fact_id: text().notNull().unique(),
+    region: text({ enum: ["americas", "asiaPacific", "europe"] }).notNull(),
+    request_id: text()
+      .notNull()
+      .references(() => qualificationAdmittedRequestActivations.request_id, {
+        onDelete: "cascade",
+        onUpdate: "restrict",
+      }),
+    root_id: text().notNull(),
+    run_id: text().notNull(),
+    session_id: sessionId()
+      .notNull()
+      .references(() => sessionOwnership.session_id, {
+        onDelete: "cascade",
+        onUpdate: "restrict",
+      }),
+  },
+  (table) => [
+    check(
+      "osfo_qualification_activation_receipt_cause",
+      sql`${table.cause} IS NULL OR ${table.cause} IN ('deployment', 'firstUse', 'warm')`,
+    ),
+    check(
+      "osfo_qualification_activation_receipt_classification",
+      sql`${table.classification} IS NULL OR ${table.classification} IN ('cold', 'warm')`,
+    ),
+    check(
+      "osfo_qualification_activation_receipt_pair",
+      sql`(${table.cause} IS NULL AND ${table.classification} IS NULL) OR (${table.cause} IS NOT NULL AND ${table.classification} IS NOT NULL)`,
+    ),
+    check(
+      "osfo_qualification_activation_receipt_region",
+      sql`${table.region} IN ('americas', 'asiaPacific', 'europe')`,
+    ),
+    uniqueIndex("osfo_qualification_activation_root_unique").on(table.execution_id, table.root_id),
+    index("osfo_qualification_activation_by_execution_session").on(
+      table.execution_id,
+      table.session_id,
+      table.run_id,
+      table.occurred_at,
+    ),
+  ],
+);
+
 /** Durable normalized model-call evidence awaiting idempotent Allowance recording. */
 export const modelCallUsageEvidence = sqliteTable(
   "osfo_model_call_usage_evidence",

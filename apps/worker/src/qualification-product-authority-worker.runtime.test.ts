@@ -12,12 +12,14 @@ import {
   canonicalQualificationJson,
   qualificationChecksum,
 } from "./qualification/qualification-checksum";
+import { QualificationAdmissionReceipt } from "./qualification/qualification-attempt";
 import { createBoundedBetaManifest } from "./qualification/qualification-manifest";
 import { ScheduledEmail } from "./services/scheduled-email";
 import {
   collectQualificationSourceBundle,
   handleQualificationProductAuthority,
   mapQualificationAuthorityConnections,
+  qualificationActivationAuthorityRecords,
   qualificationAuthorityConnectionLimit,
   qualificationMemoryAuthorityRecords,
   qualificationScheduledEmailAuthorityRecords,
@@ -41,6 +43,88 @@ it("bounds product-authority host calls below the Workers connection ceiling", a
   expect(results).toEqual(Array.from({ length: 37 }, (_, index) => index));
   expect(maximumActive).toBe(qualificationAuthorityConnectionLimit);
   expect(maximumActive).toBeLessThan(6);
+});
+
+it("rejects malformed or cross-root substituted Agent activation authority", () => {
+  const admissions = [
+    activationAdmission("attempt-1", "root-1", "submission-1"),
+    activationAdmission("attempt-2", "root-2", "submission-2"),
+  ];
+  const identities = admissions.map((admission) => ({
+    attemptId: admission.attemptId,
+    rootId: admission.rootId,
+    sessionId: "session-1",
+    submissionId: admission.thinkSubmissionId ?? "",
+  }));
+  const receipts = admissions.map((admission) =>
+    activationReceipt(admission, admission.thinkSubmissionId ?? ""),
+  );
+  const firstAdmission = admissions[0];
+  const secondAdmission = admissions[1];
+  if (firstAdmission === undefined || secondAdmission === undefined) {
+    throw new Error("Expected activation admission fixtures");
+  }
+  const firstReceipt = receipts[0];
+  if (firstReceipt === undefined) throw new Error("Expected activation receipt fixture");
+  const { artifactChecksum: _artifactChecksum, ...firstReceiptContent } = firstReceipt;
+  const missingCauseContent = { ...firstReceiptContent, cause: null, classification: null };
+  expect(
+    qualificationActivationAuthorityRecords({
+      acceptedAdmissions: admissions,
+      executionId: "execution-1",
+      identities,
+      planChecksum: "plan-1",
+      receipts,
+      region: "americas",
+      runId: "run-1",
+    }),
+  ).toMatchObject({ _tag: "Ready", records: [{ rootId: "root-1" }, { rootId: "root-2" }] });
+
+  expect(
+    qualificationActivationAuthorityRecords({
+      acceptedAdmissions: admissions,
+      executionId: "execution-1",
+      identities,
+      planChecksum: "plan-1",
+      receipts: [{ ...receipts[0], artifactChecksum: "corrupt" }, receipts[1]],
+      region: "americas",
+      runId: "run-1",
+    }),
+  ).toEqual({ _tag: "Conflict" });
+
+  const swapped = [
+    activationReceipt(firstAdmission, "submission-2"),
+    activationReceipt(secondAdmission, "submission-1"),
+  ];
+  expect(
+    qualificationActivationAuthorityRecords({
+      acceptedAdmissions: admissions,
+      executionId: "execution-1",
+      identities,
+      planChecksum: "plan-1",
+      receipts: swapped,
+      region: "americas",
+      runId: "run-1",
+    }),
+  ).toEqual({ _tag: "Conflict" });
+
+  expect(
+    qualificationActivationAuthorityRecords({
+      acceptedAdmissions: admissions,
+      executionId: "execution-1",
+      identities,
+      planChecksum: "plan-1",
+      receipts: [
+        {
+          ...missingCauseContent,
+          artifactChecksum: qualificationChecksum(missingCauseContent),
+        },
+        receipts[1],
+      ],
+      region: "americas",
+      runId: "run-1",
+    }),
+  ).toEqual({ _tag: "Missing" });
 });
 
 it("collects source bundles in canonical order and preserves closed and pending outcomes", async () => {
@@ -126,6 +210,52 @@ it("collects source bundles in canonical order and preserves closed and pending 
   });
   expect(substituted.status).toBe(409);
 });
+
+const activationAdmission = (attemptId: string, rootId: string, submissionId: string) => {
+  const fact = {
+    admissionDecision: "accepted" as const,
+    agentId: AgentId.make("agent-1"),
+    attemptId,
+    executionId: "execution-1",
+    planChecksum: "plan-1",
+    rootId,
+    runId: "run-1",
+  };
+  const productFactId = qualificationChecksum(fact);
+  const content = {
+    acceptanceReceiptId: productFactId,
+    ...fact,
+    occurredAt: "2026-08-29T17:00:00.000Z",
+    productFactId,
+    thinkSubmissionId: submissionId,
+    userMessageId: submissionId,
+    userUpdateId: productFactId,
+  };
+  return QualificationAdmissionReceipt.make({
+    ...content,
+    artifactChecksum: qualificationChecksum(content),
+  });
+};
+
+const activationReceipt = (admission: QualificationAdmissionReceipt, requestId: string) => {
+  const content = {
+    activationId: "activation-1",
+    attemptId: admission.attemptId,
+    cause: "warm" as const,
+    classification: "warm" as const,
+    deploymentVersionId: "deployment-1",
+    executionId: admission.executionId,
+    occurredAt: admission.occurredAt,
+    planChecksum: admission.planChecksum,
+    productFactId: `activation:${admission.productFactId}`,
+    region: "americas" as const,
+    requestId,
+    rootId: admission.rootId,
+    runId: admission.runId,
+    sessionId: "session-1",
+  };
+  return { ...content, artifactChecksum: qualificationChecksum(content) };
+};
 
 it("distinguishes failed, unsettled, and absent Memory obligations", () => {
   const root = { rootId: "root-1", userMessageId: "message-1" };

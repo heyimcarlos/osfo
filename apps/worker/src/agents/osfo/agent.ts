@@ -128,6 +128,13 @@ import {
   retainQualificationAdmissionReceipt,
 } from "./db/qualification-admissions";
 import {
+  readQualificationActivationReceipts,
+  retainAdmittedRequestActivation,
+  retainQualificationAdmissionActivation,
+  startQualificationRuntimeActivation,
+  type QualificationRuntimeActivationClaim,
+} from "./db/qualification-activations";
+import {
   launchModelAccessPolicy,
   type ManagedModelRoute,
   type ManagedRouteUnavailable,
@@ -736,6 +743,9 @@ export class OsfoAgent extends Think<Env> {
 
   #promptUtilizationObserver: PromptUtilization.Observer | undefined;
   #promptUtilizationSubmissionId: ThinkSubmissionId | undefined;
+  // oxlint-disable-next-line effecttsgo/crypto-random-uuid -- Zero-tolerance runtime identity must come from production Web Crypto, not an injectable test PRNG.
+  readonly #qualificationActivationId = crypto.randomUUID();
+  #qualificationRuntimeActivation: QualificationRuntimeActivationClaim | null = null;
 
   /** Preserve Agents SDK diagnostics and export only numeric compaction evidence to Osfo logs. */
   override observability = PromptUtilization.makeThinkObservability({
@@ -1394,6 +1404,8 @@ export class OsfoAgent extends Think<Env> {
             );
             return;
           }
+
+          await this.#observeAdmittedRequestActivation(admission);
 
           const recorded =
             admission.metadata.executionMode === "exhaustedConversation" ||
@@ -3183,6 +3195,7 @@ export class OsfoAgent extends Think<Env> {
   /** Reconcile committed Think messages when a new Agent activation starts. */
   override async onStart(): Promise<void> {
     await this.#migrationsReady;
+    await this.#refreshQualificationRuntimeActivation();
     await Effect.runPromise(this.#reminders.reconcileSchedules());
     await this.#reconcileModelCallUsageOrSchedule();
     await Effect.runPromise(this.#reconcileCommittedTurns());
@@ -3722,6 +3735,8 @@ export class OsfoAgent extends Think<Env> {
     await this.#migrationsReady;
     const agentName = this.name;
     const activateCurrentSession = () => this.#activateCurrentSession();
+    const refreshQualificationRuntimeActivation = () =>
+      this.#refreshQualificationRuntimeActivation();
     const store = this.#store;
     return runRpc(
       this.#accountDeletionFencedSessionExecution.run(
@@ -3735,6 +3750,7 @@ export class OsfoAgent extends Think<Env> {
           const outcome = yield* store.initialize(namedAgentId, parsed);
           if ("currentSessionId" in outcome) {
             yield* Effect.promise(activateCurrentSession);
+            yield* Effect.promise(refreshQualificationRuntimeActivation);
           }
           return outcome;
         }),
@@ -4507,13 +4523,24 @@ export class OsfoAgent extends Think<Env> {
       AgentId.make(this.name),
       admissionOutcome,
     );
-    const retained = await Effect.runPromiseExit(
-      retainQualificationAdmissionReceipt(this.#db, receipt),
-    );
-    return Exit.isSuccess(retained)
+    const retained =
+      admissionOutcome.decision === "accepted"
+        ? Exit.isSuccess(
+            await Effect.runPromiseExit(
+              retainQualificationAdmissionActivation(this.#db, {
+                admission: receipt,
+                region: decoded.success.qualificationContext.region,
+                requestId: decoded.success.submissionId,
+              }),
+            ),
+          )
+        : Exit.isSuccess(
+            await Effect.runPromiseExit(retainQualificationAdmissionReceipt(this.#db, receipt)),
+          );
+    return retained
       ? outcome
       : new ThinkSubmissionUnavailable({
-          cause: retained.cause,
+          cause: receipt.attemptId,
           message: "Qualification admission authority could not be retained",
           operation: "submitQualificationConversation",
         });
@@ -4525,6 +4552,8 @@ export class OsfoAgent extends Think<Env> {
   ) {
     const lifecycle = this.#agentSessionLifecycle;
     const sessionLifecycle = this.#sessionLifecycle;
+    const observeAdmittedRequestActivation = (admission: ManagedConversationAdmitted) =>
+      this.#observeAdmittedRequestActivation(admission);
     const submitTurn = (admission: ManagedConversationAdmitted) =>
       this.runTurn({
         idempotencyKey: admission.idempotencyKey,
@@ -4545,6 +4574,16 @@ export class OsfoAgent extends Think<Env> {
         return yield* lifecycle.replaceCurrent(admission);
       }
       if (!Predicate.isTagged(admission, "ManagedConversationAdmitted")) return admission;
+      const activationObserved = yield* Effect.promise(() =>
+        observeAdmittedRequestActivation(admission),
+      );
+      if (operationName === "submitQualificationConversation" && !activationObserved) {
+        return yield* new ThinkSubmissionUnavailable({
+          cause: admission.submissionId,
+          message: "Qualification activation authority could not observe the admitted request",
+          operation: operationName,
+        });
+      }
       return yield* callThinkSubmission("runTurn", () => submitTurn(admission));
     });
     const fenced = this.#accountDeletionFencedSessionExecution;
@@ -6733,6 +6772,35 @@ export class OsfoAgent extends Think<Env> {
       : { _tag: "QualificationAdmissionReadUnavailable" as const };
   }
 
+  /** Read activation facts for one exact qualification execution and owned Session. */
+  async readQualificationActivationReceipts(executionId: string, encodedSessionId: string) {
+    await this.#migrationsReady;
+    const sessionId = Schema.decodeOption(SessionId)(encodedSessionId);
+    if (executionId.length === 0 || executionId.length > 500 || Option.isNone(sessionId)) {
+      return { _tag: "QualificationActivationAuthorityConflict" as const };
+    }
+    const owned = await Effect.runPromiseExit(this.#store.ownsSession(sessionId.value));
+    if (!Exit.isSuccess(owned) || !owned.value) {
+      return { _tag: "QualificationActivationAuthorityUnavailable" as const };
+    }
+    const retained = await Effect.runPromiseExit(
+      readQualificationActivationReceipts(this.#db, {
+        executionId,
+        sessionId: sessionId.value,
+      }),
+    );
+    if (Exit.isSuccess(retained)) {
+      return { _tag: "QualificationActivationAuthority" as const, receipts: retained.value };
+    }
+    return Option.match(Cause.findErrorOption(retained.cause), {
+      onNone: () => ({ _tag: "QualificationActivationAuthorityUnavailable" as const }),
+      onSome: (failure) =>
+        failure._tag === "QualificationActivationConflict"
+          ? { _tag: "QualificationActivationAuthorityConflict" as const }
+          : { _tag: "QualificationActivationAuthorityUnavailable" as const },
+    });
+  }
+
   /** Join qualification roots to terminal Think, Agent SQLite, and Memory authority. */
   async readQualificationTurnAuthority(executionId: string, encodedSessionId: string) {
     await this.#migrationsReady;
@@ -6835,6 +6903,57 @@ export class OsfoAgent extends Think<Env> {
       onNone: () => Promise.resolve(invalidOsfoEnvironment),
       onSome: (runtime) => runtime.runPromise(probeExecutionUnit),
     });
+  }
+
+  async #refreshQualificationRuntimeActivation(): Promise<void> {
+    const activation = await Effect.runPromiseExit(
+      startQualificationRuntimeActivation(this.#db, {
+        activationId: this.#qualificationActivationId,
+        deploymentVersionId: this.env.CF_VERSION_METADATA?.id ?? null,
+      }),
+    );
+    if (Exit.isSuccess(activation)) {
+      const current = this.#qualificationRuntimeActivation;
+      this.#qualificationRuntimeActivation =
+        current?.activationId === activation.value.activationId && current.firstUseClaimed
+          ? { ...activation.value, firstUseClaimed: true }
+          : activation.value;
+      return;
+    }
+    await Effect.runPromise(
+      Effect.logWarning("Agent activation authority could not be retained").pipe(
+        Effect.annotateLogs({ operation: "refreshQualificationRuntimeActivation" }),
+      ),
+    );
+  }
+
+  async #observeAdmittedRequestActivation(
+    admission: ManagedConversationAdmitted,
+  ): Promise<boolean> {
+    const activation = this.#qualificationRuntimeActivation;
+    if (activation === null) return false;
+    const retained = await Effect.runPromiseExit(
+      retainAdmittedRequestActivation(this.#db, {
+        ...activation,
+        requestId: admission.submissionId,
+        sessionId: admission.metadata.sessionId,
+      }),
+    );
+    this.#qualificationRuntimeActivation = {
+      ...activation,
+      firstUseClaimed: false,
+      historyComplete: activation.historyComplete && Exit.isSuccess(retained),
+    };
+    if (Exit.isSuccess(retained)) return true;
+    await Effect.runPromise(
+      Effect.logWarning("Admitted request activation authority could not be retained").pipe(
+        Effect.annotateLogs({
+          operation: "observeAdmittedRequestActivation",
+          requestId: admission.submissionId,
+        }),
+      ),
+    );
+    return false;
   }
 
   async #activateCurrentSession(): Promise<void> {

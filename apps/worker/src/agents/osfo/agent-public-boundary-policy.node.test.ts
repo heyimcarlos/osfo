@@ -65,6 +65,7 @@ const publicBoundaryPolicy = {
   quiesceAccountDeletion: ["cancellationReconciliationDeletion", "none"],
   readActionPresentation: ["read", "none"],
   readCommittedTurns: ["cancellationReconciliationDeletion", "none"],
+  readQualificationActivationReceipts: ["read", "none"],
   readQualificationAdmissionReceipts: ["read", "none"],
   readQualificationTurnAuthority: ["read", "none"],
   readFile: ["read", "none"],
@@ -112,6 +113,7 @@ const directoryBoundaryPolicy = {
   onBeforeSubAgent: ["read", "none"],
   pendingReminderWakeUpSources: ["read", "directoryGate"],
   probeAgent: ["read", "none"],
+  readQualificationActivationReceipts: ["read", "directoryGate"],
   readQualificationAdmissionReceipts: ["read", "directoryGate"],
   readQualificationTurnAuthority: ["read", "directoryGate"],
   resolveDocumentBuildFiles: ["read", "directoryGate"],
@@ -140,6 +142,18 @@ it("classifies every public Osfo Agent method under the account deletion boundar
       .every(([, [, protection]]) => protection !== "none"),
   ).toBe(true);
   expect(publicBoundaryPolicy.inspectCoreMemory).toEqual(["read", "fencedSessionExecution"]);
+});
+
+it("keeps qualification activation identity independent from the diagnostic runtime probe", () => {
+  const source = readFileSync(new URL("./agent.ts", import.meta.url), "utf8");
+  const refresh = source.slice(
+    source.indexOf("async #refreshQualificationRuntimeActivation"),
+    source.indexOf("async #observeAdmittedRequestActivation"),
+  );
+
+  expect(source).toContain("readonly #qualificationActivationId = crypto.randomUUID()");
+  expect(refresh).toContain("activationId: this.#qualificationActivationId");
+  expect(refresh).not.toContain("probeRuntime()");
 });
 
 it("classifies every public Osfo Directory method under the account deletion boundary policy", () => {

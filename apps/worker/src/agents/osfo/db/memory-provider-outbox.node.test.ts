@@ -47,6 +47,12 @@ import {
   retainQualificationAdmissionReceipt,
 } from "./qualification-admissions";
 import { qualificationAdmissionReceipt } from "../../../qualification/qualification-attempt";
+import {
+  readQualificationActivationReceipts,
+  retainAdmittedRequestActivation,
+  retainQualificationAdmissionActivation,
+  startQualificationRuntimeActivation,
+} from "./qualification-activations";
 import { ModelCallAttemptId } from "../../../domain/model-call-attempt";
 import { makeModelCallUsageStore, readQualificationModelAccess } from "./model-call-usage";
 import type { CompletedOperation, RankedResult } from "../../../services/web";
@@ -75,6 +81,25 @@ const now = DbTimestamp.make("2026-08-23T12:00:00.000Z");
 const past = DbTimestamp.make("1960-01-01T00:00:00.000Z");
 const liveLease = DbTimestamp.make("2026-08-23T12:01:00.000Z");
 const extendedLease = DbTimestamp.make("2026-08-23T12:02:00.000Z");
+
+const qualificationAttemptInput = (attemptId: string, rootId: string, submissionId: string) => ({
+  authorization: { user: { userId: "user-1" } },
+  message: "Run the ordinary conversation journey",
+  proofArtifactChecksum: "proof-1",
+  proofArtifactId: `qualification/executions/execution-1/attempts/run-1/${rootId}.json`,
+  qualificationContext: {
+    attemptId,
+    executionId: "execution-1",
+    journey: "ordinaryConversation" as const,
+    offeredAtEpochMs: 1_787_500_000_000,
+    planChecksum: "plan-1",
+    region: "americas" as const,
+    rootId,
+    runId: "run-1",
+  },
+  routeId: "route-1",
+  submissionId,
+});
 
 it("includes every generated Agent migration in the runtime manifest", () => {
   const migrations = new URL("./migrations/", import.meta.url);
@@ -127,6 +152,327 @@ it.effect("retains qualification admission authority idempotently and rejects ch
         artifactChecksum: "changed",
       }).pipe(Effect.flip);
       expect(conflict._tag).toBe("QualificationAdmissionConflict");
+    }),
+  ),
+);
+
+it.effect("binds an accepted qualification root to first-use activation authority atomically", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const store = makeAgentStore(db);
+      yield* store.initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId: ConversationRouteId.make("route-1"),
+        sessionId: SessionId.make("session-1"),
+      });
+      const activation = yield* startQualificationRuntimeActivation(db, {
+        activationId: "activation-1",
+        deploymentVersionId: "deployment-1",
+      });
+      const observed = yield* retainAdmittedRequestActivation(db, {
+        ...activation,
+        requestId: "submission-1",
+        sessionId: "session-1",
+      });
+      expect(observed).toMatchObject({ cause: "firstUse", classification: "cold" });
+      const receipt = qualificationAdmissionReceipt(
+        qualificationAttemptInput("attempt-1", "root-1", "submission-1"),
+        AgentId.make("agent-1"),
+        {
+          decision: "accepted",
+          occurredAt: "2026-08-29T17:00:00.000Z",
+          thinkSubmissionId: "submission-1",
+        },
+      );
+      yield* retainQualificationAdmissionActivation(db, {
+        admission: receipt,
+        region: "americas",
+        requestId: "submission-1",
+      });
+      yield* retainQualificationAdmissionActivation(db, {
+        admission: receipt,
+        region: "americas",
+        requestId: "submission-1",
+      });
+
+      const changedRequest = yield* retainQualificationAdmissionActivation(db, {
+        admission: {
+          ...receipt,
+          thinkSubmissionId: "submission-2",
+        },
+        region: "americas",
+        requestId: "submission-1",
+      }).pipe(Effect.flip);
+      expect(changedRequest._tag).toBe("QualificationActivationConflict");
+
+      expect(yield* readQualificationAdmissionReceipts(db, "execution-1")).toEqual([receipt]);
+      expect(
+        yield* readQualificationActivationReceipts(db, {
+          executionId: "execution-1",
+          sessionId: "session-1",
+        }),
+      ).toMatchObject([
+        {
+          activationId: "activation-1",
+          attemptId: "attempt-1",
+          cause: "firstUse",
+          classification: "cold",
+          rootId: "root-1",
+        },
+      ]);
+    }),
+  ),
+);
+
+it.effect("consumes the first-use claim before activation-scoped memory can observe it", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const store = makeAgentStore(db);
+      yield* store.initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId: ConversationRouteId.make("route-1"),
+        sessionId: SessionId.make("session-1"),
+      });
+      const first = yield* startQualificationRuntimeActivation(db, {
+        activationId: "activation-1",
+        deploymentVersionId: "deployment-1",
+      });
+      expect(first).toMatchObject({ firstUseClaimed: true, historyComplete: true });
+      const commitUncertainRetry = yield* startQualificationRuntimeActivation(db, {
+        activationId: "activation-1",
+        deploymentVersionId: "deployment-1",
+      });
+      expect(commitUncertainRetry).toMatchObject({ firstUseClaimed: false, historyComplete: true });
+    }),
+  ),
+);
+
+it.effect("reports retained activation corruption as conflict rather than missing authority", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      yield* makeAgentStore(db).initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId: ConversationRouteId.make("route-1"),
+        sessionId: SessionId.make("session-1"),
+      });
+      const activation = yield* startQualificationRuntimeActivation(db, {
+        activationId: "activation-1",
+        deploymentVersionId: "deployment-1",
+      });
+      yield* retainAdmittedRequestActivation(db, {
+        ...activation,
+        requestId: "submission-1",
+        sessionId: "session-1",
+      });
+      yield* retainQualificationAdmissionActivation(db, {
+        admission: qualificationAdmissionReceipt(
+          qualificationAttemptInput("attempt-1", "root-1", "submission-1"),
+          AgentId.make("agent-1"),
+          {
+            decision: "accepted",
+            occurredAt: "2026-08-29T17:00:00.000Z",
+            thinkSubmissionId: "submission-1",
+          },
+        ),
+        region: "americas",
+        requestId: "submission-1",
+      });
+      database
+        .prepare(
+          "UPDATE osfo_qualification_activation_receipts SET artifact_checksum = 'corrupt' WHERE attempt_id = 'attempt-1'",
+        )
+        .run();
+      const corrupted = yield* readQualificationActivationReceipts(db, {
+        executionId: "execution-1",
+        sessionId: "session-1",
+      }).pipe(Effect.flip);
+      expect(corrupted._tag).toBe("QualificationActivationConflict");
+    }),
+  ),
+);
+
+it.effect(
+  "cascades Session activation authority without retaining User content or contact data",
+  () =>
+    withDatabase(({ database, storage }) =>
+      Effect.gen(function* () {
+        const db = makeAgentDb(asDurableObjectStorage(storage));
+        const store = makeAgentStore(db);
+        yield* store.initialize(AgentId.make("agent-1"), {
+          agentId: AgentId.make("agent-1"),
+          initializationId: AgentInitializationId.make("initialization-1"),
+          initializedAt: now,
+          routeId: ConversationRouteId.make("route-1"),
+          sessionId: SessionId.make("session-1"),
+        });
+        const activation = yield* startQualificationRuntimeActivation(db, {
+          activationId: "activation-1",
+          deploymentVersionId: "deployment-1",
+        });
+        yield* retainAdmittedRequestActivation(db, {
+          ...activation,
+          requestId: "submission-1",
+          sessionId: "session-1",
+        });
+        yield* retainQualificationAdmissionActivation(db, {
+          admission: qualificationAdmissionReceipt(
+            qualificationAttemptInput("attempt-1", "root-1", "submission-1"),
+            AgentId.make("agent-1"),
+            {
+              decision: "accepted",
+              occurredAt: "2026-08-29T17:00:00.000Z",
+              thinkSubmissionId: "submission-1",
+            },
+          ),
+          region: "americas",
+          requestId: "submission-1",
+        });
+
+        const activationColumns = database
+          .prepare("PRAGMA table_info('osfo_qualification_activation_receipts')")
+          .all()
+          .map((column) => String(column["name"]));
+        expect(activationColumns).not.toContain("user_id");
+        expect(activationColumns).not.toContain("email");
+        expect(activationColumns).not.toContain("phone");
+        expect(activationColumns).not.toContain("message");
+
+        yield* store.replaceCurrentSession({
+          expectedCurrentSessionId: SessionId.make("session-1"),
+          replacedAt: now,
+          replacementSessionId: SessionId.make("session-2"),
+          routeId: ConversationRouteId.make("route-1"),
+        });
+        yield* store.deleteHistoricalSession({
+          authorization: authorizedDeletion("activation-delete-session", "session-1").payload
+            .authorization,
+          deletedAt: now,
+          outboxId: MemoryProviderOutboxId.make("activation-delete-session"),
+          sessionId: SessionId.make("session-1"),
+          userId: UserId.make("user-1"),
+        });
+        expect(
+          database
+            .prepare("SELECT COUNT(*) AS count FROM osfo_qualification_activation_receipts")
+            .get()?.["count"],
+        ).toBe(0);
+        expect(
+          database
+            .prepare(
+              "SELECT COUNT(*) AS count FROM osfo_qualification_admitted_request_activations",
+            )
+            .get()?.["count"],
+        ).toBe(0);
+      }),
+    ),
+);
+
+it.effect(
+  "counts an ordinary admission before a qualification root and rejects changed replay",
+  () =>
+    withDatabase(({ storage }) =>
+      Effect.gen(function* () {
+        const db = makeAgentDb(asDurableObjectStorage(storage));
+        yield* makeAgentStore(db).initialize(AgentId.make("agent-1"), {
+          agentId: AgentId.make("agent-1"),
+          initializationId: AgentInitializationId.make("initialization-1"),
+          initializedAt: now,
+          routeId: ConversationRouteId.make("route-1"),
+          sessionId: SessionId.make("session-1"),
+        });
+        const activation = yield* startQualificationRuntimeActivation(db, {
+          activationId: "activation-1",
+          deploymentVersionId: "deployment-1",
+        });
+        yield* retainAdmittedRequestActivation(db, {
+          ...activation,
+          requestId: "ordinary-submission",
+          sessionId: "session-1",
+        });
+        const qualified = yield* retainAdmittedRequestActivation(db, {
+          ...activation,
+          firstUseClaimed: false,
+          requestId: "qualification-submission",
+          sessionId: "session-1",
+        });
+        expect(qualified).toMatchObject({ cause: "warm", classification: "warm" });
+        const conflict = yield* retainAdmittedRequestActivation(db, {
+          ...activation,
+          firstUseClaimed: false,
+          requestId: "qualification-submission",
+          sessionId: "different-session",
+        }).pipe(Effect.flip);
+        expect(conflict._tag).toBe("QualificationActivationConflict");
+      }),
+    ),
+);
+
+it.effect("keeps legacy and same-version restarts unknown but proves a deployment change", () =>
+  withEmptyDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const legacyMigrations = agentMigrations.filter(({ version }) => version <= 21);
+      yield* applyMigrationChain(asDurableObjectStorage(storage), legacyMigrations);
+      database
+        .prepare("INSERT INTO osfo_conversation_routes (is_primary, route_id) VALUES (1, ?)")
+        .run("route-1");
+      database
+        .prepare(
+          `INSERT INTO osfo_session_ownership
+            (became_current_at, ownership_sequence, replaced_at, route_id, session_id)
+            VALUES (?, 1, NULL, ?, ?)`,
+        )
+        .run(now, "route-1", "session-1");
+      database
+        .prepare(
+          `INSERT INTO osfo_agent_initialization
+            (agent_id, initialization_id, initialized_at, initial_route_id, initial_session_id, singleton_key)
+            VALUES (?, ?, ?, ?, ?, 'agent')`,
+        )
+        .run("agent-1", "initialization-1", now, "route-1", "session-1");
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      yield* applyAgentMigrations(asDurableObjectStorage(storage));
+      const legacyActivation = yield* startQualificationRuntimeActivation(db, {
+        activationId: "legacy-activation",
+        deploymentVersionId: "deployment-1",
+      });
+      expect(
+        yield* retainAdmittedRequestActivation(db, {
+          ...legacyActivation,
+          requestId: "legacy-request",
+          sessionId: "session-1",
+        }),
+      ).toMatchObject({ cause: null, classification: null });
+      const sameVersionActivation = yield* startQualificationRuntimeActivation(db, {
+        activationId: "same-version-restart",
+        deploymentVersionId: "deployment-1",
+      });
+      expect(
+        yield* retainAdmittedRequestActivation(db, {
+          ...sameVersionActivation,
+          requestId: "same-version-request",
+          sessionId: "session-1",
+        }),
+      ).toMatchObject({ cause: null, classification: null });
+      const changedVersionActivation = yield* startQualificationRuntimeActivation(db, {
+        activationId: "changed-version-restart",
+        deploymentVersionId: "deployment-2",
+      });
+      expect(
+        yield* retainAdmittedRequestActivation(db, {
+          ...changedVersionActivation,
+          requestId: "changed-version-request",
+          sessionId: "session-1",
+        }),
+      ).toMatchObject({ cause: "deployment", classification: "cold" });
     }),
   ),
 );
@@ -220,8 +566,8 @@ it.effect("activates an Agent that slept before the conversation processing migr
       const result = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
       expect(result).toEqual({
-        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
-        currentVersion: 21,
+        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
+        currentVersion: 22,
       });
       expect(
         database

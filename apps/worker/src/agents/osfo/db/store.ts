@@ -34,6 +34,7 @@ import {
   committedTurns,
   conversationRoutes,
   memoryProviderOutbox,
+  qualificationActivationState,
   sessionRecallCursors,
   sessionOwnership,
 } from "./schema";
@@ -417,6 +418,16 @@ export const makeAgentStore = (db: AgentDb) => {
               initialized_at: input.initializedAt,
               initial_route_id: input.routeId,
               initial_session_id: input.sessionId,
+              singleton_key: "agent",
+            })
+            .run();
+          transaction
+            .insert(qualificationActivationState)
+            .values({
+              first_use_eligible: true,
+              last_activation_id: null,
+              last_deployment_version_id: null,
+              request_count: 0,
               singleton_key: "agent",
             })
             .run();

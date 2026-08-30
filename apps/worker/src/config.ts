@@ -60,11 +60,6 @@ type GeneratedCloudflareBindings = Omit<Env, RawConfigBinding>;
 
 /** Generated Cloudflare bindings and raw Worker configuration values. */
 export interface CloudflareEnv extends GeneratedCloudflareBindings {
-  readonly CF_VERSION_METADATA?: {
-    readonly id: string;
-    readonly tag: string;
-    readonly timestamp: string;
-  };
   /** Optional private service binding for the bounded production qualification owner. */
   readonly QUALIFICATION_OWNER?: Fetcher;
   readonly QUALIFICATION_EMAIL_RECIPIENT?: string;

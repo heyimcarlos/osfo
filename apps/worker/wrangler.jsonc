@@ -5,6 +5,7 @@
   "rules": [{ "type": "Text", "globs": ["**/*.sql", "**/*.txt"], "fallthrough": true }],
   "compatibility_date": "2026-08-12",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "ai": { "binding": "AI" },
   "websearch": { "binding": "WEBSEARCH" },
   "vars": {

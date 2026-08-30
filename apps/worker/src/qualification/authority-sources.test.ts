@@ -36,6 +36,7 @@ describe("qualification authority adapter coverage", () => {
       "gmail_provider_receipts",
       "memory_commit_receipts",
       "model_access_receipts",
+      "osfo_agent_activation_log",
       "osfo_committed_turns",
       "provider_delivery_receipts",
       "task_compute_receipts",
@@ -54,6 +55,7 @@ describe("qualification authority adapter coverage", () => {
       "allowance_and_billing_ledger",
       "memory_commit_receipts",
       "model_access_receipts",
+      "osfo_agent_activation_log",
       "osfo_committed_turns",
     ]);
     expect(qualificationAuthoritySourcesRequiring("scheduledEmailTable")).toEqual([
@@ -80,6 +82,18 @@ describe("qualification authority adapter coverage", () => {
       component: "Workflow",
       journey: "reminder",
       source: "workflow_instance_receipts",
+    });
+    expect(gaps).toContainEqual({
+      activationCause: "idleEviction",
+      component: "AgentActivation",
+      journey: null,
+      source: "osfo_agent_activation_log",
+    });
+    expect(gaps).toContainEqual({
+      activationCause: "faultRecovery",
+      component: "AgentActivation",
+      journey: null,
+      source: "osfo_agent_activation_log",
     });
     expect(gaps).toContainEqual({
       component: "FaultController",

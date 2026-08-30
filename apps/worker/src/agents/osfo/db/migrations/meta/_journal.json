@@ -148,6 +148,13 @@
       "when": 1788028694148,
       "tag": "0020_wealthy_excalibur",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1788059647980,
+      "tag": "0021_short_thunderbolt",
+      "breakpoints": true
     }
   ]
 }
