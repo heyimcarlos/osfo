@@ -107,6 +107,41 @@ it.effect("rejects an Agent route mismatch before reading the file store", () =>
   }),
 );
 
+it.effect("authenticates ready File authority against the retained R2 object", () =>
+  Effect.gen(function* () {
+    const found = yield* DocumentBuildFileResolution.inspectVerificationSnapshot(
+      { agentId, fileId, userId },
+      agentId,
+      () => Effect.succeed(readyFile(userId)),
+      () => Effect.succeed({ byteLength: 12n, sha256 }),
+    );
+    const absent = yield* DocumentBuildFileResolution.inspectVerificationSnapshot(
+      { agentId, fileId, userId },
+      agentId,
+      () => Effect.succeed(readyFile(userId)),
+      () => Effect.succeed(null),
+    );
+    const substituted = yield* DocumentBuildFileResolution.inspectVerificationSnapshot(
+      { agentId, fileId, userId },
+      agentId,
+      () => Effect.succeed(readyFile(userId)),
+      () =>
+        Effect.succeed({ byteLength: 12n, sha256: FileDigest.make(`sha256:${"b".repeat(64)}`) }),
+    );
+    const wrongLength = yield* DocumentBuildFileResolution.inspectVerificationSnapshot(
+      { agentId, fileId, userId },
+      agentId,
+      () => Effect.succeed(readyFile(userId)),
+      () => Effect.succeed({ byteLength: 11n, sha256 }),
+    );
+
+    expect(found._tag).toBe("Found");
+    expect(absent).toEqual({ _tag: "Unavailable" });
+    expect(substituted).toEqual({ _tag: "Unavailable" });
+    expect(wrongLength).toEqual({ _tag: "Unavailable" });
+  }),
+);
+
 it.effect("distinguishes a closed account deletion fence from file-store failure", () =>
   Effect.gen(function* () {
     const fence = makeAccountDeletionFence();

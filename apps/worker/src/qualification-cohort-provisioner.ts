@@ -5,7 +5,11 @@ import postgres from "postgres";
 import { Effect, Option, Predicate, type Redacted, Schema } from "effect";
 
 import { OSFO_DIRECTORY_NAME, type OsfoDirectory } from "./agents/osfo/directory";
+import { DocumentBuildFileResolution } from "./agents/osfo/document-build-file-resolution";
+import { WebFileUpload } from "./agents/osfo/web-file-upload";
 import { AgentId, UserId } from "./domain";
+import { ActionId } from "./domain/action-execution";
+import { AuthSessionId } from "./domain/auth-session";
 import { makeQualificationCohortAuthority } from "./integrations/postgres/qualification-cohort";
 import { qualificationEnrollmentDigest } from "./qualification/qualification-enrollment";
 import {
@@ -24,12 +28,16 @@ import {
 } from "./qualification/qualification-manifest";
 import {
   decodeQualificationCohortManifest,
+  qualificationDocumentBuildFixture,
+  qualificationDocumentBuildFixtureBytes,
+  qualificationDocumentBuildFixtureMatches,
   qualificationCohortArtifactId,
   qualificationParticipantGrantArtifactId,
   type QualificationCohortManifest,
 } from "./qualification/qualification-cohort";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare, R2, and PostgreSQL are Promise-native owner boundaries. */
+/* oxlint-disable eslint/no-underscore-dangle -- Closed RPC outcomes use Effect-style _tag discriminators. */
 
 const Participant = Schema.Struct({
   index: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -85,6 +93,67 @@ interface FrozenQualification {
   readonly manifest: ProductionQualificationManifest;
   readonly plan: QualificationExecutionPlan;
 }
+
+type QualificationDocumentBuildFixturePort = Pick<
+  OsfoDirectory,
+  "inspectDocumentBuildSourceSnapshot" | "uploadUserTextFile"
+>;
+
+export const prepareQualificationDocumentBuildFixture = async (
+  port: QualificationDocumentBuildFixturePort,
+  input: {
+    readonly agentId: AgentId;
+    readonly authSessionId: string;
+    readonly executionId: string;
+    readonly index: number;
+    readonly plan: "adventurer" | "free";
+    readonly policy: NonNullable<QualificationCohortManifest["documentBuildFixturePolicy"]>;
+    readonly userId: UserId;
+  },
+): Promise<
+  | { readonly _tag: "Conflict" }
+  | { readonly _tag: "Missing" }
+  | {
+      readonly _tag: "Ready";
+      readonly fixture: ReturnType<typeof qualificationDocumentBuildFixture>;
+    }
+> => {
+  const fixture = qualificationDocumentBuildFixture(
+    input.executionId,
+    input.plan,
+    input.index,
+    input.policy,
+  );
+  const upload = await port.uploadUserTextFile(
+    WebFileUpload.Request.make({
+      actionId: ActionId.make(`qualification-file-fixture:${fixture.uploadId}`),
+      authority: {
+        _tag: "AuthSession",
+        authSessionId: AuthSessionId.make(input.authSessionId),
+        userId: input.userId,
+      },
+      bytes: Uint8Array.from(qualificationDocumentBuildFixtureBytes),
+      fileId: fixture.fileId,
+      fileName: fixture.fileName,
+      uploadId: fixture.uploadId,
+    }),
+  );
+  const snapshot = await port.inspectDocumentBuildSourceSnapshot(
+    DocumentBuildFileResolution.VerificationRequest.make({
+      agentId: input.agentId,
+      fileId: fixture.fileId,
+      userId: input.userId,
+    }),
+  );
+  if (snapshot._tag === "Found") {
+    return qualificationDocumentBuildFixtureMatches(fixture, snapshot, input.userId)
+      ? { _tag: "Ready", fixture }
+      : { _tag: "Conflict" };
+  }
+  return upload._tag === "Rejected" && upload.reason === "conflict"
+    ? { _tag: "Conflict" }
+    : { _tag: "Missing" };
+};
 
 const frozenQualification = (
   invocation: typeof Begin.Type,
@@ -400,11 +469,54 @@ const finalizePage = async (
           { status: 424 },
         );
       }
+      const userId = UserId.make(provision.userId);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each participant must prove its own unexpired retained AuthSession in canonical order.
+      const authSession = await Effect.runPromise(
+        authority.readActiveAuthSession({ at: new Date(cohort.notBeforeUtc), userId }),
+      );
+      if (
+        authSession === null ||
+        authSession.userId !== userId ||
+        cohort.documentBuildFixturePolicy === undefined
+      ) {
+        return Response.json(
+          {
+            error: "qualificationDocumentBuildFixtureAuthorityMissing",
+            index: provision.index,
+            plan,
+          },
+          { status: 424 },
+        );
+      }
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Fixture creation is bounded to one normal product upload per canonical participant.
+      const documentBuildFixture = await prepareQualificationDocumentBuildFixture(directory, {
+        agentId: AgentId.make(provision.agentId),
+        authSessionId: authSession.sessionId,
+        executionId,
+        index: provision.index,
+        plan,
+        policy: cohort.documentBuildFixturePolicy,
+        userId,
+      });
+      if (documentBuildFixture._tag !== "Ready") {
+        return Response.json(
+          {
+            error:
+              documentBuildFixture._tag === "Conflict"
+                ? "qualificationDocumentBuildFixtureConflict"
+                : "qualificationDocumentBuildFixtureMissing",
+            index: provision.index,
+            plan,
+          },
+          { status: documentBuildFixture._tag === "Conflict" ? 409 : 424 },
+        );
+      }
       const content = {
         agentId: AgentId.make(provision.agentId),
         cohortChecksum: cohort.artifactChecksum,
         cohortId: cohort.cohortId,
         createdAtUtc: provision.consumedAt.toISOString(),
+        documentBuildFixture: documentBuildFixture.fixture,
         executionId,
         expiresAtUtc: cohort.expiresAtUtc,
         index: provision.index,
@@ -417,7 +529,7 @@ const finalizePage = async (
         ...scheduledEmailFields,
         sessionId: agent.currentSessionId,
         status: "ACTIVE" as const,
-        userId: UserId.make(provision.userId),
+        userId,
       };
       const grant = { ...content, artifactChecksum: qualificationChecksum(content) };
       // oxlint-disable-next-line eslint/no-await-in-loop -- Allocation must precede retention for each canonical grant.

@@ -870,6 +870,7 @@ export class OsfoAgent extends Think<Env> {
   );
   readonly #accountDeletionFence = makeAccountDeletionFence();
   readonly #fileStore = makeFileStore(this.#db);
+  readonly #fileObjects = makeR2FileObjects(this.env.FILES);
   readonly #files = makeFiles<
     FileCapabilityUnavailable,
     FileCapabilityUnavailable,
@@ -886,7 +887,7 @@ export class OsfoAgent extends Think<Env> {
     now: DateTime.now.pipe(
       Effect.map((time) => Db.DbTimestamp.make(DateTime.toDateUtc(time).toISOString())),
     ),
-    objects: makeR2FileObjects(this.env.FILES),
+    objects: this.#fileObjects,
     store: this.#fileStore,
   });
   readonly #fileToolAuthorizationContext = Effect.fn("OsfoAgent.fileToolAuthorizationContext")(() =>
@@ -4792,6 +4793,7 @@ export class OsfoAgent extends Think<Env> {
       decoded.success,
       AgentId.make(this.name),
       (fileId) => this.#fileStore.find(fileId),
+      (objectKey) => this.#fileObjects.stat(objectKey),
     );
     return Effect.runPromise(
       this.#accountDeletionFence.run(inspect, () => ({ _tag: "Unavailable" as const })),

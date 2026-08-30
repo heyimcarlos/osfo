@@ -80,25 +80,39 @@ export const VerificationResult = Schema.Union([
 export type VerificationResult = typeof VerificationResult.Type;
 
 /** Inspect immutable source facts without exposing normalized content or storage identity. */
-export const inspectVerificationSnapshot = <E>(
+export const inspectVerificationSnapshot = <FindError, StatError>(
   request: VerificationRequest,
   owningAgentId: AgentId,
-  find: (fileId: FileId) => Effect.Effect<FileRecord, E>,
+  find: (fileId: FileId) => Effect.Effect<FileRecord, FindError>,
+  stat: (
+    objectKey: string,
+  ) => Effect.Effect<
+    { readonly byteLength: bigint; readonly sha256: FileDigest } | null,
+    StatError
+  >,
 ): Effect.Effect<VerificationResult> => {
   if (request.agentId !== owningAgentId) return Effect.succeed({ _tag: "Unavailable" });
   return find(request.fileId).pipe(
-    Effect.map((file): VerificationResult =>
-      file.userId === request.userId && file.state === "ready"
-        ? {
-            _tag: "Found",
-            byteLength: file.byteLength,
-            fileId: file.fileId,
-            mediaType: file.mediaType,
-            sha256: file.sha256,
-            state: "ready",
-            userId: file.userId,
-          }
-        : { _tag: "Unavailable" },
+    Effect.flatMap((file) =>
+      file.userId !== request.userId || file.state !== "ready"
+        ? Effect.succeed({ _tag: "Unavailable" as const })
+        : stat(file.objectKey).pipe(
+            Effect.map((object): VerificationResult =>
+              object !== null &&
+              object.byteLength === file.byteLength &&
+              object.sha256 === file.sha256
+                ? {
+                    _tag: "Found",
+                    byteLength: file.byteLength,
+                    fileId: file.fileId,
+                    mediaType: file.mediaType,
+                    sha256: file.sha256,
+                    state: "ready",
+                    userId: file.userId,
+                  }
+                : { _tag: "Unavailable" },
+            ),
+          ),
     ),
     Effect.orElseSucceed(() => ({ _tag: "Unavailable" as const })),
   );

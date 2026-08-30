@@ -56,6 +56,27 @@ it.effect(
   },
 );
 
+it.effect("erases disposable qualification File bytes through the existing User prefix", () => {
+  const deleted = new Array<string>();
+  const userId = UserId.make("qualification-file-user");
+  const prefix = `users/${userId}/`;
+  const fixtureKey = `${prefix}files/web%3Aqualification-fixture/source`;
+  const files = bucketStub({
+    deleted,
+    objectsByPrefix: { [prefix]: [{ key: fixtureKey }] },
+  });
+
+  return make(files, bucketStub({ deleted }), () => deletionEvidence())
+    .remove(userId, Effect.void)
+    .pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(deleted).toEqual([fixtureKey]);
+        }),
+      ),
+    );
+});
+
 it.effect("removes immutable artifact cost evidence owned by the target user", () => {
   const deleted: Array<string> = [];
   const contentId = ContentId.make("artifact:toolCall:cost-evidence");

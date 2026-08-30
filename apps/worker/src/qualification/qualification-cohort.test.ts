@@ -4,6 +4,10 @@ import { canonicalQualificationJson, qualificationChecksum } from "./qualificati
 import {
   decodeQualificationCohortManifest,
   decodeQualificationParticipantGrant,
+  qualificationDocumentBuildFixture,
+  qualificationDocumentBuildFixtureBytes,
+  qualificationDocumentBuildFixturePolicy,
+  qualificationDocumentBuildMessage,
   qualificationParticipantGrantArtifactId,
 } from "./qualification-cohort";
 
@@ -13,6 +17,7 @@ const manifestContent = {
   executionId: "execution-1",
   expiresAtUtc: "2026-08-30T17:00:00.000Z",
   grantPrefix: "qualification/executions/execution-1/cohort/grants",
+  documentBuildFixturePolicy: qualificationDocumentBuildFixturePolicy,
   manifestChecksum: "manifest-1",
   notBeforeUtc: "2026-08-29T17:00:00.000Z",
   participantCounts: { adventurer: 100, free: 900 },
@@ -38,6 +43,12 @@ const grantContent = {
   provisionChecksum: "provision-checksum-1",
   provisionId: "provision-1",
   routeId: "route-1",
+  documentBuildFixture: qualificationDocumentBuildFixture(
+    "execution-1",
+    "free",
+    0,
+    qualificationDocumentBuildFixturePolicy,
+  ),
   sessionId: "session-1",
   status: "ACTIVE" as const,
   userId: "user-1",
@@ -53,6 +64,39 @@ it("accepts only checksummed disposable cohort grants", () => {
   expect(qualificationParticipantGrantArtifactId(manifest, "free", 0)).toBe(
     "qualification/executions/execution-1/cohort/grants/free/00000000.json",
   );
+});
+
+it("freezes one deterministic real File fixture identity per disposable participant", () => {
+  const fixture = qualificationDocumentBuildFixture(
+    manifest.executionId,
+    "free",
+    0,
+    manifest.documentBuildFixturePolicy,
+  );
+
+  expect(fixture).toEqual(grant.documentBuildFixture);
+  expect(fixture.fileId).toMatch(/^web:[0-9a-f-]{36}$/u);
+  expect(fixture.byteLength).toBe("108");
+  expect(fixture.mediaType).toBe("text/plain");
+  expect(fixture.sha256).toBe(
+    "sha256:d7a6eeb9ea1e679086bf7290262c26a4e1f5ca95d6f90f02c2e3abe659367b2c",
+  );
+  expect(qualificationDocumentBuildMessage(fixture)).toContain(fixture.fileId);
+  expect(
+    qualificationDocumentBuildFixture(
+      manifest.executionId,
+      "free",
+      1,
+      manifest.documentBuildFixturePolicy,
+    ).fileId,
+  ).not.toBe(fixture.fileId);
+  return crypto.subtle
+    .digest("SHA-256", Uint8Array.from(qualificationDocumentBuildFixtureBytes).buffer)
+    .then((digest) => {
+      expect(
+        `sha256:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`,
+      ).toBe(fixture.sha256);
+    });
 });
 
 it("rejects an ordinary User-shaped record without a disposable participant grant", () => {

@@ -40,7 +40,20 @@ export const makeR2FileObjects = (
       Effect.flatMap((object) => {
         if (object === null) return Effect.succeed(null);
         const encodedDigest = object.customMetadata?.["osfo-sha256"];
+        const nativeChecksum = object.checksums.sha256;
+        const nativeDigest =
+          nativeChecksum === undefined
+            ? undefined
+            : `sha256:${bytesToHex(new Uint8Array(nativeChecksum))}`;
         return Schema.decodeUnknownEffect(FileDigest)(encodedDigest).pipe(
+          Effect.filterOrFail(
+            (sha256) => nativeDigest === sha256,
+            () =>
+              new FileObjectMetadataInvalid({
+                key,
+                message: "R2 file metadata conflicts with its native SHA-256 checksum",
+              }),
+          ),
           Effect.map((sha256) => ({ byteLength: BigInt(object.size), sha256 })),
           Effect.mapError(
             () =>
@@ -62,6 +75,9 @@ const checksumBytes = (digest: FileDigest): Uint8Array => {
   }
   return bytes;
 };
+
+const bytesToHex = (bytes: Uint8Array): string =>
+  Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
 const request = <A>(
   operation: string,

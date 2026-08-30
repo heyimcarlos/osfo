@@ -5,6 +5,7 @@ import { Clock, Data, Duration, Effect, Exit, Option, Predicate, Schema } from "
 
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/directory";
 import type { OsfoDirectory } from "./agents/osfo/directory";
+import type { DocumentBuildFileResolution } from "./agents/osfo/document-build-file-resolution";
 import { QualificationActivationReceipt } from "./agents/osfo/db/qualification-activations";
 import { BillingDb } from "./db/billing";
 import { AgentId, AllowancePeriodId, ThinkSubmissionId, UserId } from "./domain";
@@ -76,6 +77,9 @@ import type { ProductionQualificationManifest } from "./qualification/qualificat
 import {
   decodeQualificationCohortManifest,
   decodeQualificationParticipantGrant,
+  qualificationDocumentBuildFixture,
+  qualificationDocumentBuildFixtureMatches,
+  qualificationDocumentBuildMessage,
   qualificationCohortArtifactId,
   qualificationParticipantGrantArtifactId,
   type QualificationCohortManifest,
@@ -1048,6 +1052,49 @@ const retainControlledAgentRecoveryAuthority = async (
   return existing !== null && (await existing.text()) === encoded;
 };
 
+export const qualificationDocumentBuildFixturePreflight = async (
+  input: {
+    readonly cohort: QualificationCohortManifest;
+    readonly participant: NonNullable<ReturnType<typeof decodeQualificationParticipantGrant>>;
+    readonly participantIndex: number;
+    readonly plan: "adventurer" | "free";
+    readonly userId: UserId;
+  },
+  inspect: (
+    request: DocumentBuildFileResolution.VerificationRequest,
+  ) => Promise<DocumentBuildFileResolution.VerificationResult>,
+): Promise<"CONFLICT" | "MISSING" | "READY"> => {
+  const fixture = input.participant.documentBuildFixture;
+  const policy = input.cohort.documentBuildFixturePolicy;
+  if (fixture === undefined || policy === undefined) return "MISSING";
+  if (
+    input.participant.cohortChecksum !== input.cohort.artifactChecksum ||
+    input.participant.cohortId !== input.cohort.cohortId ||
+    input.participant.executionId !== input.cohort.executionId ||
+    input.participant.index !== input.participantIndex ||
+    input.participant.plan !== input.plan ||
+    input.participant.userId !== input.userId
+  ) {
+    return "CONFLICT";
+  }
+  const expected = qualificationDocumentBuildFixture(
+    input.participant.executionId,
+    input.plan,
+    input.participantIndex,
+    policy,
+  );
+  if (qualificationChecksum(fixture) !== qualificationChecksum(expected)) return "CONFLICT";
+  const source = await inspect({
+    agentId: input.participant.agentId,
+    fileId: fixture.fileId,
+    userId: input.userId,
+  });
+  if (source._tag === "Unavailable") return "MISSING";
+  return qualificationDocumentBuildFixtureMatches(fixture, source, input.userId)
+    ? "READY"
+    : "CONFLICT";
+};
+
 const executeArrival = async (
   env: QualificationProductAuthorityEnv,
   frozen: FrozenExecution,
@@ -1275,6 +1322,34 @@ const executeArrival = async (
         { status: 424 },
       );
     }
+    const documentBuildFixture = participant.documentBuildFixture;
+    if (journey === "documentBuild") {
+      const fixturePreflight = await qualificationDocumentBuildFixturePreflight(
+        { cohort, participant, participantIndex, plan: requiredPlan, userId },
+        (request) => directory.inspectDocumentBuildSourceSnapshot(request),
+      );
+      if (fixturePreflight === "MISSING") {
+        return Response.json(
+          {
+            missingSources: [
+              {
+                detail:
+                  "The disposable participant has no exact frozen Document Build File fixture",
+                source: "r2_object_metadata",
+              },
+            ],
+            status: "MISSING",
+          },
+          { status: 424 },
+        );
+      }
+      if (fixturePreflight === "CONFLICT") {
+        return Response.json(
+          { error: "qualificationDocumentBuildFixtureConflict" },
+          { status: 409 },
+        );
+      }
+    }
     if (journey === "scheduledEmail") {
       const connections = await directory.inspectIntegrationConnections(agentId, {
         authSessionId: authSession.sessionId,
@@ -1305,7 +1380,9 @@ const executeArrival = async (
     const message =
       journey === "scheduledEmail" && scheduledEmailFixture !== undefined
         ? qualificationScheduledEmailMessage(context, scheduledEmailFixture)
-        : messageForJourney(journey);
+        : journey === "documentBuild" && documentBuildFixture !== undefined
+          ? qualificationDocumentBuildMessage(documentBuildFixture)
+          : messageForJourney(journey);
     const authorization = project({
       allowance: { _tag: "Metered", ...allowance },
       authority: {

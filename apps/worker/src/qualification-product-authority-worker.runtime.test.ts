@@ -25,6 +25,12 @@ import {
 } from "./qualification/qualification-checksum";
 import { QualificationAdmissionReceipt } from "./qualification/qualification-attempt";
 import {
+  decodeQualificationCohortManifest,
+  decodeQualificationParticipantGrant,
+  qualificationDocumentBuildFixture,
+  qualificationDocumentBuildFixturePolicy,
+} from "./qualification/qualification-cohort";
+import {
   qualificationControlledAgentAbortOperationId,
   qualificationControlledAgentFaultReceipt,
   qualificationControlledAgentRecoveryReceipt,
@@ -42,6 +48,7 @@ import {
   qualificationMemoryAuthorityRecords,
   qualificationDocumentAttemptAuthorityExact,
   qualificationDocumentBuildAuthorityExact,
+  qualificationDocumentBuildFixturePreflight,
   qualificationDocumentR2AuthorityRecords,
   qualificationDocumentTaskComputeAuthorityRecords,
   qualificationScheduledEmailAuthorityRecords,
@@ -54,6 +61,112 @@ const sha256Hex = async (encoded: string) => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 };
+
+it("preflights the exact frozen disposable Document Build File before arrival execution", async () => {
+  const cohortContent = {
+    cohortId: "document-fixture-cohort",
+    createdAtUtc: "2026-08-30T10:00:00.000Z",
+    documentBuildFixturePolicy: qualificationDocumentBuildFixturePolicy,
+    executionId: "document-fixture-execution",
+    expiresAtUtc: "2026-08-31T10:00:00.000Z",
+    grantPrefix: "qualification/document-fixture/grants",
+    manifestChecksum: "document-fixture-manifest",
+    notBeforeUtc: "2026-08-30T10:01:00.000Z",
+    participantCounts: { adventurer: 1, free: 1 },
+    planChecksum: "document-fixture-plan",
+    sourceVersion: "document-fixture-source",
+    teardownPolicy: "permanentAccountDeletion" as const,
+  };
+  const cohort = decodeQualificationCohortManifest(
+    canonicalQualificationJson({
+      ...cohortContent,
+      artifactChecksum: qualificationChecksum(cohortContent),
+    }),
+  );
+  if (cohort === null) throw new Error("Expected exact fixture cohort");
+  const fixture = qualificationDocumentBuildFixture(
+    cohort.executionId,
+    "free",
+    0,
+    qualificationDocumentBuildFixturePolicy,
+  );
+  const grantContent = {
+    agentId: AgentId.make("document-fixture-agent"),
+    cohortChecksum: cohort.artifactChecksum,
+    cohortId: cohort.cohortId,
+    createdAtUtc: cohort.createdAtUtc,
+    documentBuildFixture: fixture,
+    executionId: cohort.executionId,
+    expiresAtUtc: cohort.expiresAtUtc,
+    index: 0,
+    isolation: "disposableQualificationUser" as const,
+    notBeforeUtc: cohort.notBeforeUtc,
+    plan: "free" as const,
+    provisionChecksum: "document-fixture-provision-checksum",
+    provisionId: "document-fixture-provision",
+    routeId: "document-fixture-route",
+    sessionId: "document-fixture-session",
+    status: "ACTIVE" as const,
+    userId: UserId.make("document-fixture-user"),
+  };
+  const participant = decodeQualificationParticipantGrant(
+    canonicalQualificationJson({
+      ...grantContent,
+      artifactChecksum: qualificationChecksum(grantContent),
+    }),
+  );
+  if (participant === null) throw new Error("Expected exact fixture grant");
+  const found = {
+    _tag: "Found" as const,
+    byteLength: 108n,
+    fileId: fixture.fileId,
+    mediaType: "text/plain" as const,
+    sha256: fixture.sha256,
+    state: "ready" as const,
+    userId: participant.userId,
+  };
+  const input = {
+    cohort,
+    participant,
+    participantIndex: 0,
+    plan: "free" as const,
+    userId: participant.userId,
+  };
+
+  await expect(
+    qualificationDocumentBuildFixturePreflight(input, () => Promise.resolve(found)),
+  ).resolves.toBe("READY");
+  await expect(
+    qualificationDocumentBuildFixturePreflight(input, () =>
+      Promise.resolve({ ...found, userId: UserId.make("foreign-user") }),
+    ),
+  ).resolves.toBe("CONFLICT");
+  await expect(
+    qualificationDocumentBuildFixturePreflight(input, () =>
+      Promise.resolve({ _tag: "Unavailable" }),
+    ),
+  ).resolves.toBe("MISSING");
+
+  const substitutedFixture = qualificationDocumentBuildFixture(
+    "foreign-execution",
+    "free",
+    0,
+    qualificationDocumentBuildFixturePolicy,
+  );
+  const substitutedContent = { ...grantContent, documentBuildFixture: substitutedFixture };
+  const substituted = decodeQualificationParticipantGrant(
+    canonicalQualificationJson({
+      ...substitutedContent,
+      artifactChecksum: qualificationChecksum(substitutedContent),
+    }),
+  );
+  if (substituted === null) throw new Error("Expected substituted fixture grant");
+  await expect(
+    qualificationDocumentBuildFixturePreflight({ ...input, participant: substituted }, () =>
+      Promise.resolve(found),
+    ),
+  ).resolves.toBe("CONFLICT");
+});
 
 const documentTaskRequestFor = (index: number) =>
   DocumentBuild.StoredRequest.make({

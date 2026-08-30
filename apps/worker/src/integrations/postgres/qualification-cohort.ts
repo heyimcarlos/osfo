@@ -12,9 +12,10 @@ import { and, asc, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 
 import type { Database } from "@osfo/db";
-import type {
-  QualificationCohortManifest,
-  QualificationParticipantGrant,
+import {
+  qualificationDocumentBuildFixturePolicy,
+  type QualificationCohortManifest,
+  type QualificationParticipantGrant,
 } from "../../qualification/qualification-cohort";
 import { qualificationChecksum } from "../../qualification/qualification-checksum";
 
@@ -72,6 +73,7 @@ const qualificationCohortManifestFor = (row: typeof qualificationCohorts.$inferS
     executionId: row.execution_id,
     expiresAtUtc: row.expires_at.toISOString(),
     grantPrefix: `qualification/executions/${encodeURIComponent(row.execution_id)}/cohort/grants`,
+    documentBuildFixturePolicy: qualificationDocumentBuildFixturePolicy,
     manifestChecksum: row.manifest_checksum,
     notBeforeUtc: row.not_before.toISOString(),
     participantCounts: {

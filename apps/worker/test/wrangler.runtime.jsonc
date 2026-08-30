@@ -40,7 +40,10 @@
       "localConnectionString": "postgres://osfo:osfo@127.0.0.1:5432/osfo_test",
     },
   ],
-  "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "osfo-runtime-test-artifacts" }],
+  "r2_buckets": [
+    { "binding": "ARTIFACTS", "bucket_name": "osfo-runtime-test-artifacts" },
+    { "binding": "FILES", "bucket_name": "osfo-runtime-test-files" },
+  ],
   "durable_objects": {
     "bindings": [
       { "name": "OSFO_AGENT_TEST", "class_name": "OsfoAgent" },
