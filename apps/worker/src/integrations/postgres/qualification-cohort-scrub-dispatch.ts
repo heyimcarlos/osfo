@@ -59,13 +59,13 @@ export const makeQualificationCohortScrubDispatchAuthority = (database: Database
       attempt("claimExact", () =>
         database.transaction(
           async (transaction): Promise<QualificationCohortScrubDispatchClaim> => {
-            const clock = await databaseClock(transaction);
             const [row] = await transaction
               .select()
               .from(qualificationCohortScrubDispatches)
               .where(eq(qualificationCohortScrubDispatches.dispatch_id, identity.dispatchId))
               .limit(1)
               .for("update");
+            const clock = await databaseClock(transaction);
             if (row === undefined) return { _tag: "Missing" };
             if (!rowMatches(row, identity)) return { _tag: "Conflict", failureChecksum: null };
             if (row.state === "SETTLED") {
@@ -191,8 +191,8 @@ export const makeQualificationCohortScrubDispatchAuthority = (database: Database
       attempt("reserveRestart", () =>
         database.transaction(
           async (transaction): Promise<QualificationCohortScrubRestartReservation> => {
-            const clock = await databaseClock(transaction);
             const [row] = await lockedDispatch(transaction, identity.dispatchId);
+            const clock = await databaseClock(transaction);
             const exact = claimedRowOutcome(row, identity, claimToken, clock);
             if (exact !== null) return exact;
             if (row === undefined) return { _tag: "Conflict" };
@@ -418,8 +418,8 @@ const mutateClaimed = (
 ) =>
   attempt(operation, () =>
     database.transaction(async (transaction): Promise<QualificationCohortScrubDispatchMutation> => {
-      const clock = await databaseClock(transaction);
       const [row] = await lockedDispatch(transaction, identity.dispatchId);
+      const clock = await databaseClock(transaction);
       const exact = claimedRowOutcome(row, identity, claimToken, clock);
       if (exact !== null) return exact;
       if (row === undefined) return { _tag: "Conflict" };

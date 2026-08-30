@@ -325,6 +325,59 @@ it.effect("rejects nullable and stale POST publication state combinations", () =
   }),
 );
 
+it.effect("samples scrub terminal mutation time after its dispatch lock", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedCohort(fixture, { adventurer: 1, free: 1 });
+    const identity = qualificationCohortScrubDispatchIdentity(cohortId, executionId);
+    yield* Effect.promise(() =>
+      fixture.database
+        .insert(qualificationCohortScrubDispatches)
+        .values({
+          claim_token: "old",
+          claimed_at: new Date(),
+          cohort_id: cohortId,
+          dispatch_id: identity.dispatchId,
+          execution_id: executionId,
+          lease_expires_at: new Date(Date.now() + 50),
+          protocol_version: identity.protocolVersion,
+          root_instance_id: identity.rootInstanceId,
+          state: "PENDING",
+        }),
+    );
+    const dispatch = makeQualificationCohortScrubDispatchAuthority(fixture.database);
+    const blocked = yield* Effect.promise(async () => {
+      let pending: Promise<unknown> | undefined;
+      await fixture.database.transaction(async (transaction) => {
+        await transaction
+          .select()
+          .from(qualificationCohortScrubDispatches)
+          .where(eq(qualificationCohortScrubDispatches.dispatch_id, identity.dispatchId))
+          .for("update");
+        pending = Effect.runPromise(dispatch.settle(identity, "old", "root"));
+        await Effect.runPromise(Effect.sleep("100 millis"));
+      });
+      if (pending === undefined) throw new Error("Concurrent scrub mutation did not start");
+      return pending;
+    });
+    expect(blocked).toMatchObject({ _tag: "LeaseExpired" });
+    const [unchanged] = yield* Effect.promise(() =>
+      fixture.database.select().from(qualificationCohortScrubDispatches),
+    );
+    expect(unchanged).toMatchObject({
+      publication_state: null,
+      root_checksum: null,
+      state: "PENDING",
+    });
+    expect(yield* dispatch.claimExact(identity, "fresh")).toMatchObject({ _tag: "Claimed" });
+    expect(yield* dispatch.retainConflict(identity, "fresh", "failure")).toEqual({
+      _tag: "Applied",
+    });
+  }),
+);
+
 it.effect("derives the exact partition window from PostgreSQL-owned cohort counts", () =>
   Effect.gen(function* () {
     const fixture = yield* makeTestDatabase;
