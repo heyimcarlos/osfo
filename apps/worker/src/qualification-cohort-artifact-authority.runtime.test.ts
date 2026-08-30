@@ -3,7 +3,11 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { hexToBytes } from "@noble/hashes/utils.js";
 import { expect, it } from "vitest";
 
-import type { QualificationCohortArtifactAuthority } from "./qualification-cohort-artifact-authority";
+import {
+  migrateQualificationCohortArtifactAuthority,
+  qualificationCohortArtifactMapFive,
+  type QualificationCohortArtifactAuthority,
+} from "./qualification-cohort-artifact-authority";
 import { qualificationChecksum } from "./qualification/qualification-checksum";
 
 interface TestEnv {
@@ -364,6 +368,543 @@ it("bounds metadata and authenticates the retained JSON content type", async () 
       protocolVersion: input.protocolVersion,
     }),
   ).toEqual({ _tag: "Conflict", code: "pendingIntentConflict" });
+});
+
+it("proves one exact page absent, seals it, and retains only content-free progress", async () => {
+  const pageExecutionId = `${executionId}-delete-page`;
+  const stub = runtimeEnv.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY_TEST.getByName(pageExecutionId);
+  const keys = [
+    `qualification/executions/${pageExecutionId}/cohort/grants/free/00000000.json`,
+    `qualification/executions/${pageExecutionId}/cohort/finalize-pages/free/00000000.json`,
+    `qualification/executions/${pageExecutionId}/cohort/provision-pages/00000000.json`,
+  ];
+  // oxlint-disable-next-line unicorn/no-array-sort -- ES2022 lacks toSorted and this fresh test list needs canonical order.
+  keys.sort();
+  for (const [index, artifactKey] of keys.entries()) {
+    const family = artifactKey.includes("/grants/")
+      ? "participantGrant"
+      : artifactKey.includes("/finalize-pages/")
+        ? "finalizePage"
+        : "provisionPage";
+    const kind = artifactKey.includes("/grants/")
+      ? "qualification-participant-grant-v1"
+      : artifactKey.includes("/finalize-pages/")
+        ? "qualification-cohort-finalize-page-v1"
+        : "qualification-cohort-provision-page-v1";
+    expect(
+      await stub.retain({
+        body: JSON.stringify({ index }),
+        executionId: pageExecutionId,
+        family,
+        key: artifactKey,
+        metadata: { "osfo-execution-id": pageExecutionId, "osfo-kind": kind },
+        operationToken: `page-${index}`,
+        protocolVersion: input.protocolVersion,
+      }),
+    ).toMatchObject({ _tag: "Complete" });
+  }
+  expect(
+    await stub.fence({ executionId: pageExecutionId, protocolVersion: input.protocolVersion }),
+  ).toMatchObject({ _tag: "Fenced" });
+  const expectedArtifactsChecksum = qualificationChecksum({ expectedArtifactIds: keys });
+  const proven = await stub.deletePage({
+    executionId: pageExecutionId,
+    expectedArtifactKeys: keys,
+    expectedArtifactsChecksum,
+    pageIndex: 0,
+    plan: "free",
+    position: 0,
+    previousPageChecksum: "NONE",
+    protocolVersion: input.protocolVersion,
+  });
+  expect(proven).toMatchObject({ _tag: "Proven", expectedArtifactCount: 3, scope: "page" });
+  if (proven._tag !== "Proven") return;
+  expect(
+    await stub.sealPage({
+      executionId: pageExecutionId,
+      expectedArtifactKeys: keys,
+      expectedArtifactsChecksum,
+      pageChecksum: "postgres-page-checksum",
+      pageIndex: 0,
+      plan: "free",
+      position: 0,
+      previousPageChecksum: "NONE",
+      proofChecksum: proven.proofChecksum,
+      protocolVersion: input.protocolVersion,
+    }),
+  ).toMatchObject({ _tag: "Sealed", position: 0 });
+  await runInDurableObject(stub, async (_instance, state) => {
+    expect(state.storage.sql.exec("select * from artifact_records").toArray()).toHaveLength(0);
+    expect(state.storage.sql.exec("select * from delete_intent").toArray()).toHaveLength(0);
+    expect(state.storage.sql.exec("select * from sealed_page_receipts").toArray()).toHaveLength(1);
+    expect(state.storage.sql.exec("select * from _sql_schema_migrations").toArray()).toHaveLength(
+      2,
+    );
+  });
+});
+
+it("authenticates a 4,000-page chain before compacting to one SCRUBBED tombstone", async () => {
+  const rootExecutionId = `${executionId}-root-4000`;
+  const stub = runtimeEnv.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY_TEST.getByName(rootExecutionId);
+  const inventoryKey = `qualification/executions/${rootExecutionId}/cohort/inventory-receipt.json`;
+  const manifestKey = `qualification/executions/${rootExecutionId}/cohort/manifest.json`;
+  const rootKeys = [inventoryKey, manifestKey];
+  expect(
+    await stub.retain(
+      artifactInput(rootExecutionId, inventoryKey, "inventoryReceipt", "root-inventory"),
+    ),
+  ).toMatchObject({ _tag: "Complete" });
+  expect(
+    await stub.retain(artifactInput(rootExecutionId, manifestKey, "manifest", "root-manifest")),
+  ).toMatchObject({ _tag: "Complete" });
+  expect(
+    await stub.fence({ executionId: rootExecutionId, protocolVersion: input.protocolVersion }),
+  ).toMatchObject({ _tag: "Fenced" });
+  await runInDurableObject(stub, async (_instance, state) => {
+    let previous = "NONE";
+    for (let position = 0; position < 4_000; position += 1) {
+      const pageChecksum = `page-${String(position).padStart(4, "0")}`;
+      const proofChecksum = `proof-${position}`;
+      const expectedArtifactsChecksum = `artifacts-${position}`;
+      const artifactRecordsChecksum = `records-${position}`;
+      const receiptChecksum = qualificationChecksum({
+        artifactRecordsChecksum,
+        expectedArtifactCount: 1,
+        expectedArtifactsChecksum,
+        pageChecksum,
+        pageIndex: position,
+        plan: "free",
+        position,
+        previousPageChecksum: previous,
+        proofChecksum,
+      });
+      state.storage.sql.exec(
+        `insert into sealed_page_receipts
+          (position, plan, page_index, previous_page_checksum, page_checksum, proof_checksum,
+           expected_artifact_count, expected_artifacts_checksum, artifact_records_checksum,
+           receipt_checksum)
+         values (?, 'free', ?, ?, ?, ?, 1, ?, ?, ?)`,
+        position,
+        position,
+        previous,
+        pageChecksum,
+        proofChecksum,
+        expectedArtifactsChecksum,
+        artifactRecordsChecksum,
+        receiptChecksum,
+      );
+      previous = pageChecksum;
+    }
+  });
+  const expectedArtifactsChecksum = qualificationChecksum({ expectedArtifactIds: rootKeys });
+  const proof = await stub.deleteRoot({
+    executionId: rootExecutionId,
+    expectedArtifactKeys: rootKeys,
+    expectedArtifactsChecksum,
+    expectedPageCount: 4_000,
+    finalPageChecksum: "page-3999",
+    protocolVersion: input.protocolVersion,
+  });
+  expect(proof).toMatchObject({ _tag: "Proven", expectedArtifactCount: 2, scope: "root" });
+  if (proof._tag !== "Proven") return;
+  expect(
+    await stub.sealRoot({
+      executionId: rootExecutionId,
+      proofChecksum: proof.proofChecksum,
+      protocolVersion: input.protocolVersion,
+      rootChecksum: "postgres-root-checksum",
+    }),
+  ).toEqual({ _tag: "Scrubbed", rootChecksum: "postgres-root-checksum" });
+  expect(
+    await stub.inspect({ executionId: rootExecutionId, protocolVersion: input.protocolVersion }),
+  ).toEqual({ _tag: "Scrubbed", rootChecksum: "postgres-root-checksum" });
+  expect(
+    await stub.retain(artifactInput(rootExecutionId, manifestKey, "manifest", "late")),
+  ).toEqual({
+    _tag: "Fenced",
+  });
+  await runInDurableObject(stub, async (_instance, state) => {
+    expect(state.storage.sql.exec("select * from artifact_records").toArray()).toHaveLength(0);
+    expect(state.storage.sql.exec("select * from delete_intent").toArray()).toHaveLength(0);
+    expect(state.storage.sql.exec("select * from sealed_page_receipts").toArray()).toHaveLength(0);
+    expect(state.storage.sql.exec("select * from authority_state").toArray()).toEqual([
+      expect.objectContaining({
+        execution_id: rootExecutionId,
+        lifecycle: "SCRUBBED",
+        protocol_version: input.protocolVersion,
+        root_checksum: "postgres-root-checksum",
+        singleton: 1,
+      }),
+    ]);
+  });
+});
+
+it("migrates a retained v1 writer authority to v2 without losing its fence or records", async () => {
+  const migrationExecutionId = `${executionId}-v1-migration`;
+  const stub =
+    runtimeEnv.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY_TEST.getByName(migrationExecutionId);
+  await runInDurableObject(stub, async (_instance, state) => {
+    state.storage.sql.exec("drop table sealed_page_receipts");
+    state.storage.sql.exec("drop table delete_intent");
+    state.storage.sql.exec("drop table authority_state");
+    state.storage.sql.exec("delete from _sql_schema_migrations");
+    state.storage.sql.exec(`create table authority_state (
+      singleton integer primary key check (singleton = 1), execution_id text not null,
+      protocol_version text not null, lifecycle text not null check (lifecycle in ('OPEN', 'FENCED'))
+    )`);
+    state.storage.sql.exec(
+      "insert into authority_state values (1, ?, ?, 'FENCED')",
+      migrationExecutionId,
+      input.protocolVersion,
+    );
+    migrateQualificationCohortArtifactAuthority(state.storage.sql);
+    expect(state.storage.sql.exec("select version from _sql_schema_migrations").toArray()).toEqual([
+      { version: 1 },
+      { version: 2 },
+    ]);
+    expect(state.storage.sql.exec("select * from authority_state").one()).toMatchObject({
+      execution_id: migrationExecutionId,
+      lifecycle: "FENCED",
+      root_checksum: null,
+    });
+  });
+});
+
+it("treats exact pre-absence as replay progress and rejects missing or tampered authority", async () => {
+  const caseExecutionId = `${executionId}-absence-replay`;
+  const stub = runtimeEnv.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY_TEST.getByName(caseExecutionId);
+  const absentKey = `qualification/executions/${caseExecutionId}/cohort/finalize-pages/free/00000000.json`;
+  const presentKey = `qualification/executions/${caseExecutionId}/cohort/grants/free/00000000.json`;
+  const keys = [absentKey, presentKey];
+  for (const [index, artifactKey] of keys.entries()) {
+    const family = index === 0 ? "finalizePage" : "participantGrant";
+    const kind =
+      index === 0 ? "qualification-cohort-finalize-page-v1" : "qualification-participant-grant-v1";
+    expect(
+      await stub.retain({
+        body: JSON.stringify({ index }),
+        executionId: caseExecutionId,
+        family,
+        key: artifactKey,
+        metadata: { "osfo-execution-id": caseExecutionId, "osfo-kind": kind },
+        operationToken: `absence-${index}`,
+        protocolVersion: input.protocolVersion,
+      }),
+    ).toMatchObject({ _tag: "Complete" });
+  }
+  await runtimeEnv.ARTIFACTS.delete(absentKey);
+  expect(
+    await stub.fence({ executionId: caseExecutionId, protocolVersion: input.protocolVersion }),
+  ).toMatchObject({ _tag: "Fenced" });
+  const expectedArtifactsChecksum = qualificationChecksum({ expectedArtifactIds: keys });
+  const exact = await stub.deletePage({
+    executionId: caseExecutionId,
+    expectedArtifactKeys: keys,
+    expectedArtifactsChecksum,
+    pageIndex: 0,
+    plan: "free",
+    position: 0,
+    previousPageChecksum: "NONE",
+    protocolVersion: input.protocolVersion,
+  });
+  expect(exact).toMatchObject({ _tag: "Proven", expectedArtifactCount: 2 });
+  expect(
+    await stub.deletePage({
+      executionId: caseExecutionId,
+      expectedArtifactKeys: keys,
+      expectedArtifactsChecksum,
+      pageIndex: 0,
+      plan: "free",
+      position: 0,
+      previousPageChecksum: "NONE",
+      protocolVersion: input.protocolVersion,
+    }),
+  ).toEqual(exact);
+
+  const corruptExecutionId = `${executionId}-delete-corrupt`;
+  const corruptKey = `qualification/executions/${corruptExecutionId}/cohort/finalize-pages/free/00000000.json`;
+  const corruptStub =
+    runtimeEnv.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY_TEST.getByName(corruptExecutionId);
+  expect(
+    await corruptStub.retain({
+      body: "exact",
+      executionId: corruptExecutionId,
+      family: "finalizePage",
+      key: corruptKey,
+      metadata: {
+        "osfo-execution-id": corruptExecutionId,
+        "osfo-kind": "qualification-cohort-finalize-page-v1",
+      },
+      operationToken: "corrupt-record",
+      protocolVersion: input.protocolVersion,
+    }),
+  ).toMatchObject({ _tag: "Complete" });
+  expect(
+    await corruptStub.fence({
+      executionId: corruptExecutionId,
+      protocolVersion: input.protocolVersion,
+    }),
+  ).toMatchObject({ _tag: "Fenced" });
+  await runtimeEnv.ARTIFACTS.put(corruptKey, "substituted", {
+    customMetadata: {
+      "osfo-execution-id": corruptExecutionId,
+      "osfo-kind": "qualification-cohort-finalize-page-v1",
+    },
+    httpMetadata: { contentType: "application/json" },
+    sha256: hexToBytes((await sha256("substituted")).slice("sha256:".length)),
+  });
+  expect(
+    await corruptStub.deletePage({
+      executionId: corruptExecutionId,
+      expectedArtifactKeys: [corruptKey],
+      expectedArtifactsChecksum: qualificationChecksum({ expectedArtifactIds: [corruptKey] }),
+      pageIndex: 0,
+      plan: "free",
+      position: 0,
+      previousPageChecksum: "NONE",
+      protocolVersion: input.protocolVersion,
+    }),
+  ).toEqual({ _tag: "Conflict", code: "retainedArtifactMismatch" });
+  await runInDurableObject(corruptStub, async (_instance, state) => {
+    state.storage.sql.exec("delete from delete_intent");
+    state.storage.sql.exec("delete from artifact_records");
+  });
+  expect(
+    await corruptStub.deletePage({
+      executionId: corruptExecutionId,
+      expectedArtifactKeys: [corruptKey],
+      expectedArtifactsChecksum: qualificationChecksum({ expectedArtifactIds: [corruptKey] }),
+      pageIndex: 0,
+      plan: "free",
+      position: 0,
+      previousPageChecksum: "NONE",
+      protocolVersion: input.protocolVersion,
+    }),
+  ).toEqual({ _tag: "Missing", code: "artifactAuthorityRecordMissing" });
+});
+
+it("refuses root deletion before the exact page chain is sealed", async () => {
+  const caseExecutionId = `${executionId}-root-before-pages`;
+  const stub = runtimeEnv.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY_TEST.getByName(caseExecutionId);
+  const inventoryKey = `qualification/executions/${caseExecutionId}/cohort/inventory-receipt.json`;
+  const manifestKey = `qualification/executions/${caseExecutionId}/cohort/manifest.json`;
+  const keys = [inventoryKey, manifestKey];
+  expect(
+    await stub.retain(
+      artifactInput(caseExecutionId, inventoryKey, "inventoryReceipt", "early-root-1"),
+    ),
+  ).toMatchObject({ _tag: "Complete" });
+  expect(
+    await stub.retain(artifactInput(caseExecutionId, manifestKey, "manifest", "early-root-2")),
+  ).toMatchObject({ _tag: "Complete" });
+  expect(
+    await stub.fence({ executionId: caseExecutionId, protocolVersion: input.protocolVersion }),
+  ).toMatchObject({ _tag: "Fenced" });
+  expect(
+    await stub.deleteRoot({
+      executionId: caseExecutionId,
+      expectedArtifactKeys: keys,
+      expectedArtifactsChecksum: qualificationChecksum({ expectedArtifactIds: keys }),
+      expectedPageCount: 1,
+      finalPageChecksum: "not-sealed",
+      protocolVersion: input.protocolVersion,
+    }),
+  ).toEqual({ _tag: "Missing", code: "sealedPageChainIncomplete" });
+
+  await runInDurableObject(stub, async (_instance, state) => {
+    state.storage.sql.exec(
+      `insert into sealed_page_receipts
+        (position, plan, page_index, previous_page_checksum, page_checksum, proof_checksum,
+         expected_artifact_count, expected_artifacts_checksum, artifact_records_checksum,
+         receipt_checksum)
+       values (0, 'free', 0, 'NONE', 'not-sealed', 'proof', 1, 'artifacts', 'records',
+               'tampered-receipt')`,
+    );
+  });
+  expect(
+    await stub.deleteRoot({
+      executionId: caseExecutionId,
+      expectedArtifactKeys: keys,
+      expectedArtifactsChecksum: qualificationChecksum({ expectedArtifactIds: keys }),
+      expectedPageCount: 1,
+      finalPageChecksum: "not-sealed",
+      protocolVersion: input.protocolVersion,
+    }),
+  ).toEqual({ _tag: "Conflict", code: "sealedPageChainConflict" });
+});
+
+it("bounds every R2 HEAD batch to five active calls", async () => {
+  let active = 0;
+  let maximumActive = 0;
+  const values = await qualificationCohortArtifactMapFive(
+    Array.from({ length: 27 }, (_, index) => index),
+    async (index) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await Promise.resolve();
+      active -= 1;
+      return index;
+    },
+  );
+  expect(values).toEqual(Array.from({ length: 27 }, (_, index) => index));
+  expect(maximumActive).toBe(5);
+});
+
+it("rejects native SHA, custom-metadata, and content-type substitutions during deletion", async () => {
+  for (const variant of ["metadata", "nativeSha", "contentType"] as const) {
+    const caseExecutionId = `${executionId}-delete-${variant}`;
+    const artifactKey = `qualification/executions/${caseExecutionId}/cohort/finalize-pages/free/00000000.json`;
+    const stub = runtimeEnv.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY_TEST.getByName(caseExecutionId);
+    const metadata = {
+      "osfo-execution-id": caseExecutionId,
+      "osfo-kind": "qualification-cohort-finalize-page-v1",
+    };
+    expect(
+      await stub.retain({
+        body: "exact",
+        executionId: caseExecutionId,
+        family: "finalizePage",
+        key: artifactKey,
+        metadata,
+        operationToken: `tamper-${variant}`,
+        protocolVersion: input.protocolVersion,
+      }),
+    ).toMatchObject({ _tag: "Complete" });
+    expect(
+      await stub.fence({ executionId: caseExecutionId, protocolVersion: input.protocolVersion }),
+    ).toMatchObject({ _tag: "Fenced" });
+    const putOptions = {
+      customMetadata: variant === "metadata" ? { ...metadata, substituted: "true" } : metadata,
+      httpMetadata: {
+        contentType: variant === "contentType" ? "text/plain" : "application/json",
+      },
+    };
+    await runtimeEnv.ARTIFACTS.put(
+      artifactKey,
+      "exact",
+      variant === "nativeSha"
+        ? putOptions
+        : {
+            ...putOptions,
+            sha256: hexToBytes((await sha256("exact")).slice("sha256:".length)),
+          },
+    );
+    expect(
+      await stub.deletePage({
+        executionId: caseExecutionId,
+        expectedArtifactKeys: [artifactKey],
+        expectedArtifactsChecksum: qualificationChecksum({ expectedArtifactIds: [artifactKey] }),
+        pageIndex: 0,
+        plan: "free",
+        position: 0,
+        previousPageChecksum: "NONE",
+        protocolVersion: input.protocolVersion,
+      }),
+    ).toEqual({ _tag: "Conflict", code: "retainedArtifactMismatch" });
+  }
+});
+
+it("reconciles an eviction-shaped ARMED intent after delete applied but its response was lost", async () => {
+  const caseExecutionId = `${executionId}-lost-delete-response`;
+  const artifactKey = `qualification/executions/${caseExecutionId}/cohort/finalize-pages/free/00000000.json`;
+  const stub = runtimeEnv.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY_TEST.getByName(caseExecutionId);
+  expect(
+    await stub.retain({
+      body: "lost-response",
+      executionId: caseExecutionId,
+      family: "finalizePage",
+      key: artifactKey,
+      metadata: {
+        "osfo-execution-id": caseExecutionId,
+        "osfo-kind": "qualification-cohort-finalize-page-v1",
+      },
+      operationToken: "lost-response-artifact",
+      protocolVersion: input.protocolVersion,
+    }),
+  ).toMatchObject({ _tag: "Complete" });
+  expect(
+    await stub.fence({ executionId: caseExecutionId, protocolVersion: input.protocolVersion }),
+  ).toMatchObject({ _tag: "Fenced" });
+  const expectedArtifactKeys = [artifactKey];
+  const expectedArtifactsChecksum = qualificationChecksum({
+    expectedArtifactIds: expectedArtifactKeys,
+  });
+  const operationId = await runInDurableObject(stub, async (_instance, state) => {
+    const record = state.storage.sql
+      .exec<{
+        artifact_key: string;
+        body_sha256: string;
+        family: string;
+        metadata_digest: string;
+        operation_token: string;
+      }>("select * from artifact_records")
+      .one();
+    const artifactRecordsChecksum = qualificationChecksum({
+      records: [
+        {
+          artifactKey: record.artifact_key,
+          bodySha256: record.body_sha256,
+          family: record.family,
+          metadataDigest: record.metadata_digest,
+          operationToken: record.operation_token,
+        },
+      ],
+    });
+    const retainedOperationId = qualificationChecksum({
+      artifactRecordsChecksum,
+      executionId: caseExecutionId,
+      expectedArtifactCount: 1,
+      expectedArtifactsChecksum,
+      pageIndex: 0,
+      plan: "free",
+      position: 0,
+      previousPageChecksum: "NONE",
+      scope: "page",
+    });
+    state.storage.sql.exec(
+      `insert into delete_intent
+        (singleton, scope, operation_id, phase, expected_artifact_count,
+         expected_artifacts_checksum, artifact_records_checksum, proof_checksum, plan, page_index,
+         position, previous_page_checksum, expected_page_count, final_page_checksum)
+       values (1, 'page', ?, 'ARMED', 1, ?, ?, null, 'free', 0, 0, 'NONE', null, null)`,
+      retainedOperationId,
+      expectedArtifactsChecksum,
+      artifactRecordsChecksum,
+    );
+    return retainedOperationId;
+  });
+  await runtimeEnv.ARTIFACTS.delete(artifactKey);
+  expect(
+    await stub.deletePage({
+      executionId: caseExecutionId,
+      expectedArtifactKeys,
+      expectedArtifactsChecksum,
+      pageIndex: 0,
+      plan: "free",
+      position: 0,
+      previousPageChecksum: "NONE",
+      protocolVersion: input.protocolVersion,
+    }),
+  ).toMatchObject({ _tag: "Proven", operationId });
+});
+
+const artifactInput = (
+  artifactExecutionId: string,
+  artifactKey: string,
+  family: "inventoryReceipt" | "manifest",
+  operationToken: string,
+) => ({
+  body: JSON.stringify({ family }),
+  executionId: artifactExecutionId,
+  family,
+  key: artifactKey,
+  metadata: {
+    "osfo-execution-id": artifactExecutionId,
+    "osfo-kind":
+      family === "manifest" ? "qualification-cohort-v1" : "qualification-cohort-inventory-v1",
+  },
+  operationToken,
+  protocolVersion: input.protocolVersion,
 });
 
 const sha256 = async (body: string): Promise<string> => {

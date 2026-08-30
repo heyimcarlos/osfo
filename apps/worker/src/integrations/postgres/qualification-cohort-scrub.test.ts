@@ -245,6 +245,7 @@ it.effect(
           "update qualification_cohort_scrub_pages set claimed_at = now() - interval '10 minutes', lease_expires_at = now() - interval '1 second'",
         ),
       );
+      expect(yield* authority.claimScrubPage(input)).toMatchObject({ _tag: "LeaseExpired" });
       const reclaimed = yield* authority.claimScrubPage({
         ...input,
         claimToken: "page-claim-2",
@@ -258,6 +259,7 @@ it.effect(
       );
       expect(
         yield* authority.completeScrubPage({
+          artifactAuthorityProofChecksum: "proof-reclaimed-expired",
           claimToken: reclaimed.claimToken,
           cohortId,
           deletedArtifactCount: reclaimed.expectedArtifactCount,
@@ -275,6 +277,7 @@ it.effect(
       if (finalClaim._tag !== "Claimed") return;
       expect(
         yield* authority.completeScrubPage({
+          artifactAuthorityProofChecksum: "proof-wrong-claim",
           claimToken: input.claimToken,
           cohortId,
           deletedArtifactCount: finalClaim.expectedArtifactCount,
@@ -285,6 +288,7 @@ it.effect(
         }),
       ).toEqual({ _tag: "Conflict" });
       const completed = yield* authority.completeScrubPage({
+        artifactAuthorityProofChecksum: "proof-free-page",
         claimToken: finalClaim.claimToken,
         cohortId,
         deletedArtifactCount: finalClaim.expectedArtifactCount,
@@ -296,6 +300,7 @@ it.effect(
       expect(completed).toMatchObject({ _tag: "Completed", previousPageChecksum: "NONE" });
       expect(
         yield* authority.completeScrubPage({
+          artifactAuthorityProofChecksum: "proof-free-page",
           claimToken: finalClaim.claimToken,
           cohortId,
           deletedArtifactCount: finalClaim.expectedArtifactCount,
@@ -305,6 +310,18 @@ it.effect(
           plan: "free",
         }),
       ).toEqual(completed);
+      expect(
+        yield* authority.completeScrubPage({
+          artifactAuthorityProofChecksum: "different-proof",
+          claimToken: finalClaim.claimToken,
+          cohortId,
+          deletedArtifactCount: finalClaim.expectedArtifactCount,
+          deletedArtifactsChecksum: finalClaim.expectedArtifactsChecksum,
+          executionId,
+          pageIndex: 0,
+          plan: "free",
+        }),
+      ).toEqual({ _tag: "Conflict" });
 
       const columns = yield* Effect.promise(() =>
         fixture.client.query<{ column_name: string }>(
@@ -359,6 +376,7 @@ it.effect("chains every plan page before one root scrub completion", () =>
       expect(claimed).toMatchObject({ _tag: "Claimed", previousPageChecksum });
       if (claimed._tag !== "Claimed") return;
       const completed = yield* authority.completeScrubPage({
+        artifactAuthorityProofChecksum: `proof-${plan}-${pageIndex}`,
         claimToken,
         cohortId,
         deletedArtifactCount: claimed.expectedArtifactCount,
@@ -391,7 +409,15 @@ it.effect("chains every plan page before one root scrub completion", () =>
       ),
     );
     expect(
+      yield* authority.claimScrubRoot({
+        claimToken: root.claimToken,
+        cohortId,
+        executionId,
+      }),
+    ).toMatchObject({ _tag: "LeaseExpired" });
+    expect(
       yield* authority.completeScrubRoot({
+        artifactAuthorityProofChecksum: "proof-expired-root",
         claimToken: root.claimToken,
         cohortId,
         deletedArtifactCount: root.expectedArtifactCount,
@@ -410,6 +436,7 @@ it.effect("chains every plan page before one root scrub completion", () =>
     });
     if (reclaimedRoot._tag !== "Claimed") return;
     const completedRoot = yield* authority.completeScrubRoot({
+      artifactAuthorityProofChecksum: "proof-root",
       claimToken: reclaimedRoot.claimToken,
       cohortId,
       deletedArtifactCount: reclaimedRoot.expectedArtifactCount,
@@ -469,6 +496,7 @@ it.effect("rolls back root completion when the cohort state no longer permits sc
       if (page._tag !== "Claimed") return;
       expect(
         yield* authority.completeScrubPage({
+          artifactAuthorityProofChecksum: `proof-state-${plan}`,
           claimToken: page.claimToken,
           cohortId,
           deletedArtifactCount: page.expectedArtifactCount,
@@ -492,6 +520,7 @@ it.effect("rolls back root completion when the cohort state no longer permits sc
 
     expect(
       yield* authority.completeScrubRoot({
+        artifactAuthorityProofChecksum: "proof-state-root",
         claimToken: root.claimToken,
         cohortId,
         deletedArtifactCount: root.expectedArtifactCount,

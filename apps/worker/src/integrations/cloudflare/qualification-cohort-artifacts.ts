@@ -4,11 +4,20 @@ import { Effect, Schema } from "effect";
 import { qualificationChecksum } from "../../qualification/qualification-checksum";
 import {
   qualificationCohortArtifactProtocol,
+  type QualificationCohortArtifactDeleteOutcome,
+  type QualificationCohortArtifactDeletePageInput,
+  type QualificationCohortArtifactDeleteRootInput,
   type QualificationCohortArtifactFamily,
   type QualificationCohortArtifactFenceOutcome,
   type QualificationCohortArtifactFenceInput,
+  type QualificationCohortArtifactInspectInput,
+  type QualificationCohortArtifactInspection,
   type QualificationCohortArtifactRetainInput,
   type QualificationCohortArtifactRetainOutcome,
+  type QualificationCohortArtifactSealPageInput,
+  type QualificationCohortArtifactSealPageOutcome,
+  type QualificationCohortArtifactSealRootInput,
+  type QualificationCohortArtifactSealRootOutcome,
 } from "../../qualification/cohort-artifact-authority-contract";
 
 export class QualificationCohortArtifactAuthorityUnavailable extends Schema.TaggedError<QualificationCohortArtifactAuthorityUnavailable>()(
@@ -27,14 +36,39 @@ export interface RetainInput {
 /** Narrow private RPC port used by the qualification cohort artifact adapter. */
 export interface QualificationCohortArtifactAuthorityNamespace {
   readonly getByName: (executionId: string) => {
+    readonly deletePage: (
+      input: QualificationCohortArtifactDeletePageInput,
+    ) => Promise<QualificationCohortArtifactDeleteOutcome>;
+    readonly deleteRoot: (
+      input: QualificationCohortArtifactDeleteRootInput,
+    ) => Promise<QualificationCohortArtifactDeleteOutcome>;
     readonly fence: (
       input: QualificationCohortArtifactFenceInput,
     ) => Promise<QualificationCohortArtifactFenceOutcome>;
     readonly retain: (
       input: QualificationCohortArtifactRetainInput,
     ) => Promise<QualificationCohortArtifactRetainOutcome>;
+    readonly inspect: (
+      input: QualificationCohortArtifactInspectInput,
+    ) => Promise<QualificationCohortArtifactInspection>;
+    readonly sealPage: (
+      input: QualificationCohortArtifactSealPageInput,
+    ) => Promise<QualificationCohortArtifactSealPageOutcome>;
+    readonly sealRoot: (
+      input: QualificationCohortArtifactSealRootInput,
+    ) => Promise<QualificationCohortArtifactSealRootOutcome>;
   };
 }
+
+const callAuthority = <A>(operation: string, evaluate: () => Promise<A>) =>
+  Effect.tryPromise({
+    catch: (cause) =>
+      new QualificationCohortArtifactAuthorityUnavailable({
+        cause,
+        operation,
+      }),
+    try: evaluate,
+  });
 
 const sha256Hex = async (body: string): Promise<string> => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
@@ -96,4 +130,51 @@ export const fenceQualificationCohortArtifacts = Effect.fn("QualificationCohortA
           protocolVersion: qualificationCohortArtifactProtocol,
         }),
     }),
+);
+
+export const deleteQualificationCohortArtifactPage = Effect.fn(
+  "QualificationCohortArtifacts.deletePage",
+)(
+  (
+    namespace: QualificationCohortArtifactAuthorityNamespace,
+    input: QualificationCohortArtifactDeletePageInput,
+  ) => callAuthority("deletePage", () => namespace.getByName(input.executionId).deletePage(input)),
+);
+
+export const sealQualificationCohortArtifactPage = Effect.fn(
+  "QualificationCohortArtifacts.sealPage",
+)(
+  (
+    namespace: QualificationCohortArtifactAuthorityNamespace,
+    input: QualificationCohortArtifactSealPageInput,
+  ) => callAuthority("sealPage", () => namespace.getByName(input.executionId).sealPage(input)),
+);
+
+export const deleteQualificationCohortArtifactRoot = Effect.fn(
+  "QualificationCohortArtifacts.deleteRoot",
+)(
+  (
+    namespace: QualificationCohortArtifactAuthorityNamespace,
+    input: QualificationCohortArtifactDeleteRootInput,
+  ) => callAuthority("deleteRoot", () => namespace.getByName(input.executionId).deleteRoot(input)),
+);
+
+export const sealQualificationCohortArtifactRoot = Effect.fn(
+  "QualificationCohortArtifacts.sealRoot",
+)(
+  (
+    namespace: QualificationCohortArtifactAuthorityNamespace,
+    input: QualificationCohortArtifactSealRootInput,
+  ) => callAuthority("sealRoot", () => namespace.getByName(input.executionId).sealRoot(input)),
+);
+
+export const inspectQualificationCohortArtifacts = Effect.fn(
+  "QualificationCohortArtifacts.inspect",
+)((namespace: QualificationCohortArtifactAuthorityNamespace, executionId: string) =>
+  callAuthority("inspect", () =>
+    namespace.getByName(executionId).inspect({
+      executionId,
+      protocolVersion: qualificationCohortArtifactProtocol,
+    }),
+  ),
 );

@@ -28,7 +28,15 @@ const namespaceWith = (
   retain: ReturnType<QualificationCohortArtifactAuthorityNamespace["getByName"]>["retain"],
 ): QualificationCohortArtifactAuthorityNamespace => {
   const namespace: QualificationCohortArtifactAuthorityNamespace = {
-    getByName: () => ({ fence: () => Promise.resolve({ _tag: "Missing" }), retain }),
+    getByName: () => ({
+      deletePage: () => Promise.resolve({ _tag: "Missing", code: "test" }),
+      deleteRoot: () => Promise.resolve({ _tag: "Missing", code: "test" }),
+      fence: () => Promise.resolve({ _tag: "Missing" }),
+      inspect: () => Promise.resolve({ _tag: "Missing" }),
+      retain,
+      sealPage: () => Promise.resolve({ _tag: "Missing", code: "test" }),
+      sealRoot: () => Promise.resolve({ _tag: "Missing", code: "test" }),
+    }),
   };
   return namespace;
 };

@@ -35,6 +35,7 @@ export interface QualificationScrubPageClaimInput extends PageIdentity {
 }
 
 export interface QualificationScrubPageCompletionInput extends QualificationScrubPageClaimInput {
+  readonly artifactAuthorityProofChecksum: string;
   readonly deletedArtifactCount: number;
   readonly deletedArtifactsChecksum: string;
 }
@@ -49,6 +50,7 @@ export interface QualificationScrubRootClaimInput extends RootIdentity {
 }
 
 export interface QualificationScrubRootCompletionInput extends QualificationScrubRootClaimInput {
+  readonly artifactAuthorityProofChecksum: string;
   readonly deletedArtifactCount: number;
   readonly deletedArtifactsChecksum: string;
 }
@@ -78,11 +80,13 @@ interface RootDescriptor extends RootIdentity {
 
 export type QualificationScrubPageClaim =
   | ({ readonly _tag: "Claimed" } & PageDescriptor)
-  | ({ readonly _tag: "Completed"; readonly pageChecksum: string } & Omit<
-      PageDescriptor,
-      "expectedArtifactIds"
-    >)
+  | ({
+      readonly _tag: "Completed";
+      readonly artifactAuthorityProofChecksum: string;
+      readonly pageChecksum: string;
+    } & Omit<PageDescriptor, "expectedArtifactIds">)
   | { readonly _tag: "Busy"; readonly leaseExpiresAt: Date }
+  | { readonly _tag: "LeaseExpired"; readonly leaseExpiresAt: Date }
   | { readonly _tag: "Conflict" }
   | {
       readonly _tag: "Pending";
@@ -96,6 +100,7 @@ export type QualificationScrubPageCompletion =
   | {
       readonly _tag: "Completed";
       readonly completedAt: Date;
+      readonly artifactAuthorityProofChecksum: string;
       readonly pageChecksum: string;
       readonly previousPageChecksum: string;
     }
@@ -103,11 +108,13 @@ export type QualificationScrubPageCompletion =
 
 export type QualificationScrubRootClaim =
   | ({ readonly _tag: "Claimed" } & RootDescriptor)
-  | ({ readonly _tag: "Completed"; readonly rootChecksum: string } & Omit<
-      RootDescriptor,
-      "expectedArtifactIds"
-    >)
+  | ({
+      readonly _tag: "Completed";
+      readonly artifactAuthorityProofChecksum: string;
+      readonly rootChecksum: string;
+    } & Omit<RootDescriptor, "expectedArtifactIds">)
   | { readonly _tag: "Busy"; readonly leaseExpiresAt: Date }
+  | { readonly _tag: "LeaseExpired"; readonly leaseExpiresAt: Date }
   | { readonly _tag: "Conflict" }
   | {
       readonly _tag: "Pending";
@@ -115,7 +122,12 @@ export type QualificationScrubRootClaim =
     };
 
 export type QualificationScrubRootCompletion =
-  | { readonly _tag: "Completed"; readonly completedAt: Date; readonly rootChecksum: string }
+  | {
+      readonly _tag: "Completed";
+      readonly artifactAuthorityProofChecksum: string;
+      readonly completedAt: Date;
+      readonly rootChecksum: string;
+    }
   | { readonly _tag: "Conflict" };
 
 export interface QualificationTeardownInspection {
@@ -279,7 +291,11 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
                 ? completedPageClaim(existing)
                 : conflict;
             }
-            if (existing.claim_token === input.claimToken) return claimedPage(existing, descriptor);
+            if (existing.claim_token === input.claimToken) {
+              return existing.lease_expires_at <= clock
+                ? { _tag: "LeaseExpired", leaseExpiresAt: existing.lease_expires_at }
+                : claimedPage(existing, descriptor);
+            }
             if (existing.lease_expires_at > clock) {
               return { _tag: "Busy", leaseExpiresAt: existing.lease_expires_at };
             }
@@ -333,6 +349,7 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
         database.transaction(async (transaction): Promise<QualificationScrubPageCompletion> => {
           if (
             !validClaim(input.claimToken) ||
+            !validChecksum(input.artifactAuthorityProofChecksum) ||
             !validPageIndex(input.pageIndex) ||
             !Number.isSafeInteger(input.deletedArtifactCount) ||
             input.deletedArtifactCount <= 0
@@ -361,11 +378,16 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
             return conflict;
           }
           if (page.completed_at !== null && page.page_checksum !== null) {
-            return completedPageChecksumIsAuthentic(page) ? pageCompletion(page) : conflict;
+            return page.artifact_authority_proof_checksum ===
+              input.artifactAuthorityProofChecksum && completedPageChecksumIsAuthentic(page)
+              ? pageCompletion(page)
+              : conflict;
           }
+          if (page.artifact_authority_proof_checksum !== null) return conflict;
           const clock = await readDatabaseClock(transaction);
           if (clock === null || page.lease_expires_at <= clock) return conflict;
           const content = {
+            artifactAuthorityProofChecksum: input.artifactAuthorityProofChecksum,
             cohortId: input.cohortId,
             completedAtUtc: clock.toISOString(),
             deletedArtifactCount: input.deletedArtifactCount,
@@ -381,6 +403,7 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
           const [completed] = await transaction
             .update(qualificationCohortScrubPages)
             .set({
+              artifact_authority_proof_checksum: input.artifactAuthorityProofChecksum,
               completed_at: clock,
               deleted_artifact_count: input.deletedArtifactCount,
               deleted_artifacts_checksum: input.deletedArtifactsChecksum,
@@ -503,7 +526,11 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
               return completedRootClaim(existing);
             }
             if (existing.completed_at !== null || existing.root_checksum !== null) return conflict;
-            if (existing.claim_token === input.claimToken) return claimedRoot(existing, descriptor);
+            if (existing.claim_token === input.claimToken) {
+              return existing.lease_expires_at <= clock
+                ? { _tag: "LeaseExpired", leaseExpiresAt: existing.lease_expires_at }
+                : claimedRoot(existing, descriptor);
+            }
             if (existing.lease_expires_at > clock) {
               return { _tag: "Busy", leaseExpiresAt: existing.lease_expires_at };
             }
@@ -547,6 +574,7 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
         database.transaction(async (transaction): Promise<QualificationScrubRootCompletion> => {
           if (
             !validClaim(input.claimToken) ||
+            !validChecksum(input.artifactAuthorityProofChecksum) ||
             !Number.isSafeInteger(input.deletedArtifactCount) ||
             input.deletedArtifactCount <= 0
           ) {
@@ -584,14 +612,18 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
             return conflict;
           }
           if (root.completed_at !== null && root.root_checksum !== null) {
-            return cohort.state === "SCRUBBED" && completedRootRowIsAuthentic(root)
+            return cohort.state === "SCRUBBED" &&
+              root.artifact_authority_proof_checksum === input.artifactAuthorityProofChecksum &&
+              completedRootRowIsAuthentic(root)
               ? rootCompletion(root)
               : conflict;
           }
+          if (root.artifact_authority_proof_checksum !== null) return conflict;
           if (cohort.state !== "SCRUBBING") return conflict;
           const clock = await readDatabaseClock(transaction);
           if (clock === null || root.lease_expires_at <= clock) return conflict;
           const content = {
+            artifactAuthorityProofChecksum: input.artifactAuthorityProofChecksum,
             cohortId: input.cohortId,
             completedAtUtc: clock.toISOString(),
             deletedArtifactCount: input.deletedArtifactCount,
@@ -605,6 +637,7 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
           const [completed] = await transaction
             .update(qualificationCohortScrubRoots)
             .set({
+              artifact_authority_proof_checksum: input.artifactAuthorityProofChecksum,
               completed_at: clock,
               deleted_artifact_count: input.deletedArtifactCount,
               deleted_artifacts_checksum: input.deletedArtifactsChecksum,
@@ -734,6 +767,7 @@ const attempt = <A>(operation: string, evaluate: () => PromiseLike<A>) =>
   });
 
 const validClaim = (claimToken: string) => claimToken.length > 0 && claimToken.length <= 300;
+const validChecksum = (checksum: string) => checksum.length > 0 && checksum.length <= 300;
 const validPageIndex = (pageIndex: number) => Number.isSafeInteger(pageIndex) && pageIndex >= 0;
 const pagesFor = (participants: number) => Math.ceil(participants / pageSize);
 const productDeletionComplete = (state: string) =>
@@ -846,12 +880,14 @@ const completedPageRowIsAuthentic = async (
 
 const completedPageChecksumIsAuthentic = (row: typeof qualificationCohortScrubPages.$inferSelect) =>
   row.completed_at !== null &&
+  row.artifact_authority_proof_checksum !== null &&
   row.deleted_artifact_count !== null &&
   row.deleted_artifacts_checksum !== null &&
   row.deleted_artifact_count === row.expected_artifact_count &&
   row.deleted_artifacts_checksum === row.expected_artifacts_checksum &&
   row.page_checksum ===
     qualificationChecksum({
+      artifactAuthorityProofChecksum: row.artifact_authority_proof_checksum,
       cohortId: row.cohort_id,
       completedAtUtc: row.completed_at.toISOString(),
       deletedArtifactCount: row.deleted_artifact_count,
@@ -866,12 +902,14 @@ const completedPageChecksumIsAuthentic = (row: typeof qualificationCohortScrubPa
 
 const completedRootRowIsAuthentic = (row: typeof qualificationCohortScrubRoots.$inferSelect) =>
   row.completed_at !== null &&
+  row.artifact_authority_proof_checksum !== null &&
   row.deleted_artifact_count !== null &&
   row.deleted_artifacts_checksum !== null &&
   row.deleted_artifact_count === row.expected_artifact_count &&
   row.deleted_artifacts_checksum === row.expected_artifacts_checksum &&
   row.root_checksum ===
     qualificationChecksum({
+      artifactAuthorityProofChecksum: row.artifact_authority_proof_checksum,
       cohortId: row.cohort_id,
       completedAtUtc: row.completed_at.toISOString(),
       deletedArtifactCount: row.deleted_artifact_count,
@@ -994,6 +1032,7 @@ const completedPageClaim = (
   row: typeof qualificationCohortScrubPages.$inferSelect,
 ): QualificationScrubPageClaim => ({
   _tag: "Completed",
+  artifactAuthorityProofChecksum: row.artifact_authority_proof_checksum ?? "",
   claimToken: row.claim_token,
   cohortId: row.cohort_id,
   deletionReceiptsChecksum: row.deletion_receipts_checksum,
@@ -1016,6 +1055,7 @@ const pageCompletion = (
     ? conflict
     : {
         _tag: "Completed",
+        artifactAuthorityProofChecksum: row.artifact_authority_proof_checksum ?? "",
         completedAt: row.completed_at,
         pageChecksum: row.page_checksum,
         previousPageChecksum: row.previous_page_checksum,
@@ -1035,6 +1075,7 @@ const completedRootClaim = (
   row: typeof qualificationCohortScrubRoots.$inferSelect,
 ): QualificationScrubRootClaim => ({
   _tag: "Completed",
+  artifactAuthorityProofChecksum: row.artifact_authority_proof_checksum ?? "",
   claimToken: row.claim_token,
   cohortId: row.cohort_id,
   executionId: row.execution_id,
@@ -1052,4 +1093,9 @@ const rootCompletion = (
 ): QualificationScrubRootCompletion =>
   row.completed_at === null || row.root_checksum === null
     ? conflict
-    : { _tag: "Completed", completedAt: row.completed_at, rootChecksum: row.root_checksum };
+    : {
+        _tag: "Completed",
+        artifactAuthorityProofChecksum: row.artifact_authority_proof_checksum ?? "",
+        completedAt: row.completed_at,
+        rootChecksum: row.root_checksum,
+      };

@@ -237,6 +237,7 @@ export const qualificationCohortScrubPages = pgTable(
     first_participant_index: integer().notNull(),
     lease_expires_at: timestamp({ mode: "date", withTimezone: true }).notNull(),
     page_checksum: text(),
+    artifact_authority_proof_checksum: text(),
     page_index: integer().notNull(),
     participant_count: integer().notNull(),
     plan: text({ enum: planValues }).notNull(),
@@ -268,9 +269,11 @@ export const qualificationCohortScrubPages = pgTable(
     check(
       "qualification_cohort_scrub_pages_completion_check",
       sql`(${table.completed_at} is null and ${table.deleted_artifact_count} is null
-          and ${table.deleted_artifacts_checksum} is null and ${table.page_checksum} is null)
+          and ${table.deleted_artifacts_checksum} is null and ${table.page_checksum} is null
+          and ${table.artifact_authority_proof_checksum} is null)
         or (${table.completed_at} is not null and ${table.deleted_artifact_count} is not null
-          and ${table.deleted_artifacts_checksum} is not null and ${table.page_checksum} is not null)`,
+          and ${table.deleted_artifacts_checksum} is not null and ${table.page_checksum} is not null
+          and ${table.artifact_authority_proof_checksum} is not null)`,
     ),
   ],
 );
@@ -293,6 +296,7 @@ export const qualificationCohortScrubRoots = pgTable(
     final_page_checksum: text().notNull(),
     lease_expires_at: timestamp({ mode: "date", withTimezone: true }).notNull(),
     root_checksum: text(),
+    artifact_authority_proof_checksum: text(),
     scrub_root_id: text().primaryKey(),
   },
   (table) => [
@@ -318,9 +322,11 @@ export const qualificationCohortScrubRoots = pgTable(
     check(
       "qualification_cohort_scrub_roots_completion_check",
       sql`(${table.completed_at} is null and ${table.deleted_artifact_count} is null
-          and ${table.deleted_artifacts_checksum} is null and ${table.root_checksum} is null)
+          and ${table.deleted_artifacts_checksum} is null and ${table.root_checksum} is null
+          and ${table.artifact_authority_proof_checksum} is null)
         or (${table.completed_at} is not null and ${table.deleted_artifact_count} is not null
-          and ${table.deleted_artifacts_checksum} is not null and ${table.root_checksum} is not null)`,
+          and ${table.deleted_artifacts_checksum} is not null and ${table.root_checksum} is not null
+          and ${table.artifact_authority_proof_checksum} is not null)`,
     ),
   ],
 );
