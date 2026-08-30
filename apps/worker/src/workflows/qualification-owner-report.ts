@@ -106,9 +106,16 @@ const familyStructureExact = (
   if (family.family === "execution_run_corpus") {
     return (
       (family.verdict === "PASS" &&
+        family.reason === "authenticated_execution_run_corpus" &&
+        family.failCount === 0 &&
+        family.missingCount === 0 &&
         family.references.length === 1 &&
         family.references[0]?.kind === "executionCorpus") ||
-      (family.verdict === "MISSING" && family.references.length === 0)
+      (family.verdict === "MISSING" &&
+        family.reason === "authority_not_installed_pre_teardown" &&
+        family.failCount === 0 &&
+        family.missingCount === 1 &&
+        family.references.length === 0)
     );
   }
   return family.references.length === 0;

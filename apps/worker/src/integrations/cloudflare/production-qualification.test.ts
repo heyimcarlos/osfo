@@ -1094,6 +1094,8 @@ it.each([
   "corpusCount",
   "corpusCrossExecution",
   "corpusReferenceTerminal",
+  "corpusPassLegacyReason",
+  "corpusPassArbitraryReason",
   "corpusSubstitutedKey",
 ] as const)(
   "authenticates a distributed PRE_TEARDOWN report before returning %s",
@@ -1121,7 +1123,9 @@ it.each([
     } else if (
       scenario.startsWith("corpus") &&
       scenario !== "corpusSubstitutedKey" &&
-      scenario !== "corpusReferenceTerminal"
+      scenario !== "corpusReferenceTerminal" &&
+      scenario !== "corpusPassLegacyReason" &&
+      scenario !== "corpusPassArbitraryReason"
     ) {
       const decoded = Schema.decodeSync(
         Schema.fromJsonString(QualificationExecutionRunCorpusReceipt),
@@ -1142,7 +1146,7 @@ it.each([
         : scenario === "corpusReferenceTerminal"
           ? { ...inventory.executionCorpus, terminalJoinPageChecksum: "substituted-reference" }
           : inventory.executionCorpus;
-    const report = qualificationDistributedEvaluationReport({
+    const canonicalReport = qualificationDistributedEvaluationReport({
       ...inventory,
       executionCorpus,
       acceptanceLevel: manifest.acceptanceLevel,
@@ -1154,6 +1158,26 @@ it.each([
       sourceVersion: manifest.sourceVersion,
       topologyVersion: manifest.topologyVersion,
     });
+    const report = (() => {
+      if (scenario !== "corpusPassLegacyReason" && scenario !== "corpusPassArbitraryReason") {
+        return canonicalReport;
+      }
+      const families = canonicalReport.families.map((family) => {
+        if (family.family !== "execution_run_corpus") return family;
+        const { checksum: _familyChecksum, ...familyContent } = family;
+        const alteredContent = {
+          ...familyContent,
+          reason:
+            scenario === "corpusPassLegacyReason"
+              ? "authority_not_installed_pre_teardown"
+              : "arbitrary_current_reason",
+        };
+        return { ...alteredContent, checksum: qualificationChecksum(alteredContent) };
+      });
+      const { checksum: _reportChecksum, ...reportContent } = canonicalReport;
+      const alteredContent = { ...reportContent, families };
+      return { ...alteredContent, checksum: qualificationChecksum(alteredContent) };
+    })();
     const result = await runProductionQualification(
       {
         ARTIFACTS: bucket,
