@@ -857,6 +857,7 @@ describe("POST teardown finalizer", () => {
         finalizeQualificationPostTeardown({ ...collision, releaseBackoffMilliseconds: 1_000 }),
       );
       expect(failure).toBeInstanceOf(QualificationPostTeardownFinalizationConflict);
+      expect(collision.stats()).toEqual({ getCount: 12, putCount: 1 });
       expect(collision.mutations).toEqual(["pin", "conflict"]);
     }),
   );
@@ -871,7 +872,7 @@ describe("POST teardown finalizer", () => {
       });
       expect(result._tag).toBe("Ineligible");
       expect(state.mutations).toEqual(["pin", "ineligible"]);
-      expect(state.stats().putCount).toBe(0);
+      expect(state.stats()).toEqual({ getCount: 5, putCount: 0 });
     }),
   );
 
@@ -887,6 +888,7 @@ describe("POST teardown finalizer", () => {
       );
       expect(publishFailure).toBeInstanceOf(QualificationPostTeardownPublicationUnavailable);
       expect(published.mutations).toEqual(["pin", "publish"]);
+      expect(published.stats()).toEqual({ getCount: 11, putCount: 4 });
       const publishedTerminal = published.terminal();
       if (publishedTerminal === null) throw new Error("Expected committed publication terminal");
       expect(
@@ -915,6 +917,7 @@ describe("POST teardown finalizer", () => {
       );
       expect(ineligibleFailure).toBeInstanceOf(QualificationPostTeardownPublicationUnavailable);
       expect(ineligible.mutations).toEqual(["pin", "ineligible"]);
+      expect(ineligible.stats()).toEqual({ getCount: 5, putCount: 0 });
       const ineligibleTerminal = ineligible.terminal();
       if (ineligibleTerminal === null) throw new Error("Expected committed ineligible terminal");
       expect(
