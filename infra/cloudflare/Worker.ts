@@ -13,6 +13,7 @@ import { Files } from "./Files";
 import { Artifacts } from "./Artifacts";
 import { QualificationOwnerLayer } from "./QualificationOwner";
 import { QualificationCohortArtifactAuthority } from "./QualificationCohortArtifactAuthority";
+import { QualificationCohortScrubPartitionWorkflow } from "./QualificationCohortScrubPartitionWorkflow";
 import { OsfoDirectory } from "./OsfoDirectory";
 import { ApiWorker, QualificationOwnerWorker } from "./WorkerBindings";
 
@@ -64,6 +65,7 @@ const apiLayer = ApiWorker.make(
           Config.withDefault(""),
         ),
         QUALIFICATION_COHORT_ARTIFACT_AUTHORITY: QualificationCohortArtifactAuthority,
+        QUALIFICATION_COHORT_SCRUB_PARTITION_WORKFLOW: QualificationCohortScrubPartitionWorkflow,
         QUALIFICATION_OWNER: QualificationOwnerWorker,
         QUALIFICATION_TRIGGER_TOKEN: Config.redacted("QUALIFICATION_TRIGGER_TOKEN").pipe(
           Config.withDefault(Redacted.make("")),

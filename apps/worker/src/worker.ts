@@ -33,6 +33,7 @@ export { DocumentBuildTimerWorkflow } from "./workflows/document-build-timer";
 export { ResearchReportWorkflow } from "./workflows/research-report";
 export { ResearchReportTimerWorkflow } from "./workflows/research-report-timer";
 export { ScheduledEmailWorkflow } from "./workflows/scheduled-email";
+export { QualificationCohortScrubPartitionWorkflow } from "./workflows/qualification-cohort-scrub-partition";
 export { runProductionQualification } from "./integrations/cloudflare/production-qualification";
 
 /** Private product-owned qualification authority entrypoint. */

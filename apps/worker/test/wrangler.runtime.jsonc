@@ -44,6 +44,13 @@
     { "binding": "ARTIFACTS", "bucket_name": "osfo-runtime-test-artifacts" },
     { "binding": "FILES", "bucket_name": "osfo-runtime-test-files" },
   ],
+  "workflows": [
+    {
+      "binding": "QUALIFICATION_COHORT_SCRUB_PARTITION_WORKFLOW_TEST",
+      "class_name": "QualificationCohortScrubPartitionWorkflow",
+      "name": "qualification-cohort-scrub-partition-runtime-test",
+    },
+  ],
   "durable_objects": {
     "bindings": [
       { "name": "OSFO_AGENT_TEST", "class_name": "OsfoAgent" },

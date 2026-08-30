@@ -5,12 +5,23 @@ import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/t
 import { Effect } from "effect";
 
 import { qualificationChecksum } from "../../qualification/qualification-checksum";
+import { qualificationCohortScrubPartitionProtocol } from "../../qualification/cohort-scrub-partition";
 import { makeQualificationCohortAuthority } from "./qualification-cohort";
 
 const cohortId = "qualification-scrub-cohort";
 const executionId = "qualification-scrub-execution";
 const activatedAt = "2099-08-29T17:00:00.000Z";
 const deletedAt = "2099-08-30T17:00:00.000Z";
+
+const partitionPayload = {
+  cohortId,
+  executionId,
+  firstPagePosition: 0,
+  pageCount: 2,
+  partitionIndex: 0,
+  protocolVersion: qualificationCohortScrubPartitionProtocol,
+  rootCoordinatorInstanceId: "scrub-root",
+} as const;
 
 const deletionReceipt = (userId: string, deletionCaseId: string) => {
   const receiptId = `postgres:qualification-account-deletion:${deletionCaseId}`;
@@ -151,6 +162,33 @@ it.effect("does not expose scrub work before every product deletion is proven", 
     expect(yield* authority.inspectTeardown(cohortId)).toMatchObject({
       productDeletion: { deleted: 2, expected: 3, state: "PENDING" },
       scrub: { state: "NOT_STARTED" },
+    });
+  }),
+);
+
+it.effect("derives the exact partition window from PostgreSQL-owned cohort counts", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeTestDatabase;
+    yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+    yield* applyMigrations(fixture.client);
+    yield* seedCohort(fixture, { adventurer: 1, free: 25 });
+    const authority = makeQualificationCohortAuthority(fixture.database);
+
+    expect(yield* authority.inspectScrubPartition(partitionPayload)).toMatchObject({
+      _tag: "Ready",
+      freeParticipantCount: 25,
+      pageCount: 2,
+      pages: [
+        { pageIndex: 0, plan: "free", position: 0 },
+        { pageIndex: 0, plan: "adventurer", position: 1 },
+      ],
+      totalPageCount: 2,
+    });
+    expect(
+      yield* authority.inspectScrubPartition({ ...partitionPayload, firstPagePosition: 1 }),
+    ).toEqual({ _tag: "Conflict" });
+    expect(yield* authority.inspectScrubPartition({ ...partitionPayload, pageCount: 1 })).toEqual({
+      _tag: "Conflict",
     });
   }),
 );

@@ -12,6 +12,11 @@ import { Effect } from "effect";
 import type { Database } from "@osfo/db";
 import { qualificationChecksum } from "../../qualification/qualification-checksum";
 import { qualificationCohortArtifactProtocol } from "../../qualification/cohort-artifact-authority-contract";
+import {
+  qualificationCohortScrubPartitionTopology,
+  type QualificationCohortScrubPartitionTopology,
+  type QualificationCohortScrubPartitionWorkflowPayload,
+} from "../../qualification/cohort-scrub-partition";
 import { QualificationCohortAuthorityUnavailable } from "./qualification-cohort-error";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle owns these transaction Promise boundaries. */
@@ -143,8 +148,41 @@ export interface QualificationTeardownInspection {
   };
 }
 
+export type QualificationScrubPartitionInspection =
+  | ({ readonly _tag: "Ready" } & QualificationCohortScrubPartitionTopology)
+  | { readonly _tag: "Conflict" }
+  | {
+      readonly _tag: "Pending";
+      readonly reason: "artifactAuthorityUnavailable" | "productDeletionIncomplete";
+    };
+
 /** Persistence-only scrub authority. R2 deletion remains outside this adapter. */
 export const makeQualificationCohortScrubAuthority = (database: Database) => {
+  const inspectScrubPartition = Effect.fn("QualificationCohortAuthority.inspectScrubPartition")(
+    (input: QualificationCohortScrubPartitionWorkflowPayload) =>
+      attempt("inspectScrubPartition", async (): Promise<QualificationScrubPartitionInspection> => {
+        const [cohort] = await database
+          .select()
+          .from(qualificationCohorts)
+          .where(
+            and(
+              eq(qualificationCohorts.cohort_id, input.cohortId),
+              eq(qualificationCohorts.execution_id, input.executionId),
+            ),
+          )
+          .limit(1);
+        if (cohort === undefined) return conflict;
+        if (cohort.artifact_authority_protocol !== qualificationCohortArtifactProtocol) {
+          return { _tag: "Pending", reason: "artifactAuthorityUnavailable" };
+        }
+        if (!productDeletionComplete(cohort.state)) {
+          return { _tag: "Pending", reason: "productDeletionIncomplete" };
+        }
+        const topology = qualificationCohortScrubPartitionTopology(input, cohortCounts(cohort));
+        return topology === null ? conflict : { _tag: "Ready", ...topology };
+      }),
+  );
+
   const claimScrubPage = Effect.fn("QualificationCohortAuthority.claimScrubPage")(
     (input: QualificationScrubPageClaimInput) =>
       attempt("claimScrubPage", () =>
@@ -251,7 +289,7 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
           if (previousPageChecksum === null) {
             return { _tag: "Pending", reason: "previousPageIncomplete" };
           }
-          const expectedArtifactIds = scrubPageArtifactIds(
+          const expectedArtifactIds = qualificationScrubPageArtifactIds(
             input.executionId,
             input.plan,
             firstParticipantIndex,
@@ -749,6 +787,7 @@ export const makeQualificationCohortScrubAuthority = (database: Database) => {
     claimScrubRoot,
     completeScrubPage,
     completeScrubRoot,
+    inspectScrubPartition,
     inspectTeardown,
   } as const;
 };
@@ -800,7 +839,8 @@ const previousPage = (
 ): Pick<PageIdentity, "pageIndex" | "plan"> | null => {
   if (input.pageIndex > 0) return { pageIndex: input.pageIndex - 1, plan: input.plan };
   if (input.plan === "free") return null;
-  return { pageIndex: pagesFor(counts.free) - 1, plan: "free" };
+  const freePageCount = pagesFor(counts.free);
+  return freePageCount === 0 ? null : { pageIndex: freePageCount - 1, plan: "free" };
 };
 
 const readCompletedPageChecksum = async (
@@ -847,7 +887,7 @@ const completedPageRowIsAuthentic = async (
   if (!completedPageChecksumIsAuthentic(row)) return false;
   const expectedParticipantCount = Math.min(pageSize, counts[row.plan] - row.page_index * pageSize);
   if (expectedParticipantCount <= 0) return false;
-  const expectedArtifactIds = scrubPageArtifactIds(
+  const expectedArtifactIds = qualificationScrubPageArtifactIds(
     row.execution_id,
     row.plan,
     row.page_index * pageSize,
@@ -958,7 +998,7 @@ const exactDeletionReceipt = (
   );
 };
 
-const scrubPageArtifactIds = (
+export const qualificationScrubPageArtifactIds = (
   executionId: string,
   plan: Plan,
   firstParticipantIndex: number,
