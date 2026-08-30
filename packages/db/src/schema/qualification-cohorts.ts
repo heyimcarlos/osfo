@@ -13,7 +13,13 @@ import {
 import { allowancePeriods } from "./allowances";
 
 const planValues = ["free", "adventurer"] as const;
-const cohortStateValues = ["PROVISIONING", "ACTIVE", "DELETING", "DELETED"] as const;
+const cohortStateValues = [
+  "PROVISIONING",
+  "ACTIVE",
+  "PRODUCT_DELETED",
+  "SCRUBBING",
+  "SCRUBBED",
+] as const;
 const participantStateValues = ["ACTIVE", "DELETION_REQUESTED", "DELETED"] as const;
 const provisionStateValues = ["PENDING", "CONSUMED"] as const;
 const attemptStateValues = ["OFFERED", "DECIDED"] as const;
@@ -209,6 +215,111 @@ export const qualificationCohortFinalizationPages = pgTable(
     check(
       "qualification_cohort_finalization_pages_bounds_check",
       sql`${table.page_index} >= 0 and ${table.first_participant_index} >= 0 and ${table.participant_count} > 0 and ${table.participant_count} <= 25`,
+    ),
+  ],
+);
+
+/** Bounded artifact-scrub progress derived from authenticated product-deletion receipts. */
+export const qualificationCohortScrubPages = pgTable(
+  "qualification_cohort_scrub_pages",
+  {
+    claim_token: text().notNull(),
+    claimed_at: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    cohort_id: text().notNull(),
+    completed_at: timestamp({ mode: "date", withTimezone: true }),
+    deleted_artifact_count: integer(),
+    deleted_artifacts_checksum: text(),
+    deletion_receipts_checksum: text().notNull(),
+    execution_id: text().notNull(),
+    expected_artifact_count: integer().notNull(),
+    expected_artifacts_checksum: text().notNull(),
+    first_participant_index: integer().notNull(),
+    lease_expires_at: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    page_checksum: text(),
+    page_index: integer().notNull(),
+    participant_count: integer().notNull(),
+    plan: text({ enum: planValues }).notNull(),
+    previous_page_checksum: text().notNull(),
+    scrub_page_id: text().primaryKey(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.cohort_id, table.execution_id],
+      foreignColumns: [qualificationCohorts.cohort_id, qualificationCohorts.execution_id],
+      name: "qualification_cohort_scrub_pages_cohort_fk",
+    }).onDelete("restrict"),
+    unique("qualification_cohort_scrub_pages_position_unique").on(
+      table.cohort_id,
+      table.plan,
+      table.page_index,
+    ),
+    check(
+      "qualification_cohort_scrub_pages_bounds_check",
+      sql`${table.page_index} >= 0 and ${table.first_participant_index} >= 0
+        and ${table.participant_count} > 0 and ${table.participant_count} <= 25
+        and ${table.expected_artifact_count} > 0`,
+    ),
+    check(
+      "qualification_cohort_scrub_pages_time_check",
+      sql`${table.claimed_at} < ${table.lease_expires_at}
+        and (${table.completed_at} is null or ${table.completed_at} >= ${table.claimed_at})`,
+    ),
+    check(
+      "qualification_cohort_scrub_pages_completion_check",
+      sql`(${table.completed_at} is null and ${table.deleted_artifact_count} is null
+          and ${table.deleted_artifacts_checksum} is null and ${table.page_checksum} is null)
+        or (${table.completed_at} is not null and ${table.deleted_artifact_count} is not null
+          and ${table.deleted_artifacts_checksum} is not null and ${table.page_checksum} is not null)`,
+    ),
+  ],
+);
+
+/** One content-free root receipt retained only after every exact scrub page completes. */
+export const qualificationCohortScrubRoots = pgTable(
+  "qualification_cohort_scrub_roots",
+  {
+    claim_token: text().notNull(),
+    claimed_at: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    cohort_id: text().notNull(),
+    completed_at: timestamp({ mode: "date", withTimezone: true }),
+    deleted_artifact_count: integer(),
+    deleted_artifacts_checksum: text(),
+    execution_id: text().notNull(),
+    expected_artifact_count: integer().notNull(),
+    expected_artifacts_checksum: text().notNull(),
+    expected_page_count: integer().notNull(),
+    expected_participant_count: integer().notNull(),
+    final_page_checksum: text().notNull(),
+    lease_expires_at: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    root_checksum: text(),
+    scrub_root_id: text().primaryKey(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.cohort_id, table.execution_id],
+      foreignColumns: [qualificationCohorts.cohort_id, qualificationCohorts.execution_id],
+      name: "qualification_cohort_scrub_roots_cohort_fk",
+    }).onDelete("restrict"),
+    unique("qualification_cohort_scrub_roots_cohort_unique").on(
+      table.cohort_id,
+      table.execution_id,
+    ),
+    check(
+      "qualification_cohort_scrub_roots_bounds_check",
+      sql`${table.expected_artifact_count} > 0 and ${table.expected_page_count} > 0
+        and ${table.expected_participant_count} > 0`,
+    ),
+    check(
+      "qualification_cohort_scrub_roots_time_check",
+      sql`${table.claimed_at} < ${table.lease_expires_at}
+        and (${table.completed_at} is null or ${table.completed_at} >= ${table.claimed_at})`,
+    ),
+    check(
+      "qualification_cohort_scrub_roots_completion_check",
+      sql`(${table.completed_at} is null and ${table.deleted_artifact_count} is null
+          and ${table.deleted_artifacts_checksum} is null and ${table.root_checksum} is null)
+        or (${table.completed_at} is not null and ${table.deleted_artifact_count} is not null
+          and ${table.deleted_artifacts_checksum} is not null and ${table.root_checksum} is not null)`,
     ),
   ],
 );

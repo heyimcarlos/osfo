@@ -9,7 +9,7 @@ import {
   qualificationParticipantProvisions,
 } from "@osfo/db/schema/qualification-cohorts";
 import { and, asc, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
-import { Data, Effect } from "effect";
+import { Effect } from "effect";
 
 import type { Database } from "@osfo/db";
 import {
@@ -18,16 +18,12 @@ import {
   type QualificationParticipantGrant,
 } from "../../qualification/qualification-cohort";
 import { qualificationChecksum } from "../../qualification/qualification-checksum";
+import { QualificationCohortAuthorityUnavailable } from "./qualification-cohort-error";
+import { makeQualificationCohortScrubAuthority } from "./qualification-cohort-scrub";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle owns these transaction Promise boundaries. */
 
-export class QualificationCohortAuthorityUnavailable extends Data.TaggedError(
-  "QualificationCohortAuthorityUnavailable",
-)<{
-  readonly cause: unknown;
-  readonly message: string;
-  readonly operation: string;
-}> {}
+export { QualificationCohortAuthorityUnavailable } from "./qualification-cohort-error";
 
 interface ProvisionedParticipant {
   readonly allocationId: string;
@@ -89,6 +85,7 @@ const qualificationCohortManifestFor = (row: typeof qualificationCohorts.$inferS
 
 /** PostgreSQL authority owned by the disposable qualification-account provisioner. */
 export const makeQualificationCohortAuthority = (database: Database) => {
+  const scrub = makeQualificationCohortScrubAuthority(database);
   const readActiveAuthSession = Effect.fn("QualificationCohortAuthority.readActiveAuthSession")(
     (input: { readonly at: Date; readonly userId: string }) =>
       attempt("readActiveAuthSession", async () => {
@@ -816,21 +813,6 @@ export const makeQualificationCohortAuthority = (database: Database) => {
     }),
   );
 
-  const inspectTeardown = Effect.fn("QualificationCohortAuthority.inspectTeardown")(
-    (cohortId: string) =>
-      attempt("inspectTeardown", () =>
-        database
-          .select({
-            active: sql<number>`count(*) filter (where ${qualificationParticipantAllocations.state} <> 'DELETED')::int`,
-            activeCohorts: sql<number>`(select count(*)::int from ${qualificationCohorts} where ${qualificationCohorts.cohort_id} = ${cohortId} and ${qualificationCohorts.state} <> 'DELETED')`,
-            deleted: sql<number>`count(*) filter (where ${qualificationParticipantAllocations.state} = 'DELETED')::int`,
-            missingReceipts: sql<number>`count(*) filter (where ${qualificationParticipantAllocations.state} = 'DELETED' and (${qualificationParticipantAllocations.deletion_receipt_id} is null or ${qualificationParticipantAllocations.deletion_receipt_checksum} is null))::int`,
-          })
-          .from(qualificationParticipantAllocations)
-          .where(eq(qualificationParticipantAllocations.cohort_id, cohortId)),
-      ).pipe(Effect.map(([summary]) => summary)),
-  );
-
   const listActive = Effect.fn("QualificationCohortAuthority.listActive")((cohortId: string) =>
     attempt("listActive", () =>
       database
@@ -937,7 +919,7 @@ export const makeQualificationCohortAuthority = (database: Database) => {
     inspectInventory,
     inspectParticipant,
     inspectProvisionInventory,
-    inspectTeardown,
+    ...scrub,
     listActive,
     listConsumedProvisionPage,
     listInventoryPage,

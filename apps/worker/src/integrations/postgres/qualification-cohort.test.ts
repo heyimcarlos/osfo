@@ -501,10 +501,8 @@ it.effect("requires pre-registration provisions and rejects ordinary or duplicat
       { concurrency: 1, discard: true },
     );
     expect(yield* authority.inspectTeardown(manifest.cohortId)).toMatchObject({
-      active: 0,
-      activeCohorts: 0,
-      deleted: 3,
-      missingReceipts: 0,
+      productDeletion: { deleted: 3, expected: 3, state: "COMPLETE" },
+      scrub: { completedPages: 0, expectedPages: 2, state: "NOT_STARTED" },
     });
     const retainedProvisions = yield* Effect.promise(() =>
       fixture.database.select().from(qualificationParticipantProvisions),

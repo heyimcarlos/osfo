@@ -13,6 +13,66 @@ class MigrationConstraintRejected extends Data.TaggedError("MigrationConstraintR
 }> {}
 
 describe("Postgres migrations", () => {
+  it.effect("migrates legacy deleted qualification cohorts to product-deleted replay state", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      ({ client }) =>
+        Effect.gen(function* () {
+          const migrations = yield* readMigrations;
+          const scrubMigration = migrations.find(({ name }) => name.startsWith("0043_"));
+          if (scrubMigration === undefined) {
+            return yield* Effect.die(new Error("Qualification scrub migration is missing"));
+          }
+          yield* applyMigrations(
+            client,
+            migrations.filter(({ name }) => name < scrubMigration.name),
+          );
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO qualification_cohorts (
+                artifact_checksum, artifact_id, activated_at, cohort_id, created_at,
+                created_for_qualification, execution_id, expected_adventurer_participants,
+                expected_free_participants, expires_at, manifest_checksum, not_before,
+                plan_checksum, source_version, state, teardown_policy
+              ) VALUES (
+                'legacy-checksum', 'legacy-artifact', now(), 'legacy-cohort',
+                now() - interval '1 minute', true, 'legacy-execution', 1, 1,
+                now() + interval '1 day', 'legacy-manifest', now(), 'legacy-plan',
+                'legacy-source', 'DELETED', 'permanentAccountDeletion'
+              )
+            `),
+          );
+
+          yield* applyMigrations(client, migrations);
+          yield* applyMigrations(client, migrations);
+          const cohort = yield* Effect.promise(() =>
+            client.query<{ readonly state: string }>(
+              "SELECT state FROM qualification_cohorts WHERE cohort_id = 'legacy-cohort'",
+            ),
+          );
+          const scrubTables = yield* Effect.promise(() =>
+            client.query<{ readonly table_name: string }>(`
+              SELECT table_name
+              FROM information_schema.tables
+              WHERE table_name IN (
+                'qualification_cohort_scrub_pages',
+                'qualification_cohort_scrub_roots'
+              )
+              ORDER BY table_name
+            `),
+          );
+
+          expect(cohort.rows).toEqual([{ state: "PRODUCT_DELETED" }]);
+          expect(scrubTables.rows.map(({ table_name }) => table_name)).toEqual([
+            "qualification_cohort_scrub_pages",
+            "qualification_cohort_scrub_roots",
+          ]);
+          return undefined;
+        }),
+      closeTestDatabase,
+    ),
+  );
+
   it.effect("applies new migrations once and skips them on a repeated apply", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,

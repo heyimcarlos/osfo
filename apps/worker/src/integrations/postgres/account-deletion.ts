@@ -245,7 +245,7 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
           [...new Set(completedAllocations.map(({ cohortId }) => cohortId))].map((cohortId) =>
             transaction
               .update(qualificationCohorts)
-              .set({ state: "DELETED" })
+              .set({ state: "PRODUCT_DELETED" })
               .where(
                 and(
                   eq(qualificationCohorts.cohort_id, cohortId),
