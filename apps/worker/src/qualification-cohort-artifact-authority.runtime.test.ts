@@ -6,6 +6,7 @@ import { expect, it } from "vitest";
 import {
   migrateQualificationCohortArtifactAuthority,
   qualificationCohortArtifactMapFive,
+  sealQualificationCohortArtifactAuthorityRoot,
   type QualificationCohortArtifactAuthority,
 } from "./qualification-cohort-artifact-authority";
 import { qualificationChecksum } from "./qualification/qualification-checksum";
@@ -507,6 +508,24 @@ it("authenticates a 4,000-page chain before compacting to one SCRUBBED tombstone
   });
   expect(proof).toMatchObject({ _tag: "Proven", expectedArtifactCount: 2, scope: "root" });
   if (proof._tag !== "Proven") return;
+  await runInDurableObject(stub, async (_instance, state) => {
+    state.storage.sql.exec(`create trigger fail_root_compaction
+      before delete on sealed_page_receipts
+      begin select raise(abort, 'forced root compaction failure'); end`);
+    expect(() =>
+      sealQualificationCohortArtifactAuthorityRoot(state.storage, "postgres-root-checksum"),
+    ).toThrow("forced root compaction failure");
+    expect(state.storage.sql.exec("select * from authority_state").one()).toMatchObject({
+      lifecycle: "FENCED",
+      root_checksum: null,
+    });
+    expect(state.storage.sql.exec("select * from artifact_records").toArray()).toHaveLength(2);
+    expect(state.storage.sql.exec("select * from delete_intent").toArray()).toHaveLength(1);
+    expect(state.storage.sql.exec("select * from sealed_page_receipts").toArray()).toHaveLength(
+      4_000,
+    );
+    state.storage.sql.exec("drop trigger fail_root_compaction");
+  });
   expect(
     await stub.sealRoot({
       executionId: rootExecutionId,
@@ -539,7 +558,7 @@ it("authenticates a 4,000-page chain before compacting to one SCRUBBED tombstone
   });
 });
 
-it("migrates a retained v1 writer authority to v2 without losing its fence or records", async () => {
+it("atomically retries a failed v1 to v2 migration without losing its fence", async () => {
   const migrationExecutionId = `${executionId}-v1-migration`;
   const stub =
     runtimeEnv.QUALIFICATION_COHORT_ARTIFACT_AUTHORITY_TEST.getByName(migrationExecutionId);
@@ -557,7 +576,26 @@ it("migrates a retained v1 writer authority to v2 without losing its fence or re
       migrationExecutionId,
       input.protocolVersion,
     );
-    migrateQualificationCohortArtifactAuthority(state.storage.sql);
+    state.storage.sql.exec("create table delete_intent (blocker text)");
+    expect(() => migrateQualificationCohortArtifactAuthority(state.storage)).toThrow(
+      "delete_intent",
+    );
+    expect(state.storage.sql.exec("select version from _sql_schema_migrations").toArray()).toEqual([
+      { version: 1 },
+    ]);
+    expect(
+      state.storage.sql
+        .exec("select name from sqlite_schema where name = 'authority_state_v2'")
+        .toArray(),
+    ).toEqual([]);
+    expect(state.storage.sql.exec("select * from authority_state").one()).toEqual({
+      execution_id: migrationExecutionId,
+      lifecycle: "FENCED",
+      protocol_version: input.protocolVersion,
+      singleton: 1,
+    });
+    state.storage.sql.exec("drop table delete_intent");
+    migrateQualificationCohortArtifactAuthority(state.storage);
     expect(state.storage.sql.exec("select version from _sql_schema_migrations").toArray()).toEqual([
       { version: 1 },
       { version: 2 },

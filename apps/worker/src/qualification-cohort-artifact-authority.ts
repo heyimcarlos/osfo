@@ -141,7 +141,10 @@ const migrations = [
 ] as const;
 
 /** Constructor-owned SQL migration runner. Production invokes it only during constructor initialization. */
-export const migrateQualificationCohortArtifactAuthority = (sql: SqlStorage): void => {
+export const migrateQualificationCohortArtifactAuthority = (
+  storage: DurableObjectStorage,
+): void => {
+  const { sql } = storage;
   sql.exec(`create table if not exists _sql_schema_migrations (
     version integer primary key, applied_at text not null default current_timestamp
   )`);
@@ -153,8 +156,18 @@ export const migrateQualificationCohortArtifactAuthority = (sql: SqlStorage): vo
   );
   for (const migration of migrations) {
     if (applied.has(migration.version)) continue;
-    sql.exec(migration.statements);
-    sql.exec("insert into _sql_schema_migrations (version) values (?)", migration.version);
+    storage.transactionSync(() => {
+      sql.exec(migration.statements);
+      const marker = sql.exec(
+        "insert into _sql_schema_migrations (version) values (?)",
+        migration.version,
+      );
+      if (marker.rowsWritten !== 1) {
+        throw new Error(
+          `Qualification cohort artifact migration ${migration.version} was not retained`,
+        );
+      }
+    });
   }
 };
 
@@ -205,6 +218,26 @@ export const qualificationCohortArtifactMapFive = async <A, B>(
   return results;
 };
 
+/** Atomically replace all recoverable deletion authority with the content-free SCRUBBED tombstone. */
+export const sealQualificationCohortArtifactAuthorityRoot = (
+  storage: DurableObjectStorage,
+  rootChecksum: string,
+): void => {
+  storage.transactionSync(() => {
+    const transitioned = storage.sql.exec(
+      "update authority_state set lifecycle = 'SCRUBBED', root_checksum = ? where singleton = 1 and lifecycle = 'FENCED'",
+      rootChecksum,
+    );
+    if (transitioned.rowsWritten !== 1) {
+      throw new Error("Qualification cohort artifact authority did not enter SCRUBBED");
+    }
+    storage.sql.exec("delete from artifact_records");
+    storage.sql.exec("delete from pending_intent");
+    storage.sql.exec("delete from delete_intent");
+    storage.sql.exec("delete from sealed_page_receipts");
+  });
+};
+
 /** Exclusive, execution-scoped mutation and deletion authority for disposable cohort R2 artifacts. */
 export class QualificationCohortArtifactAuthority extends DurableObject<AuthorityEnv> {
   #active = false;
@@ -212,7 +245,7 @@ export class QualificationCohortArtifactAuthority extends DurableObject<Authorit
   constructor(ctx: DurableObjectState, env: AuthorityEnv) {
     super(ctx, env);
     void ctx.blockConcurrencyWhile(async () => {
-      migrateQualificationCohortArtifactAuthority(this.ctx.storage.sql);
+      migrateQualificationCohortArtifactAuthority(this.ctx.storage);
     });
   }
 
@@ -432,14 +465,7 @@ export class QualificationCohortArtifactAuthority extends DurableObject<Authorit
     ) {
       return { _tag: "Missing", code: "rootAbsenceProofMissing" };
     }
-    this.ctx.storage.sql.exec("delete from artifact_records");
-    this.ctx.storage.sql.exec("delete from pending_intent");
-    this.ctx.storage.sql.exec("delete from delete_intent");
-    this.ctx.storage.sql.exec("delete from sealed_page_receipts");
-    this.ctx.storage.sql.exec(
-      "update authority_state set lifecycle = 'SCRUBBED', root_checksum = ? where singleton = 1 and lifecycle = 'FENCED'",
-      decoded.rootChecksum,
-    );
+    sealQualificationCohortArtifactAuthorityRoot(this.ctx.storage, decoded.rootChecksum);
     return { _tag: "Scrubbed", rootChecksum: decoded.rootChecksum };
   }
 
