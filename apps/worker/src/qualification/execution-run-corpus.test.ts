@@ -79,4 +79,29 @@ describe("qualification execution/run corpus receipt", () => {
       }),
     ).toThrow("exceeds its byte budget");
   });
+
+  it.each([
+    [50, 1],
+    [51, 2],
+    [6_894, 138],
+  ])("binds %i partitions to exactly %i leaf join pages", (partitionCount, pageCount) => {
+    expect(
+      qualificationExecutionRunCorpusReceipt({
+        ...input,
+        completeOutcomeCount: partitionCount,
+        completionCount: partitionCount,
+        pageCount,
+        partitionCount,
+      }).pageCount,
+    ).toBe(pageCount);
+    expect(() =>
+      qualificationExecutionRunCorpusReceipt({
+        ...input,
+        completeOutcomeCount: partitionCount,
+        completionCount: partitionCount,
+        pageCount: pageCount + 1,
+        partitionCount,
+      }),
+    ).toThrow("Qualification execution/run corpus receipt conflicts");
+  });
 });

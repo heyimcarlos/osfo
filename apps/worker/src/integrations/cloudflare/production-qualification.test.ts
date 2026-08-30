@@ -5,6 +5,11 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 
 import { compactManifest, manifestVersions } from "../../../test/support/qualification-fixtures";
 import {
+  historicalDistributedCompletionWithNineMissing,
+  historicalDistributedReportWithNineMissing,
+  historicalDistributedResponseWithNineMissing,
+} from "../../../test/support/historical-distributed-report";
+import {
   createQualificationExecutionPlan,
   type QualificationExecutionPlan,
 } from "../../qualification/execution";
@@ -21,10 +26,14 @@ import { qualificationCohortArtifactId } from "../../qualification/qualification
 import {
   QualificationExecutionRunCorpusReceipt,
   qualificationExecutionRunCorpusReceipt,
+  qualificationExecutionRunCorpusReceiptArtifactId,
 } from "../../qualification/execution-run-corpus";
 import {
+  QualificationDistributedEvaluationReport,
+  QualificationDistributedEvaluationReportCompletion,
   qualificationDistributedEvaluationReport,
   qualificationDistributedEvaluationReportArtifactId,
+  qualificationDistributedEvaluationReportCompletion,
   qualificationDistributedEvaluationReportCompletionArtifactId,
 } from "../../qualification/distributed-evaluation-report";
 import {
@@ -78,6 +87,7 @@ const authoritySources = [
 const memoryBucket = () => {
   const retained = new Map<string, string>();
   let listCallCount = 0;
+  const getKeys = new Array<string>();
   const metadata = new Map<
     string,
     {
@@ -88,6 +98,7 @@ const memoryBucket = () => {
   const listed = new Map<string, QualificationExecutionListedObject>();
   const bucket = {
     get: (key: string) => {
+      getKeys.push(key);
       if (!retained.has(key)) return Promise.resolve(null);
       const retainedMetadata = metadata.get(key);
       const value = { text: () => Promise.resolve(retained.get(key) ?? "") };
@@ -130,7 +141,7 @@ const memoryBucket = () => {
       return Promise.resolve({ etag: qualificationChecksum({ value }) });
     },
   } satisfies QualificationExecutionListingBucket;
-  return { bucket, listCallCount: () => listCallCount, listed, metadata, retained };
+  return { bucket, getKeys, listCallCount: () => listCallCount, listed, metadata, retained };
 };
 
 const sha256Hex = async (encoded: string) => {
@@ -872,6 +883,203 @@ it.each([
       findings: expect.arrayContaining([expect.objectContaining({ code: expectedCode })]),
       verdict: expectedVerdict,
     });
+    expect(storage.listCallCount()).toBe(0);
+  },
+);
+
+it("replays the literal accepted pre-corpus report without a corpus GET or LIST", async () => {
+  const manifest = compactManifest();
+  const plan = createQualificationExecutionPlan(manifest, 0, "historical-execution-corpus");
+  const storage = memoryBucket();
+  retainCohort(storage.retained, manifest, plan);
+  const partitionCount = plan.runs.reduce(
+    (total, run) => total + Math.ceil(run.arrivalCount / 256),
+    0,
+  );
+  await retainCorrectnessReference(storage, {
+    artifactId: qualificationCorrectnessRootReceiptArtifactId(plan.executionId, partitionCount),
+    executionId: plan.executionId,
+    planChecksum: plan.planChecksum,
+    rootCount: 43_374,
+  });
+  const dimensionInventory = qualificationOwnerDimensionCoordinatorBudget(plan);
+  await retainDimensionReference(storage, {
+    artifactId: qualificationDimensionCoordinatorCompletionArtifactId(plan.executionId),
+    dimensionCount: dimensionInventory.dimensionCount,
+    executionId: plan.executionId,
+    numericDimensionCount: dimensionInventory.numericDimensionCount,
+    planChecksum: plan.planChecksum,
+  });
+  const report = Schema.decodeSync(Schema.fromJsonString(QualificationDistributedEvaluationReport))(
+    historicalDistributedReportWithNineMissing,
+  );
+  const completion = Schema.decodeSync(
+    Schema.fromJsonString(QualificationDistributedEvaluationReportCompletion),
+  )(historicalDistributedCompletionWithNineMissing);
+  storage.retained.set(report.artifactId, historicalDistributedReportWithNineMissing);
+  storage.metadata.set(report.artifactId, {
+    customMetadata: {
+      "osfo-artifact-checksum": report.checksum,
+      "osfo-body-sha256": await sha256Hex(historicalDistributedReportWithNineMissing),
+      "osfo-execution-id": report.executionId,
+      "osfo-expected-dimension-count": String(report.expectedDimensionCount),
+      "osfo-expected-root-count": String(report.expectedRootCount),
+      "osfo-kind": report.version,
+      "osfo-manifest-checksum": report.manifestChecksum,
+      "osfo-plan-checksum": report.planChecksum,
+      "osfo-verdict": report.verdict,
+    },
+    httpMetadata: { contentType: "application/json" },
+  });
+  storage.retained.set(completion.artifactId, historicalDistributedCompletionWithNineMissing);
+  storage.metadata.set(completion.artifactId, {
+    customMetadata: {
+      "osfo-artifact-checksum": completion.checksum,
+      "osfo-body-sha256": await sha256Hex(historicalDistributedCompletionWithNineMissing),
+      "osfo-execution-id": completion.executionId,
+      "osfo-kind": completion.version,
+      "osfo-manifest-checksum": completion.manifestChecksum,
+      "osfo-plan-checksum": completion.planChecksum,
+      "osfo-report-checksum": completion.reportChecksum,
+      "osfo-verdict": completion.verdict,
+    },
+    httpMetadata: { contentType: "application/json" },
+  });
+  const result = await runProductionQualification(
+    {
+      ARTIFACTS: storage.bucket,
+      QUALIFICATION_OWNER: {
+        fetch: () =>
+          Promise.resolve(
+            new Response(historicalDistributedResponseWithNineMissing, {
+              headers: { "content-type": "application/json" },
+              status: 424,
+            }),
+          ),
+      },
+    },
+    manifest,
+    plan,
+  );
+  expect(result).toMatchObject({
+    findings: expect.arrayContaining([
+      expect.objectContaining({ code: "productionQualificationDistributedReportMissing" }),
+    ]),
+    verdict: "MISSING",
+  });
+  expect(storage.getKeys).not.toContain(
+    qualificationExecutionRunCorpusReceiptArtifactId(plan.executionId),
+  );
+  expect(storage.listCallCount()).toBe(0);
+});
+
+it.each(["countHybrid", "reasonHybrid"] as const)(
+  "replays the pre-corpus v1 facade without corpus reads: %s",
+  async (scenario) => {
+    const manifest = compactManifest();
+    const plan = createQualificationExecutionPlan(
+      manifest,
+      0,
+      `historical-execution-corpus-${scenario}`,
+    );
+    const storage = memoryBucket();
+    retainCohort(storage.retained, manifest, plan);
+    const current = qualificationDistributedEvaluationReport({
+      ...reportInventory(plan),
+      acceptanceLevel: manifest.acceptanceLevel,
+      correctness: { reason: "qualificationCorrectnessMissing", verdict: "MISSING" },
+      dimensions: { reason: "correctness_prerequisite_missing", verdict: "MISSING" },
+      executionId: plan.executionId,
+      manifestChecksum: manifest.manifestChecksum,
+      planChecksum: plan.planChecksum,
+      sourceVersion: manifest.sourceVersion,
+      topologyVersion: manifest.topologyVersion,
+    });
+    const legacyCorpusContent = {
+      failCount: 0,
+      family: "execution_run_corpus" as const,
+      missingCount: 1,
+      reason:
+        scenario === "reasonHybrid"
+          ? "injected_missing_reason"
+          : "authority_not_installed_pre_teardown",
+      references: [],
+      verdict: "MISSING" as const,
+    };
+    const legacyCorpus = {
+      ...legacyCorpusContent,
+      checksum: qualificationChecksum(legacyCorpusContent),
+    };
+    const { checksum: _currentChecksum, ...currentContent } = current;
+    const families = current.families.map((family) =>
+      family.family === "execution_run_corpus" ? legacyCorpus : family,
+    );
+    const reportContent = {
+      ...currentContent,
+      families,
+      missingFamilyCount: current.missingFamilyCount + (scenario === "countHybrid" ? 2 : 1),
+    };
+    const report = { ...reportContent, checksum: qualificationChecksum(reportContent) };
+    const completion = qualificationDistributedEvaluationReportCompletion(report);
+    const encodedReport = canonicalQualificationJson(report);
+    const encodedCompletion = canonicalQualificationJson(completion);
+    storage.retained.set(report.artifactId, encodedReport);
+    storage.metadata.set(report.artifactId, {
+      customMetadata: {
+        "osfo-artifact-checksum": report.checksum,
+        "osfo-body-sha256": await sha256Hex(encodedReport),
+        "osfo-execution-id": report.executionId,
+        "osfo-expected-dimension-count": String(report.expectedDimensionCount),
+        "osfo-expected-root-count": String(report.expectedRootCount),
+        "osfo-kind": report.version,
+        "osfo-manifest-checksum": report.manifestChecksum,
+        "osfo-plan-checksum": report.planChecksum,
+        "osfo-verdict": report.verdict,
+      },
+      httpMetadata: { contentType: "application/json" },
+    });
+    storage.retained.set(completion.artifactId, encodedCompletion);
+    storage.metadata.set(completion.artifactId, {
+      customMetadata: {
+        "osfo-artifact-checksum": completion.checksum,
+        "osfo-body-sha256": await sha256Hex(encodedCompletion),
+        "osfo-execution-id": completion.executionId,
+        "osfo-kind": completion.version,
+        "osfo-manifest-checksum": completion.manifestChecksum,
+        "osfo-plan-checksum": completion.planChecksum,
+        "osfo-report-checksum": completion.reportChecksum,
+        "osfo-verdict": completion.verdict,
+      },
+      httpMetadata: { contentType: "application/json" },
+    });
+    const responseBody = `{"completionArtifactId":"${completion.artifactId}","completionChecksum":"${completion.checksum}","error":"qualificationAuthorityMaterialMissing","executionId":"${plan.executionId}","failingFamilies":[],"manifestChecksum":"${manifest.manifestChecksum}","missingFamilies":${canonicalQualificationJson(families.filter(({ verdict }) => verdict === "MISSING").map(({ family }) => family))},"phase":"PRE_TEARDOWN","planChecksum":"${plan.planChecksum}","reportArtifactId":"${report.artifactId}","reportChecksum":"${report.checksum}","verdict":"MISSING","version":"qualification-owner-response-v2"}`;
+    const result = await runProductionQualification(
+      {
+        ARTIFACTS: storage.bucket,
+        QUALIFICATION_OWNER: {
+          fetch: () =>
+            Promise.resolve(
+              new Response(responseBody, {
+                headers: { "content-type": "application/json" },
+                status: 424,
+              }),
+            ),
+        },
+      },
+      manifest,
+      plan,
+    );
+    expect(result).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({
+          code: "productionQualificationOwnerConflict",
+        }),
+      ]),
+      verdict: "FAIL",
+    });
+    expect(storage.getKeys).not.toContain(
+      qualificationExecutionRunCorpusReceiptArtifactId(plan.executionId),
+    );
     expect(storage.listCallCount()).toBe(0);
   },
 );

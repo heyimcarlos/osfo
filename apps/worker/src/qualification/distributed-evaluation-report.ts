@@ -99,6 +99,20 @@ export const QualificationDistributedEvaluationReport = Schema.Struct({
 export type QualificationDistributedEvaluationReport =
   typeof QualificationDistributedEvaluationReport.Type;
 
+export const qualificationDistributedEvaluationReportHasLegacyMissingCorpus = (
+  report: QualificationDistributedEvaluationReport,
+): boolean => {
+  const corpus = report.families[4];
+  return (
+    corpus?.family === "execution_run_corpus" &&
+    corpus.verdict === "MISSING" &&
+    corpus.failCount === 0 &&
+    corpus.missingCount === 1 &&
+    corpus.reason === "authority_not_installed_pre_teardown" &&
+    corpus.references.length === 0
+  );
+};
+
 export const QualificationDistributedEvaluationReportCompletion = Schema.Struct({
   artifactId: Identity,
   checksum: Identity,
@@ -327,7 +341,7 @@ const executionCorpusFamily = (
   if (
     input.rootCount !== expectedRootCount ||
     input.completionCount !== input.partitionCount ||
-    input.acceptedCount !== input.rootCount
+    input.acceptedCount > input.rootCount
   ) {
     throw new Error("Qualification distributed report execution corpus conflicts");
   }
@@ -347,6 +361,14 @@ export const qualificationDistributedEvaluationReport = (
 ): QualificationDistributedEvaluationReport => {
   const expectedDimensionCount = safeCount(input.expectedDimensionCount);
   const expectedRootCount = safeCount(input.expectedRootCount);
+  const correctness = correctnessFamily(input.correctness, expectedRootCount);
+  if (
+    "artifactId" in input.correctness &&
+    (input.executionCorpus.acceptedCount !== input.correctness.acceptedCount ||
+      input.executionCorpus.rootCount !== input.correctness.rootCount)
+  ) {
+    throw new Error("Qualification distributed report corpus/correctness counts conflict");
+  }
   const families = [
     family({
       failCount: 0,
@@ -355,7 +377,7 @@ export const qualificationDistributedEvaluationReport = (
       reason: "authenticated_frozen_owner_request",
       verdict: "PASS",
     }),
-    correctnessFamily(input.correctness, expectedRootCount),
+    correctness,
     dimensionFamily(input.dimensions, expectedDimensionCount),
     missingFamily("semantic_good_root"),
     executionCorpusFamily(input.executionCorpus, expectedRootCount),

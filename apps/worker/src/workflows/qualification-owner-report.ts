@@ -10,6 +10,7 @@ import {
   QualificationDistributedEvaluationReport,
   QualificationDistributedEvaluationReportCompletion,
   qualificationDistributedEvaluationFamilyNames,
+  qualificationDistributedEvaluationReportHasLegacyMissingCorpus,
   qualificationDistributedEvaluationUnimplementedFamilies,
   qualificationDistributedEvaluationReportCompletion,
   qualificationDistributedEvaluationReportArtifactId,
@@ -104,9 +105,10 @@ const familyStructureExact = (
   }
   if (family.family === "execution_run_corpus") {
     return (
-      family.verdict === "PASS" &&
-      family.references.length === 1 &&
-      family.references[0]?.kind === "executionCorpus"
+      (family.verdict === "PASS" &&
+        family.references.length === 1 &&
+        family.references[0]?.kind === "executionCorpus") ||
+      (family.verdict === "MISSING" && family.references.length === 0)
     );
   }
   return family.references.length === 0;
@@ -314,6 +316,9 @@ export const authenticateQualificationDistributedEvaluationReport = async (input
   const { checksum, ...content } = report;
   const correctnessReference = report.families[1]?.references[0];
   const dimensionReference = report.families[2]?.references[0];
+  const corpusReference = report.families[4]?.references[0];
+  const legacyMissingCorpus =
+    qualificationDistributedEvaluationReportHasLegacyMissingCorpus(report);
   const familiesExact =
     report.failingFamilyCount ===
       report.families.filter(({ verdict }) => verdict === "FAIL").length &&
@@ -333,12 +338,22 @@ export const authenticateQualificationDistributedEvaluationReport = async (input
         familyChecksum === qualificationChecksum(familyContent) && familyStructureExact(candidate)
       );
     }) &&
+    (legacyMissingCorpus ||
+      (corpusReference?.kind === "executionCorpus" &&
+        report.families[4]?.verdict === "PASS" &&
+        corpusReference.rootCount === report.expectedRootCount &&
+        corpusReference.acceptedCount <= corpusReference.rootCount)) &&
     (correctnessReference === undefined ||
       (correctnessReference.kind === "correctness" &&
         correctnessReference.rootCount === report.expectedRootCount &&
         correctnessReference.acceptedCount <= correctnessReference.rootCount &&
         (report.families[1]?.verdict !== "PASS" ||
           correctnessReference.acceptedCount === correctnessReference.rootCount))) &&
+    (correctnessReference === undefined ||
+      legacyMissingCorpus ||
+      (corpusReference?.kind === "executionCorpus" &&
+        corpusReference.acceptedCount === correctnessReference.acceptedCount &&
+        corpusReference.rootCount === correctnessReference.rootCount)) &&
     (dimensionReference === undefined ||
       (dimensionReference.kind === "dimensions" &&
         dimensionReference.dimensionCount === report.expectedDimensionCount)) &&

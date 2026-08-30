@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { canonicalQualificationJson, qualificationChecksum } from "./qualification-checksum";
+import { qualificationEvaluationLeafJoinPageCount } from "./owner-partitions";
 
 const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const Identity = Schema.String.check(Schema.isMinLength(1));
@@ -56,6 +57,7 @@ export const qualificationExecutionRunCorpusReceipt = (
     !counts.every((count) => Number.isSafeInteger(count) && count >= 0) ||
     input.partitionCount === 0 ||
     input.pageCount === 0 ||
+    input.pageCount !== qualificationEvaluationLeafJoinPageCount(input.partitionCount) ||
     input.completionCount + input.missingCompletionCount !== input.partitionCount ||
     input.completeOutcomeCount + input.failOutcomeCount + input.outcomeMissingCount !==
       input.completionCount ||

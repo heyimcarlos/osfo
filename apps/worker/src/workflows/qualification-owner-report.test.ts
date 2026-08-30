@@ -42,6 +42,39 @@ const executionCorpus = {
   terminalLaunchPageChecksum: "launch-checksum",
 };
 
+const historicalMissingCorpusReport =
+  '{"acceptanceLevel":"BoundedBeta","artifactId":"qualification/executions/legacy/distributed-evaluation-report.json","executionId":"legacy","expectedDimensionCount":1,"expectedRootCount":1,"failingFamilyCount":0,"families":[{"failCount":0,"family":"manifest_plan","missingCount":0,"reason":"authenticated_frozen_owner_request","verdict":"PASS","references":[],"checksum":"sha256:2110ed3b128d996eff24e985c3bc066974846454d7394fb1349f16fda262b535"},{"failCount":0,"family":"forest_correctness","missingCount":1,"reason":"missing","verdict":"MISSING","references":[],"checksum":"sha256:8cacc7a828b8bcd1e530096976555abe01577f85bab80a9d27461709e88f2516"},{"failCount":0,"family":"numeric_stage_operation_dimensions","missingCount":1,"reason":"missing","verdict":"MISSING","references":[],"checksum":"sha256:bca5c99633438104d2548345bc19db6d297819f4ad1e7b1e9f8fc309ff6e2c97"},{"failCount":0,"family":"semantic_good_root","missingCount":1,"reason":"authority_not_installed_pre_teardown","verdict":"MISSING","references":[],"checksum":"sha256:4943e2994dc21406286ad51c4dc46bb6967154a2821ec5328634e700ba26adda"},{"failCount":0,"family":"execution_run_corpus","missingCount":1,"reason":"authority_not_installed_pre_teardown","verdict":"MISSING","references":[],"checksum":"sha256:157ca1a0e17831b2de5429be65a88c7df731077631860501effc42856a9d9909"},{"failCount":0,"family":"recovery_reserve_slope","missingCount":1,"reason":"authority_not_installed_pre_teardown","verdict":"MISSING","references":[],"checksum":"sha256:efd5fc097eb984a86582ad5322ae52bcec2665ff0fb95409c70c37f567b0ed35"},{"failCount":0,"family":"resource_headroom","missingCount":1,"reason":"authority_not_installed_pre_teardown","verdict":"MISSING","references":[],"checksum":"sha256:1d30b8e733edc863550e311df1f46fa99e01edb918ddb85ddbdde24a87986c59"},{"failCount":0,"family":"cost_economics","missingCount":1,"reason":"authority_not_installed_pre_teardown","verdict":"MISSING","references":[],"checksum":"sha256:e9f8db1ae57096edc60469977c978473231332e3b7cf995603761e5b6e6856f5"},{"failCount":0,"family":"memory_semantics","missingCount":1,"reason":"authority_not_installed_pre_teardown","verdict":"MISSING","references":[],"checksum":"sha256:7d69552ced8060b4dc6abfc9c35e9a31ab936c8731b98ad1d49922f3ac0608d0"},{"failCount":0,"family":"external_gates_public_promotion","missingCount":1,"reason":"authority_not_installed_pre_teardown","verdict":"MISSING","references":[],"checksum":"sha256:179671c44fbf2ac99f5d3f4abb2e99a9001aefe9177fcc987c0f206b23058350"},{"failCount":0,"family":"cohort_teardown","missingCount":1,"reason":"post_run_teardown_not_evaluated","verdict":"MISSING","references":[],"checksum":"sha256:574310db318f8ad2bc39fc4d28c141eb48ee93a48bd1ba7eaffd7eb73b58eb81"},{"failCount":0,"family":"evidence_retention","missingCount":1,"reason":"evidence_retention_authority_not_installed","verdict":"MISSING","references":[],"checksum":"sha256:def3e98f176515c60cc3fa7dfbea144e0fac96ed5bdc66c468927db1fd462876"}],"manifestChecksum":"m","missingFamilyCount":11,"phase":"PRE_TEARDOWN","planChecksum":"p","sourceVersion":"s","topologyVersion":"t","verdict":"MISSING","version":"qualification-distributed-evaluation-report-v1","checksum":"sha256:e982c1afc55a46efb5ee4dc8eca6ec19ac6c487ee07b285b91368c099c765aed"}';
+
+const historicalMissingCorpusCompletion =
+  '{"artifactId":"qualification/executions/legacy/distributed-evaluation-report-completion.json","executionId":"legacy","failingFamilyCount":0,"manifestChecksum":"m","missingFamilyCount":11,"planChecksum":"p","reportArtifactId":"qualification/executions/legacy/distributed-evaluation-report.json","reportChecksum":"sha256:e982c1afc55a46efb5ee4dc8eca6ec19ac6c487ee07b285b91368c099c765aed","verdict":"MISSING","version":"qualification-distributed-evaluation-report-completion-v1","checksum":"sha256:83d654cb6d4db9dbfa21de4e4901c681dd06cd714a9fed1af23934358e254351"}';
+
+const historicalAcceptedReport = historicalMissingCorpusReport
+  .replaceAll(
+    "qualification/executions/legacy/distributed-evaluation-report.json",
+    "qualification/executions/legacy/distributed-report/pre-teardown-v1/report.json",
+  )
+  .replace(
+    "sha256:e982c1afc55a46efb5ee4dc8eca6ec19ac6c487ee07b285b91368c099c765aed",
+    "sha256:20d6bfe2885d74273b4b74016d70c1a458be55705e57a28e21267567ce803ff6",
+  );
+const historicalAcceptedCompletion = historicalMissingCorpusCompletion
+  .replaceAll(
+    "qualification/executions/legacy/distributed-evaluation-report-completion.json",
+    "qualification/executions/legacy/distributed-report/pre-teardown-v1/completion.json",
+  )
+  .replaceAll(
+    "qualification/executions/legacy/distributed-evaluation-report.json",
+    "qualification/executions/legacy/distributed-report/pre-teardown-v1/report.json",
+  )
+  .replaceAll(
+    "sha256:e982c1afc55a46efb5ee4dc8eca6ec19ac6c487ee07b285b91368c099c765aed",
+    "sha256:20d6bfe2885d74273b4b74016d70c1a458be55705e57a28e21267567ce803ff6",
+  )
+  .replace(
+    "sha256:83d654cb6d4db9dbfa21de4e4901c681dd06cd714a9fed1af23934358e254351",
+    "sha256:4854ec7c2f08d56a15839be4f0f78476e71d6b89577e248e91bc0e4425a1101d",
+  );
+
 const report = qualificationDistributedEvaluationReport({
   acceptanceLevel: "BoundedBeta",
   correctness: { reason: "correctness_missing", verdict: "MISSING" },
@@ -98,6 +131,109 @@ const memoryBucket = () => {
 };
 
 describe("qualification owner distributed report retention", () => {
+  it("retains a rejected-root correctness FAIL when corpus counts agree", async () => {
+    const retained = memoryBucket();
+    const rejectedReport = qualificationDistributedEvaluationReport({
+      acceptanceLevel: "BoundedBeta",
+      correctness: {
+        acceptedCount: 0,
+        artifactId: "correctness.json",
+        checksum: "correctness-checksum",
+        failCount: 1,
+        missingCount: 0,
+        rootCount: 1,
+        verdict: "FAIL",
+      },
+      dimensions: { reason: "correctness_prerequisite_failed", verdict: "MISSING" },
+      executionCorpus: { ...executionCorpus, acceptedCount: 0 },
+      executionId: report.executionId,
+      expectedDimensionCount: report.expectedDimensionCount,
+      expectedRootCount: 1,
+      manifestChecksum: report.manifestChecksum,
+      planChecksum: report.planChecksum,
+      sourceVersion: report.sourceVersion,
+      topologyVersion: report.topologyVersion,
+    });
+    await expect(
+      retainQualificationDistributedEvaluationReport(retained.bucket, rejectedReport),
+    ).resolves.toMatchObject({ verdict: "FAIL" });
+  });
+
+  it("authenticates a literal historical report without execution corpus authority", async () => {
+    const retained = memoryBucket();
+    const bodySha256 = await sha256Hex(historicalAcceptedReport);
+    retained.values.set(
+      "qualification/executions/legacy/distributed-report/pre-teardown-v1/report.json",
+      {
+        customMetadata: {
+          "osfo-artifact-checksum":
+            "sha256:20d6bfe2885d74273b4b74016d70c1a458be55705e57a28e21267567ce803ff6",
+          "osfo-body-sha256": bodySha256,
+          "osfo-execution-id": "legacy",
+          "osfo-expected-dimension-count": "1",
+          "osfo-expected-root-count": "1",
+          "osfo-kind": "qualification-distributed-evaluation-report-v1",
+          "osfo-manifest-checksum": "m",
+          "osfo-plan-checksum": "p",
+          "osfo-verdict": "MISSING",
+        },
+        encoded: historicalAcceptedReport,
+        httpMetadata: { contentType: "application/json" },
+      },
+    );
+    await expect(
+      authenticateQualificationDistributedEvaluationReport({
+        acceptanceLevel: "BoundedBeta",
+        artifactId:
+          "qualification/executions/legacy/distributed-report/pre-teardown-v1/report.json",
+        bucket: retained.bucket,
+        checksum: "sha256:20d6bfe2885d74273b4b74016d70c1a458be55705e57a28e21267567ce803ff6",
+        executionId: "legacy",
+        expectedDimensionCount: 1,
+        expectedRootCount: 1,
+        manifestChecksum: "m",
+        planChecksum: "p",
+        sourceVersion: "s",
+        topologyVersion: "t",
+      }),
+    ).resolves.toMatchObject({ status: "COMPLETE" });
+    retained.values.set(
+      "qualification/executions/legacy/distributed-report/pre-teardown-v1/completion.json",
+      {
+        customMetadata: {
+          "osfo-artifact-checksum":
+            "sha256:4854ec7c2f08d56a15839be4f0f78476e71d6b89577e248e91bc0e4425a1101d",
+          "osfo-body-sha256": await sha256Hex(historicalAcceptedCompletion),
+          "osfo-execution-id": "legacy",
+          "osfo-kind": "qualification-distributed-evaluation-report-completion-v1",
+          "osfo-manifest-checksum": "m",
+          "osfo-plan-checksum": "p",
+          "osfo-report-checksum":
+            "sha256:20d6bfe2885d74273b4b74016d70c1a458be55705e57a28e21267567ce803ff6",
+          "osfo-verdict": "MISSING",
+        },
+        encoded: historicalAcceptedCompletion,
+        httpMetadata: { contentType: "application/json" },
+      },
+    );
+    await expect(
+      authenticateQualificationDistributedEvaluationReportCompletion({
+        artifactId:
+          "qualification/executions/legacy/distributed-report/pre-teardown-v1/completion.json",
+        bucket: retained.bucket,
+        checksum: "sha256:4854ec7c2f08d56a15839be4f0f78476e71d6b89577e248e91bc0e4425a1101d",
+        executionId: "legacy",
+        failingFamilyCount: 0,
+        manifestChecksum: "m",
+        missingFamilyCount: 11,
+        planChecksum: "p",
+        reportArtifactId:
+          "qualification/executions/legacy/distributed-report/pre-teardown-v1/report.json",
+        reportChecksum: "sha256:20d6bfe2885d74273b4b74016d70c1a458be55705e57a28e21267567ce803ff6",
+        verdict: "MISSING",
+      }),
+    ).resolves.toMatchObject({ status: "COMPLETE" });
+  });
   it("authenticates the compact correctness receipt without traversing its shard tree", async () => {
     const retained = memoryBucket();
     const root = qualificationEvaluationRootAccumulatorReceipt({

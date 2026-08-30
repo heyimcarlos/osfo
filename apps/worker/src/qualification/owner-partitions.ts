@@ -5,6 +5,12 @@ export const qualificationPartitionChunkLimit = 1;
 export const qualificationPartitionMaximumPollsPerChunk = 100;
 export const qualificationPartitionWorkflowStepBudget = 10_000;
 export const qualificationPartitionCreateBatchLimit = 50;
+export const qualificationEvaluationLeafJoinPageCount = (partitionCount: number): number => {
+  if (!Number.isSafeInteger(partitionCount) || partitionCount <= 0) {
+    throw new Error("Qualification leaf join partition count must be a positive safe integer");
+  }
+  return Math.ceil(partitionCount / qualificationPartitionCreateBatchLimit);
+};
 export const qualificationLeafCompletionHorizonMs = 17 * 60_000;
 export const qualificationLeafFanoutMaximumDurationMs = 3 * 60_000;
 export const qualificationCorrectnessReducerFanIn = 16;
@@ -105,7 +111,7 @@ export const qualificationOwnerCorrectnessForestBudget = (partitionCount: number
   const levelPageCounts = levelCounts.map((count) =>
     Math.ceil(count / qualificationCorrectnessLaunchPageSize),
   );
-  const leafJoinPageCount = Math.ceil(partitionCount / qualificationPartitionCreateBatchLimit);
+  const leafJoinPageCount = qualificationEvaluationLeafJoinPageCount(partitionCount);
   const priorLevelPageCount = levelPageCounts.slice(0, -1).reduce((sum, count) => sum + count, 0);
   const leafInventoryPageCount = Math.ceil(
     leafJoinPageCount / qualificationPartitionCreateBatchLimit,
@@ -172,7 +178,7 @@ export const qualificationOwnerDimensionCoordinatorBudget = (plan: Qualification
     (total, run) => total + Math.ceil(run.arrivalCount / 256),
     0,
   );
-  const leafJoinPageCount = Math.ceil(partitionCount / qualificationPartitionCreateBatchLimit);
+  const leafJoinPageCount = qualificationEvaluationLeafJoinPageCount(partitionCount);
   const levelWidths = new globalThis.Array<number>();
   let dimensionIndexPageCount = 0;
   let launchPageCount = 0;

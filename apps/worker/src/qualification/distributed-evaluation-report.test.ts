@@ -179,6 +179,43 @@ describe("distributed qualification evaluation report", () => {
     ).toThrow("Qualification distributed report dimension inventory conflicts");
   });
 
+  it("retains a correctness FAIL with rejected roots when corpus counts agree", () => {
+    const report = qualificationDistributedEvaluationReport({
+      ...identity,
+      correctness: {
+        acceptedCount: 10,
+        artifactId: "correctness.json",
+        checksum: "correctness-checksum",
+        failCount: 2,
+        missingCount: 0,
+        rootCount: 12,
+        verdict: "FAIL",
+      },
+      dimensions: { reason: "correctness_prerequisite_failed", verdict: "MISSING" },
+      executionCorpus: { ...identity.executionCorpus, acceptedCount: 10 },
+    });
+    expect(report.verdict).toBe("FAIL");
+    expect(report.families[4]?.verdict).toBe("PASS");
+  });
+
+  it("rejects correctness and corpus count substitution", () => {
+    expect(() =>
+      qualificationDistributedEvaluationReport({
+        ...identity,
+        correctness: {
+          acceptedCount: 10,
+          artifactId: "correctness.json",
+          checksum: "correctness-checksum",
+          failCount: 2,
+          missingCount: 0,
+          rootCount: 12,
+          verdict: "FAIL",
+        },
+        dimensions: { reason: "correctness_prerequisite_failed", verdict: "MISSING" },
+      }),
+    ).toThrow("Qualification distributed report corpus/correctness counts conflict");
+  });
+
   it("requires every authenticated correctness PASS root to be accepted", () => {
     expect(() =>
       qualificationDistributedEvaluationReport({
@@ -213,6 +250,7 @@ describe("distributed qualification evaluation report", () => {
         reason: "correctness_prerequisite_failed",
         verdict: "MISSING",
       },
+      executionCorpus: { ...identity.executionCorpus, acceptedCount: 8 },
     });
 
     expect(report.verdict).toBe("FAIL");

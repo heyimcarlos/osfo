@@ -11,6 +11,7 @@ import {
 import {
   qualificationLeafCompletionHorizonMs,
   qualificationLeafFanoutMaximumDurationMs,
+  qualificationPartitionCreateBatchLimit,
 } from "../qualification/owner-partitions";
 import type {
   QualificationEvaluationLeafWorkflowPayload,
@@ -22,7 +23,7 @@ import { QualificationEvaluationLeafCompletion } from "./qualification-evaluatio
 
 const Identity = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_000));
 const NonNegativeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
-const qualificationLeafPageSize = 50;
+const qualificationLeafPageSize = qualificationPartitionCreateBatchLimit;
 export { qualificationLeafCompletionHorizonMs, qualificationLeafFanoutMaximumDurationMs };
 
 export const QualificationEvaluationLeafLaunchInput = Schema.Struct({

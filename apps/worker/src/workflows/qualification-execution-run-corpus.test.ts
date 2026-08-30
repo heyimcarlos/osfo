@@ -1,7 +1,10 @@
 /* oxlint-disable effecttsgo/async-function -- Promise fakes model the R2 boundary. */
 import { describe, expect, it } from "@effect/vitest";
 
-import { canonicalQualificationJson } from "../qualification/qualification-checksum";
+import {
+  canonicalQualificationJson,
+  qualificationChecksum,
+} from "../qualification/qualification-checksum";
 import { qualificationExecutionRunCorpusReceiptArtifactId } from "../qualification/execution-run-corpus";
 import {
   QualificationExecutionRunCorpusRetentionConflict,
@@ -183,5 +186,36 @@ describe("qualification execution/run corpus R2 authority", () => {
     await expect(
       retainQualificationExecutionRunCorpusReceipt({ ...authority, bucket: storage.bucket }),
     ).rejects.toBeInstanceOf(QualificationExecutionRunCorpusRetentionConflict);
+  });
+
+  it("rejects a self-checksummed metadata-exact noncanonical page count", async () => {
+    const storage = memoryBucket();
+    const receipt = await retainQualificationExecutionRunCorpusReceipt({
+      ...authority,
+      bucket: storage.bucket,
+    });
+    const retained = storage.values.get(receipt.artifactId);
+    if (retained === undefined) throw new Error("fixture receipt missing");
+    const { checksum: _checksum, ...originalContent } = receipt;
+    const content = { ...originalContent, pageCount: 2 };
+    const altered = { ...content, checksum: qualificationChecksum(content) };
+    const encoded = canonicalQualificationJson(altered);
+    const bodyDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded));
+    const bodySha256 = [...new Uint8Array(bodyDigest)]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    storage.values.set(receipt.artifactId, {
+      customMetadata: {
+        ...retained.customMetadata,
+        "osfo-artifact-checksum": altered.checksum,
+        "osfo-body-sha256": bodySha256,
+        "osfo-page-count": "2",
+      },
+      encoded,
+      httpMetadata: retained.httpMetadata,
+    });
+    await expect(authenticate(storage.bucket, altered.checksum)).resolves.toEqual({
+      status: "FAIL",
+    });
   });
 });
