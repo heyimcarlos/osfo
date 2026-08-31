@@ -99,7 +99,7 @@ export interface Persistence {
   readonly listOpen: () => Effect.Effect<ReadonlyArray<unknown>, Unavailable>;
   readonly listApprovalBindings: () => Effect.Effect<ReadonlyArray<unknown>, Unavailable>;
   readonly listApprovalSettlements: () => Effect.Effect<ReadonlyArray<unknown>, Unavailable>;
-  readonly listTerminal: (limit: number) => Effect.Effect<ReadonlyArray<unknown>, Unavailable>;
+  readonly listTerminal: () => Effect.Effect<ReadonlyArray<unknown>, Unavailable>;
   readonly read: (actionId: ActionId) => Effect.Effect<unknown, Unavailable>;
   readonly readApprovalBinding: (
     presentationId: ActionPresentationId,
@@ -589,6 +589,11 @@ const decodeRecoverableApprovalSettlements = (values: ReadonlyArray<unknown>) =>
     ),
   );
 
+const decodeRecoverableTerminalStatuses = (values: ReadonlyArray<unknown>) =>
+  Effect.forEach(values, (value) =>
+    decodeTerminal(value, "list.terminal.decode").pipe(Effect.option),
+  ).pipe(Effect.map((statuses) => statuses.filter(Option.isSome).map((status) => status.value)));
+
 const encode = Schema.encodeSync(Context);
 const encodeTerminal = Schema.encodeSync(TerminalStatus);
 export const maximumVisibleActions = 50;
@@ -650,18 +655,18 @@ export const make = (persistence: Persistence): Interface => ({
   listForUser: Effect.fn("ImmediateGmailSend.Store.listForUser")((userId) =>
     Effect.all({
       open: persistence.listOpen().pipe(
-        Effect.flatMap((values) =>
-          Effect.forEach(values, (value) => decode(value, "list.open.decode")),
-        ),
+        Effect.flatMap((values) => decodeRecoverableContexts(values, "list.open.decode")),
         Effect.map((contexts) =>
-          contexts.filter((context) => context.authorityIdentity.userId === userId),
+          contexts
+            .filter((context) => context.authorityIdentity.userId === userId)
+            .slice(0, maximumVisibleActions),
         ),
       ),
-      terminal: persistence.listTerminal(maximumVisibleActions).pipe(
-        Effect.flatMap((values) =>
-          Effect.forEach(values, (value) => decodeTerminal(value, "list.terminal.decode")),
+      terminal: persistence.listTerminal().pipe(
+        Effect.flatMap(decodeRecoverableTerminalStatuses),
+        Effect.map((statuses) =>
+          statuses.filter((status) => status.userId === userId).slice(0, maximumVisibleActions),
         ),
-        Effect.map((statuses) => statuses.filter((status) => status.userId === userId)),
       ),
     }),
   ),
@@ -684,7 +689,7 @@ export const make = (persistence: Persistence): Interface => ({
   ),
   readTerminalForUser: Effect.fn("ImmediateGmailSend.Store.readTerminalForUser")(
     (actionId, userId) =>
-      persistence.listTerminal(maximumVisibleActions).pipe(
+      persistence.listTerminal().pipe(
         Effect.flatMap((values) =>
           Effect.forEach(values, (value) => decodeTerminal(value, "readTerminal.decode")),
         ),
@@ -831,12 +836,10 @@ export const makeDurableObjectPersistence = (storage: DurableObjectStorage): Per
       catch: (cause) => unavailable("listApprovalSettlements", cause),
     }),
   ),
-  listTerminal: Effect.fn("ImmediateGmailSend.Persistence.listTerminal")((limit) =>
+  listTerminal: Effect.fn("ImmediateGmailSend.Persistence.listTerminal")(() =>
     Effect.tryPromise({
       try: () =>
-        storage
-          .list({ limit, prefix: terminalStoragePrefix })
-          .then((records) => [...records.values()]),
+        storage.list({ prefix: terminalStoragePrefix }).then((records) => [...records.values()]),
       catch: (cause) => unavailable("listTerminal", cause),
     }),
   ),
@@ -960,8 +963,7 @@ export const makeDurableObjectPersistence = (storage: DurableObjectStorage): Per
           ) {
             throw new RetainedContextConflict();
           }
-          const settlementSequence =
-            ((await transaction.get<number>(settlementSequenceStorageKey)) ?? 0) + 1;
+          const settlementSequence = await nextSettlementSequence(transaction);
           const terminal = encodeTerminal({
             actionId: context.actionId,
             presentationId: context.presentationId,
@@ -975,9 +977,7 @@ export const makeDurableObjectPersistence = (storage: DurableObjectStorage): Per
           await transaction.delete(openKey);
           await transaction.delete(approvalBindingStorageKey(context.presentationId));
           await transaction.delete(approvalSettlementStorageKey(context.presentationId));
-          const visible = await transaction.list({ prefix: terminalStoragePrefix });
-          const stale = [...visible.keys()].slice(maximumVisibleActions);
-          if (stale.length > 0) await transaction.delete(stale);
+          await compactTerminalStatuses(transaction);
         }),
       catch: (cause) =>
         cause instanceof RetainedContextConflict
@@ -1004,8 +1004,7 @@ export const makeDurableObjectPersistence = (storage: DurableObjectStorage): Per
           ) {
             throw new RetainedApprovalConflict();
           }
-          const settlementSequence =
-            ((await transaction.get<number>(settlementSequenceStorageKey)) ?? 0) + 1;
+          const settlementSequence = await nextSettlementSequence(transaction);
           const terminal = encodeTerminal({
             actionId: binding.actionId,
             presentationId: binding.presentationId,
@@ -1018,9 +1017,7 @@ export const makeDurableObjectPersistence = (storage: DurableObjectStorage): Per
           await transaction.put(terminalStorageKey(settlementSequence, binding.actionId), terminal);
           await transaction.delete(approvalKey);
           await transaction.delete(approvalSettlementStorageKey(binding.presentationId));
-          const visible = await transaction.list({ prefix: terminalStoragePrefix });
-          const stale = [...visible.keys()].slice(maximumVisibleActions);
-          if (stale.length > 0) await transaction.delete(stale);
+          await compactTerminalStatuses(transaction);
         }),
       catch: (cause) =>
         cause instanceof RetainedApprovalConflict
@@ -1048,6 +1045,46 @@ const approvalSettlementStorageKey = (presentationId: ActionPresentationId) =>
 const openStorageKey = (actionId: ActionId) => `${openStoragePrefix}${actionId}`;
 const terminalStorageKey = (settlementSequence: number, actionId: ActionId) =>
   `${terminalStoragePrefix}${String(Number.MAX_SAFE_INTEGER - settlementSequence).padStart(16, "0")}:${actionId}`;
+
+const SettlementSequence = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+
+const nextSettlementSequence = async (transaction: DurableObjectTransaction) => {
+  const retained = Schema.decodeUnknownOption(SettlementSequence)(
+    await transaction.get(settlementSequenceStorageKey),
+  );
+  if (Option.isSome(retained)) return retained.value + 1;
+  const terminals = await transaction.list({ prefix: terminalStoragePrefix });
+  const maximum = [...terminals.values()].reduce<number>((current, value) => {
+    const decoded = Schema.decodeUnknownOption(TerminalStatus)(value);
+    return Option.isSome(decoded) ? Math.max(current, decoded.value.settlementSequence) : current;
+  }, 0);
+  return maximum + 1;
+};
+
+const compactTerminalStatuses = async (transaction: DurableObjectTransaction) => {
+  const terminals = await transaction.list({ prefix: terminalStoragePrefix });
+  const partitioned = [...terminals.entries()].reduce<{
+    readonly invalid: Array<string>;
+    readonly valid: Array<{ readonly key: string; readonly status: TerminalStatus }>;
+  }>(
+    (current, [key, value]) => {
+      const decoded = Schema.decodeUnknownOption(TerminalStatus)(value);
+      if (Option.isNone(decoded)) {
+        current.invalid.push(key);
+        return current;
+      }
+      current.valid.push({ key, status: decoded.value });
+      return current;
+    },
+    { invalid: [], valid: [] },
+  );
+  const overflow = partitioned.valid
+    .sort((left, right) => right.status.settlementSequence - left.status.settlementSequence)
+    .slice(maximumVisibleActions)
+    .map(({ key }) => key);
+  const stale = [...partitioned.invalid, ...overflow];
+  if (stale.length > 0) await transaction.delete(stale);
+};
 
 class OpenActionLimitReached extends Data.TaggedError("OpenActionLimitReached") {}
 class ApprovalBindingLimitReached extends Data.TaggedError("ApprovalBindingLimitReached") {}

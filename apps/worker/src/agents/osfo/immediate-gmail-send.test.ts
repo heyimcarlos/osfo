@@ -325,6 +325,54 @@ it.effect("projects only the newest fifty Gmail Actions", () =>
   }),
 );
 
+it.effect("keeps valid User-visible open and terminal Actions behind corrupt rows", () =>
+  Effect.gen(function* () {
+    const { records, storage } = durableStorageFake();
+    const store = ImmediateGmailSend.make(ImmediateGmailSend.makeDurableObjectPersistence(storage));
+    const terminalCandidate = {
+      ...candidate,
+      actionId: ActionId.make("gmail-action-terminal-visible"),
+      presentationId: ActionPresentationId.make("presentation-terminal-visible"),
+    };
+    const terminalContext = yield* store.retain(terminalCandidate);
+    yield* store.settle(terminalContext, "applied");
+    const openContext = yield* store.retain(candidate);
+    for (let index = 0; index < 50; index += 1) {
+      const suffix = index.toString().padStart(2, "0");
+      records.set(`osfo:immediate-gmail-send:open:000-corrupt-visible-${suffix}`, {
+        broken: true,
+      });
+      records.set(`osfo:immediate-gmail-send:terminal:000-corrupt-visible-${suffix}`, {
+        broken: true,
+      });
+    }
+
+    const exactOpen = yield* store.readForUser(
+      candidate.actionId,
+      candidate.authorityIdentity.userId,
+    );
+
+    expect(exactOpen).toMatchObject(candidate);
+    expect(
+      yield* store
+        .readForUser(ActionId.make("000-corrupt-visible-00"), candidate.authorityIdentity.userId)
+        .pipe(Effect.result),
+    ).toMatchObject({ failure: { _tag: "ImmediateGmailSendUnavailable" } });
+
+    yield* store.settle(openContext, "notApplied");
+    const visible = yield* store.listForUser(candidate.authorityIdentity.userId);
+
+    expect(visible.open).toEqual([]);
+    expect(visible.terminal.map(({ actionId }) => actionId)).toEqual([
+      candidate.actionId,
+      terminalCandidate.actionId,
+    ]);
+    expect(
+      [...records.keys()].filter((key) => key.includes("terminal:000-corrupt-visible")),
+    ).toEqual([]);
+  }),
+);
+
 it.effect("compacts durable terminal visibility and bulk-deletes bounded User state", () =>
   Effect.gen(function* () {
     const { batches, records, storage } = durableStorageFake();
@@ -347,7 +395,7 @@ it.effect("compacts durable terminal visibility and bulk-deletes bounded User st
         );
       },
     );
-    expect(yield* persistence.listTerminal(100)).toHaveLength(50);
+    expect(yield* persistence.listTerminal()).toHaveLength(50);
     expect(yield* persistence.listOpen()).toHaveLength(0);
 
     yield* Effect.forEach(
@@ -379,7 +427,7 @@ it.effect("settles one open Action at most once", () =>
       { concurrency: "unbounded" },
     );
 
-    expect(yield* persistence.listTerminal(100)).toHaveLength(1);
+    expect(yield* persistence.listTerminal()).toHaveLength(1);
   }),
 );
 
@@ -397,7 +445,7 @@ it.effect("rejects settlement when the retained open context changed", () =>
         .pipe(Effect.result),
     ).toMatchObject({ failure: { _tag: "ImmediateGmailSendConflict" } });
     expect(yield* persistence.listOpen()).toHaveLength(1);
-    expect(yield* persistence.listTerminal(100)).toHaveLength(0);
+    expect(yield* persistence.listTerminal()).toHaveLength(0);
   }),
 );
 
@@ -512,6 +560,45 @@ it.effect("does not let corrupt prefix rows hide valid recovery and quiescence o
     expect(
       [...records.keys()].some((key) => key.startsWith("osfo:immediate-gmail-send:terminal:")),
     ).toBe(true);
+  }),
+);
+
+it.effect("repairs a corrupt settlement sequence while quiescing a valid open Action", () =>
+  Effect.gen(function* () {
+    const { records, storage } = durableStorageFake();
+    const store = ImmediateGmailSend.make(ImmediateGmailSend.makeDurableObjectPersistence(storage));
+    const baseline = yield* store.retain({
+      ...candidate,
+      actionId: ActionId.make("gmail-action-before-corrupt-sequence"),
+      presentationId: ActionPresentationId.make("presentation-before-corrupt-sequence"),
+    });
+    yield* store.settle(baseline, "applied");
+    yield* store.retain(candidate);
+    records.set("osfo:immediate-gmail-send:settlement-sequence", { broken: true });
+    const coordinator = ImmediateGmailSend.makeCoordinator({
+      accounting: noAccounting,
+      approvalPending: () => Effect.succeed(false),
+      integrations: {
+        execute: () => Effect.succeed(appliedResult),
+        inspectAction: () => Effect.succeed({ _tag: "NotApplied", providerLogId: null }),
+        readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
+      },
+      scheduler: schedulerRecording([]),
+      store,
+    });
+
+    yield* coordinator.quiesceUser(candidate.authorityIdentity.userId);
+    const visible = yield* store.listForUser(candidate.authorityIdentity.userId);
+
+    expect(records.get("osfo:immediate-gmail-send:settlement-sequence")).toBe(2);
+    expect(visible.open).toEqual([]);
+    expect(visible.terminal.at(0)).toMatchObject({
+      actionId: candidate.actionId,
+      settlementSequence: 2,
+      status: "notApplied",
+    });
+    yield* coordinator.deleteUser(candidate.authorityIdentity.userId);
+    expect(records.size).toBe(0);
   }),
 );
 
@@ -1572,11 +1659,11 @@ const memoryStore = () => {
     listApprovalBindings: () => Effect.succeed([...approvalBindings.values()]),
     listApprovalSettlements: () => Effect.succeed([...approvalSettlements.values()]),
     listOpen: () => Effect.succeed([...contexts.values()]),
-    listTerminal: (limit) => {
+    listTerminal: () => {
       const values = [...terminal.values()].sort(
         (left, right) => right.settlementSequence - left.settlementSequence,
       );
-      return Effect.succeed(values.slice(0, limit));
+      return Effect.succeed(values);
     },
     read: (actionId) => Effect.succeed(contexts.get(actionId) ?? null),
     readApprovalBinding: (presentationId) =>

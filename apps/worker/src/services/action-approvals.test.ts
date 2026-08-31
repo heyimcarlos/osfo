@@ -1,4 +1,5 @@
 import { expect, it } from "@effect/vitest";
+import type { PendingApproval } from "@cloudflare/think";
 import { Deferred, Effect, Fiber } from "effect";
 
 import { UserId } from "../domain";
@@ -7,11 +8,12 @@ import { AuthSessionId } from "../domain/auth-session";
 import {
   ActionPresentation,
   ActionPresentationId,
+  makeThinkActionApprovalAdapter,
   type PendingThinkAction,
 } from "../agents/osfo/think-action-approvals";
 import { makeActionApprovals } from "./action-approvals";
 
-/* oxlint-disable effecttsgo/global-date, vitest/no-standalone-expect -- Fixed authority time and assertions execute inside the @effect/vitest Effect callback. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, vitest/no-standalone-expect -- Promise fakes implement the external Think port; fixed authority time and assertions execute inside the @effect/vitest Effect callback. */
 
 it.effect("reuses the immutable Action presentation retained on its first read", () => {
   const retained = new Map<string, ActionPresentation>();
@@ -219,4 +221,93 @@ it.effect(
       expect(approved).toBe("lost");
       expect(winner).toBe("rejected");
     }),
+);
+
+it.effect("fails the approval handoff when Think returns its nested Action error envelope", () => {
+  const pending: PendingThinkAction = {
+    descriptor: {
+      action: "gmailSendEmail",
+      input: { body: "Hello", subject: "Subject", to: "person@example.com" },
+      kind: "durable-pause",
+      permissions: ["gmail:send"],
+      requestId: "request-1",
+      risk: "high",
+      summary: "Send Gmail message",
+      toolCallId: "action-1",
+    },
+    executionId: ActionPresentationId.make("action-pause:presentation-1"),
+    source: "action",
+  };
+  const lifecycle = makeThinkActionApprovalAdapter({
+    think: {
+      approve: async () => ({
+        error: { message: "The retained Gmail context is unavailable", name: "Error" },
+      }),
+      pending: async () =>
+        [
+          {
+            ...pending,
+            descriptor: {
+              ...pending.descriptor,
+              permissions: [...pending.descriptor.permissions],
+              risk: pending.descriptor.risk ?? "high",
+            },
+          },
+        ] satisfies Array<PendingApproval>,
+      reject: async () => ({ status: "rejected" }),
+    },
+  });
+  const actor = {
+    _tag: "AuthSession" as const,
+    authSessionId: AuthSessionId.make("session-1"),
+    expiresAt: new Date("2026-08-25T00:00:00.000Z"),
+    userId: UserId.make("user-1"),
+  };
+  const approvals = makeActionApprovals({
+    authorizer: { ownsAgent: () => Effect.succeed(true) },
+    lifecycle,
+    now: Effect.succeed(new Date("2026-08-24T00:00:00.000Z")),
+    present: () => Effect.die(new Error("dispatch does not project the presentation")),
+    presentations: { retain: (candidate) => Effect.succeed(candidate) },
+  });
+
+  return Effect.gen(function* () {
+    const result = yield* approvals
+      .dispatch(actor, pending.executionId, "approved")
+      .pipe(Effect.result);
+
+    expect(result).toMatchObject({
+      failure: {
+        _tag: "ThinkApprovalUnavailable",
+        message: "The retained Gmail context is unavailable",
+        operation: "approveExecution",
+      },
+    });
+  });
+});
+
+it.effect("distinguishes a lost Think decision from a successful Approval dispatch", () =>
+  Effect.gen(function* () {
+    const presentationId = ActionPresentationId.make("action-pause:presentation-1");
+    const lost = makeThinkActionApprovalAdapter({
+      think: {
+        approve: async () => ({ error: "already resolved", status: "error" }),
+        pending: async () => [],
+        reject: async () => ({ status: "rejected" }),
+      },
+    });
+    const accepted = makeThinkActionApprovalAdapter({
+      think: {
+        approve: async () => ({ _tag: "IntegrationEffectCompleted" }),
+        pending: async () => [],
+        reject: async () => ({ status: "rejected" }),
+      },
+    });
+
+    const lostResult = yield* lost.resolve(presentationId, "approved").pipe(Effect.result);
+    const acceptedResult = yield* accepted.resolve(presentationId, "approved").pipe(Effect.result);
+
+    expect(lostResult).toMatchObject({ failure: { _tag: "ApprovalAlreadyResolved" } });
+    expect(acceptedResult).toMatchObject({ success: undefined });
+  }),
 );
