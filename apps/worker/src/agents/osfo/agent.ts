@@ -294,6 +294,7 @@ import {
   ResearchReportIdentityInput,
   researchReportRequiresApproval,
   ResearchReportStartInput,
+  scheduledEmailApprovalSelection,
   scheduledEmailStartActionName,
   ScheduledEmailIdentityInput,
   ScheduledEmailStartInput,
@@ -438,6 +439,7 @@ const ImmediateGmailSendReconciliation = Schema.Struct({
 const ActionPresentationListSelection = Schema.Union([
   Schema.Undefined,
   Schema.Literal("immediate-gmail"),
+  Schema.Literal("scheduled-email"),
 ]);
 
 class MemoryProviderWorkUnavailable extends Data.TaggedError("MemoryProviderWorkUnavailable")<{
@@ -4853,7 +4855,11 @@ export class OsfoAgent extends Think<Env> {
         Effect.flatMap(({ actor, selection: selected }) =>
           this.#actionApprovals.list(
             actor,
-            selected === "immediate-gmail" ? ImmediateGmailApprovals.selection : undefined,
+            selected === "immediate-gmail"
+              ? ImmediateGmailApprovals.selection
+              : selected === "scheduled-email"
+                ? scheduledEmailApprovalSelection
+                : undefined,
           ),
         ),
       ),

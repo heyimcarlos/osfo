@@ -151,8 +151,11 @@ const adaptBindings = (env: CloudflareEnv, config: CloudflareConfig): Bindings =
           directory.connectIntegrationFromSettings(agentId, input),
         disconnectIntegrationFromSettings: (agentId, input) =>
           directory.disconnectIntegrationFromSettings(agentId, input),
-        listActionPresentations: (agentId, actor, selection?: "immediate-gmail") =>
-          directory.listActionPresentations(agentId, actor, selection),
+        listActionPresentations: (
+          agentId,
+          actor,
+          selection?: "immediate-gmail" | "scheduled-email",
+        ) => directory.listActionPresentations(agentId, actor, selection),
         decideActionApproval: (agentId, input) => directory.decideActionApproval(agentId, input),
         changePersonalSkill: (agentId, input) => directory.changePersonalSkill(agentId, input),
         presentPersonalSkillDeletion: (agentId, input) =>

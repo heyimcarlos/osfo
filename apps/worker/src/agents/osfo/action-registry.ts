@@ -70,6 +70,7 @@ export {
   researchReportRequiresApproval,
   ResearchReportStartInput,
   RetainedDocumentInput,
+  scheduledEmailApprovalSelection,
   scheduledEmailStartActionName,
   ScheduledEmailIdentityInput,
   ScheduledEmailStartInput,

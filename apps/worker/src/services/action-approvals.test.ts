@@ -11,6 +11,10 @@ import {
   makeThinkActionApprovalAdapter,
   type PendingThinkAction,
 } from "../agents/osfo/think-action-approvals";
+import {
+  scheduledEmailApprovalSelection,
+  scheduledEmailStartActionName,
+} from "../agents/osfo/action-presentation";
 import { makeActionApprovals } from "./action-approvals";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, vitest/no-standalone-expect -- Promise fakes implement the external Think port; fixed authority time and assertions execute inside the @effect/vitest Effect callback. */
@@ -137,6 +141,77 @@ it.effect("selects the oldest matching pending Actions before presentation work"
     expect(presentationCalls).toBe(50);
     expect(listed.presentations.at(0)?.presentationId).toBe("presentation-1");
     expect(listed.presentations.at(-1)?.presentationId).toBe("presentation-59");
+  });
+});
+
+it.effect("projects only Scheduled Email Actions for the bounded scheduled selection", () => {
+  const pending = [
+    {
+      action: "gmailSendEmail",
+      executionId: "presentation-gmail",
+      toolCallId: "action-gmail",
+    },
+    {
+      action: scheduledEmailStartActionName,
+      executionId: "presentation-scheduled",
+      toolCallId: "action-scheduled",
+    },
+  ].map(({ action, executionId, toolCallId }): PendingThinkAction => ({
+    descriptor: {
+      action,
+      input: {},
+      kind: "durable-pause",
+      permissions: ["gmail:send"],
+      requestId: `request-${toolCallId}`,
+      risk: "high",
+      summary: action,
+      toolCallId,
+    },
+    executionId: ActionPresentationId.make(executionId),
+    source: "action",
+  }));
+  let gmailPresentations = 0;
+  const approvals = makeActionApprovals({
+    authorizer: { ownsAgent: () => Effect.succeed(true) },
+    lifecycle: {
+      findPending: () => Effect.die(new Error("not used by list")),
+      listPending: Effect.succeed(pending),
+      resolve: () => Effect.void,
+    },
+    now: Effect.succeed(new Date("2026-08-24T00:00:00.000Z")),
+    present: (item) => {
+      if (item.descriptor.action === "gmailSendEmail") {
+        gmailPresentations += 1;
+      }
+      return Effect.succeed(
+        ActionPresentation.make({
+          actionDefinitionVersion: "osfo-scheduled-email-start-v1",
+          actionId: ActionId.make(item.descriptor.toolCallId),
+          consequences: ["Schedule one email."],
+          description: item.descriptor.summary,
+          fields: [],
+          operation: "integration.effect",
+          presentationId: item.executionId,
+          title: "Schedule email",
+        }),
+      );
+    },
+    presentations: { retain: (candidate) => Effect.succeed(candidate) },
+  });
+  const actor = {
+    _tag: "AuthSession" as const,
+    authSessionId: AuthSessionId.make("session-1"),
+    expiresAt: new Date("2026-08-25T00:00:00.000Z"),
+    userId: UserId.make("user-1"),
+  };
+
+  return Effect.gen(function* () {
+    const listed = yield* approvals.list(actor, scheduledEmailApprovalSelection);
+
+    expect(listed.presentations.map(({ presentationId }) => presentationId)).toEqual([
+      "presentation-scheduled",
+    ]);
+    expect(gmailPresentations).toBe(0);
   });
 });
 
