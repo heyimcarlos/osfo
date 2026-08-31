@@ -3,7 +3,7 @@
 /* oxlint-disable eslint/no-underscore-dangle -- Assertions inspect canonical tagged outcomes. */
 import { expect, it } from "@effect/vitest";
 import { BrowserCrypto } from "@effect/platform-browser";
-import { Deferred, Effect, Fiber, Layer, Logger, Option, References } from "effect";
+import { Deferred, Effect, Fiber, Option } from "effect";
 
 import { Db } from "../../db";
 import {
@@ -908,7 +908,7 @@ it.effect("waits for an accepted provider conversation to leave processing", () 
   );
 });
 
-it.effect("emits separate backlog, processing, and search-readiness evidence", () => {
+it.effect("reconciles accepted provider work without an observability wrapper", () => {
   const base = conversationClaim();
   const claim: ClaimedMemoryProviderWork = {
     ...base,
@@ -921,23 +921,7 @@ it.effect("emits separate backlog, processing, and search-readiness evidence", (
     usage: providerUsage,
   };
   const calls: Array<string> = [];
-  const logs: Array<{ readonly annotations: object; readonly message: unknown }> = [];
-  const logger = Logger.make<unknown, void>((options) => {
-    logs.push({
-      annotations: { ...options.fiber.getRef(References.CurrentLogAnnotations) },
-      message: options.message,
-    });
-  });
-  const { completed, store: baseStore } = testStore(claim, { configurationCurrent: false });
-  const store: MemoryProviderOutboxStore = {
-    ...baseStore,
-    inspectBacklog: () =>
-      Effect.succeed({
-        blockedAppendCount: 1,
-        oldestPendingAppendAgeMillis: 120_000,
-        pendingAppendCount: 2,
-      }),
-  };
+  const { completed, store } = testStore(claim, { configurationCurrent: false });
   const provider = providerStub({
     configureOrganizationGuidance: Effect.sync(() => {
       calls.push("organization");
@@ -961,29 +945,11 @@ it.effect("emits separate backlog, processing, and search-readiness evidence", (
   return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
     Effect.provideService(MemoryProvider.Service, provider),
     Effect.provideService(Db.Service, unavailableDatabase),
-    Effect.provide(Layer.merge(BrowserCrypto.layer, Logger.layer([logger]))),
+    Effect.provide(BrowserCrypto.layer),
     Effect.andThen(
       Effect.sync(() => {
         expect(calls).toEqual(["organization", "user", "status", "search"]);
         expect(completed).toEqual([claim.outboxId]);
-        expect(logs.map(({ message }) => message)).toContainEqual([
-          "MemoryProvider outbox backlog observed",
-        ]);
-        expect(logs.map(({ message }) => message)).toContainEqual([
-          "MemoryProvider overlapping append blocked",
-        ]);
-        expect(logs.map(({ message }) => message)).toContainEqual([
-          "MemoryProvider processing completed",
-        ]);
-        expect(logs.map(({ message }) => message)).toContainEqual([
-          "MemoryProvider source search ready",
-        ]);
-        expect(
-          logs.every(({ annotations }) => !Object.values(annotations).includes(claim.outboxId)),
-        ).toBe(true);
-        expect(
-          logs.every(({ annotations }) => !Object.values(annotations).includes(documentId)),
-        ).toBe(true);
       }),
     ),
   );
@@ -1215,12 +1181,6 @@ const testStore = (
     expediteProcessingConversationWork: () => Effect.void,
     hasUnsettledProviderConversationWork: Effect.succeed(false),
     hasRetryableWork: Effect.succeed(false),
-    inspectBacklog: () =>
-      Effect.succeed({
-        blockedAppendCount: 0,
-        oldestPendingAppendAgeMillis: 0,
-        pendingAppendCount: 0,
-      }),
     inspectConfiguration: () => Effect.succeed(Option.none()),
     isClaimCurrent: () => Effect.succeed(true),
     markProviderAccepted: () => Effect.succeed(options.providerAccepted ?? true),

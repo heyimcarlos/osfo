@@ -536,17 +536,18 @@ is activated, Osfo preserves company-cost continuity evidence without turning
 memory calls into User-facing allowance debits. Activation belongs to the
 complete-system qualification that proves current provider prices, bounded
 operation costs, concurrency, routing, and economics across the whole Capability
-Catalog. Observability records provider latency, recall failures, retry count,
-resource-price evidence, and the oldest pending save age. Osfo tells the User
-about degraded memory only when it affects the requested task.
+Catalog. Private-beta runtime authority is the durable provider operation and
+ordered outbox state, not a separate observability wrapper. Broader provider
+latency, retry, and backlog qualification belongs to the post-beta work in
+[#181](https://github.com/heyimcarlos/osfo/issues/181). Osfo tells the User about
+degraded memory only when it affects the requested task.
 
 Compaction thresholds and safety headroom are configurable per model. The 50 to
 60 percent context target is a measurement hypothesis, not a product rule.
 Think's proactive overflow handling and bounded reactive compact-and-retry are
-safety mechanisms. Osfo measures model context size, input utilization before
-each model step, peak utilization, utilization before and after compaction,
-tokens by prompt category where practical, compaction frequency, overflow and
-retry events, output tokens, and tool-heavy turn growth.
+safety mechanisms and remain launch policy. Prompt-category estimation and
+utilization qualification are deferred to post-beta #181 and are not
+private-beta runtime authority.
 
 Current and historical Sessions are retained indefinitely by default. Osfo does
 not prune a current Session, apply a fixed age rule, or silently delete history
@@ -854,10 +855,23 @@ Cloudflare resources and secrets. Secrets never enter stage outputs.
 
 Product facts and required semantic evidence commit in the same local
 transaction. There is no cross-store evidence transaction. Telemetry exports
-after commit and cannot erase product evidence. Qualification correlates local
-evidence and returns only PASS, FAIL, or MISSING.
+after commit and cannot erase product evidence. Post-beta #181 qualification may
+correlate local evidence and return only PASS, FAIL, or MISSING; private-beta
+launch does not persist a parallel semantic qualification receipt.
 
-## Production acceptance
+## Private-beta launch acceptance
+
+Private-beta activation follows the critical direct-production journey evidence
+owned by [#184](https://github.com/heyimcarlos/osfo/issues/184): exact committed
+records and observable User outcomes for registration, channel linking, core
+work, billing, and permanent deletion. It does not require a retained Good Root
+receipt, unsampled semantic trace, workload corpus, or Model Quality Gate.
+
+## Post-beta public-scale acceptance
+
+The following workload, retained-corpus, semantic-trace, economics, and model-
+quality requirements remain public-scale authority owned by #181. They are
+deferred from private-beta activation rather than removed.
 
 ### Levels and workload
 
@@ -919,7 +933,7 @@ domain. One interrupted Agent settles within 60 seconds. After dependency
 recovery, backlog slope is negative within five minutes and recoverable work is
 terminal or durably waiting within 20 minutes.
 
-Every accepted root has one unsampled semantic trace. Required signals cover all
+For post-beta public-scale qualification, every accepted root has one unsampled semantic trace. Required signals cover all
 platform stores, Think, providers, Workflows, model access, memory,
 Composio-backed Gmail operations, WhatsApp, and task compute. Safe evidence
 contains no OAuth credential or provider token. Missing material semantic, usage,
@@ -937,7 +951,7 @@ rolling seven-day SLOs. Public promotion needs 28 consecutive beta days, 25,000
 accepted registered messages, the full Public corpus, and three clean public
 runs from each region. Correctness failures cannot spend an error budget.
 
-### Model Quality Gate
+### Post-beta Model Quality Gate
 
 The gate evaluates the complete behavior configuration, not only a model. It
 includes routes, prompts, skills, tools, context, memory, policy, Workflows, and
@@ -1028,9 +1042,11 @@ runtime behavior. User feedback on a running vertical slice becomes a
 regression case.
 
 Every change must pass the root install, format, lint, typecheck, test, and build
-commands. Production-facing work also records the applicable system,
-provider, browser, migration, SLO, cost, and Model Quality evidence required by
-this specification. Report each required result as PASS, FAIL, or MISSING.
+commands. Private-beta production-facing work records the direct system,
+provider, browser, migration, cost, and User-outcome evidence required by its
+issue. The SLO, semantic-trace, workload, and Model Quality evidence below is
+required for post-beta public-scale work under #181. Report each required result
+as PASS, FAIL, or MISSING.
 
 Implementation evidence must include at least:
 
@@ -1048,7 +1064,8 @@ Implementation evidence must include at least:
   Think-table isolation, and Worker-to-Agent recovery;
 - provider conformance and focused live qualification for Meta, SMS, managed
   models, Supermemory, Composio-backed Gmail, search, and temporary compute;
-- the complete production and Model Quality gates in this document.
+- for post-beta public-scale work, the complete production and Model Quality
+  gates in this document.
 
 The linked implementation map owns the exact ticket order and live status. No
 implementation ticket may silently decide a structural question that this

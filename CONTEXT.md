@@ -38,8 +38,9 @@ delivery dimension independently of the Reference Workload Trace.
 _Avoid_: Production traffic forecast, simultaneous worst case
 
 **Production Acceptance Corpus**:
-The retained-data shape at which every production SLO and correctness gate
-must pass.
+The post-beta retained-data shape at which every public-scale SLO and correctness
+gate must pass under [#181](https://github.com/heyimcarlos/osfo/issues/181). It
+is not private-beta launch authority.
 _Avoid_: Clean database, empty benchmark corpus
 
 **Growth Corpus**:
@@ -73,30 +74,32 @@ support, and expected GM Summon costs for the same cohort and allowance periods.
 _Avoid_: Vendor allowance, gross revenue, per-request model cost
 
 **Good Root Outcome**:
-The authoritative root outcome for one accepted incoming message that passes
+The post-beta public-scale qualification outcome for one accepted incoming message that passes
 its Reference Workload Trace journey's versioned reproducible acceptance
-assertions before that journey's Evaluation Deadline. Subjective model quality
-evaluation is separate.
+assertions before that journey's Evaluation Deadline. It is owned by #181, is
+separate from subjective model quality evaluation, and is not a retained runtime
+receipt for private-beta launch.
 _Avoid_: Useful Completion, successful AgentRun, terminal response, model score
 
 **Model Quality Gate**:
-The release verdict for one complete Osfo behavior configuration, evaluated with
+The post-beta public-scale release verdict for one complete Osfo behavior configuration, evaluated with
 independent journey and risk-class floors plus a non-regression comparison. It
-remains separate from Good Root Outcome, Delivery, and system error budgets.
+remains separate from Good Root Outcome, Delivery, and system error budgets and
+is owned by #181.
 _Avoid_: Model benchmark, combined quality score, production SLO
 
 **Good Root Outcome Ratio**:
-Good Root Outcomes divided by accepted incoming messages whose evaluation
+The post-beta #181 ratio of Good Root Outcomes divided by accepted incoming messages whose evaluation
 windows have closed. System failures and deadline misses remain in the
 denominator; overload rejections remain in the admission SLI.
 _Avoid_: Success rate over completed work, admission success rate
 
 **Goodput**:
-The number of Good Root Outcomes produced per second.
+The post-beta #181 number of Good Root Outcomes produced per second.
 _Avoid_: AgentRun throughput, terminal response rate
 
 **Goodput Knee**:
-The first offered-demand region where additional demand no longer increases
+The post-beta #181 first offered-demand region where additional demand no longer increases
 Goodput acceptably or first violates an outcome, latency, backlog, correctness,
 recovery, or bounded-resource gate.
 _Avoid_: First rejection, peak AgentRun throughput, benchmark maximum
@@ -141,9 +144,9 @@ _Avoid_: Mutable Skill body, latest Skill pointer, model completion
 
 **Skill Learning**:
 Company-funded, bounded post-turn work that may create or revise a Personal Skill
-only after a Good Root Outcome commits and trusted reusable evidence exists. It
-is failure-isolated from the root task, excludes untrusted uploaded or fetched
-content, and keeps minor non-changes quiet.
+only after the direct User's exact completed root turn commits and trusted
+reusable evidence exists. It is failure-isolated from the root task, excludes
+untrusted uploaded or fetched content, and keeps minor non-changes quiet.
 _Avoid_: Memory ingestion, whole-Session reflection, model self-approval
 
 **Account**:

@@ -3,6 +3,7 @@
 /* oxlint-disable eslint/no-await-in-loop -- Bounded polling must observe each durable write before scheduling the next read. */
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
+import { Session } from "@cloudflare/think";
 import { expect, it, vi } from "vitest";
 import { tool, type LanguageModel, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
@@ -33,6 +34,7 @@ it("drives an OsfoAgent across restart and loads learning only in the matching l
   };
   const stub = runtimeEnv.OSFO_AGENT_TEST.get(runtimeEnv.OSFO_AGENT_TEST.idFromName(agentId));
   await runInDurableObject(stub, async (agent, state) => {
+    const historyReads = vi.spyOn(Session.prototype, "getHistory");
     await agent.initialize({
       agentId,
       initializationId: "personal-skill-journey-initialization",
@@ -41,6 +43,7 @@ it("drives an OsfoAgent across restart and loads learning only in the matching l
       sessionId: initialSessionId,
     });
     await agent.onStart();
+    expect(historyReads).not.toHaveBeenCalled();
     const submissionId = ThinkSubmissionId.make("personal-skill-submission-initial");
     const metadata = turnMetadata({ sessionId: initialSessionId, submissionId });
     const userMessage = managedUserMessage(
@@ -115,7 +118,9 @@ it("drives an OsfoAgent across restart and loads learning only in the matching l
     expect(foreign.skills).toEqual([]);
     const restartedAgent = new OsfoAgent(state, runtimeEnv);
     expect(restartedAgent).not.toBe(agent);
+    historyReads.mockClear();
     await restartedAgent.onStart();
+    expect(historyReads).not.toHaveBeenCalled();
     const matchingSubmissionId = ThinkSubmissionId.make("personal-skill-submission-matching");
     const matchingMetadata = turnMetadata({
       sessionId: matchingSessionId,
@@ -129,13 +134,20 @@ it("drives an OsfoAgent across restart and loads learning only in the matching l
         matchingMetadata,
       ),
     ]);
-    await restartedAgent.beforeTurn(
-      turnContext(
-        "Create my weekly report as a PDF.",
-        compiledAgentTools(restartedAgent),
-        new MockLanguageModelV4(),
-      ),
+    const matchingTurnContext = turnContext(
+      "Create my weekly report as a PDF.",
+      compiledAgentTools(restartedAgent),
+      new MockLanguageModelV4(),
     );
+    await restartedAgent.beforeTurn(matchingTurnContext);
+    expect(historyReads).toHaveBeenCalled();
+    expect(
+      state.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM osfo_personal_skill_learning_candidates",
+        )
+        .one().count,
+    ).toBe(1);
     const matchingState = latestManagedTurn(restartedAgent.messages);
     expect(matchingState.capabilityTurnState.eligiblePersonalSkills).toHaveLength(1);
     const selected = matchingState.capabilityTurnState.eligiblePersonalSkills[0];
@@ -148,6 +160,34 @@ it("drives an OsfoAgent across restart and loads learning only in the matching l
       { context: {}, messages: [], toolCallId: "personal-skill-load-matching" },
     );
     expect(loaded).toMatchObject({ instructions: "Put the summary first in every weekly report." });
+
+    const secondSubmissionId = ThinkSubmissionId.make("personal-skill-submission-second");
+    const secondMetadata = turnMetadata({
+      sessionId: matchingSessionId,
+      submissionId: secondSubmissionId,
+    });
+    await restartedAgent.onSubmissionStatus(runningSubmission(secondMetadata));
+    await restartedAgent.addMessages([
+      managedUserMessage(
+        "personal-skill-user-second",
+        "Create another weekly report as a PDF.",
+        secondMetadata,
+      ),
+    ]);
+    await restartedAgent.beforeTurn(
+      turnContext(
+        "Create another weekly report as a PDF.",
+        compiledAgentTools(restartedAgent),
+        new MockLanguageModelV4(),
+      ),
+    );
+    expect(
+      state.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM osfo_personal_skill_learning_candidates",
+        )
+        .one().count,
+    ).toBe(1);
 
     const unrelatedAgent = new OsfoAgent(state, runtimeEnv);
     await unrelatedAgent.onStart();
