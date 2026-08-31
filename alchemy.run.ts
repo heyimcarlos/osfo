@@ -7,6 +7,7 @@ import { Effect, Layer } from "effect";
 import { DatabaseHyperdrive, Db } from "./infra/cloudflare/Db";
 import { Artifacts } from "./infra/cloudflare/Artifacts";
 import Worker from "./infra/cloudflare/Worker";
+import Web from "./infra/cloudflare/Web";
 
 /** Stage-separated Osfo Cloudflare stack. */
 export default Stack(
@@ -21,6 +22,7 @@ export default Stack(
     const artifacts = yield* Artifacts;
     const db = yield* DatabaseHyperdrive;
     const worker = yield* Worker;
+    const web = yield* Web(worker.url.as<string>());
 
     return {
       branchId,
@@ -28,6 +30,8 @@ export default Stack(
       hyperdriveId: db.hyperdriveId,
       stage,
       url: worker.url.as<string>(),
+      webUrl: web.url.as<string>(),
+      webWorkerName: web.workerName,
       workerName: worker.workerName,
     };
   }),
