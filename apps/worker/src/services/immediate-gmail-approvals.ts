@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Predicate, Schema } from "effect";
 
 import type {
   ActionPresentation,
@@ -6,6 +6,7 @@ import type {
   ApprovalDecisionAccepted,
 } from "../agents/osfo/think-action-approvals";
 import type { ActionApprovalSelection } from "./action-approvals";
+import type { IntegrationConnectionBinding, IntegrationConnectionEvidence } from "./integrations";
 
 export interface Decision {
   readonly decision: "approve" | "reject";
@@ -28,6 +29,18 @@ export const selection: ActionApprovalSelection = {
   maximum: maximumVisibleApprovals,
   select: (pending) => pending.descriptor.action === "gmailSendEmail",
 };
+
+export const connectionBindingForPresentation = Effect.fn(
+  "ImmediateGmailApprovals.connectionBindingForPresentation",
+)(<E, R>(inspection: Effect.Effect<IntegrationConnectionEvidence, E, R>) =>
+  inspection.pipe(
+    Effect.map((evidence): IntegrationConnectionBinding | null =>
+      Predicate.isTagged(evidence, "IntegrationConnectionConnected")
+        ? evidence.connectionBinding
+        : null,
+    ),
+  ),
+);
 
 /** Own the immediate-Gmail projection and exact decision fence over Think's Approval store. */
 export const make = (port: Port) => {

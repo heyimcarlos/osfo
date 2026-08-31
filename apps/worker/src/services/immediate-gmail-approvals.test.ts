@@ -3,12 +3,14 @@ import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 import { ActionId } from "../domain/action-execution";
+import { UserId } from "../domain";
 import {
   ActionPresentationId,
   ActionPresentationsFound,
   ApprovalDecisionAccepted,
 } from "../agents/osfo/think-action-approvals";
 import { ImmediateGmailApprovals } from "./immediate-gmail-approvals";
+import { IntegrationConnectionBinding } from "./integrations";
 
 it.effect("drains the oldest fifty immediate Gmail Approvals so later items become reachable", () =>
   Effect.gen(function* () {
@@ -49,6 +51,40 @@ it.effect("drains the oldest fifty immediate Gmail Approvals so later items beco
         .decide({ decision: "approve", presentationId: "gmail-presentation-51" })
         .pipe(Effect.result),
     ).toMatchObject({ failure: { _tag: "ImmediateGmailApprovalsUnavailable" } });
+  }),
+);
+
+it.effect("leaves the first presentation retryable until connection evidence succeeds", () =>
+  Effect.gen(function* () {
+    const connectionBinding = IntegrationConnectionBinding.make("a".repeat(64));
+    const retained: Array<IntegrationConnectionBinding | null> = [];
+    let attempts = 0;
+    const inspect = () => {
+      attempts += 1;
+      return attempts === 1
+        ? Effect.fail("transient provider outage" as const)
+        : Effect.succeed({
+            _tag: "IntegrationConnectionConnected" as const,
+            connectionBinding,
+            toolkit: "gmail",
+            userId: UserId.make("user-1"),
+          });
+    };
+    const present = () =>
+      ImmediateGmailApprovals.connectionBindingForPresentation(inspect()).pipe(
+        Effect.tap((binding) =>
+          Effect.sync(() => {
+            retained.push(binding);
+          }),
+        ),
+      );
+
+    expect(yield* present().pipe(Effect.result)).toMatchObject({
+      failure: "transient provider outage",
+    });
+    expect(retained).toEqual([]);
+    expect(yield* present()).toBe(connectionBinding);
+    expect(retained).toEqual([connectionBinding]);
   }),
 );
 

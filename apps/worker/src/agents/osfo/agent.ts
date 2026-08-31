@@ -4903,14 +4903,16 @@ export class OsfoAgent extends Think<Env> {
       const integrations = Option.getOrUndefined(configuredIntegrations);
       const connectionBinding = yield* integrations === undefined
         ? Effect.succeed(null)
-        : integrations.connectionEvidence({ toolkit: "gmail", userId }).pipe(
-            Effect.match({
-              onFailure: () => null,
-              onSuccess: (evidence) =>
-                Predicate.isTagged(evidence, "IntegrationConnectionConnected")
-                  ? evidence.connectionBinding
-                  : null,
-            }),
+        : ImmediateGmailApprovals.connectionBindingForPresentation(
+            integrations.connectionEvidence({ toolkit: "gmail", userId }),
+          ).pipe(
+            Effect.mapError(
+              () =>
+                new ActionPresentationUnavailable({
+                  action: pending.descriptor.action,
+                  message: "The Gmail Connection identity could not be inspected",
+                }),
+            ),
           );
       yield* immediateGmailSendStore
         .retainApprovalBinding({
