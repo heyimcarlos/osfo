@@ -698,6 +698,123 @@ describe("Integrations", () => {
   );
 
   it.effect(
+    "rejects a snapshotted provider account that differs from the approved connection binding",
+    () =>
+      Effect.gen(function* () {
+        const harness = makeHarness();
+        harness.toolkits = [
+          {
+            connectedAccount: { id: "approved-account", status: "ACTIVE" },
+            isActive: true,
+            slug: "gmail",
+          },
+        ];
+        const integrations = make(harness);
+        const approved = yield* integrations.connectionEvidence({ toolkit: "gmail", userId });
+        if (approved._tag !== "IntegrationConnectionConnected") {
+          return yield* Effect.die(new Error("The approved test connection must be current"));
+        }
+        harness.toolkits = [
+          {
+            connectedAccount: { id: "replacement-account", status: "ACTIVE" },
+            isActive: true,
+            slug: "gmail",
+          },
+        ];
+        let authorityChecks = 0;
+
+        const failure = yield* Effect.flip(
+          integrations.execute({
+            actionId: ActionId.make("action-snapshotted-replacement"),
+            authorize: Effect.sync(() => {
+              authorityChecks += 1;
+              harness.toolkits = [
+                {
+                  connectedAccount: { id: "approved-account", status: "ACTIVE" },
+                  isActive: true,
+                  slug: "gmail",
+                },
+              ];
+            }),
+            expectedConnectionBinding: approved.connectionBinding,
+            identity: {
+              manifestVersion: ManifestVersion.make("gmail-v1"),
+              operation: "GMAIL_SEND_EMAIL",
+              toolkit: "gmail",
+            },
+            input: {
+              body: "Hello",
+              gmailResource: "primary",
+              recipients: ["person@example.test"],
+              subject: "Subject",
+            },
+            userId,
+          }),
+        );
+
+        expect(failure).toMatchObject({ _tag: "IntegrationConnectionUnavailable" });
+        expect(authorityChecks).toBe(1);
+        expect(harness.actions.size).toBe(0);
+        expect(harness.executed).toEqual([]);
+        return undefined;
+      }),
+  );
+
+  it.effect(
+    "executes only the provider account whose snapshot matches the approved connection binding",
+    () =>
+      Effect.gen(function* () {
+        const harness = makeHarness();
+        harness.toolkits = [
+          {
+            connectedAccount: { id: "approved-account", status: "ACTIVE" },
+            isActive: true,
+            slug: "gmail",
+          },
+        ];
+        harness.executeResult = {
+          data: { id: "provider-message-1" },
+          error: null,
+          logId: "composio-log-1",
+        };
+        const integrations = make(harness);
+        const approved = yield* integrations.connectionEvidence({ toolkit: "gmail", userId });
+        if (approved._tag !== "IntegrationConnectionConnected") {
+          return yield* Effect.die(new Error("The approved test connection must be current"));
+        }
+
+        yield* integrations.execute({
+          actionId: ActionId.make("action-snapshotted-approved"),
+          authorize: Effect.sync(() => {
+            harness.toolkits = [
+              {
+                connectedAccount: { id: "replacement-account", status: "ACTIVE" },
+                isActive: true,
+                slug: "gmail",
+              },
+            ];
+          }),
+          expectedConnectionBinding: approved.connectionBinding,
+          identity: {
+            manifestVersion: ManifestVersion.make("gmail-v1"),
+            operation: "GMAIL_SEND_EMAIL",
+            toolkit: "gmail",
+          },
+          input: {
+            body: "Hello",
+            gmailResource: "primary",
+            recipients: ["person@example.test"],
+            subject: "Subject",
+          },
+          userId,
+        });
+
+        expect(harness.executed).toMatchObject([{ connectedAccountId: "approved-account" }]);
+        return undefined;
+      }),
+  );
+
+  it.effect(
     "bounds large reads and drops provider fields outside the manifest output contract",
     () =>
       Effect.gen(function* () {

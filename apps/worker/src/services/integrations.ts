@@ -320,6 +320,7 @@ export type IntegrationEffectFinalOutcome =
 export interface ExecuteIntegrationInput<E, F = never> {
   readonly actionId?: ActionId;
   readonly authorize: Effect.Effect<void, E>;
+  readonly expectedConnectionBinding?: IntegrationConnectionBinding;
   readonly finalizeEffect?: (outcome: IntegrationEffectFinalOutcome) => Effect.Effect<void, F>;
   readonly identity: {
     readonly manifestVersion: ManifestVersion;
@@ -637,6 +638,16 @@ export const make = (
           });
         }
         yield* input.authorize;
+        if (
+          input.expectedConnectionBinding !== undefined &&
+          inspectedConnection.evidence.connectionBinding !== input.expectedConnectionBinding
+        ) {
+          return yield* new IntegrationConnectionUnavailable({
+            message: "The approved Integration Connection changed before execution",
+            toolkit: manifest.toolkit,
+            userId: input.userId,
+          });
+        }
         const connection = {
           connectedAccountId: inspectedConnection.connectedAccountId,
           session: actionSession.session,

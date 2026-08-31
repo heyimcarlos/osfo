@@ -1196,6 +1196,7 @@ it.effect("replays a settled Action without re-admission or accounting in a rene
               : { _tag: "NotStarted" as const },
           ),
         execute: (input) => {
+          expect(input.expectedConnectionBinding).toBe(candidate.connectionBinding);
           if (applied) {
             expect(input.finalizeEffect).toBeUndefined();
             return Effect.succeed(appliedResult);

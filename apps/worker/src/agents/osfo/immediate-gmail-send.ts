@@ -351,6 +351,7 @@ export const makeCoordinator = (options: {
         return yield* options.integrations.execute({
           actionId: candidate.actionId,
           authorize: Effect.void,
+          expectedConnectionBinding: candidate.connectionBinding,
           identity: integrationIdentity,
           input: candidate.input,
           userId: candidate.authorityIdentity.userId,
@@ -395,6 +396,7 @@ export const makeCoordinator = (options: {
       .execute({
         actionId: context.actionId,
         authorize: recheck,
+        expectedConnectionBinding: context.connectionBinding,
         finalizeEffect: (outcome) => finalize(context, outcome),
         identity: integrationIdentity,
         input: context.input,
