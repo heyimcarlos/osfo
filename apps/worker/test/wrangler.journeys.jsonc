@@ -13,6 +13,7 @@
   "durable_objects": {
     "bindings": [
       { "name": "DOCUMENT_SANDBOX", "class_name": "Sandbox" },
+      { "name": "OSFO_AGENT_JOURNEY_TEST", "class_name": "OsfoAgent" },
       { "name": "OSFO_DIRECTORY", "class_name": "OsfoDirectory" },
     ],
   },

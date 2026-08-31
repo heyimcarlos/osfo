@@ -264,9 +264,15 @@ export class IntegrationEffectFinalizationUnavailable extends Schema.TaggedError
   { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
 ) {}
 
+export const IntegrationConnectionBinding = Schema.String.check(
+  Schema.isPattern(/^[0-9a-f]{64}$/u),
+).pipe(Schema.brand("IntegrationConnectionBinding"));
+export type IntegrationConnectionBinding = typeof IntegrationConnectionBinding.Type;
+
 export type IntegrationConnectionEvidence =
   | {
       readonly _tag: "IntegrationConnectionConnected";
+      readonly connectionBinding: IntegrationConnectionBinding;
       readonly toolkit: string;
       readonly userId: UserId;
     }
@@ -500,6 +506,7 @@ export const make = (
           connectedAccountId: candidate.connectedAccount.id,
           evidence: {
             _tag: "IntegrationConnectionConnected" as const,
+            connectionBinding: yield* connectionBindingFor(candidate.connectedAccount.id),
             toolkit: input.toolkit,
             userId: input.userId,
           },
@@ -955,7 +962,27 @@ export const make = (
           });
           return { _tag: "NotApplied" as const, providerLogId: evidence.value.providerLogId };
         }
-        const result = yield* normalizeEffect(manifest, evidence.value.execution, decoded.success);
+        const normalized = yield* Effect.result(
+          normalizeEffect(manifest, evidence.value.execution, decoded.success),
+        );
+        if (Result.isFailure(normalized)) {
+          if (normalized.failure.code !== "resultInvalid") {
+            return yield* normalized.failure;
+          }
+          if (retryAfterMilliseconds <= 0) {
+            return yield* terminalizeAmbiguous(
+              input.actionId,
+              retained.correlation,
+              digest,
+              input.finalizeEffect,
+            );
+          }
+          return {
+            _tag: "Ambiguous" as const,
+            retryAfterMilliseconds,
+          };
+        }
+        const result = normalized.success;
         const settled = yield* ports.settleAction(
           input.actionId,
           retained.correlation.providerRequestId,
@@ -1414,11 +1441,7 @@ const actionDigest = (
           toolkit: manifest.toolkit,
         }),
       );
-      return crypto.subtle
-        .digest("SHA-256", encoded)
-        .then((digest) =>
-          [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
-        );
+      return sha256Hex(encoded);
     },
     catch: (cause) =>
       new IntegrationPersistenceUnavailable({
@@ -1427,5 +1450,28 @@ const actionDigest = (
         operation: "digestAction",
       }),
   });
+
+const connectionBindingFor = (
+  connectedAccountId: string,
+): Effect.Effect<IntegrationConnectionBinding, IntegrationPersistenceUnavailable> =>
+  Effect.tryPromise({
+    try: () =>
+      sha256Hex(
+        new TextEncoder().encode(`osfo-integration-connection-v1:${connectedAccountId}`),
+      ).then((digest) => IntegrationConnectionBinding.make(digest)),
+    catch: (cause) =>
+      new IntegrationPersistenceUnavailable({
+        cause,
+        message: "The private Integration Connection binding could not be computed",
+        operation: "bindConnection",
+      }),
+  });
+
+const sha256Hex = (value: Uint8Array): Promise<string> =>
+  crypto.subtle
+    .digest("SHA-256", new Uint8Array(value))
+    .then((digest) =>
+      [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+    );
 
 export * as Integrations from "./integrations";

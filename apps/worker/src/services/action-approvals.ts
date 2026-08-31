@@ -40,6 +40,7 @@ export interface ActionApprovalLifecycle {
 /** Project one registered Think Action into its definition-owned safe presentation. */
 export type PresentAction = (
   pending: PendingThinkAction,
+  userId: UserId,
 ) => Effect.Effect<ActionPresentation, ActionPresentationUnavailable>;
 
 /** Durable first-write-wins storage for one immutable Action presentation. */
@@ -81,7 +82,7 @@ export const makeActionApprovals = (options: {
   ) {
     return yield* authorize(actor, presentationId).pipe(
       Effect.andThen(options.lifecycle.findPending(presentationId)),
-      Effect.flatMap(options.present),
+      Effect.flatMap((pending) => options.present(pending, actor.userId)),
       Effect.flatMap(options.presentations.retain),
       Effect.map((presentation) => ActionPresentationFound.make({ presentation })),
     );
@@ -112,10 +113,11 @@ export const makeActionApprovals = (options: {
     const selected =
       selection === undefined
         ? pending
-        : pending.filter(selection.select).slice(-selection.maximum);
+        : pending.filter(selection.select).slice(0, selection.maximum);
     const presentations = yield* Effect.forEach(
       selected,
-      (candidate) => options.present(candidate).pipe(Effect.flatMap(options.presentations.retain)),
+      (candidate) =>
+        options.present(candidate, actor.userId).pipe(Effect.flatMap(options.presentations.retain)),
       { concurrency: 1 },
     );
     return ActionPresentationsFound.make({ presentations });

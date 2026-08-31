@@ -36,11 +36,8 @@ export const make = (port: Port) => {
     // Think returns durable-pause Approvals oldest-first from its created_at index.
     const selected = found.presentations
       .filter(isImmediateGmailApproval)
-      .slice(-maximumVisibleApprovals);
-    return selected.reduceRight<Array<ReturnType<typeof project>>>(
-      (newestFirst, presentation) => newestFirst.concat(project(presentation)),
-      [],
-    );
+      .slice(0, maximumVisibleApprovals);
+    return selected.map(project);
   });
 
   const decide = Effect.fn("ImmediateGmailApprovals.decide")(function* (decision: Decision) {

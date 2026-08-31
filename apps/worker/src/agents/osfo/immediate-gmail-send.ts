@@ -1,5 +1,5 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/lazy-effect, eslint/no-underscore-dangle, osfo/no-unknown-parameters, unicorn/no-array-sort -- Durable Object persistence owns its Promise, wall-clock, and unknown-value boundaries; the zero-argument list operation is named explicitly; Effect outcomes use _tag and a fresh projection array is sorted. */
-import { Effect, Option, Schema } from "effect";
+import { Data, Effect, Option, Schema } from "effect";
 
 import { AllowancePeriodId, ManifestVersion, UserId } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
@@ -7,6 +7,8 @@ import { GmailMessageInput } from "../../domain/integration-manifest";
 import { ManagedTurnAuthorityIdentity } from "../../domain/managed-conversation";
 import {
   initialActionReconciliationDelayMilliseconds,
+  IntegrationConnectionBinding,
+  type IntegrationConnectionEvidence,
   type Integrations,
 } from "../../services/integrations";
 import { ActionPresentationId } from "./think-action-approvals";
@@ -14,6 +16,7 @@ import { ActionPresentationId } from "./think-action-approvals";
 export const Candidate = Schema.Struct({
   actionId: ActionId,
   authorityIdentity: ManagedTurnAuthorityIdentity,
+  connectionBinding: IntegrationConnectionBinding,
   input: GmailMessageInput,
   presentationId: ActionPresentationId,
 });
@@ -34,10 +37,20 @@ export const Context = Schema.Struct({
 
 export type Context = typeof Context.Type;
 
+export const ApprovalConnectionBinding = Schema.Struct({
+  actionId: ActionId,
+  connectionBinding: IntegrationConnectionBinding,
+  presentationId: ActionPresentationId,
+  userId: UserId,
+});
+
+export type ApprovalConnectionBinding = typeof ApprovalConnectionBinding.Type;
+
 export const TerminalStatus = Schema.Struct({
   actionId: ActionId,
   presentationId: ActionPresentationId,
-  retainedAt: Schema.Date,
+  settledAt: Schema.Date,
+  settlementSequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
   status: Schema.Union([
     Schema.Literal("applied"),
     Schema.Literal("notApplied"),
@@ -77,7 +90,16 @@ export interface Persistence {
   readonly listOpen: () => Effect.Effect<ReadonlyArray<unknown>, Unavailable>;
   readonly listTerminal: (limit: number) => Effect.Effect<ReadonlyArray<unknown>, Unavailable>;
   readonly read: (actionId: ActionId) => Effect.Effect<unknown, Unavailable>;
-  readonly retain: (candidate: AdmittedCandidate) => Effect.Effect<unknown, Unavailable>;
+  readonly readApprovalBinding: (
+    presentationId: ActionPresentationId,
+  ) => Effect.Effect<unknown, Unavailable>;
+  readonly releaseApprovalBinding: (
+    presentationId: ActionPresentationId,
+  ) => Effect.Effect<void, Unavailable>;
+  readonly retain: (candidate: AdmittedCandidate) => Effect.Effect<unknown, Conflict | Unavailable>;
+  readonly retainApprovalBinding: (
+    binding: ApprovalConnectionBinding,
+  ) => Effect.Effect<unknown, Conflict | Unavailable>;
   readonly settle: (
     context: Context,
     status: TerminalStatus["status"],
@@ -87,6 +109,7 @@ export interface Persistence {
 export interface Interface {
   readonly deleteUser: (userId: UserId) => Effect.Effect<void, Unavailable>;
   readonly listAllForUser: (userId: UserId) => Effect.Effect<ReadonlyArray<Context>, Unavailable>;
+  readonly listOpen: () => Effect.Effect<ReadonlyArray<Context>, Unavailable>;
   readonly listForUser: (userId: UserId) => Effect.Effect<VisibleActions, Unavailable>;
   readonly readForUser: (
     actionId: ActionId,
@@ -96,7 +119,17 @@ export interface Interface {
     actionId: ActionId,
     userId: UserId,
   ) => Effect.Effect<TerminalStatus, NotFound | Unavailable>;
+  readonly readApprovalBindingForUser: (
+    presentationId: ActionPresentationId,
+    userId: UserId,
+  ) => Effect.Effect<ApprovalConnectionBinding, NotFound | Unavailable>;
+  readonly releaseApprovalBinding: (
+    presentationId: ActionPresentationId,
+  ) => Effect.Effect<void, Unavailable>;
   readonly retain: (candidate: AdmittedCandidate) => Effect.Effect<Context, Conflict | Unavailable>;
+  readonly retainApprovalBinding: (
+    binding: ApprovalConnectionBinding,
+  ) => Effect.Effect<ApprovalConnectionBinding, Conflict | Unavailable>;
   readonly settle: (
     context: Context,
     status: TerminalStatus["status"],
@@ -219,8 +252,9 @@ export const makeCoordinator = (options: {
             readContextStatus(context).pipe(
               Effect.map((inspection) => ({
                 actionId: context.actionId,
+                orderedAt: context.retainedAt,
                 presentationId: context.presentationId,
-                retainedAt: context.retainedAt,
+                settlementSequence: 0,
                 status:
                   inspection._tag === "Applied"
                     ? ("applied" as const)
@@ -232,11 +266,23 @@ export const makeCoordinator = (options: {
               })),
             ),
           { concurrency: 1 },
-        ).pipe(Effect.map((items) => [...items, ...terminal])),
+        ).pipe(
+          Effect.map((items) => [
+            ...items,
+            ...terminal.map((status) => ({
+              ...status,
+              orderedAt: status.settledAt,
+            })),
+          ]),
+        ),
       ),
       Effect.map((items) => ({
         items: [...items]
-          .sort((left, right) => right.retainedAt.getTime() - left.retainedAt.getTime())
+          .sort(
+            (left, right) =>
+              right.orderedAt.getTime() - left.orderedAt.getTime() ||
+              right.settlementSequence - left.settlementSequence,
+          )
           .slice(0, maximumVisibleActions)
           .map(({ actionId, presentationId, status }) => ({ actionId, presentationId, status })),
       })),
@@ -364,12 +410,28 @@ export const makeCoordinator = (options: {
       ),
   );
 
+  const recoverOnActivation = Effect.fn("ImmediateGmailSend.recoverOnActivation")(() =>
+    options.store
+      .listOpen()
+      .pipe(
+        Effect.flatMap((contexts) =>
+          Effect.forEach(
+            contexts,
+            (context) =>
+              scheduleInspection(context, initialActionReconciliationDelayMilliseconds, true),
+            { concurrency: 1, discard: true },
+          ),
+        ),
+      ),
+  );
+
   return {
     deleteUser: options.store.deleteUser,
     execute,
     inspectForUser,
     quiesceUser,
     reconcile,
+    recoverOnActivation,
   };
 };
 
@@ -400,6 +462,12 @@ const decodeTerminal = (value: unknown, operation: string) =>
 const encode = Schema.encodeSync(Context);
 const encodeTerminal = Schema.encodeSync(TerminalStatus);
 export const maximumVisibleActions = 50;
+export const maximumOpenActions = 50;
+
+export const hasCurrentConnectionBinding = (
+  evidence: IntegrationConnectionEvidence,
+  expected: IntegrationConnectionBinding,
+) => evidence._tag === "IntegrationConnectionConnected" && evidence.connectionBinding === expected;
 
 export const make = (persistence: Persistence): Interface => ({
   deleteUser: Effect.fn("ImmediateGmailSend.Store.deleteUser")((userId) =>
@@ -414,6 +482,15 @@ export const make = (persistence: Persistence): Interface => ({
         contexts.filter((context) => context.authorityIdentity.userId === userId),
       ),
     ),
+  ),
+  listOpen: Effect.fn("ImmediateGmailSend.Store.listOpen")(() =>
+    persistence
+      .listOpen()
+      .pipe(
+        Effect.flatMap((values) =>
+          Effect.forEach(values, (value) => decode(value, "listOpen.decode")),
+        ),
+      ),
   ),
   listForUser: Effect.fn("ImmediateGmailSend.Store.listForUser")((userId) =>
     Effect.all({
@@ -464,6 +541,26 @@ export const make = (persistence: Persistence): Interface => ({
         }),
       ),
   ),
+  readApprovalBindingForUser: Effect.fn("ImmediateGmailSend.Store.readApprovalBindingForUser")(
+    (presentationId, userId) =>
+      persistence.readApprovalBinding(presentationId).pipe(
+        Effect.flatMap((value) =>
+          value === null
+            ? Effect.fail(notFound(ActionId.make(presentationId)))
+            : Schema.decodeUnknownEffect(ApprovalConnectionBinding)(value).pipe(
+                Effect.mapError((cause) => unavailable("readApprovalBinding.decode", cause)),
+                Effect.flatMap((binding) =>
+                  binding.userId === userId
+                    ? Effect.succeed(binding)
+                    : Effect.fail(notFound(binding.actionId)),
+                ),
+              ),
+        ),
+      ),
+  ),
+  releaseApprovalBinding: Effect.fn("ImmediateGmailSend.Store.releaseApprovalBinding")(
+    (presentationId) => persistence.releaseApprovalBinding(presentationId),
+  ),
   retain: Effect.fn("ImmediateGmailSend.Store.retain")((candidate) =>
     persistence.retain(candidate).pipe(
       Effect.flatMap((retained) => decode(retained, "retain.decode")),
@@ -480,6 +577,27 @@ export const make = (persistence: Persistence): Interface => ({
       ),
     ),
   ),
+  retainApprovalBinding: Effect.fn("ImmediateGmailSend.Store.retainApprovalBinding")((candidate) =>
+    persistence.retainApprovalBinding(candidate).pipe(
+      Effect.flatMap((value) =>
+        Schema.decodeUnknownEffect(ApprovalConnectionBinding)(value).pipe(
+          Effect.mapError((cause) => unavailable("retainApprovalBinding.decode", cause)),
+        ),
+      ),
+      Effect.flatMap((retained) =>
+        retained.actionId === candidate.actionId &&
+        retained.presentationId === candidate.presentationId &&
+        retained.userId === candidate.userId
+          ? Effect.succeed(retained)
+          : Effect.fail(
+              new Conflict({
+                actionId: candidate.actionId,
+                message: "The Approval identity is already bound to another Gmail Action",
+              }),
+            ),
+      ),
+    ),
+  ),
   settle: Effect.fn("ImmediateGmailSend.Store.settle")((context, status) =>
     persistence.settle(context, status),
   ),
@@ -489,11 +607,16 @@ export const makeDurableObjectPersistence = (storage: DurableObjectStorage): Per
   deleteUser: Effect.fn("ImmediateGmailSend.Persistence.deleteUser")((userId) =>
     Effect.tryPromise({
       try: async () => {
-        const [open, terminal] = await Promise.all([
+        const [approvalBindings, open, terminal] = await Promise.all([
+          storage.list({ prefix: approvalBindingStoragePrefix }),
           storage.list({ prefix: openStoragePrefix }),
           storage.list({ prefix: terminalStoragePrefix }),
         ]);
         const keys = [
+          settlementSequenceStorageKey,
+          ...[...approvalBindings.entries()]
+            .filter(([, value]) => decodedApprovalBindingUserId(value) === userId)
+            .map(([key]) => key),
           ...[...open.entries()]
             .filter(([, value]) => decodedUserId(value) === userId)
             .map(([key]) => key),
@@ -514,7 +637,9 @@ export const makeDurableObjectPersistence = (storage: DurableObjectStorage): Per
   listOpen: Effect.fn("ImmediateGmailSend.Persistence.listOpen")(() =>
     Effect.tryPromise({
       try: () =>
-        storage.list({ prefix: openStoragePrefix }).then((records) => [...records.values()]),
+        storage
+          .list({ limit: maximumOpenActions, prefix: openStoragePrefix })
+          .then((records) => [...records.values()]),
       catch: (cause) => unavailable("listOpen", cause),
     }),
   ),
@@ -533,6 +658,21 @@ export const makeDurableObjectPersistence = (storage: DurableObjectStorage): Per
       catch: (cause) => unavailable("read", cause),
     }),
   ),
+  readApprovalBinding: Effect.fn("ImmediateGmailSend.Persistence.readApprovalBinding")(
+    (presentationId) =>
+      Effect.tryPromise({
+        try: () =>
+          storage.get(approvalBindingStorageKey(presentationId)).then((value) => value ?? null),
+        catch: (cause) => unavailable("readApprovalBinding", cause),
+      }),
+  ),
+  releaseApprovalBinding: Effect.fn("ImmediateGmailSend.Persistence.releaseApprovalBinding")(
+    (presentationId) =>
+      Effect.tryPromise({
+        try: () => storage.delete(approvalBindingStorageKey(presentationId)).then(() => undefined),
+        catch: (cause) => unavailable("releaseApprovalBinding", cause),
+      }),
+  ),
   retain: Effect.fn("ImmediateGmailSend.Persistence.retain")((candidate) =>
     Effect.tryPromise({
       try: () =>
@@ -540,27 +680,59 @@ export const makeDurableObjectPersistence = (storage: DurableObjectStorage): Per
           const key = openStorageKey(candidate.actionId);
           const retained = await transaction.get(key);
           if (retained !== undefined) return retained;
+          const open = await transaction.list({
+            limit: maximumOpenActions,
+            prefix: openStoragePrefix,
+          });
+          if (open.size >= maximumOpenActions) throw new OpenActionLimitReached();
           const context = { ...candidate, retainedAt: new Date() };
           const encoded = encode(context);
           await transaction.put(key, encoded);
+          await transaction.delete(approvalBindingStorageKey(candidate.presentationId));
           return encoded;
         }),
-      catch: (cause) => unavailable("retain", cause),
+      catch: (cause) =>
+        cause instanceof OpenActionLimitReached
+          ? new Conflict({
+              actionId: candidate.actionId,
+              message: "The Agent already has the maximum open Gmail Actions",
+            })
+          : unavailable("retain", cause),
     }),
+  ),
+  retainApprovalBinding: Effect.fn("ImmediateGmailSend.Persistence.retainApprovalBinding")(
+    (candidate) =>
+      Effect.tryPromise({
+        try: () =>
+          storage.transaction(async (transaction) => {
+            const key = approvalBindingStorageKey(candidate.presentationId);
+            const retained = await transaction.get(key);
+            if (retained !== undefined) return retained;
+            const encoded = Schema.encodeSync(ApprovalConnectionBinding)(candidate);
+            await transaction.put(key, encoded);
+            return encoded;
+          }),
+        catch: (cause) => unavailable("retainApprovalBinding", cause),
+      }),
   ),
   settle: Effect.fn("ImmediateGmailSend.Persistence.settle")((context, status) =>
     Effect.tryPromise({
       try: () =>
         storage.transaction(async (transaction) => {
+          const settlementSequence =
+            ((await transaction.get<number>(settlementSequenceStorageKey)) ?? 0) + 1;
           const terminal = encodeTerminal({
             actionId: context.actionId,
             presentationId: context.presentationId,
-            retainedAt: context.retainedAt,
+            settledAt: new Date(),
+            settlementSequence,
             status,
             userId: context.authorityIdentity.userId,
           });
-          await transaction.put(terminalStorageKey(context), terminal);
+          await transaction.put(settlementSequenceStorageKey, settlementSequence);
+          await transaction.put(terminalStorageKey(settlementSequence, context.actionId), terminal);
           await transaction.delete(openStorageKey(context.actionId));
+          await transaction.delete(approvalBindingStorageKey(context.presentationId));
           const visible = await transaction.list({ prefix: terminalStoragePrefix });
           const stale = [...visible.keys()].slice(maximumVisibleActions);
           if (stale.length > 0) await transaction.delete(stale);
@@ -572,18 +744,24 @@ export const makeDurableObjectPersistence = (storage: DurableObjectStorage): Per
 
 const storagePrefix = "osfo:immediate-gmail-send:";
 const maximumBulkDeleteKeys = 128;
+const approvalBindingStoragePrefix = `${storagePrefix}approval:`;
 const openStoragePrefix = `${storagePrefix}open:`;
 const terminalStoragePrefix = `${storagePrefix}terminal:`;
+const settlementSequenceStorageKey = `${storagePrefix}settlement-sequence`;
+const approvalBindingStorageKey = (presentationId: ActionPresentationId) =>
+  `${approvalBindingStoragePrefix}${presentationId}`;
 const openStorageKey = (actionId: ActionId) => `${openStoragePrefix}${actionId}`;
-const terminalStorageKey = (context: Context) => {
-  const reverseTimestamp = Number.MAX_SAFE_INTEGER - context.retainedAt.getTime();
-  return `${terminalStoragePrefix}${String(reverseTimestamp).padStart(16, "0")}:${context.actionId}`;
-};
+const terminalStorageKey = (settlementSequence: number, actionId: ActionId) =>
+  `${terminalStoragePrefix}${String(Number.MAX_SAFE_INTEGER - settlementSequence).padStart(16, "0")}:${actionId}`;
 
 const decodedUserId = (value: unknown) =>
   Schema.decodeUnknownSync(Context)(value).authorityIdentity.userId;
 const decodedTerminalUserId = (value: unknown) =>
   Schema.decodeUnknownSync(TerminalStatus)(value).userId;
+const decodedApprovalBindingUserId = (value: unknown) =>
+  Schema.decodeUnknownSync(ApprovalConnectionBinding)(value).userId;
+
+class OpenActionLimitReached extends Data.TaggedError("OpenActionLimitReached") {}
 
 const notFound = (actionId: ActionId) =>
   new NotFound({ actionId, message: "The Gmail Action does not belong to this User" });

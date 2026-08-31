@@ -6,3 +6,11 @@ repository configuration.
 - On a 32 GiB development machine, `apps/worker`'s PGlite Vitest configuration
   can exhaust memory at its default concurrency. Run it locally with
   `vitest run --config vitest.db.config.ts --maxWorkers=1`.
+- Cloudflare Vitest/Miniflare needs each exercised facet class listed as a
+  test-only Durable Object binding. Keep those compatibility bindings out of
+  `new_sqlite_classes`; without them, facet startup rejects the SDK's
+  `StartupOptions.class` before product routing. Even with bindings for
+  `ThinkMessengerStateAgent`, `CompanyAgent`, and `OsfoAgent`, Miniflare cannot
+  serialize Chat SDK's live `_ThreadImpl` delivery surface across a facet.
+  Qualify genuine messenger ingress in real Wrangler/Chrome and use the trusted
+  Agent submission seam only to arrange downstream Worker journey state.

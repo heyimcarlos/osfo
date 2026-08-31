@@ -103,8 +103,9 @@ describe("Integrations", () => {
             slug: "gmail",
           },
         ];
-        expect(yield* integrations.connectionEvidence({ toolkit: "gmail", userId })).toEqual({
+        expect(yield* integrations.connectionEvidence({ toolkit: "gmail", userId })).toMatchObject({
           _tag: "IntegrationConnectionConnected",
+          connectionBinding: expect.stringMatching(/^[0-9a-f]{64}$/u),
           toolkit: "gmail",
           userId,
         });
@@ -450,6 +451,43 @@ describe("Integrations", () => {
       };
       expect(yield* make(harness).inspectAction(request)).toEqual({ _tag: "TerminalAmbiguous" });
       expect(harness.actions.get(actionId)).toMatchObject({ _tag: "TerminalAmbiguous" });
+      expect(accounting.retained).toEqual([
+        {
+          items: [{ allowanceKind: "gmailSends", basis: "conservative", quantity: 1n }],
+          source: { sourceId: actionId, sourceType: "integrationAction" },
+        },
+      ]);
+      expect(harness.executed).toHaveLength(1);
+    }),
+  );
+
+  it.effect("terminalizes malformed Applied evidence conservatively across restart", () =>
+    Effect.gen(function* () {
+      const harness = makeAmbiguousGmailHarness();
+      const actionId = ActionId.make("action-malformed-applied-evidence");
+      const accounting = makeActionAccounting();
+      const request = gmailEffectRequest(actionId, accounting.finalize(actionId));
+      yield* TestClock.setTime(1);
+      yield* make(harness).execute(request).pipe(Effect.result);
+      harness.inspectionEvidence = {
+        _tag: "Applied",
+        execution: { data: {}, error: null, logId: "malformed-applied-log" },
+      };
+
+      yield* TestClock.setTime(120_001);
+      expect(yield* make(harness).inspectAction(request)).toEqual({
+        _tag: "Ambiguous",
+        retryAfterMilliseconds: 180_000,
+      });
+      expect(accounting.retained).toEqual([]);
+
+      yield* TestClock.setTime(300_001);
+      expect(yield* make(harness).inspectAction(request)).toEqual({ _tag: "TerminalAmbiguous" });
+      expect(yield* make(harness).inspectAction(request)).toEqual({ _tag: "TerminalAmbiguous" });
+      expect(harness.actions.get(actionId)).toMatchObject({
+        _tag: "TerminalAmbiguous",
+        correlation: expect.objectContaining({ providerRequestId: expect.any(String) }),
+      });
       expect(accounting.retained).toEqual([
         {
           items: [{ allowanceKind: "gmailSends", basis: "conservative", quantity: 1n }],

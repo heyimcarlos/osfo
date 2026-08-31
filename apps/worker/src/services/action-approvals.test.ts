@@ -79,8 +79,8 @@ it.effect("reuses the immutable Action presentation retained on its first read",
   });
 });
 
-it.effect("selects the newest matching pending Actions before presentation work", () => {
-  const pending = Array.from({ length: 60 }, (_, index): PendingThinkAction => ({
+it.effect("selects the oldest matching pending Actions before presentation work", () => {
+  const pending = Array.from({ length: 62 }, (_, index): PendingThinkAction => ({
     descriptor: {
       action: index % 6 === 0 ? "scheduledEmailStart" : "gmailSendEmail",
       input: { index },

@@ -29,6 +29,12 @@ interface StripeCheckoutState {
 
 interface ResearchControl {
   nextDocumentBuildActionId: string | null;
+  nextImmediateGmailActionId: string | null;
+}
+
+interface IntegrationConnectionControl {
+  nextOrdinal: number;
+  swapAfterInspections: number | null;
 }
 
 /** One observed Supermemory request. */
@@ -192,8 +198,15 @@ const startProvider = (options: {
     const researchLedger: Array<ResearchLedgerEntry> = [];
     const integrationLedger: Array<IntegrationLedgerEntry> = [];
     const integrationSessions = new Map<string, string>();
-    const integrationConnections = new Set<string>();
-    const researchControl: ResearchControl = { nextDocumentBuildActionId: null };
+    const integrationConnections = new Map<string, string>();
+    const integrationConnectionControl: IntegrationConnectionControl = {
+      nextOrdinal: 1,
+      swapAfterInspections: null,
+    };
+    const researchControl: ResearchControl = {
+      nextDocumentBuildActionId: null,
+      nextImmediateGmailActionId: null,
+    };
     let whatsAppNextResponseStatus: number | null = null;
     let whatsAppTemplateOnly = false;
     const server = createServer((request, response) => {
@@ -215,9 +228,12 @@ const startProvider = (options: {
         whatsAppLedger.length = 0;
         researchLedger.length = 0;
         researchControl.nextDocumentBuildActionId = null;
+        researchControl.nextImmediateGmailActionId = null;
         integrationLedger.length = 0;
         integrationSessions.clear();
         integrationConnections.clear();
+        integrationConnectionControl.nextOrdinal = 1;
+        integrationConnectionControl.swapAfterInspections = null;
         whatsAppNextResponseStatus = null;
         whatsAppTemplateOnly = false;
         response.statusCode = 204;
@@ -321,8 +337,43 @@ const startProvider = (options: {
         respondJson(response, 200, integrationLedger);
         return;
       }
+      if (request.method === "GET" && pathname === "/_test/integrations/control") {
+        respondJson(response, 200, {
+          swapAfterInspections: integrationConnectionControl.swapAfterInspections,
+        });
+        return;
+      }
+      if (request.method === "POST" && pathname === "/_test/integrations/next-gmail-action") {
+        const actionId = url.searchParams.get("actionId");
+        if (actionId === null || !/^verification-gmail-[a-z0-9-]{1,48}$/u.test(actionId)) {
+          respondJson(response, 400, { error: "Invalid immediate Gmail Action ID" });
+          return;
+        }
+        researchControl.nextImmediateGmailActionId = actionId;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
       if (request.method === "POST" && pathname === "/_test/integrations/reset-ledger") {
         integrationLedger.length = 0;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      if (request.method === "POST" && pathname === "/_test/integrations/swap-connection") {
+        const afterInspections = Number.parseInt(
+          url.searchParams.get("afterInspections") ?? "",
+          10,
+        );
+        if (
+          !Number.isSafeInteger(afterInspections) ||
+          afterInspections < 1 ||
+          afterInspections > 10
+        ) {
+          respondJson(response, 400, { error: "Invalid Integration inspection count" });
+          return;
+        }
+        integrationConnectionControl.swapAfterInspections = afterInspections;
         response.statusCode = 204;
         response.end();
         return;
@@ -334,6 +385,7 @@ const startProvider = (options: {
           url,
           integrationSessions,
           integrationConnections,
+          integrationConnectionControl,
           integrationLedger,
         );
         return;
@@ -524,7 +576,8 @@ const handleLocalIntegrations = (
   response: ServerResponse,
   url: URL,
   sessions: Map<string, string>,
-  connections: Set<string>,
+  connections: Map<string, string>,
+  control: IntegrationConnectionControl,
   ledger: Array<IntegrationLedgerEntry>,
 ): void => {
   const segments = url.pathname.split("/").filter(Boolean);
@@ -544,7 +597,7 @@ const handleLocalIntegrations = (
     return;
   }
   if (request.method === "POST" && operation === "connect" && sessionId !== undefined) {
-    completeLocalIntegrationConnect(response, url, sessionId, sessions, connections);
+    completeLocalIntegrationConnect(response, url, sessionId, sessions, connections, control);
     return;
   }
   readTextBody(request)
@@ -581,6 +634,16 @@ const handleLocalIntegrations = (
         return;
       }
       if (operation === "toolkits") {
+        if (control.swapAfterInspections !== null) {
+          control.swapAfterInspections -= 1;
+          if (control.swapAfterInspections === 0) {
+            const userId = input.userId ?? "";
+            if (connections.has(userId)) {
+              connections.set(userId, integrationAccountId(userId, control.nextOrdinal++));
+            }
+            control.swapAfterInspections = null;
+          }
+        }
         const requested = input.toolkits ?? [];
         respondJson(
           response,
@@ -588,7 +651,7 @@ const handleLocalIntegrations = (
           requested.map((toolkit) => ({
             connectedAccount:
               toolkit === "gmail" && connections.has(input.userId ?? "")
-                ? { id: integrationAccountId(input.userId ?? ""), status: "ACTIVE" }
+                ? { id: connections.get(input.userId ?? ""), status: "ACTIVE" }
                 : null,
             isActive: toolkit === "gmail" && connections.has(input.userId ?? ""),
             slug: toolkit,
@@ -659,7 +722,8 @@ const completeLocalIntegrationConnect = (
   url: URL,
   sessionId: string,
   sessions: ReadonlyMap<string, string>,
-  connections: Set<string>,
+  connections: Map<string, string>,
+  control: IntegrationConnectionControl,
 ): void => {
   const userId = sessions.get(sessionId);
   const callback = url.searchParams.get("callback");
@@ -667,7 +731,7 @@ const completeLocalIntegrationConnect = (
     respondJson(response, 400, { error: "Connect request is invalid" });
     return;
   }
-  connections.add(userId);
+  connections.set(userId, integrationAccountId(userId, control.nextOrdinal++));
   response.statusCode = 303;
   response.setHeader("location", callback);
   response.end();
@@ -677,15 +741,17 @@ const executeLocalIntegration = (
   response: ServerResponse,
   sessionId: string,
   input: typeof LocalIntegrationRequestFromJson.Type,
-  connections: ReadonlySet<string>,
+  connections: ReadonlyMap<string, string>,
   ledger: Array<IntegrationLedgerEntry>,
 ): void => {
   const userId = input.userId ?? "";
   const message = input.input;
+  const connectedAccountId = input.connectedAccountId;
   if (
     !connections.has(userId) ||
     input.providerTool !== "GMAIL_SEND_EMAIL" ||
-    input.connectedAccountId !== integrationAccountId(userId) ||
+    connectedAccountId === undefined ||
+    connectedAccountId !== connections.get(userId) ||
     message === undefined ||
     input.correlation?.providerRequestId === null ||
     input.correlation?.providerRequestId === undefined
@@ -697,7 +763,7 @@ const executeLocalIntegration = (
   const logId = `local-gmail-log-${ordinal}`;
   const resourceId = `local-gmail-message-${ordinal}`;
   ledger.push({
-    connectedAccountId: input.connectedAccountId,
+    connectedAccountId,
     input: message,
     logId,
     providerSessionId: sessionId,
@@ -710,8 +776,8 @@ const executeLocalIntegration = (
   respondJson(response, 200, { data: { id: resourceId }, error: null, logId });
 };
 
-const integrationAccountId = (userId: string) =>
-  `local-gmail-${createHash("sha256").update(userId).digest("hex").slice(0, 16)}`;
+const integrationAccountId = (userId: string, ordinal: number) =>
+  `local-gmail-${createHash("sha256").update(`${userId}:${ordinal}`).digest("hex").slice(0, 16)}`;
 
 const sameJsonObject = (left: JsonObject, right: JsonObject | undefined): boolean =>
   right !== undefined && JSON.stringify(left) === JSON.stringify(right);
@@ -825,9 +891,11 @@ const handleResearch = (
             });
             return;
           }
+          const operationId = control.nextImmediateGmailActionId ?? "verification-gmailSendEmail";
+          control.nextImmediateGmailActionId = null;
           ledger.push({
             kind: "tool-selection",
-            operationId: "verification-gmailSendEmail",
+            operationId,
             selectedTool: "gmailSendEmail",
             subject: `${recipient}|${subject}|${body}`,
           });
@@ -842,7 +910,7 @@ const handleResearch = (
                 recipients: [recipient],
                 subject,
               },
-              "verification-gmailSendEmail",
+              operationId,
             ),
           );
           return;

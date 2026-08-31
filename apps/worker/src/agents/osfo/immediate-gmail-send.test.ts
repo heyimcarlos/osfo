@@ -10,12 +10,15 @@ import { Integrations } from "../../services/integrations";
 import { ActionPresentationId } from "./think-action-approvals";
 import { ImmediateGmailSend } from "./immediate-gmail-send";
 
+const connectionBinding = Integrations.IntegrationConnectionBinding.make("a".repeat(64));
+
 it.effect("retains immutable Gmail facts and hides them from another User", () =>
   Effect.gen(function* () {
     const { contexts, store } = memoryStore();
     const candidate = {
       actionId: ActionId.make("gmail-action-1"),
       allowancePeriodId: AllowancePeriodId.make("period-1"),
+      connectionBinding,
       authorityIdentity: {
         _tag: "AuthSession",
         authSessionId: AuthSessionId.make("auth-session-1"),
@@ -61,6 +64,7 @@ it.effect("projects only the newest fifty Gmail Actions", () =>
           .retain({
             actionId: ActionId.make(`gmail-action-${index}`),
             allowancePeriodId: AllowancePeriodId.make("period-1"),
+            connectionBinding,
             authorityIdentity: {
               _tag: "AuthSession",
               authSessionId: AuthSessionId.make("auth-session-1"),
@@ -112,7 +116,7 @@ it.effect("compacts durable terminal visibility and bulk-deletes bounded User st
     expect(yield* persistence.listOpen()).toHaveLength(0);
 
     yield* Effect.forEach(
-      Array.from({ length: 80 }, (_, index) => index),
+      Array.from({ length: ImmediateGmailSend.maximumOpenActions }, (_, index) => index),
       (index) =>
         persistence.retain({
           ...candidate,
@@ -122,10 +126,150 @@ it.effect("compacts durable terminal visibility and bulk-deletes bounded User st
     );
     batches.length = 0;
     yield* persistence.deleteUser(userId);
-    expect(batches.map((batch) => batch.length)).toEqual([128, 2]);
+    expect(batches.map((batch) => batch.length)).toEqual([101]);
     expect(records.size).toBe(0);
   }),
 );
+
+it.effect("orders and prunes terminal visibility by settlement rather than retention", () =>
+  Effect.gen(function* () {
+    const { store } = memoryStore();
+    const old = yield* store.retain({
+      ...candidate,
+      actionId: ActionId.make("old-action"),
+      presentationId: ActionPresentationId.make("old-presentation"),
+    });
+    yield* Effect.forEach(
+      Array.from({ length: ImmediateGmailSend.maximumVisibleActions }, (_, index) => index),
+      (index) =>
+        store
+          .retain({
+            ...candidate,
+            actionId: ActionId.make(`newer-action-${index}`),
+            presentationId: ActionPresentationId.make(`newer-presentation-${index}`),
+          })
+          .pipe(Effect.flatMap((context) => store.settle(context, "applied"))),
+    );
+    yield* store.settle(old, "applied");
+
+    const visible = (yield* store.listForUser(candidate.authorityIdentity.userId)).terminal;
+    expect(visible).toHaveLength(ImmediateGmailSend.maximumVisibleActions);
+    expect(visible[0]?.actionId).toBe(old.actionId);
+    expect(visible.some((status) => status.actionId === "newer-action-0")).toBe(false);
+  }),
+);
+
+it.effect("rejects the fifty-first open Action before any provider effect", () =>
+  Effect.gen(function* () {
+    const { storage } = durableStorageFake();
+    const store = ImmediateGmailSend.make(ImmediateGmailSend.makeDurableObjectPersistence(storage));
+    yield* Effect.forEach(
+      Array.from({ length: ImmediateGmailSend.maximumOpenActions }, (_, index) => index),
+      (index) =>
+        store.retain({
+          ...candidate,
+          actionId: ActionId.make(`bounded-open-${index}`),
+          presentationId: ActionPresentationId.make(`bounded-presentation-${index}`),
+        }),
+    );
+    let providerEffects = 0;
+    const coordinator = ImmediateGmailSend.makeCoordinator({
+      accounting: noAccounting,
+      integrations: {
+        execute: () =>
+          Effect.sync(() => {
+            providerEffects += 1;
+            return appliedResult;
+          }),
+        inspectAction: () => Effect.succeed({ _tag: "NotStarted" }),
+        readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
+      },
+      scheduler: schedulerRecording([]),
+      store,
+    });
+    const overflow = {
+      ...candidate,
+      actionId: ActionId.make("bounded-open-overflow"),
+      presentationId: ActionPresentationId.make("bounded-presentation-overflow"),
+    };
+
+    expect(
+      yield* coordinator
+        .execute(overflow, Effect.succeed(candidate.allowancePeriodId), Effect.void)
+        .pipe(Effect.result),
+    ).toMatchObject({ failure: { _tag: "ImmediateGmailSendConflict" } });
+    expect(providerEffects).toBe(0);
+  }),
+);
+
+it.effect("recovers a retained Action on activation after scheduler retries exhaust", () =>
+  Effect.gen(function* () {
+    const { store } = memoryStore();
+    yield* store.retain(candidate);
+    let schedulerAvailable = false;
+    let scheduleAttempts = 0;
+    const recovered: Array<ScheduledInspection> = [];
+    const coordinator = ImmediateGmailSend.makeCoordinator({
+      accounting: noAccounting,
+      integrations: {
+        execute: () => Effect.succeed(appliedResult),
+        inspectAction: () => Effect.succeed({ _tag: "Pending" }),
+        readActionStatus: () => Effect.succeed({ _tag: "Pending" }),
+      },
+      scheduler: {
+        schedule: (_actionId, _userId, delayMilliseconds, idempotent) =>
+          Effect.suspend(() => {
+            scheduleAttempts += 1;
+            return schedulerAvailable
+              ? Effect.sync(() => recovered.push({ delayMilliseconds, idempotent }))
+              : Effect.fail(
+                  new ImmediateGmailSend.Unavailable({
+                    cause: "scheduler unavailable",
+                    message: "scheduler unavailable",
+                    operation: "test.schedule",
+                  }),
+                );
+          }),
+      },
+      store,
+    });
+
+    yield* Effect.forEach(
+      Array.from({ length: 10 }, () => undefined),
+      () =>
+        coordinator
+          .reconcile(candidate.actionId, candidate.authorityIdentity.userId)
+          .pipe(Effect.result),
+      { discard: true },
+    );
+    schedulerAvailable = true;
+    yield* coordinator.recoverOnActivation();
+
+    expect(scheduleAttempts).toBe(11);
+    expect(recovered).toEqual([
+      {
+        delayMilliseconds: Integrations.initialActionReconciliationDelayMilliseconds,
+        idempotent: true,
+      },
+    ]);
+  }),
+);
+
+it("binds an Approval to the unchanged private Connection identity", () => {
+  const connectedA = {
+    _tag: "IntegrationConnectionConnected" as const,
+    connectionBinding,
+    toolkit: "gmail",
+    userId: candidate.authorityIdentity.userId,
+  };
+  const connectedB = {
+    ...connectedA,
+    connectionBinding: Integrations.IntegrationConnectionBinding.make("b".repeat(64)),
+  };
+
+  expect(ImmediateGmailSend.hasCurrentConnectionBinding(connectedA, connectionBinding)).toBe(true);
+  expect(ImmediateGmailSend.hasCurrentConnectionBinding(connectedB, connectionBinding)).toBe(false);
+});
 
 it.effect("retains before execution and schedules one initial ambiguous inspection", () =>
   Effect.gen(function* () {
@@ -874,6 +1018,7 @@ it.effect("durably reschedules repeated accounting failures until once-only sett
 const candidate = {
   actionId: ActionId.make("gmail-action-coordinator"),
   allowancePeriodId: AllowancePeriodId.make("period-1"),
+  connectionBinding,
   authorityIdentity: {
     _tag: "AuthSession",
     authSessionId: AuthSessionId.make("auth-session-1"),
@@ -914,9 +1059,14 @@ const schedulerRecording = (
 });
 
 const memoryStore = () => {
+  const approvalBindings = new Map<
+    ActionPresentationId,
+    ImmediateGmailSend.ApprovalConnectionBinding
+  >();
   const contexts = new Map<ActionId, ImmediateGmailSend.Context>();
   const terminal = new Map<ActionId, ImmediateGmailSend.TerminalStatus>();
   let retainedOrdinal = 0;
+  let settlementSequence = 0;
   const store = ImmediateGmailSend.make({
     deleteUser: (userId) =>
       Effect.sync(() => {
@@ -926,20 +1076,24 @@ const memoryStore = () => {
         for (const [actionId, status] of terminal) {
           if (status.userId === userId) terminal.delete(actionId);
         }
+        for (const [presentationId, binding] of approvalBindings) {
+          if (binding.userId === userId) approvalBindings.delete(presentationId);
+        }
       }),
     listOpen: () => Effect.succeed([...contexts.values()]),
     listTerminal: (limit) => {
-      const values = [...terminal.values()];
-      return Effect.succeed(
-        values
-          .reduceRight<Array<ImmediateGmailSend.TerminalStatus>>(
-            (newestFirst, status) => newestFirst.concat(status),
-            [],
-          )
-          .slice(0, limit),
+      const values = [...terminal.values()].sort(
+        (left, right) => right.settlementSequence - left.settlementSequence,
       );
+      return Effect.succeed(values.slice(0, limit));
     },
     read: (actionId) => Effect.succeed(contexts.get(actionId) ?? null),
+    readApprovalBinding: (presentationId) =>
+      Effect.succeed(approvalBindings.get(presentationId) ?? null),
+    releaseApprovalBinding: (presentationId) =>
+      Effect.sync(() => {
+        approvalBindings.delete(presentationId);
+      }),
     retain: (retainedCandidate) =>
       Effect.sync(() => {
         const retained =
@@ -951,17 +1105,28 @@ const memoryStore = () => {
         contexts.set(retainedCandidate.actionId, retained);
         return retained;
       }),
+    retainApprovalBinding: (binding) =>
+      Effect.sync(() => {
+        const retained = approvalBindings.get(binding.presentationId) ?? binding;
+        approvalBindings.set(binding.presentationId, retained);
+        return retained;
+      }),
     settle: (context, status) =>
       Effect.sync(() => {
         contexts.delete(context.actionId);
+        settlementSequence += 1;
         terminal.set(context.actionId, {
           actionId: context.actionId,
           presentationId: context.presentationId,
-          retainedAt: context.retainedAt,
+          settledAt: new Date(Date.UTC(2026, 7, 30, 13, 0, settlementSequence)),
+          settlementSequence,
           status,
           userId: context.authorityIdentity.userId,
         });
-        const stale = [...terminal.keys()].slice(0, -ImmediateGmailSend.maximumVisibleActions);
+        const stale = [...terminal.values()]
+          .sort((left, right) => right.settlementSequence - left.settlementSequence)
+          .slice(ImmediateGmailSend.maximumVisibleActions)
+          .map((value) => value.actionId);
         stale.forEach((actionId) => terminal.delete(actionId));
       }),
   });
