@@ -274,7 +274,7 @@ import {
   ApprovalActorAuthorizationUnavailable,
   type ApprovalActorUnauthorized,
   type ApprovalAlreadyResolved,
-  type ApprovalDecisionAccepted,
+  ApprovalDecisionAccepted,
   type CancelActionApprovalRequest,
   DecideActionApprovalRequest,
   makeThinkActionApprovalAdapter,
@@ -5028,6 +5028,10 @@ export class OsfoAgent extends Think<Env> {
                         presentation: approvalPresentationFor(found.presentation),
                       });
                     }
+                    const acceptedDecision = ApprovalDecisionAccepted.make({
+                      decision: parsed.decision === "approve" ? "approved" : "rejected",
+                      presentationId: parsed.presentationId,
+                    });
                     const result = yield* actionApprovals
                       .dispatch(
                         parsed.actor,
@@ -5036,9 +5040,9 @@ export class OsfoAgent extends Think<Env> {
                         parsed.reason,
                       )
                       .pipe(
-                        Effect.tapError(() =>
+                        Effect.catch((failure) =>
                           approvalSettlement === undefined || immediateGmailSends === undefined
-                            ? Effect.void
+                            ? Effect.fail(failure)
                             : immediateGmailSends
                                 .recoverApprovalSettlement(approvalSettlement)
                                 .pipe(
@@ -5050,6 +5054,12 @@ export class OsfoAgent extends Think<Env> {
                                           "The Gmail Approval handoff could not be reconciled",
                                         operation: "decideActionApproval.recoverHandoff",
                                       }),
+                                  ),
+                                  Effect.flatMap((recovery) =>
+                                    recovery._tag === "Committed" &&
+                                    Schema.is(ThinkApprovalUnavailable)(failure)
+                                      ? Effect.succeed(acceptedDecision)
+                                      : Effect.fail(failure),
                                   ),
                                 ),
                         ),

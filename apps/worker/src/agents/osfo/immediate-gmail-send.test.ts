@@ -216,6 +216,36 @@ it.effect("keeps the first presented Connection binding immutable across account
   }),
 );
 
+it.effect("recognizes a consumed Approval with a durable open reconciliation context", () =>
+  Effect.gen(function* () {
+    const { store } = memoryStore();
+    const binding = {
+      actionId: candidate.actionId,
+      connectionBinding,
+      presentationId: candidate.presentationId,
+      userId: candidate.authorityIdentity.userId,
+    } as const;
+    const obligation = { ...binding, status: "invalidated" } as const;
+    yield* store.retainApprovalBinding(binding);
+    yield* store.retainApprovalSettlement(obligation);
+    yield* store.retain(candidate);
+
+    expect(yield* makeRecoveryCoordinator(store).recoverApprovalSettlement(obligation)).toEqual({
+      _tag: "Committed",
+    });
+    expect(yield* store.listApprovalBindings()).toEqual([]);
+    expect(yield* store.listApprovalSettlements()).toEqual([]);
+    expect(
+      yield* store.readForUser(candidate.actionId, candidate.authorityIdentity.userId),
+    ).toEqual(
+      expect.objectContaining({
+        connectionBinding,
+        presentationId: candidate.presentationId,
+      }),
+    );
+  }),
+);
+
 it.effect("returns an accepted decision when post-commit binding cleanup is deferred", () =>
   Effect.gen(function* () {
     const { store } = memoryStore();

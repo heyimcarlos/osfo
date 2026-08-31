@@ -70,6 +70,13 @@ export const TerminalStatus = Schema.Struct({
 
 export type TerminalStatus = typeof TerminalStatus.Type;
 
+export type ApprovalSettlementRecovery =
+  | { readonly _tag: "Pending" }
+  | { readonly _tag: "Committed" };
+
+const pendingApprovalSettlementRecovery: ApprovalSettlementRecovery = { _tag: "Pending" };
+const committedApprovalSettlementRecovery: ApprovalSettlementRecovery = { _tag: "Committed" };
+
 export interface VisibleActions {
   readonly open: ReadonlyArray<Context>;
   readonly terminal: ReadonlyArray<TerminalStatus>;
@@ -469,15 +476,59 @@ export const makeCoordinator = (options: {
 
   const recoverApprovalSettlement = Effect.fn("ImmediateGmailSend.recoverApprovalSettlement")(
     (obligation: ApprovalSettlementObligation) =>
-      options
-        .approvalPending(obligation.presentationId)
-        .pipe(
-          Effect.flatMap((pending) =>
-            pending
-              ? options.store.releaseApprovalSettlement(obligation.presentationId)
-              : options.store.settleApproval(obligation, obligation.status),
-          ),
+      options.approvalPending(obligation.presentationId).pipe(
+        Effect.flatMap(
+          (pending): Effect.Effect<ApprovalSettlementRecovery, Conflict | Unavailable> => {
+            if (pending) {
+              return options.store
+                .releaseApprovalSettlement(obligation.presentationId)
+                .pipe(Effect.as(pendingApprovalSettlementRecovery));
+            }
+            return options.store.settleApproval(obligation, obligation.status).pipe(
+              Effect.andThen(
+                options.store.readTerminalForUser(obligation.actionId, obligation.userId).pipe(
+                  Effect.flatMap((terminal) =>
+                    terminal.presentationId === obligation.presentationId
+                      ? Effect.succeed(committedApprovalSettlementRecovery)
+                      : Effect.fail(
+                          new Conflict({
+                            actionId: obligation.actionId,
+                            message:
+                              "The settled Action identity differs from its Approval handoff",
+                          }),
+                        ),
+                  ),
+                  Effect.catchTag("ImmediateGmailSendNotFound", () =>
+                    options.store.readForUser(obligation.actionId, obligation.userId).pipe(
+                      Effect.flatMap((context) =>
+                        context.presentationId === obligation.presentationId &&
+                        context.connectionBinding === obligation.connectionBinding
+                          ? Effect.succeed(committedApprovalSettlementRecovery)
+                          : Effect.fail(
+                              new Conflict({
+                                actionId: obligation.actionId,
+                                message:
+                                  "The open Action identity differs from its Approval handoff",
+                              }),
+                            ),
+                      ),
+                      Effect.catchTag("ImmediateGmailSendNotFound", (cause) =>
+                        Effect.fail(
+                          new Unavailable({
+                            cause,
+                            message: "The committed Gmail Approval outcome is unavailable",
+                            operation: "recoverApprovalSettlement.readCommitted",
+                          }),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
         ),
+      ),
   );
 
   const recoverOnActivation = Effect.fn("ImmediateGmailSend.recoverOnActivation")(() =>
