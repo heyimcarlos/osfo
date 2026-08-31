@@ -5,6 +5,7 @@ import { expect, it } from "vitest";
 
 type BoundaryClass =
   | "cancellationReconciliationDeletion"
+  | "deniedMutation"
   | "initialization"
   | "ordinaryMutation"
   | "read";
@@ -19,12 +20,13 @@ type Protection =
 
 const publicBoundaryPolicy = {
   analyzeFile: ["ordinaryMutation", "accountDeletionFence"],
+  approveExecution: ["deniedMutation", "none"],
   authorizeAction: ["read", "trackedThinkLifecycle"],
   beforeStep: ["ordinaryMutation", "trackedThinkLifecycle"],
   beforeTurn: ["ordinaryMutation", "trackedThinkLifecycle"],
   beginScheduledEmail: ["ordinaryMutation", "accountDeletionFence"],
   boundCoreMemory: ["ordinaryMutation", "fencedSessionExecution"],
-  cancelActionApproval: ["cancellationReconciliationDeletion", "none"],
+  cancelActionApproval: ["deniedMutation", "none"],
   cancelManagedConversation: ["cancellationReconciliationDeletion", "none"],
   changePersonalSkill: ["ordinaryMutation", "accountDeletionFence"],
   chatWithMessengerContext: ["ordinaryMutation", "fencedSessionExecution"],
@@ -71,6 +73,7 @@ const publicBoundaryPolicy = {
   readRoute: ["read", "none"],
   readSession: ["read", "none"],
   readSessionAuthorizationFacts: ["read", "none"],
+  rejectExecution: ["deniedMutation", "none"],
   recoverScheduledEmail: ["cancellationReconciliationDeletion", "none"],
   reconcileMemoryProviderOutbox: ["cancellationReconciliationDeletion", "none"],
   reconcileImmediateGmailSend: ["cancellationReconciliationDeletion", "accountDeletionFence"],
@@ -156,4 +159,22 @@ it("classifies every public Osfo Directory method under the account deletion bou
     "cancellationReconciliationDeletion",
     "deletionOrchestration",
   ]);
+});
+
+it("denies native Think Approval decisions outside the authenticated Directory boundary", () => {
+  const source = readFileSync(new URL("./agent.ts", import.meta.url), "utf8");
+
+  expect(source).toContain("approve: (executionId) => this.#approveThinkExecution(executionId)");
+  expect(source).toContain(
+    "reject: (executionId, reason) => this.#rejectThinkExecution(executionId, reason)",
+  );
+  expect(source).toMatch(
+    /override async approveExecution\(executionId: string\): Promise<NativeApprovalDecisionDenied> \{\s+return nativeApprovalDecisionDenied\(executionId\);\s+\}/,
+  );
+  expect(source).toMatch(
+    /override async rejectExecution\(executionId: string\): Promise<NativeApprovalDecisionDenied> \{\s+return nativeApprovalDecisionDenied\(executionId\);\s+\}/,
+  );
+  expect(source).toMatch(
+    /async cancelActionApproval\([\s\S]*?return new ThinkApprovalUnavailable\([\s\S]*?authenticated Directory authority required[\s\S]*?\n  \}/,
+  );
 });

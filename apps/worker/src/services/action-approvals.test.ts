@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
 
 import { UserId } from "../domain";
 import { ActionId } from "../domain/action-execution";
@@ -137,3 +137,86 @@ it.effect("selects the oldest matching pending Actions before presentation work"
     expect(listed.presentations.at(-1)?.presentationId).toBe("presentation-59");
   });
 });
+
+it.effect(
+  "serializes the complete decision handoff so a losing request cannot disturb the winner",
+  () =>
+    Effect.gen(function* () {
+      const firstEntered = yield* Deferred.make<void>();
+      const releaseFirst = yield* Deferred.make<void>();
+      const actor = {
+        _tag: "AuthSession" as const,
+        authSessionId: AuthSessionId.make("session-1"),
+        // oxlint-disable-next-line effecttsgo/global-date-in-effect -- Fixed authority time keeps the concurrency test deterministic.
+        expiresAt: new Date("2026-08-25T00:00:00.000Z"),
+        userId: UserId.make("user-1"),
+      };
+      const pending: PendingThinkAction = {
+        descriptor: {
+          action: "gmailSendEmail",
+          input: { body: "Hello", subject: "Subject", to: "person@example.com" },
+          kind: "durable-pause",
+          permissions: ["gmail:send"],
+          requestId: "request-1",
+          risk: "high",
+          summary: "Send Gmail message",
+          toolCallId: "action-1",
+        },
+        executionId: ActionPresentationId.make("presentation-1"),
+        source: "action",
+      };
+      let pendingDecision = true;
+      let winner: "approved" | "rejected" | undefined;
+      const approvals = makeActionApprovals({
+        authorizer: { ownsAgent: () => Effect.succeed(true) },
+        lifecycle: {
+          findPending: () => Effect.succeed(pending),
+          listPending: Effect.succeed([pending]),
+          resolve: () => Effect.void,
+        },
+        // oxlint-disable-next-line effecttsgo/global-date-in-effect -- Fixed authority time keeps the concurrency test deterministic.
+        now: Effect.succeed(new Date("2026-08-24T00:00:00.000Z")),
+        present: () =>
+          Effect.succeed(
+            ActionPresentation.make({
+              actionDefinitionVersion: "osfo-gmail-send-v1",
+              actionId: ActionId.make("action-1"),
+              consequences: ["Send one message."],
+              description: "Send the exact message shown here.",
+              fields: [],
+              operation: "integration.effect",
+              presentationId: pending.executionId,
+              title: "Send Gmail message",
+            }),
+          ),
+        presentations: { retain: (candidate) => Effect.succeed(candidate) },
+      });
+      const decide = (decision: "approved" | "rejected", wait: boolean) =>
+        approvals.runDecision(
+          Effect.gen(function* () {
+            yield* approvals.read(actor, pending.executionId);
+            if (wait) {
+              yield* Deferred.succeed(firstEntered, undefined);
+              yield* Deferred.await(releaseFirst);
+            }
+            if (!pendingDecision) return "lost" as const;
+            pendingDecision = false;
+            winner = decision;
+            return "won" as const;
+          }),
+        );
+
+      const reject = yield* decide("rejected", true).pipe(Effect.forkChild);
+      yield* Deferred.await(firstEntered);
+      const approve = yield* decide("approved", false).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      expect(approve.pollUnsafe()).toBeUndefined();
+      yield* Deferred.succeed(releaseFirst, undefined);
+      const rejected = yield* Fiber.join(reject);
+      const approved = yield* Fiber.join(approve);
+      expect(rejected).toBe("won");
+      expect(approved).toBe("lost");
+      expect(winner).toBe("rejected");
+    }),
+);

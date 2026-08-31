@@ -568,6 +568,27 @@ const decodeApprovalSettlement = (value: unknown, operation: string) =>
     Effect.mapError((cause) => unavailable(operation, cause)),
   );
 
+// A corrupt owned row cannot safely authorize provider inspection. Keep valid obligations
+// fail-closed and recoverable, while allowing permanent deletion to erase the raw prefix.
+const decodeRecoverableContexts = (values: ReadonlyArray<unknown>, operation: string) =>
+  Effect.forEach(values, (value) => decode(value, operation).pipe(Effect.option)).pipe(
+    Effect.map((contexts) => contexts.filter(Option.isSome).map((context) => context.value)),
+  );
+
+const decodeRecoverableApprovalBindings = (values: ReadonlyArray<unknown>) =>
+  Effect.forEach(values, (value) =>
+    decodeApprovalBinding(value, "listApprovalBindings.decode").pipe(Effect.option),
+  ).pipe(Effect.map((bindings) => bindings.filter(Option.isSome).map((binding) => binding.value)));
+
+const decodeRecoverableApprovalSettlements = (values: ReadonlyArray<unknown>) =>
+  Effect.forEach(values, (value) =>
+    decodeApprovalSettlement(value, "listApprovalSettlements.decode").pipe(Effect.option),
+  ).pipe(
+    Effect.map((obligations) =>
+      obligations.filter(Option.isSome).map((obligation) => obligation.value),
+    ),
+  );
+
 const encode = Schema.encodeSync(Context);
 const encodeTerminal = Schema.encodeSync(TerminalStatus);
 export const maximumVisibleActions = 50;
@@ -602,44 +623,29 @@ export const make = (persistence: Persistence): Interface => ({
   ),
   listAllForUser: Effect.fn("ImmediateGmailSend.Store.listAllForUser")((userId) =>
     persistence.listOpen().pipe(
-      Effect.flatMap((values) =>
-        Effect.forEach(values, (value) => decode(value, "listAll.decode")),
-      ),
+      Effect.flatMap((values) => decodeRecoverableContexts(values, "listAll.decode")),
       Effect.map((contexts) =>
         contexts.filter((context) => context.authorityIdentity.userId === userId),
       ),
     ),
   ),
   listApprovalBindings: Effect.fn("ImmediateGmailSend.Store.listApprovalBindings")(() =>
-    persistence
-      .listApprovalBindings()
-      .pipe(
-        Effect.flatMap((values) =>
-          Effect.forEach(values, (value) =>
-            decodeApprovalBinding(value, "listApprovalBindings.decode"),
-          ),
-        ),
-      ),
+    persistence.listApprovalBindings().pipe(
+      Effect.flatMap(decodeRecoverableApprovalBindings),
+      Effect.map((bindings) => bindings.slice(0, maximumApprovalBindings)),
+    ),
   ),
   listApprovalSettlements: Effect.fn("ImmediateGmailSend.Store.listApprovalSettlements")(() =>
-    persistence
-      .listApprovalSettlements()
-      .pipe(
-        Effect.flatMap((values) =>
-          Effect.forEach(values, (value) =>
-            decodeApprovalSettlement(value, "listApprovalSettlements.decode"),
-          ),
-        ),
-      ),
+    persistence.listApprovalSettlements().pipe(
+      Effect.flatMap(decodeRecoverableApprovalSettlements),
+      Effect.map((obligations) => obligations.slice(0, maximumApprovalBindings)),
+    ),
   ),
   listOpen: Effect.fn("ImmediateGmailSend.Store.listOpen")(() =>
-    persistence
-      .listOpen()
-      .pipe(
-        Effect.flatMap((values) =>
-          Effect.forEach(values, (value) => decode(value, "listOpen.decode")),
-        ),
-      ),
+    persistence.listOpen().pipe(
+      Effect.flatMap((values) => decodeRecoverableContexts(values, "listOpen.decode")),
+      Effect.map((contexts) => contexts.slice(0, maximumOpenActions)),
+    ),
   ),
   listForUser: Effect.fn("ImmediateGmailSend.Store.listForUser")((userId) =>
     Effect.all({
@@ -801,9 +807,9 @@ export const makeDurableObjectPersistence = (storage: DurableObjectStorage): Per
   listOpen: Effect.fn("ImmediateGmailSend.Persistence.listOpen")(() =>
     Effect.tryPromise({
       try: () =>
-        storage
-          .list({ limit: maximumOpenActions, prefix: openStoragePrefix })
-          .then((records) => [...records.values()]),
+        // Scan the owned prefix before applying the valid-record cap. Corrupt rows must
+        // never occupy the bounded recovery window and hide a later trusted obligation.
+        storage.list({ prefix: openStoragePrefix }).then((records) => [...records.values()]),
       catch: (cause) => unavailable("listOpen", cause),
     }),
   ),
@@ -811,7 +817,7 @@ export const makeDurableObjectPersistence = (storage: DurableObjectStorage): Per
     Effect.tryPromise({
       try: () =>
         storage
-          .list({ limit: maximumApprovalBindings, prefix: approvalBindingStoragePrefix })
+          .list({ prefix: approvalBindingStoragePrefix })
           .then((records) => [...records.values()]),
       catch: (cause) => unavailable("listApprovalBindings", cause),
     }),
@@ -820,7 +826,7 @@ export const makeDurableObjectPersistence = (storage: DurableObjectStorage): Per
     Effect.tryPromise({
       try: () =>
         storage
-          .list({ limit: maximumApprovalBindings, prefix: approvalSettlementStoragePrefix })
+          .list({ prefix: approvalSettlementStoragePrefix })
           .then((records) => [...records.values()]),
       catch: (cause) => unavailable("listApprovalSettlements", cause),
     }),

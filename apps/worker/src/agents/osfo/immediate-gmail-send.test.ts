@@ -73,6 +73,44 @@ it.effect("recovers a committed rejection after settlement fails and the Agent r
   }),
 );
 
+it.effect("recovers an approved handoff that crashes before the Gmail tool executes", () =>
+  Effect.gen(function* () {
+    const { store } = memoryStore();
+    const binding = {
+      actionId: candidate.actionId,
+      connectionBinding,
+      presentationId: candidate.presentationId,
+      userId: candidate.authorityIdentity.userId,
+    } as const;
+    let providerEffects = 0;
+    yield* store.retainApprovalBinding(binding);
+    yield* store.retainApprovalSettlement({ ...binding, status: "invalidated" });
+    const coordinator = ImmediateGmailSend.makeCoordinator({
+      accounting: noAccounting,
+      approvalPending: () => Effect.succeed(false),
+      integrations: {
+        execute: () =>
+          Effect.sync(() => {
+            providerEffects += 1;
+            return appliedResult;
+          }),
+        inspectAction: () => Effect.succeed({ _tag: "NotStarted" }),
+        readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
+      },
+      scheduler: schedulerRecording([]),
+      store,
+    });
+
+    yield* coordinator.recoverOnActivation();
+
+    expect(providerEffects).toBe(0);
+    expect(yield* store.listForUser(binding.userId)).toMatchObject({
+      open: [],
+      terminal: [{ actionId: binding.actionId, status: "invalidated" }],
+    });
+  }),
+);
+
 it.effect("reconciles a failed rejection on the live Agent before a later Approval", () =>
   Effect.gen(function* () {
     const { store } = memoryStore();
@@ -159,7 +197,7 @@ it.effect("recovers an admission invalidation after settlement fails and the Age
   }),
 );
 
-it.effect("rejects an Approval replay when the connected account binding changed", () =>
+it.effect("keeps the first presented Connection binding immutable across account replacement", () =>
   Effect.gen(function* () {
     const { store } = memoryStore();
     const binding = {
@@ -376,6 +414,104 @@ it.effect("deletes malformed immediate Gmail rows without blocking account delet
     yield* persistence.deleteUser(candidate.authorityIdentity.userId);
 
     expect(records).toEqual(new Map([["unrelated", { keep: true }]]));
+  }),
+);
+
+it.effect("quiesces malformed owned state without reconstructing a provider effect", () =>
+  Effect.gen(function* () {
+    const { records, storage } = durableStorageFake();
+    const store = ImmediateGmailSend.make(ImmediateGmailSend.makeDurableObjectPersistence(storage));
+    let pendingInspections = 0;
+    let providerInspections = 0;
+    records.set("osfo:immediate-gmail-send:open:malformed", { broken: true });
+    records.set("osfo:immediate-gmail-send:approval:malformed", { broken: true });
+    records.set("osfo:immediate-gmail-send:approval-settlement:malformed", { broken: true });
+    const coordinator = ImmediateGmailSend.makeCoordinator({
+      accounting: noAccounting,
+      approvalPending: () =>
+        Effect.sync(() => {
+          pendingInspections += 1;
+          return false;
+        }),
+      integrations: {
+        execute: () => Effect.succeed(appliedResult),
+        inspectAction: () =>
+          Effect.sync(() => {
+            providerInspections += 1;
+            return { _tag: "NotStarted" as const };
+          }),
+        readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
+      },
+      scheduler: schedulerRecording([]),
+      store,
+    });
+
+    yield* coordinator.recoverOnActivation();
+    yield* coordinator.quiesceUser(candidate.authorityIdentity.userId);
+    yield* coordinator.deleteUser(candidate.authorityIdentity.userId);
+
+    expect(pendingInspections).toBe(0);
+    expect(providerInspections).toBe(0);
+    expect(records.size).toBe(0);
+  }),
+);
+
+it.effect("does not let corrupt prefix rows hide valid recovery and quiescence obligations", () =>
+  Effect.gen(function* () {
+    const { records, storage } = durableStorageFake();
+    const store = ImmediateGmailSend.make(ImmediateGmailSend.makeDurableObjectPersistence(storage));
+    const binding = {
+      actionId: ActionId.make("pending-approval-action"),
+      connectionBinding,
+      presentationId: ActionPresentationId.make("pending-approval-presentation"),
+      userId: candidate.authorityIdentity.userId,
+    } as const;
+    yield* store.retain(candidate);
+    yield* store.retainApprovalBinding(binding);
+    yield* store.retainApprovalSettlement({ ...binding, status: "invalidated" });
+    for (let index = 0; index < 50; index += 1) {
+      const suffix = index.toString().padStart(2, "0");
+      records.set(`osfo:immediate-gmail-send:open:000-corrupt-${suffix}`, { broken: true });
+      records.set(`osfo:immediate-gmail-send:approval:000-corrupt-${suffix}`, { broken: true });
+      records.set(`osfo:immediate-gmail-send:approval-settlement:000-corrupt-${suffix}`, {
+        broken: true,
+      });
+    }
+    const scheduled: Array<ScheduledInspection> = [];
+    let pendingInspections = 0;
+    let providerInspections = 0;
+    const coordinator = ImmediateGmailSend.makeCoordinator({
+      accounting: noAccounting,
+      approvalPending: () =>
+        Effect.sync(() => {
+          pendingInspections += 1;
+          return false;
+        }),
+      integrations: {
+        execute: () => Effect.succeed(appliedResult),
+        inspectAction: () =>
+          Effect.sync(() => {
+            providerInspections += 1;
+            return { _tag: "Pending" as const };
+          }),
+        readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
+      },
+      scheduler: schedulerRecording(scheduled),
+      store,
+    });
+
+    yield* coordinator.recoverOnActivation();
+    const quiescenceFailure = yield* coordinator
+      .quiesceUser(candidate.authorityIdentity.userId)
+      .pipe(Effect.flip);
+
+    expect(scheduled).toHaveLength(2);
+    expect(pendingInspections).toBe(1);
+    expect(providerInspections).toBe(1);
+    expect(quiescenceFailure._tag).toBe("ImmediateGmailSendUnavailable");
+    expect(
+      [...records.keys()].some((key) => key.startsWith("osfo:immediate-gmail-send:terminal:")),
+    ).toBe(true);
   }),
 );
 

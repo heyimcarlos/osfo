@@ -1,4 +1,4 @@
-import { Effect, Predicate } from "effect";
+import { Effect, Predicate, Semaphore } from "effect";
 
 import type { UserId } from "../domain";
 import {
@@ -63,6 +63,8 @@ export const makeActionApprovals = (options: {
   readonly present: PresentAction;
   readonly presentations: ActionPresentationPersistence;
 }) => {
+  const decisionSemaphore = Semaphore.makeUnsafe(1);
+
   const authorize = Effect.fn("ActionApprovals.authorize")(function* (
     actor: ApprovalActor,
     presentationId: ActionPresentationId,
@@ -123,7 +125,13 @@ export const makeActionApprovals = (options: {
     return ActionPresentationsFound.make({ presentations });
   });
 
-  return { dispatch, list, read };
+  return {
+    dispatch,
+    list,
+    read,
+    /** Serialize the complete read, durable handoff, and Think claim for one User decision. */
+    runDecision: <A, E, R>(effect: Effect.Effect<A, E, R>) => decisionSemaphore.withPermit(effect),
+  };
 };
 
 const unauthorized = (userId: UserId, presentationId: ActionPresentationId) =>

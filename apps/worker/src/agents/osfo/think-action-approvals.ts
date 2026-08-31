@@ -107,6 +107,16 @@ export const ApprovalDecisionAccepted = Schema.TaggedStruct("ApprovalDecisionAcc
 /** Accepted handoff of one exact decision to Think. */
 export type ApprovalDecisionAccepted = typeof ApprovalDecisionAccepted.Type;
 
+/** Fail-closed response from Think's inherited client-callable decision RPCs. */
+export const NativeApprovalDecisionDenied = Schema.Struct({
+  error: Schema.String,
+  executionId: Schema.String,
+  status: Schema.Literal("error"),
+});
+
+/** Fail-closed response from Think's inherited client-callable decision RPCs. */
+export type NativeApprovalDecisionDenied = typeof NativeApprovalDecisionDenied.Type;
+
 /** Expected failure when the requested Think Approval is not pending. */
 export class ActionPresentationNotFound extends Schema.TaggedError<ActionPresentationNotFound>()(
   "ActionPresentationNotFound",
