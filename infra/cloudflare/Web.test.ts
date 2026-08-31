@@ -1,20 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 
 import { productionWebOrigin, webOptionsForStage } from "./Web";
 
 describe("webOptionsForStage", () => {
-  it("routes the production apex through its Worker without claiming DNS ownership", () => {
+  it("routes the production apex through its Worker", () => {
     const options = webOptionsForStage("production", "https://api.osfo.ai");
 
     expect(productionWebOrigin).toBe("https://osfo.ai");
     expect(options).toMatchObject({
-      domain: null,
       env: {
         VITE_API_URL: "https://api.osfo.ai",
         VITE_OSFO_STAGE: "production",
       },
       routes: [{ pattern: "osfo.ai/*", zoneName: "osfo.ai" }],
     });
+    expect(options).not.toHaveProperty("domain");
   });
 
   it("keeps preview traffic and browser configuration on the preview stage", () => {
