@@ -73,7 +73,7 @@ it.effect("recovers a committed rejection after settlement fails and the Agent r
   }),
 );
 
-it.effect("discards a prepared rejection while Think still owns the pending Approval", () =>
+it.effect("reconciles a failed rejection on the live Agent before a later Approval", () =>
   Effect.gen(function* () {
     const { store } = memoryStore();
     const binding = {
@@ -82,8 +82,9 @@ it.effect("discards a prepared rejection while Think still owns the pending Appr
       presentationId: candidate.presentationId,
       userId: candidate.authorityIdentity.userId,
     } as const;
+    const obligation = { ...binding, status: "rejected" } as const;
     yield* store.retainApprovalBinding(binding);
-    yield* store.retainApprovalSettlement({ ...binding, status: "rejected" });
+    yield* store.retainApprovalSettlement(obligation);
     const coordinator = ImmediateGmailSend.makeCoordinator({
       accounting: noAccounting,
       approvalPending: () => Effect.succeed(true),
@@ -96,7 +97,7 @@ it.effect("discards a prepared rejection while Think still owns the pending Appr
       store,
     });
 
-    yield* coordinator.recoverOnActivation();
+    yield* coordinator.recoverApprovalSettlement(obligation);
 
     expect(yield* store.listApprovalSettlements()).toHaveLength(0);
     expect((yield* store.listForUser(binding.userId)).terminal).toEqual([]);

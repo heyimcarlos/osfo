@@ -4921,6 +4921,7 @@ export class OsfoAgent extends Think<Env> {
     await this.#migrationsReady;
     const actionApprovals = this.#actionApprovals;
     const currentApprovedActions = this.#currentApprovedActions;
+    const immediateGmailSends = Option.getOrUndefined(this.#immediateGmailSends);
     const immediateGmailSendStore = this.#immediateGmailSendStore;
     const completeImmediateGmailDecision = (
       binding: ImmediateGmailSend.ApprovalConnectionBinding,
@@ -4978,9 +4979,13 @@ export class OsfoAgent extends Think<Env> {
                       presentation: approvalPresentationFor(found.presentation),
                     });
                   }
-                  if (parsed.decision === "reject" && approvalBinding !== undefined) {
+                  const approvalSettlement =
+                    parsed.decision === "reject" && approvalBinding !== undefined
+                      ? ({ ...approvalBinding, status: "rejected" } as const)
+                      : undefined;
+                  if (approvalSettlement !== undefined) {
                     yield* immediateGmailSendStore
-                      .retainApprovalSettlement({ ...approvalBinding, status: "rejected" })
+                      .retainApprovalSettlement(approvalSettlement)
                       .pipe(
                         Effect.mapError(
                           () =>
@@ -4999,6 +5004,20 @@ export class OsfoAgent extends Think<Env> {
                       parsed.reason,
                     )
                     .pipe(
+                      Effect.tapError(() =>
+                        approvalSettlement === undefined || immediateGmailSends === undefined
+                          ? Effect.void
+                          : immediateGmailSends.recoverApprovalSettlement(approvalSettlement).pipe(
+                              Effect.mapError(
+                                (cause) =>
+                                  new ThinkApprovalUnavailable({
+                                    cause,
+                                    message: "The rejected Gmail outcome could not be reconciled",
+                                    operation: "decideActionApproval.recoverRejection",
+                                  }),
+                              ),
+                            ),
+                      ),
                       Effect.ensuring(Effect.sync(() => currentApprovedActions.delete(actionId))),
                     );
                   if (approvalBinding !== undefined) {

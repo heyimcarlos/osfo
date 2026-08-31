@@ -465,6 +465,19 @@ export const makeCoordinator = (options: {
       ),
   );
 
+  const recoverApprovalSettlement = Effect.fn("ImmediateGmailSend.recoverApprovalSettlement")(
+    (obligation: ApprovalSettlementObligation) =>
+      options
+        .approvalPending(obligation.presentationId)
+        .pipe(
+          Effect.flatMap((pending) =>
+            pending
+              ? options.store.releaseApprovalSettlement(obligation.presentationId)
+              : options.store.settleApproval(obligation, obligation.status),
+          ),
+        ),
+  );
+
   const recoverOnActivation = Effect.fn("ImmediateGmailSend.recoverOnActivation")(() =>
     Effect.all({
       bindings: options.store.listApprovalBindings(),
@@ -480,20 +493,10 @@ export const makeCoordinator = (options: {
                 scheduleInspection(context, initialActionReconciliationDelayMilliseconds, true),
               { concurrency: 1, discard: true },
             ),
-            Effect.forEach(
-              obligations,
-              (obligation) =>
-                options
-                  .approvalPending(obligation.presentationId)
-                  .pipe(
-                    Effect.flatMap((pending) =>
-                      pending
-                        ? options.store.releaseApprovalSettlement(obligation.presentationId)
-                        : options.store.settleApproval(obligation, obligation.status),
-                    ),
-                  ),
-              { concurrency: 1, discard: true },
-            ),
+            Effect.forEach(obligations, recoverApprovalSettlement, {
+              concurrency: 1,
+              discard: true,
+            }),
             Effect.forEach(
               bindings.filter(
                 (binding) =>
@@ -526,6 +529,7 @@ export const makeCoordinator = (options: {
     inspectForUser,
     quiesceUser,
     reconcile,
+    recoverApprovalSettlement,
     recoverOnActivation,
   };
 };
