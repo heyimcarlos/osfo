@@ -17,7 +17,7 @@ import {
 } from "../agents/osfo/action-presentation";
 import { makeActionApprovals } from "./action-approvals";
 
-/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, vitest/no-standalone-expect -- Promise fakes implement the external Think port; fixed authority time and assertions execute inside the @effect/vitest Effect callback. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/global-date-in-effect, vitest/no-standalone-expect -- Promise fakes implement the external Think port; fixed authority time and assertions execute inside the @effect/vitest Effect callback. */
 
 it.effect("reuses the immutable Action presentation retained on its first read", () => {
   const retained = new Map<string, ActionPresentation>();
@@ -214,6 +214,90 @@ it.effect("projects only Scheduled Email Actions for the bounded scheduled selec
     expect(gmailPresentations).toBe(0);
   });
 });
+
+it.effect("finishes presentation retention before a concurrent decision can claim the Action", () =>
+  Effect.gen(function* () {
+    const presentationStarted = yield* Deferred.make<void>();
+    const releasePresentation = yield* Deferred.make<void>();
+    const retained = new Set<ActionPresentationId>();
+    const pending: PendingThinkAction = {
+      descriptor: {
+        action: "gmailSendEmail",
+        input: {},
+        kind: "durable-pause",
+        permissions: ["gmail:send"],
+        requestId: "request-list-decision-race",
+        risk: "high",
+        summary: "Send Gmail message",
+        toolCallId: "action-list-decision-race",
+      },
+      executionId: ActionPresentationId.make("presentation-list-decision-race"),
+      source: "action",
+    };
+    let decisionEntered = false;
+    let decisionObservedRetainedPresentation = false;
+    const approvals = makeActionApprovals({
+      authorizer: { ownsAgent: () => Effect.succeed(true) },
+      lifecycle: {
+        findPending: () => Effect.succeed(pending),
+        listPending: Effect.succeed([pending]),
+        resolve: () => Effect.void,
+      },
+      now: Effect.succeed(new Date("2026-08-24T00:00:00.000Z")),
+      present: () =>
+        Deferred.succeed(presentationStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releasePresentation)),
+          Effect.as(
+            ActionPresentation.make({
+              actionDefinitionVersion: "osfo-gmail-send-v1",
+              actionId: ActionId.make("action-list-decision-race"),
+              consequences: ["Send one message."],
+              description: "Send the exact Gmail message shown here.",
+              fields: [],
+              operation: "integration.effect",
+              presentationId: pending.executionId,
+              title: "Send Gmail message",
+            }),
+          ),
+        ),
+      presentations: {
+        retain: (candidate) =>
+          Effect.sync(() => {
+            retained.add(candidate.presentationId);
+            return candidate;
+          }),
+      },
+    });
+    const actor = {
+      _tag: "AuthSession" as const,
+      authSessionId: AuthSessionId.make("session-1"),
+      expiresAt: new Date("2026-08-25T00:00:00.000Z"),
+      userId: UserId.make("user-1"),
+    };
+
+    const listing = yield* approvals
+      .list(actor, { maximum: 50, select: () => true })
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(presentationStarted);
+    const decision = yield* approvals
+      .runDecision(
+        Effect.sync(() => {
+          decisionEntered = true;
+          decisionObservedRetainedPresentation = retained.has(pending.executionId);
+          retained.delete(pending.executionId);
+        }),
+      )
+      .pipe(Effect.forkChild);
+    yield* Effect.yieldNow;
+
+    expect(decisionEntered).toBe(false);
+    yield* Deferred.succeed(releasePresentation, undefined);
+    expect((yield* Fiber.join(listing)).presentations).toHaveLength(1);
+    yield* Fiber.join(decision);
+    expect(decisionObservedRetainedPresentation).toBe(true);
+    expect(retained.size).toBe(0);
+  }),
+);
 
 it.effect(
   "serializes the complete decision handoff so a losing request cannot disturb the winner",

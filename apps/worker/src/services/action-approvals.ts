@@ -107,22 +107,28 @@ export const makeActionApprovals = (options: {
     actor: ApprovalActor,
     selection?: ActionApprovalSelection,
   ) {
-    const pending = yield* options.lifecycle.listPending;
-    yield* authorize(
-      actor,
-      pending[0]?.executionId ?? ActionPresentationId.make("pending-action-list"),
+    return yield* decisionSemaphore.withPermit(
+      Effect.gen(function* () {
+        const pending = yield* options.lifecycle.listPending;
+        yield* authorize(
+          actor,
+          pending[0]?.executionId ?? ActionPresentationId.make("pending-action-list"),
+        );
+        const selected =
+          selection === undefined
+            ? pending
+            : pending.filter(selection.select).slice(0, selection.maximum);
+        const presentations = yield* Effect.forEach(
+          selected,
+          (candidate) =>
+            options
+              .present(candidate, actor.userId)
+              .pipe(Effect.flatMap(options.presentations.retain)),
+          { concurrency: 1 },
+        );
+        return ActionPresentationsFound.make({ presentations });
+      }),
     );
-    const selected =
-      selection === undefined
-        ? pending
-        : pending.filter(selection.select).slice(0, selection.maximum);
-    const presentations = yield* Effect.forEach(
-      selected,
-      (candidate) =>
-        options.present(candidate, actor.userId).pipe(Effect.flatMap(options.presentations.retain)),
-      { concurrency: 1 },
-    );
-    return ActionPresentationsFound.make({ presentations });
   });
 
   return {
