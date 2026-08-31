@@ -48,6 +48,16 @@ describe("GmailSendControlContent", () => {
               presentationId: "gmail-ambiguous-presentation",
               status: "ambiguous",
             },
+            {
+              actionId: "gmail-rejected",
+              presentationId: "gmail-rejected-presentation",
+              status: "rejected",
+            },
+            {
+              actionId: "gmail-invalidated",
+              presentationId: "gmail-invalidated-presentation",
+              status: "invalidated",
+            },
           ],
         }}
         onDecide={vi.fn<(presentationId: string, decision: "approve" | "reject") => void>()}
@@ -65,6 +75,8 @@ describe("GmailSendControlContent", () => {
     expect(html).toContain("Immediate Gmail send rejected. No message was sent.");
     expect(html).toContain("Gmail message sent");
     expect(html).toContain("Gmail message not sent");
+    expect(html).toContain("Gmail send rejected — no message was sent");
+    expect(html).toContain("Gmail send invalidated — no message was sent");
     expect(html).toContain("Gmail delivery unconfirmed — it may have been sent");
     expect(html).not.toContain("providerLogId");
     expect(html).not.toContain("Scheduled Emails");

@@ -299,6 +299,8 @@ export function GmailSendControlContent({
 const gmailStatusLabel = (status: GmailSendStatus["status"]) => {
   if (status === "applied") return "Gmail message sent";
   if (status === "notApplied") return "Gmail message not sent";
+  if (status === "rejected") return "Gmail send rejected — no message was sent";
+  if (status === "invalidated") return "Gmail send invalidated — no message was sent";
   if (status === "pending") return "Gmail send in progress";
   return "Gmail delivery unconfirmed — it may have been sent";
 };

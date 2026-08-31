@@ -11,6 +11,202 @@ import { ActionPresentationId } from "./think-action-approvals";
 import { ImmediateGmailSend } from "./immediate-gmail-send";
 
 const connectionBinding = Integrations.IntegrationConnectionBinding.make("a".repeat(64));
+const replacementConnectionBinding = Integrations.IntegrationConnectionBinding.make("b".repeat(64));
+
+it.effect("retains a rejected Approval as a durable no-effect outcome", () =>
+  Effect.gen(function* () {
+    const { store } = memoryStore();
+    const binding = {
+      actionId: candidate.actionId,
+      connectionBinding: null,
+      presentationId: candidate.presentationId,
+      userId: candidate.authorityIdentity.userId,
+    } as const;
+    yield* store.retainApprovalBinding(binding);
+
+    yield* store.settleApproval(binding, "rejected");
+
+    expect(yield* store.listForUser(binding.userId)).toMatchObject({
+      open: [],
+      terminal: [
+        {
+          actionId: binding.actionId,
+          presentationId: binding.presentationId,
+          status: "rejected",
+        },
+      ],
+    });
+  }),
+);
+
+it.effect("recovers a committed rejection after settlement fails and the Agent restarts", () =>
+  Effect.gen(function* () {
+    const { store } = memoryStore();
+    const binding = {
+      actionId: candidate.actionId,
+      connectionBinding,
+      presentationId: candidate.presentationId,
+      userId: candidate.authorityIdentity.userId,
+    } as const;
+    const unavailable = new ImmediateGmailSend.Unavailable({
+      cause: "injected storage outage",
+      message: "Approval settlement is unavailable",
+      operation: "settleApproval",
+    });
+    yield* store.retainApprovalBinding(binding);
+    yield* store.retainApprovalSettlement({ ...binding, status: "rejected" });
+
+    yield* ImmediateGmailSend.completeApprovalDecision({
+      binding,
+      decision: "reject",
+      defer: () => Effect.void,
+      store: { ...store, settleApproval: () => Effect.fail(unavailable) },
+    });
+    expect(yield* store.listApprovalSettlements()).toHaveLength(1);
+
+    yield* makeRecoveryCoordinator(store).recoverOnActivation();
+
+    expect(yield* store.listApprovalSettlements()).toHaveLength(0);
+    expect(yield* store.listForUser(binding.userId)).toMatchObject({
+      terminal: [{ actionId: binding.actionId, status: "rejected" }],
+    });
+  }),
+);
+
+it.effect("discards a prepared rejection while Think still owns the pending Approval", () =>
+  Effect.gen(function* () {
+    const { store } = memoryStore();
+    const binding = {
+      actionId: candidate.actionId,
+      connectionBinding,
+      presentationId: candidate.presentationId,
+      userId: candidate.authorityIdentity.userId,
+    } as const;
+    yield* store.retainApprovalBinding(binding);
+    yield* store.retainApprovalSettlement({ ...binding, status: "rejected" });
+    const coordinator = ImmediateGmailSend.makeCoordinator({
+      accounting: noAccounting,
+      approvalPending: () => Effect.succeed(true),
+      integrations: {
+        execute: () => Effect.succeed(appliedResult),
+        inspectAction: () => Effect.succeed({ _tag: "NotStarted" }),
+        readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
+      },
+      scheduler: schedulerRecording([]),
+      store,
+    });
+
+    yield* coordinator.recoverOnActivation();
+
+    expect(yield* store.listApprovalSettlements()).toHaveLength(0);
+    expect((yield* store.listForUser(binding.userId)).terminal).toEqual([]);
+
+    expect(
+      yield* makeRecoveryCoordinator(store).execute(
+        candidate,
+        Effect.succeed(candidate.allowancePeriodId),
+        Effect.void,
+      ),
+    ).toEqual(appliedResult);
+    expect(yield* store.listForUser(binding.userId)).toMatchObject({
+      terminal: [{ actionId: binding.actionId, status: "applied" }],
+    });
+  }),
+);
+
+it.effect("recovers an admission invalidation after settlement fails and the Agent restarts", () =>
+  Effect.gen(function* () {
+    const { store } = memoryStore();
+    const unavailable = new ImmediateGmailSend.Unavailable({
+      cause: "injected storage outage",
+      message: "Approval settlement is unavailable",
+      operation: "settleApproval",
+    });
+    yield* store.retainApprovalBinding({
+      actionId: candidate.actionId,
+      connectionBinding,
+      presentationId: candidate.presentationId,
+      userId: candidate.authorityIdentity.userId,
+    });
+    const firstRun = makeRecoveryCoordinator({
+      ...store,
+      settleApproval: () => Effect.fail(unavailable),
+    });
+
+    expect(
+      yield* firstRun
+        .execute(
+          candidate,
+          Effect.fail(
+            new ImmediateGmailSend.Conflict({
+              actionId: candidate.actionId,
+              message: "Admission invalidated",
+            }),
+          ),
+          Effect.void,
+        )
+        .pipe(Effect.result),
+    ).toMatchObject({ failure: { _tag: "ImmediateGmailSendUnavailable" } });
+    expect(yield* store.listApprovalSettlements()).toHaveLength(1);
+
+    yield* makeRecoveryCoordinator(store).recoverOnActivation();
+
+    expect(yield* store.listApprovalSettlements()).toHaveLength(0);
+    expect(yield* store.listForUser(candidate.authorityIdentity.userId)).toMatchObject({
+      terminal: [{ actionId: candidate.actionId, status: "invalidated" }],
+    });
+  }),
+);
+
+it.effect("rejects an Approval replay when the connected account binding changed", () =>
+  Effect.gen(function* () {
+    const { store } = memoryStore();
+    const binding = {
+      actionId: candidate.actionId,
+      connectionBinding,
+      presentationId: candidate.presentationId,
+      userId: candidate.authorityIdentity.userId,
+    } as const;
+    yield* store.retainApprovalBinding(binding);
+
+    expect(
+      yield* store
+        .retainApprovalBinding({ ...binding, connectionBinding: replacementConnectionBinding })
+        .pipe(Effect.result),
+    ).toMatchObject({ failure: { _tag: "ImmediateGmailSendConflict" } });
+  }),
+);
+
+it.effect("returns an accepted decision when post-commit binding cleanup is deferred", () =>
+  Effect.gen(function* () {
+    const { store } = memoryStore();
+    const binding = {
+      actionId: candidate.actionId,
+      connectionBinding,
+      presentationId: candidate.presentationId,
+      userId: candidate.authorityIdentity.userId,
+    } as const;
+    let deferred = 0;
+    const unavailable = new ImmediateGmailSend.Unavailable({
+      cause: "injected storage failure",
+      message: "Approval cleanup is unavailable",
+      operation: "releaseApprovalBinding",
+    });
+
+    yield* ImmediateGmailSend.completeApprovalDecision({
+      binding,
+      decision: "approve",
+      defer: (_retry, failure) =>
+        Effect.sync(() => {
+          expect(failure).toBe(unavailable);
+          deferred += 1;
+        }),
+      store: { ...store, releaseApprovalBinding: () => Effect.fail(unavailable) },
+    });
+
+    expect(deferred).toBe(1);
+  }),
+);
 
 it.effect("retains immutable Gmail facts and hides them from another User", () =>
   Effect.gen(function* () {
@@ -131,6 +327,57 @@ it.effect("compacts durable terminal visibility and bulk-deletes bounded User st
   }),
 );
 
+it.effect("settles one open Action at most once", () =>
+  Effect.gen(function* () {
+    const { storage } = durableStorageFake();
+    const persistence = ImmediateGmailSend.makeDurableObjectPersistence(storage);
+    const context = yield* persistence
+      .retain(candidate)
+      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(ImmediateGmailSend.Context)));
+
+    yield* Effect.all(
+      [persistence.settle(context, "applied"), persistence.settle(context, "applied")],
+      { concurrency: "unbounded" },
+    );
+
+    expect(yield* persistence.listTerminal(100)).toHaveLength(1);
+  }),
+);
+
+it.effect("rejects settlement when the retained open context changed", () =>
+  Effect.gen(function* () {
+    const { storage } = durableStorageFake();
+    const persistence = ImmediateGmailSend.makeDurableObjectPersistence(storage);
+    const context = yield* persistence
+      .retain(candidate)
+      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(ImmediateGmailSend.Context)));
+
+    expect(
+      yield* persistence
+        .settle({ ...context, input: { ...context.input, body: "Changed body" } }, "applied")
+        .pipe(Effect.result),
+    ).toMatchObject({ failure: { _tag: "ImmediateGmailSendConflict" } });
+    expect(yield* persistence.listOpen()).toHaveLength(1);
+    expect(yield* persistence.listTerminal(100)).toHaveLength(0);
+  }),
+);
+
+it.effect("deletes malformed immediate Gmail rows without blocking account deletion", () =>
+  Effect.gen(function* () {
+    const { records, storage } = durableStorageFake();
+    const persistence = ImmediateGmailSend.makeDurableObjectPersistence(storage);
+    records.set("osfo:immediate-gmail-send:open:malformed", { broken: true });
+    records.set("osfo:immediate-gmail-send:approval:malformed", { broken: true });
+    records.set("osfo:immediate-gmail-send:terminal:malformed", { broken: true });
+    records.set("osfo:immediate-gmail-send:settlement-sequence", 2);
+    records.set("unrelated", { keep: true });
+
+    yield* persistence.deleteUser(candidate.authorityIdentity.userId);
+
+    expect(records).toEqual(new Map([["unrelated", { keep: true }]]));
+  }),
+);
+
 it.effect("orders and prunes terminal visibility by settlement rather than retention", () =>
   Effect.gen(function* () {
     const { store } = memoryStore();
@@ -174,6 +421,7 @@ it.effect("rejects the fifty-first open Action before any provider effect", () =
     );
     let providerEffects = 0;
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: noAccounting,
       integrations: {
         execute: () =>
@@ -210,6 +458,7 @@ it.effect("recovers a retained Action on activation after scheduler retries exha
     let scheduleAttempts = 0;
     const recovered: Array<ScheduledInspection> = [];
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: noAccounting,
       integrations: {
         execute: () => Effect.succeed(appliedResult),
@@ -277,6 +526,7 @@ it.effect("retains before execution and schedules one initial ambiguous inspecti
     const scheduled: Array<ScheduledInspection> = [];
     let executions = 0;
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: noAccounting,
       integrations: {
         readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
@@ -318,6 +568,7 @@ it.effect("does not start the provider effect until the durable recovery handoff
     const { contexts, store } = memoryStore();
     let executions = 0;
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: noAccounting,
       integrations: {
         readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
@@ -352,13 +603,15 @@ it.effect("does not start the provider effect until the durable recovery handoff
   }),
 );
 
-it.effect("projects retained status without provider inspection or accounting", () =>
+it.effect("keeps an open provider settlement pending until accounting is durable", () =>
   Effect.gen(function* () {
     const { store } = memoryStore();
     yield* store.retain(candidate);
     let inspections = 0;
+    let statusReads = 0;
     let accounting = 0;
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: {
         record: () =>
           Effect.sync(() => {
@@ -371,7 +624,10 @@ it.effect("projects retained status without provider inspection or accounting", 
           inspections += 1;
           return Effect.succeed({ _tag: "Applied", result: appliedResult });
         },
-        readActionStatus: () => Effect.succeed({ _tag: "Applied", result: appliedResult }),
+        readActionStatus: () => {
+          statusReads += 1;
+          return Effect.succeed({ _tag: "Applied", result: appliedResult });
+        },
       },
       scheduler: schedulerRecording([]),
       store,
@@ -382,11 +638,74 @@ it.effect("projects retained status without provider inspection or accounting", 
         {
           actionId: candidate.actionId,
           presentationId: candidate.presentationId,
-          status: "applied",
+          status: "pending",
         },
       ],
     });
     expect(inspections).toBe(0);
+    expect(statusReads).toBe(0);
+    expect(accounting).toBe(0);
+  }),
+);
+
+it.effect("retains admission invalidation without a provider effect or accounting", () =>
+  Effect.gen(function* () {
+    const { store } = memoryStore();
+    const binding = {
+      actionId: candidate.actionId,
+      connectionBinding,
+      presentationId: candidate.presentationId,
+      userId: candidate.authorityIdentity.userId,
+    } as const;
+    yield* store.retainApprovalBinding(binding);
+    let providerEffects = 0;
+    let accounting = 0;
+    const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
+      accounting: {
+        record: () =>
+          Effect.sync(() => {
+            accounting += 1;
+          }),
+      },
+      integrations: {
+        execute: () =>
+          Effect.sync(() => {
+            providerEffects += 1;
+            return appliedResult;
+          }),
+        inspectAction: () => Effect.succeed({ _tag: "NotStarted" }),
+        readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
+      },
+      scheduler: schedulerRecording([]),
+      store,
+    });
+
+    expect(
+      yield* coordinator
+        .execute(
+          candidate,
+          Effect.fail(
+            new ImmediateGmailSend.Unavailable({
+              cause: "connection replaced",
+              message: "Current policy denied the Action",
+              operation: "admit",
+            }),
+          ),
+          Effect.void,
+        )
+        .pipe(Effect.result),
+    ).toMatchObject({ failure: { _tag: "ImmediateGmailSendUnavailable" } });
+    expect(yield* coordinator.inspectForUser(candidate.authorityIdentity.userId)).toMatchObject({
+      items: [
+        {
+          actionId: candidate.actionId,
+          presentationId: candidate.presentationId,
+          status: "invalidated",
+        },
+      ],
+    });
+    expect(providerEffects).toBe(0);
     expect(accounting).toBe(0);
   }),
 );
@@ -405,6 +724,7 @@ it.effect("reschedules only open reconciliation states and never resends", () =>
     ];
     let executions = 0;
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: noAccounting,
       integrations: {
         readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
@@ -438,6 +758,7 @@ it.effect("schedules recovery when Applied accounting fails after provider settl
     const { store } = memoryStore();
     const scheduled: Array<ScheduledInspection> = [];
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: {
         record: () =>
           Effect.fail(
@@ -486,6 +807,7 @@ it.effect("blocks deletion while reconciliation is open and removes context afte
       { _tag: "Applied", result: appliedResult },
     ];
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: noAccounting,
       integrations: {
         readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
@@ -527,6 +849,7 @@ it.effect("blocks deletion for an unresolved Action older than the visible fifty
     );
     const scheduled: Array<ScheduledInspection> = [];
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: noAccounting,
       integrations: {
         readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
@@ -559,6 +882,7 @@ it.effect("compacts a settled accounting identity so later wakes are no-ops", ()
     const recorded = new Set<string>();
     let finalizerCalls = 0;
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: {
         record: (context, basis) =>
           Effect.sync(() => {
@@ -595,6 +919,7 @@ it.effect("accepts the pre-scheduled wake after an immediate Applied settlement"
     let providerInspections = 0;
     let accounting = 0;
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: {
         record: () =>
           Effect.sync(() => {
@@ -632,6 +957,7 @@ it.effect("replays a settled Action without re-admission or accounting in a rene
     let rechecks = 0;
     let applied = false;
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: {
         record: (context) =>
           Effect.sync(() => {
@@ -702,6 +1028,7 @@ it.effect("validates terminal replay input and Approval identity without re-admi
     let admissions = 0;
     let executions = 0;
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: noAccounting,
       integrations: {
         readActionStatus: (input) =>
@@ -763,6 +1090,7 @@ it.effect("replays terminal NotApplied and Ambiguous outcomes without new accoun
       let rechecks = 0;
       let accounting = 0;
       const coordinator = ImmediateGmailSend.makeCoordinator({
+        approvalPending: () => Effect.succeed(false),
         accounting: {
           record: () =>
             Effect.sync(() => {
@@ -851,6 +1179,7 @@ it.effect("replays a provider terminal Action after its bounded UI status is pru
     let admissions = 0;
     let rechecks = 0;
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: noAccounting,
       integrations: {
         readActionStatus: () => Effect.succeed({ _tag: "Applied", result: appliedResult }),
@@ -886,6 +1215,7 @@ it.effect("fails connection preflight before retaining or scheduling an Action",
     const scheduled: Array<ScheduledInspection> = [];
     let executions = 0;
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: noAccounting,
       integrations: {
         readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
@@ -927,6 +1257,7 @@ it.effect("rejects a changed-input replay without re-running admission", () =>
     let admissions = 0;
     let executions = 0;
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: noAccounting,
       integrations: {
         readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
@@ -965,6 +1296,7 @@ it.effect("durably reschedules repeated accounting failures until once-only sett
     const recorded = new Set<string>();
     let failuresRemaining = 2;
     const coordinator = ImmediateGmailSend.makeCoordinator({
+      approvalPending: () => Effect.succeed(false),
       accounting: {
         record: (context, basis) =>
           Effect.suspend(() => {
@@ -1044,6 +1376,19 @@ const appliedResult = {
 
 const noAccounting: ImmediateGmailSend.Accounting = { record: () => Effect.void };
 
+const makeRecoveryCoordinator = (store: ImmediateGmailSend.Interface) =>
+  ImmediateGmailSend.makeCoordinator({
+    accounting: noAccounting,
+    approvalPending: () => Effect.succeed(false),
+    integrations: {
+      execute: () => Effect.succeed(appliedResult),
+      inspectAction: () => Effect.succeed({ _tag: "NotStarted" }),
+      readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
+    },
+    scheduler: schedulerRecording([]),
+    store,
+  });
+
 interface ScheduledInspection {
   readonly delayMilliseconds: number;
   readonly idempotent: boolean;
@@ -1063,6 +1408,10 @@ const memoryStore = () => {
     ActionPresentationId,
     ImmediateGmailSend.ApprovalConnectionBinding
   >();
+  const approvalSettlements = new Map<
+    ActionPresentationId,
+    ImmediateGmailSend.ApprovalSettlementObligation
+  >();
   const contexts = new Map<ActionId, ImmediateGmailSend.Context>();
   const terminal = new Map<ActionId, ImmediateGmailSend.TerminalStatus>();
   let retainedOrdinal = 0;
@@ -1079,7 +1428,12 @@ const memoryStore = () => {
         for (const [presentationId, binding] of approvalBindings) {
           if (binding.userId === userId) approvalBindings.delete(presentationId);
         }
+        for (const [presentationId, obligation] of approvalSettlements) {
+          if (obligation.userId === userId) approvalSettlements.delete(presentationId);
+        }
       }),
+    listApprovalBindings: () => Effect.succeed([...approvalBindings.values()]),
+    listApprovalSettlements: () => Effect.succeed([...approvalSettlements.values()]),
     listOpen: () => Effect.succeed([...contexts.values()]),
     listTerminal: (limit) => {
       const values = [...terminal.values()].sort(
@@ -1093,6 +1447,11 @@ const memoryStore = () => {
     releaseApprovalBinding: (presentationId) =>
       Effect.sync(() => {
         approvalBindings.delete(presentationId);
+        approvalSettlements.delete(presentationId);
+      }),
+    releaseApprovalSettlement: (presentationId) =>
+      Effect.sync(() => {
+        approvalSettlements.delete(presentationId);
       }),
     retain: (retainedCandidate) =>
       Effect.sync(() => {
@@ -1103,6 +1462,8 @@ const memoryStore = () => {
             retainedAt: new Date(Date.UTC(2026, 7, 30, 12, 0, retainedOrdinal++)),
           } as const);
         contexts.set(retainedCandidate.actionId, retained);
+        approvalBindings.delete(retainedCandidate.presentationId);
+        approvalSettlements.delete(retainedCandidate.presentationId);
         return retained;
       }),
     retainApprovalBinding: (binding) =>
@@ -1111,9 +1472,31 @@ const memoryStore = () => {
         approvalBindings.set(binding.presentationId, retained);
         return retained;
       }),
+    retainApprovalSettlement: (obligation) =>
+      Effect.sync(() => {
+        const retained = approvalSettlements.get(obligation.presentationId) ?? obligation;
+        approvalSettlements.set(obligation.presentationId, retained);
+        return retained;
+      }),
+    settleApproval: (binding, status) =>
+      Effect.sync(() => {
+        if (!approvalBindings.has(binding.presentationId)) return;
+        approvalBindings.delete(binding.presentationId);
+        approvalSettlements.delete(binding.presentationId);
+        settlementSequence += 1;
+        terminal.set(binding.actionId, {
+          actionId: binding.actionId,
+          presentationId: binding.presentationId,
+          settledAt: new Date(Date.UTC(2026, 7, 30, 13, 0, settlementSequence)),
+          settlementSequence,
+          status,
+          userId: binding.userId,
+        });
+      }),
     settle: (context, status) =>
       Effect.sync(() => {
         contexts.delete(context.actionId);
+        approvalSettlements.delete(context.presentationId);
         settlementSequence += 1;
         terminal.set(context.actionId, {
           actionId: context.actionId,
@@ -1136,6 +1519,7 @@ const memoryStore = () => {
 const durableStorageFake = () => {
   const records = new Map<string, unknown>();
   const batches: Array<ReadonlyArray<string>> = [];
+  let transactionTail = Promise.resolve();
   const list = async (options?: { readonly limit?: number; readonly prefix?: string }) => {
     const entries = [...records.entries()]
       .filter(([key]) => options?.prefix === undefined || key.startsWith(options.prefix))
@@ -1160,7 +1544,14 @@ const durableStorageFake = () => {
   // this fake preserves their Promise, transaction, key-order, and value contracts.
   const storage = {
     ...adapter,
-    transaction: async <A>(run: (transaction: typeof adapter) => Promise<A>) => run(adapter),
+    transaction: <A>(run: (transaction: typeof adapter) => Promise<A>) => {
+      const result = transactionTail.then(() => run(adapter));
+      transactionTail = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      return result;
+    },
   } as unknown as DurableObjectStorage;
   return { batches, records, storage };
 };

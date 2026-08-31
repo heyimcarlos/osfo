@@ -42,7 +42,14 @@ export type GmailSendApproval = typeof GmailSendApproval.Type;
 export const GmailSendStatus = Schema.Struct({
   actionId: bounded(200),
   presentationId: bounded(200),
-  status: Schema.Literals(["pending", "applied", "notApplied", "ambiguous"]),
+  status: Schema.Literals([
+    "pending",
+    "applied",
+    "notApplied",
+    "ambiguous",
+    "rejected",
+    "invalidated",
+  ]),
 });
 export type GmailSendStatus = typeof GmailSendStatus.Type;
 

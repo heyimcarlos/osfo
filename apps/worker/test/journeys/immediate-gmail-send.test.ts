@@ -215,6 +215,9 @@ it.effect(
       yield* Effect.promise(() =>
         waitForConnectionSwapConsumed(app.integrations.connectionControl),
       );
+      yield* Effect.promise(() =>
+        waitForStatus(app.integrations.gmailSends, admissionApproval.presentationId, "invalidated"),
+      );
       expect(yield* Effect.promise(app.integrations.ledger)).toEqual(provider);
       expect(yield* Effect.promise(() => app.database.gmailSendUsage(identity.userId))).toEqual(
         usage,
@@ -250,6 +253,9 @@ it.effect(
       );
       yield* Effect.promise(() =>
         waitForConnectionSwapConsumed(app.integrations.connectionControl),
+      );
+      yield* Effect.promise(() =>
+        waitForStatus(app.integrations.gmailSends, recheckApproval.presentationId, "invalidated"),
       );
       expect(yield* Effect.promise(app.integrations.ledger)).toEqual(provider);
       expect(yield* Effect.promise(() => app.database.gmailSendUsage(identity.userId))).toEqual(
@@ -289,7 +295,44 @@ it.effect(
         presentationId: staleApproval.presentationId,
       });
       yield* Effect.promise(() =>
-        waitForApprovalRemoval(app.integrations.gmailSends, staleApproval.presentationId),
+        waitForStatus(app.integrations.gmailSends, staleApproval.presentationId, "rejected"),
+      );
+      expect(yield* Effect.promise(app.integrations.ledger)).toEqual(provider);
+      expect(yield* Effect.promise(() => app.database.gmailSendUsage(identity.userId))).toEqual(
+        usage,
+      );
+
+      const reconnection = yield* Effect.promise(app.integrations.connectGmail);
+      if (reconnection.body === undefined)
+        throw new Error("Gmail reconnect returned no hosted URL");
+      const reconnectionUrl = reconnection.body.url;
+      const reconnected = yield* Effect.promise(() =>
+        fetch(reconnectionUrl, { method: "POST", redirect: "manual" }),
+      );
+      expect(reconnected.status).toBe(303);
+      yield* Effect.promise(() =>
+        app.integrations.nextGmailAction("verification-gmail-unseen-disconnect"),
+      );
+      yield* Effect.promise(() =>
+        submit(
+          "unseen-disconnect",
+          "unseen-disconnect@example.test",
+          "Disconnect before first settings view",
+          "Must remain rejectable without a live connection",
+        ),
+      );
+      expect((yield* Effect.promise(app.integrations.disconnectGmail)).status).toBe(200);
+      const unseenPending = yield* Effect.promise(() =>
+        waitForApproval(app.integrations.gmailSends),
+      );
+      const unseenApproval = unseenPending.approvals[0];
+      if (unseenApproval === undefined) throw new Error("Unseen disconnected Approval was absent");
+      const unseenRejection = yield* Effect.promise(() =>
+        app.integrations.decideGmailSend("reject", unseenApproval.presentationId),
+      );
+      expect(unseenRejection.response.status).toBe(200);
+      yield* Effect.promise(() =>
+        waitForStatus(app.integrations.gmailSends, unseenApproval.presentationId, "rejected"),
       );
       expect(yield* Effect.promise(app.integrations.ledger)).toEqual(provider);
       expect(yield* Effect.promise(() => app.database.gmailSendUsage(identity.userId))).toEqual(
@@ -327,6 +370,21 @@ const waitForApprovalRemoval = async (
     inspect,
     (view) => view.approvals.every((approval) => approval.presentationId !== presentationId),
     "Rejected immediate Gmail execution",
+  );
+
+const waitForStatus = async (
+  inspect: () => Promise<{ readonly body: GmailSendsView | undefined }>,
+  presentationId: string,
+  status: "invalidated" | "rejected",
+) =>
+  poll(
+    inspect,
+    (view) =>
+      view.approvals.every((approval) => approval.presentationId !== presentationId) &&
+      view.statuses.some(
+        (candidate) => candidate.presentationId === presentationId && candidate.status === status,
+      ),
+    `${status} immediate Gmail status`,
   );
 
 const waitForConnectionSwapConsumed = async (

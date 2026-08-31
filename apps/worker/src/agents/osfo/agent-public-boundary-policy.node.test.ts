@@ -73,7 +73,7 @@ const publicBoundaryPolicy = {
   readSessionAuthorizationFacts: ["read", "none"],
   recoverScheduledEmail: ["cancellationReconciliationDeletion", "none"],
   reconcileMemoryProviderOutbox: ["cancellationReconciliationDeletion", "none"],
-  reconcileImmediateGmailSend: ["cancellationReconciliationDeletion", "none"],
+  reconcileImmediateGmailSend: ["cancellationReconciliationDeletion", "accountDeletionFence"],
   reconcileModelCallUsage: ["cancellationReconciliationDeletion", "none"],
   settleGatewayModelUsage: ["cancellationReconciliationDeletion", "none"],
   submitManagedConversation: ["ordinaryMutation", "fencedSessionExecution"],
