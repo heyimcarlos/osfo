@@ -49,6 +49,11 @@ export interface ActionPresentationPersistence {
   ) => Effect.Effect<ActionPresentation, ThinkApprovalUnavailable>;
 }
 
+export interface ActionApprovalSelection {
+  readonly maximum: number;
+  readonly select: (pending: PendingThinkAction) => boolean;
+}
+
 /** Apply Osfo authority and sequencing around Think's sole Approval lifecycle. */
 export const makeActionApprovals = (options: {
   readonly authorizer: ApprovalActorAuthorizer;
@@ -95,14 +100,21 @@ export const makeActionApprovals = (options: {
     );
   });
 
-  const list = Effect.fn("ActionApprovals.list")(function* (actor: ApprovalActor) {
+  const list = Effect.fn("ActionApprovals.list")(function* (
+    actor: ApprovalActor,
+    selection?: ActionApprovalSelection,
+  ) {
     const pending = yield* options.lifecycle.listPending;
     yield* authorize(
       actor,
       pending[0]?.executionId ?? ActionPresentationId.make("pending-action-list"),
     );
+    const selected =
+      selection === undefined
+        ? pending
+        : pending.filter(selection.select).slice(-selection.maximum);
     const presentations = yield* Effect.forEach(
-      pending,
+      selected,
       (candidate) => options.present(candidate).pipe(Effect.flatMap(options.presentations.retain)),
       { concurrency: 1 },
     );

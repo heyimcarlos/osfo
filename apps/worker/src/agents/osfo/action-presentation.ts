@@ -819,6 +819,8 @@ const encodeCalendarRecurrence = Schema.encodeSync(
 );
 
 const gmailPresentationFields = (input: typeof GmailMessageInput.Type) => [
+  { label: "Gmail mailbox", name: "gmailResource", value: input.gmailResource },
+  { label: "Integration manifest", name: "manifestVersion", value: "gmail-v1" },
   { label: "Recipients", name: "recipients", value: encodeGmailRecipients(input.recipients) },
   { label: "Subject", name: "subject", value: input.subject },
   { label: "Message", name: "body", value: input.body },

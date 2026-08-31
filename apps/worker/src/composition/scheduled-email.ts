@@ -168,6 +168,13 @@ export const serviceLayerFromDatabase = (
                   Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
                 IntegrationActionConflict: (cause) =>
                   Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
+                IntegrationActionNotApplied: (cause) =>
+                  Effect.fail(
+                    new ScheduledEmail.SendNotApplied({
+                      message: cause.message,
+                      providerLogId: cause.providerLogId,
+                    }),
+                  ),
                 IntegrationConnectionUnavailable: (cause) =>
                   Effect.fail(new ScheduledEmail.SendAuthorityEnded({ message: cause.message })),
                 IntegrationExecutionRejected: (cause) =>
@@ -337,6 +344,7 @@ const makeAccounting = (database: Database) =>
 
 const gmailInput = (email: ScheduledEmail.Record) => ({
   body: email.request.body,
+  gmailResource: email.request.gmailResource,
   recipients: email.request.recipients,
   subject: email.request.subject,
 });

@@ -50,6 +50,7 @@ const PersistedNotApplied = Schema.TaggedStruct("NotApplied", {
 
 const PersistedApplied = Schema.TaggedStruct("Applied", {
   digest: actionDigest,
+  providerRequestId: Schema.optionalKey(Schema.NullOr(boundedProviderIdentity)),
   result: PersistedEffectResult,
 });
 
@@ -60,6 +61,10 @@ const PersistedAction = Schema.Union([
   }),
   Schema.TaggedStruct("Ambiguous", {
     correlation: Schema.optionalKey(Schema.NullOr(ProviderAttemptCorrelation)),
+    digest: actionDigest,
+  }),
+  Schema.TaggedStruct("TerminalAmbiguous", {
+    correlation: ProviderAttemptCorrelation,
     digest: actionDigest,
   }),
   PersistedNotApplied,
@@ -208,9 +213,20 @@ const normalizePersistedAction = (
   if (value._tag === "NotApplied") {
     return { ...value, providerLogId: value.providerLogId ?? null };
   }
+  if (value._tag === "TerminalAmbiguous") {
+    return {
+      ...value,
+      correlation: {
+        ...value.correlation,
+        providerRequestId: value.correlation.providerRequestId ?? null,
+        providerSessionId: value.correlation.providerSessionId ?? null,
+      },
+    };
+  }
   if (value._tag !== "Applied") return value;
   return {
     ...value,
+    providerRequestId: value.providerRequestId ?? null,
     result: {
       ...value.result,
       evidence: {

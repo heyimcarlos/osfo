@@ -5,6 +5,7 @@ import {
   type BillingReconciliationRequest,
   ChannelLinkInviteToken,
   type HelpArea,
+  type GmailSendApprovalDecision,
   type IntegrationToolkit,
   type RegistrationLocale,
   type ScheduledEmailApprovalDecision,
@@ -97,6 +98,19 @@ export const inspectIntegrations = Effect.gen(function* () {
   const client = yield* apiClient;
   return yield* client.integrations.inspect();
 });
+
+/** Inspect exact immediate Gmail Approvals and settled outcomes for the authenticated User. */
+export const inspectGmailSends = Effect.gen(function* () {
+  const client = yield* apiClient;
+  return yield* client.integrations.gmailSends();
+});
+
+/** Dispatch one exact immediate Gmail Approval decision through the owning Agent. */
+export const decideGmailSendApproval = (payload: GmailSendApprovalDecision) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    return yield* client.integrations.decideGmailSend({ payload });
+  });
 
 /** Acquire a provider-hosted connect URL for one exact toolkit. */
 export const connectIntegration = (toolkit: IntegrationToolkit) =>

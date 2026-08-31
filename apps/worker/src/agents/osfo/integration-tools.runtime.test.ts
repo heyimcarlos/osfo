@@ -76,6 +76,7 @@ const fakeIntegrations: Integrations.Interface = {
       }),
     ),
   inspectAction: () => Effect.succeed({ _tag: "NotStarted" }),
+  readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
   resolveSession: (userId) =>
     Effect.succeed({ _tag: "IntegrationSessionResolved", resumed: true, userId }),
 };

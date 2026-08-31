@@ -118,6 +118,15 @@ export const IntegrationConnection = Schema.Union([
 /** Retained single Gmail fact used only by launch-v1 Authorization. */
 export const GmailConnection = Schema.NullOr(IntegrationConnection);
 
+/** Project one current connection into both launch-v1 and manifest-governed facts. */
+export const connectedIntegrationAuthorizationFacts = (userId: UserId, toolkit: string) => {
+  const connection = { _tag: "Connected" as const, toolkit, userId };
+  return {
+    gmailConnection: toolkit === "gmail" ? connection : null,
+    integrationConnections: [connection],
+  };
+};
+
 /** Current live resource facts used by Authorization. */
 export const LiveResourceFacts = Schema.Struct({
   activeGmSummonsInSession: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),

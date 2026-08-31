@@ -16,12 +16,13 @@ usage() {
     '  control-osfo identity <run-id>' \
     '  control-osfo journeys <run-id>' \
     '  control-osfo account-deletion-envelope-journey <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> start' \
-    '  control-osfo record <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> <action|result> <summary>' \
-    '  control-osfo observe <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> start' \
+    '  control-osfo record <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> <action|result> <summary>' \
+    '  control-osfo observe <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay>' \
     '  control-osfo channel-invite <run-id>' \
     '  control-osfo telegram-reply <run-id> <message>' \
     '  control-osfo document-build-free-denial <run-id> <file-id>' \
+    '  control-osfo gmail-send-request <run-id>' \
     '  control-osfo scheduled-email-request <run-id>' \
     '  control-osfo whatsapp-invite <run-id>' \
     '  control-osfo record-reminder-due <run-id> <rfc3339-instant>' \
@@ -30,7 +31,7 @@ usage() {
     '  control-osfo whatsapp-reply <run-id> <message>' \
     '  control-osfo seed-account-deletion <run-id>' \
     '  control-osfo reconcile-account-deletion <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> finish' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> finish' \
     '  control-osfo cleanup <run-id>'
 }
 
@@ -44,7 +45,7 @@ require_run_id() {
 
 require_feature() {
   case "${1:-}" in
-    registration|channel-linking|research-report|document-build-free-denial|document-build|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay) ;;
+    registration|channel-linking|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay) ;;
     *)
       printf 'Unknown browser feature: %s\n' "${1:-}" >&2
       exit 2
@@ -584,7 +585,7 @@ evidence_start() {
     printf 'provider_template_policy=fixed-variable-free-only\n' \
       >>"$feature_dir/metadata.txt"
   fi
-  if [[ "$feature" == scheduled-email ]]; then
+  if [[ "$feature" == scheduled-email || "$feature" == immediate-gmail-send ]]; then
     provider_origin="$(state_value "$run_id" provider-origin)"
     curl --fail --silent --show-error --request POST \
       "$provider_origin/_test/integrations/reset-ledger" >/dev/null
@@ -913,6 +914,25 @@ document_build_free_denial() {
   printf '%s\n' "$inbox_url" >"$state_dir/document-build-free-inbox-url"
   printf 'document_build_free_denial_ready action=%s workflow=%s inbox=%s reply=%s\n' \
     "$action_id" "$workflow_id" "$inbox_url" "$feature_dir/agent-reply.txt"
+}
+
+gmail_send_request() {
+  local run_id state_dir recipient subject body message reply
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  state_dir="$(state_dir_for "$run_id")"
+  recipient="gmail-send-$run_id@example.test"
+  subject="Immediate Gmail verification $run_id"
+  body="Run-owned immediate Gmail verification $run_id"
+  message="Send this exact Gmail message now: recipient=$recipient; subject=$subject; body=$body"
+  printf '%s\n' "$recipient" >"$state_dir/gmail-send-recipient"
+  printf '%s\n' "$subject" >"$state_dir/gmail-send-subject"
+  printf '%s\n' "$body" >"$state_dir/gmail-send-body"
+  printf '%s\n' "$message" >"$state_dir/gmail-send-agent-request"
+  reply="$(telegram_reply "$run_id" "$message")"
+  printf '%s\n' "$reply" >"$state_dir/gmail-send-agent-reply"
+  printf 'gmail_send_request_ready recipient=%s subject=%s action=%s\n' \
+    "$recipient" "$subject" 'verification-gmailSendEmail'
 }
 
 scheduled_email_request() {
@@ -1867,6 +1887,60 @@ observe_scheduled_email() {
     "$feature_dir/state.json" "$feature_dir/provider.json"
 }
 
+observe_immediate_gmail_send() {
+  local run_id state_dir feature_dir container_id provider_origin phone recipient subject body action_id state_json
+  run_id="$1"
+  state_dir="$(state_dir_for "$run_id")"
+  feature_dir="$(feature_artifact_dir_for "$run_id" immediate-gmail-send)"
+  begin_observation "$feature_dir"
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  recipient="$(state_value "$run_id" gmail-send-recipient)"
+  subject="$(state_value "$run_id" gmail-send-subject)"
+  body="$(state_value "$run_id" gmail-send-body)"
+  action_id='verification-gmailSendEmail'
+  state_json="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userId', u.id,
+      'agentId', a.agent_id,
+      'actionId', (select au.source_id from allowance_usage au where au.user_id = u.id and au.source_type = 'integrationAction' and au.source_id like '${action_id}::cf-wai-tool-call::%' and au.allowance_kind = 'gmailSends' limit 1),
+      'gmailSendUsage', (select count(*) from allowance_usage au where au.user_id = u.id and au.source_type = 'integrationAction' and au.source_id like '${action_id}::cf-wai-tool-call::%' and au.allowance_kind = 'gmailSends'),
+      'gmailSendQuantity', (select au.quantity::text from allowance_usage au where au.user_id = u.id and au.source_type = 'integrationAction' and au.source_id like '${action_id}::cf-wai-tool-call::%' and au.allowance_kind = 'gmailSends' limit 1),
+      'gmailSendBasis', (select au.basis from allowance_usage au where au.user_id = u.id and au.source_type = 'integrationAction' and au.source_id like '${action_id}::cf-wai-tool-call::%' and au.allowance_kind = 'gmailSends' limit 1)
+    ) from users u
+    join agents a on a.user_id = u.id
+    where u.phone_number = '$phone';")"
+  if [[ -z "$state_json" ]]; then
+    printf 'No registered User exists for the immediate Gmail observation\n' >&2
+    exit 1
+  fi
+  jq . <<<"$state_json" >"$feature_dir/state.json"
+  jq --null-input \
+    --argjson integration "$(curl --fail --silent --show-error "$provider_origin/_test/integrations/ledger")" \
+    --argjson model "$(curl --fail --silent --show-error "$provider_origin/_test/research/ledger")" \
+    '{ integration: $integration, model: $model }' \
+    >"$feature_dir/provider.json"
+  jq --exit-status --arg actionId "$action_id" \
+    '(.actionId | startswith($actionId + "::cf-wai-tool-call::")) and .gmailSendUsage == 1 and
+      .gmailSendQuantity == "1" and .gmailSendBasis == "observed"' \
+    "$feature_dir/state.json" >/dev/null
+  jq --exit-status \
+    --arg recipient "$recipient" --arg subject "$subject" --arg body "$body" --arg actionId "$action_id" \
+    '([.integration[] | select(
+        .providerTool == "GMAIL_SEND_EMAIL" and .input.recipient_email == $recipient and
+        .input.subject == $subject and .input.body == $body and
+        (.logId | length) > 0 and (.resourceId | length) > 0)] | length) == 1 and
+      (.integration | length) == 1 and
+      ([.model[] | select(.kind == "tool-selection" and .selectedTool == "gmailSendEmail" and
+        .operationId == $actionId and .subject == ($recipient + "|" + $subject + "|" + $body))] | length) == 1' \
+    "$feature_dir/provider.json" >/dev/null
+  complete_observation "$run_id" "$feature_dir"
+  printf 'observed immediate-gmail-send state=%s provider=%s\n' \
+    "$feature_dir/state.json" "$feature_dir/provider.json"
+}
+
 observe_billing() {
   local run_id feature_dir container_id provider_origin phone state_json
   run_id="$1"
@@ -2389,6 +2463,7 @@ case "$command_name" in
       research-report) observe_research_report "$2" ;;
       document-build-free-denial) observe_document_build_free_denial "$2" ;;
       document-build) observe_document_build "$2" ;;
+      immediate-gmail-send) observe_immediate_gmail_send "$2" ;;
       scheduled-email) observe_scheduled_email "$2" ;;
       billing) observe_billing "$2" ;;
       whatsapp-wakeup) observe_whatsapp_wakeup "$2" ;;
@@ -2418,6 +2493,10 @@ case "$command_name" in
   scheduled-email-request)
     require_run_id "${2:-}"
     scheduled_email_request "$2"
+    ;;
+  gmail-send-request)
+    require_run_id "${2:-}"
+    gmail_send_request "$2"
     ;;
   whatsapp-invite)
     require_run_id "${2:-}"

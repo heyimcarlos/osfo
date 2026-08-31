@@ -1,6 +1,6 @@
 ---
 name: verify-osfo
-description: Verify Osfo registration, SMS phone authentication, Telegram or WhatsApp channel linking, Research Reports, Document Build, Scheduled Email, Reminder Approval and due delivery, billing, permanent account deletion, or retained deletion replay in Chrome with a disposable verified User, local provider boundaries, committed state, and durable evidence. Use after implementing or reviewing one of those browser paths.
+description: Verify Osfo registration, SMS phone authentication, Telegram or WhatsApp channel linking, Research Reports, Document Build, immediate Gmail send, Scheduled Email, Reminder Approval and due delivery, billing, permanent account deletion, or retained deletion replay in Chrome with a disposable verified User, local provider boundaries, committed state, and durable evidence. Use after implementing or reviewing one of those browser paths.
 ---
 
 # Verify Osfo
@@ -60,6 +60,7 @@ Open the selected feature file for its only authoritative drive and completion c
 - [channel linking](features/channel-linking.md)
 - [Research Report](features/research-report.md)
 - [Document Build](features/document-build.md)
+- [Immediate Gmail send](features/immediate-gmail-send.md)
 - [Scheduled Email](features/scheduled-email.md)
 - [Free billing summary](features/billing.md)
 - [account deletion](features/account-deletion.md)
@@ -69,7 +70,7 @@ Open the selected feature file for its only authoritative drive and completion c
 For any mapped feature, start evidence before its first action. Save `action.png` when the named action is ready and `result.png` only after the named result appears. Record both visible facts, observe committed state, and finish:
 
 ```sh
-FEATURE=registration # registration, channel-linking, research-report, document-build-free-denial, document-build, scheduled-email, billing, whatsapp-wakeup, account-deletion, or account-deletion-replay
+FEATURE=registration # registration, channel-linking, research-report, document-build-free-denial, document-build, immediate-gmail-send, scheduled-email, billing, whatsapp-wakeup, account-deletion, or account-deletion-replay
 ./.agents/skills/verify-osfo/helpers/control-osfo evidence "$RUN_ID" "$FEATURE" start
 # Save Chrome screenshots to the exact action.png and result.png paths printed above.
 ./.agents/skills/verify-osfo/helpers/control-osfo record "$RUN_ID" "$FEATURE" action \

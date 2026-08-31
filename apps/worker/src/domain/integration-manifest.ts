@@ -178,6 +178,7 @@ export const GmailSearchInput = Schema.Struct({
 
 export const GmailMessageInput = Schema.Struct({
   body: boundedSummary,
+  gmailResource: Schema.Literal("primary"),
   recipients: Schema.NonEmptyArray(boundedIdentity).check(Schema.isMaxLength(50)),
   subject: nonEmpty.check(Schema.isMaxLength(998)),
 });

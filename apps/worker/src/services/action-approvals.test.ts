@@ -78,3 +78,62 @@ it.effect("reuses the immutable Action presentation retained on its first read",
     expect(listed.presentations).toEqual([first.presentation]);
   });
 });
+
+it.effect("selects the newest matching pending Actions before presentation work", () => {
+  const pending = Array.from({ length: 60 }, (_, index): PendingThinkAction => ({
+    descriptor: {
+      action: index % 6 === 0 ? "scheduledEmailStart" : "gmailSendEmail",
+      input: { index },
+      kind: "durable-pause",
+      permissions: ["gmail:send"],
+      requestId: `request-${index}`,
+      risk: "high",
+      summary: `Action ${index}`,
+      toolCallId: `action-${index}`,
+    },
+    executionId: ActionPresentationId.make(`presentation-${index}`),
+    source: "action",
+  }));
+  let presentationCalls = 0;
+  const approvals = makeActionApprovals({
+    authorizer: { ownsAgent: () => Effect.succeed(true) },
+    lifecycle: {
+      findPending: () => Effect.die(new Error("not used by list")),
+      listPending: Effect.succeed(pending),
+      resolve: () => Effect.void,
+    },
+    now: Effect.succeed(new Date("2026-08-24T00:00:00.000Z")),
+    present: (item) =>
+      Effect.sync(() => {
+        presentationCalls += 1;
+        return ActionPresentation.make({
+          actionDefinitionVersion: "osfo-gmail-send-v1",
+          actionId: ActionId.make(item.descriptor.toolCallId),
+          consequences: ["Send one message."],
+          description: item.descriptor.summary,
+          fields: [],
+          operation: "integration.effect",
+          presentationId: item.executionId,
+          title: "Send Gmail message",
+        });
+      }),
+    presentations: { retain: (candidate) => Effect.succeed(candidate) },
+  });
+  const actor = {
+    _tag: "AuthSession" as const,
+    authSessionId: AuthSessionId.make("session-1"),
+    expiresAt: new Date("2026-08-25T00:00:00.000Z"),
+    userId: UserId.make("user-1"),
+  };
+
+  return Effect.gen(function* () {
+    const listed = yield* approvals.list(actor, {
+      maximum: 50,
+      select: (item) => item.descriptor.action === "gmailSendEmail",
+    });
+    expect(listed.presentations).toHaveLength(50);
+    expect(presentationCalls).toBe(50);
+    expect(listed.presentations.at(0)?.presentationId).toBe("presentation-1");
+    expect(listed.presentations.at(-1)?.presentationId).toBe("presentation-59");
+  });
+});

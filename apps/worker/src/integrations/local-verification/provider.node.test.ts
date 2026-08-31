@@ -1,6 +1,6 @@
 /* oxlint-disable effecttsgo/global-fetch-in-effect, vitest/no-standalone-expect -- This Effect test drives the owned loopback provider boundary. */
 import { it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { expect } from "vitest";
 
 import { UserId } from "../../domain";
@@ -9,7 +9,91 @@ import {
   startRunProviderEmulator,
 } from "../../../test/emulators/provider-emulator";
 import { directIntegrationProviderConfig } from "../../services/integrations";
+import { ResearchVerificationProvider } from "../cloudflare/research-verification-provider";
 import { LocalVerificationIntegrationProvider } from "./provider";
+
+it.effect("does not replay the stable immediate Gmail Action after Approval continuation", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(startProviderEmulator),
+    (emulator) =>
+      Effect.gen(function* () {
+        const binding = ResearchVerificationProvider.makeAiBinding({
+          _tag: "LocalVerification",
+          baseURL: emulator.origin,
+        });
+        const request =
+          "Send this exact Gmail message now: recipient=person@example.test; subject=Exact subject; body=Exact body";
+        const gmailTool = {
+          function: {
+            name: "gmailSendEmail",
+            parameters: { properties: {}, type: "object" },
+          },
+          type: "function" as const,
+        };
+        const initial = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            messages: [{ content: request, role: "user" }],
+            tools: [gmailTool],
+          }),
+        );
+        const continued = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            messages: [
+              { content: request, role: "user" },
+              {
+                content: '{"status":"paused"}',
+                name: "gmailSendEmail",
+                role: "tool",
+                tool_call_id: "verification-gmailSendEmail",
+              },
+              {
+                content:
+                  "Continue your previous response from exactly where it left off. Do not repeat any of it.",
+                role: "user",
+              },
+            ],
+            tools: [gmailTool],
+          }),
+        );
+        expect(initial).toMatchObject({
+          tool_calls: [{ id: "verification-gmailSendEmail", name: "gmailSendEmail" }],
+        });
+        expect(continued).toMatchObject({
+          finish_reason: "stop",
+          response: "The approved immediate Gmail Action is complete.",
+        });
+        expect(continued).not.toHaveProperty("tool_calls");
+        const ledger = yield* Effect.promise(() =>
+          fetch(`${emulator.origin}/_test/research/ledger`).then((response) => response.json()),
+        );
+        const toolSelections = yield* Schema.decodeUnknownEffect(
+          Schema.Array(
+            Schema.Struct({
+              kind: Schema.String,
+              operationId: Schema.NullOr(Schema.String),
+              selectedTool: Schema.optionalKey(Schema.String),
+              subject: Schema.String,
+            }),
+          ),
+        )(ledger).pipe(
+          Effect.map((entries) =>
+            entries.filter(
+              (entry) => entry.kind === "tool-selection" && entry.selectedTool === "gmailSendEmail",
+            ),
+          ),
+        );
+        expect(toolSelections).toEqual([
+          {
+            kind: "tool-selection",
+            operationId: "verification-gmailSendEmail",
+            selectedTool: "gmailSendEmail",
+            subject: "person@example.test|Exact subject|Exact body",
+          },
+        ]);
+      }),
+    (emulator) => Effect.promise(emulator.close),
+  ),
+);
 
 it.effect("renders delivered Telegram replies in the run-owned provider inbox", () =>
   Effect.scoped(

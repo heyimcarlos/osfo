@@ -14,6 +14,7 @@ import {
   Approval,
   approvalFor,
   ApprovalPresentation,
+  connectedIntegrationAuthorizationFacts,
   emptyLiveResourceFacts,
   make,
   type AuthorizationContext,
@@ -829,6 +830,17 @@ describe("governed Authorization", () => {
         send,
       ),
     ).toMatchObject({ _tag: "ApprovalRequired" });
+  });
+
+  it("projects Gmail into both launch-v1 and manifest-governed connection facts", () => {
+    expect(connectedIntegrationAuthorizationFacts(userId, "gmail")).toEqual({
+      gmailConnection: { _tag: "Connected", toolkit: "gmail", userId },
+      integrationConnections: [{ _tag: "Connected", toolkit: "gmail", userId }],
+    });
+    expect(connectedIntegrationAuthorizationFacts(userId, "googlecalendar")).toEqual({
+      gmailConnection: null,
+      integrationConnections: [{ _tag: "Connected", toolkit: "googlecalendar", userId }],
+    });
   });
 
   it("requires a connection for the exact manifest toolkit", () => {

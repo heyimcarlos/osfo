@@ -799,6 +799,54 @@ const handleResearch = (
         const scheduledEmailWorkflowId = /scheduled-email:[\w:-]{8,300}/iu.exec(lastMessage)?.[0];
         const scheduledEmailFixture =
           /recipient=([^;]+); subject=([^;]+); body=([^;]+); sendAt=([^;\s]+)/iu.exec(lastMessage);
+        const immediateGmailFixture = latestUserMessageMatch(
+          input,
+          /send this exact Gmail message now: recipient=([^;]+); subject=([^;]+); body=([^;]+)/iu,
+        );
+        if (
+          immediateGmailFixture !== null &&
+          toolNames.includes("gmailSendEmail") &&
+          lastMessageRole(input) === "user"
+        ) {
+          const [, recipient, subject, body] = immediateGmailFixture;
+          if (recipient === undefined || subject === undefined || body === undefined) {
+            respondJson(response, 400, { error: "Immediate Gmail fixture is incomplete" });
+            return;
+          }
+          if (
+            lastMessageContent(input).startsWith(
+              "Continue your previous response from exactly where it left off.",
+            )
+          ) {
+            respondJson(response, 200, {
+              finish_reason: "stop",
+              response: "The approved immediate Gmail Action is complete.",
+              usage: { completion_tokens: 1, prompt_tokens: 1 },
+            });
+            return;
+          }
+          ledger.push({
+            kind: "tool-selection",
+            operationId: "verification-gmailSendEmail",
+            selectedTool: "gmailSendEmail",
+            subject: `${recipient}|${subject}|${body}`,
+          });
+          respondJson(
+            response,
+            200,
+            toolResponse(
+              "gmailSendEmail",
+              {
+                body,
+                gmailResource: "primary",
+                recipients: [recipient],
+                subject,
+              },
+              "verification-gmailSendEmail",
+            ),
+          );
+          return;
+        }
         if (
           scheduledEmailWorkflowId !== undefined &&
           toolNames.includes("inspectScheduledEmail") &&
@@ -1035,6 +1083,14 @@ const latestUserMessageContent = (input: ResearchRequest): string => {
   if (typeof message.content === "string") return message.content;
   return JSON.stringify(message.content);
 };
+
+const latestUserMessageMatch = (input: ResearchRequest, pattern: RegExp): RegExpExecArray | null =>
+  input.messages?.reduceRight<RegExpExecArray | null>((found, message) => {
+    if (found !== null || message.role !== "user" || typeof message.content !== "string") {
+      return found;
+    }
+    return pattern.exec(message.content);
+  }, null) ?? null;
 
 const isDocumentBuildSkillLoadResult = (input: ResearchRequest): boolean => {
   const message = lastMessage(input);

@@ -719,6 +719,7 @@ it.effect("rejects a changed source snapshot and permanently fences deleted Remi
     Effect.gen(function* () {
       const canceledSchedules: Array<string> = [];
       const canceledSources: Array<string> = [];
+      const deletedImmediateGmailSends: Array<UserId> = [];
       const deletedPersonalSkills: Array<UserId> = [];
       const clock = yield* Ref.make(new Date("2026-09-02T11:59:59.000Z"));
       const reminders = makeReminderAuthority({
@@ -779,6 +780,9 @@ it.effect("rejects a changed source snapshot and permanently fences deleted Remi
         {
           deleteUserData: (userId) => Effect.sync(() => void deletedPersonalSkills.push(userId)),
         },
+        {
+          deleteUser: (userId) => Effect.sync(() => void deletedImmediateGmailSends.push(userId)),
+        },
         ownerUserId,
       );
       expect(yield* reminders.inspect(ownerUserId, reminderId)).toBeNull();
@@ -792,6 +796,7 @@ it.effect("rejects a changed source snapshot and permanently fences deleted Remi
       expect(canceledSchedules).toContain(`schedule-${reminderId}`);
       expect(canceledSources).toEqual([snapshot[0]?.sourceIdentity]);
       expect(deletedPersonalSkills).toEqual([ownerUserId]);
+      expect(deletedImmediateGmailSends).toEqual([ownerUserId]);
       expect(
         yield* reminders.deliver({
           callbackCapability: testCallbackCapability(1),
