@@ -21,6 +21,7 @@ export const AgentStoreOperation = Schema.Literals([
   "replaceCurrentSession",
   "rollbackCurrentSessionReplacement",
   "recordCommittedTurn",
+  "readCommittedTurnWindow",
   "readCommittedTurns",
   "claimMemoryProviderOutbox",
   "completeMemoryProviderOutbox",

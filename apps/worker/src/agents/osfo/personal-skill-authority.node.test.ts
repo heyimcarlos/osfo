@@ -8,7 +8,7 @@ import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from "node:sqli
 
 import { describe, expect, it } from "@effect/vitest";
 import type { UIMessage } from "ai";
-import { Effect, Exit, Option, Schema } from "effect";
+import { Deferred, Effect, Exit, Fiber, Schema } from "effect";
 
 import {
   AssistantMessageId,
@@ -25,10 +25,8 @@ import {
   SkillLearningModelAttemptId,
 } from "../../domain/personal-skill";
 import { CommittedTurnReceipt } from "./db/store";
-import { makeGoodRootOutcomeEvaluator } from "./good-root-outcome-evaluator";
 import { CommittedTurnTerminal, withCommittedTurnTerminal } from "./committed-turn-terminal";
 import {
-  makeGoodRootOutcomeEvaluatorAuthority,
   makePersonalSkillAuthority,
   type PersonalSkillAuthorityStorage,
 } from "./personal-skill-authority";
@@ -38,10 +36,12 @@ import { Capabilities } from "../../services/capabilities";
 import { makePersonalSkillTools, SkillManageInput } from "./personal-skill-tools";
 import { makePersonalSkillControl } from "./personal-skill-control";
 import {
-  ingestGoodRootEvaluation,
+  ingestCompletedSkillLearningTurn,
   recoverPersonalSkillLearning,
+  replayCommittedSkillLearningTurns,
   selectPersonalSkillsForTurn,
 } from "./personal-skill-runtime";
+import { makeAccountDeletionFence } from "./account-deletion-fence";
 
 const userId = UserId.make("user-1");
 const availability = {
@@ -287,6 +287,16 @@ describe("PersonalSkillAuthority", () => {
         const candidate = learningCandidate();
         expect((yield* authority.enqueueLearning(candidate))._tag).toBe("Queued");
         expect((yield* authority.enqueueLearning(candidate))._tag).toBe("AlreadyQueued");
+        expect(
+          (yield* authority.enqueueLearning({
+            ...candidate,
+            evidence: candidate.evidence.map((reference) =>
+              reference._tag === "ConfirmedRootOutcome"
+                ? { _tag: "CompletedDirectUserTurn" as const, referenceId: reference.referenceId }
+                : reference,
+            ),
+          }))._tag,
+        ).toBe("AlreadyQueued");
 
         const first = yield* authority.claimLearning({
           candidateId: candidate.candidateId,
@@ -471,10 +481,10 @@ describe("PersonalSkillAuthority", () => {
     withDatabase((storage) =>
       Effect.gen(function* () {
         const authority = makePersonalSkillAuthority(storage);
-        expect(authority).not.toHaveProperty("retainGoodRootEvaluation");
         const submissionId = ThinkSubmissionId.make("submission-journey");
         const assistantMessageId = AssistantMessageId.make("assistant-journey");
         const requestId = ThinkRequestId.make("request-journey");
+        const learningNowEpochMillis = Date.UTC(2026, 7, 27, 0, 0, 0, 100);
         const messages = journeyMessages({ assistantMessageId, requestId, submissionId });
         const committed = yield* Schema.decodeEffect(CommittedTurnReceipt)({
           assistantMessageId,
@@ -484,29 +494,31 @@ describe("PersonalSkillAuthority", () => {
           source: "hook",
           thinkRequestId: requestId,
         });
-        const evaluation = yield* makeGoodRootOutcomeEvaluator({
-          authority: makeGoodRootOutcomeEvaluatorAuthority(storage),
-          facts: {
-            readCommittedTurns: Effect.succeed([committed]),
-            readMessages: () => messages,
-          },
-        }).evaluate({
-          assistantMessageId,
-          evaluatedAtEpochMillis: 1_788_000_000_100,
-        });
-        expect(Option.isSome(evaluation)).toBe(true);
-        if (Option.isNone(evaluation)) return;
-        const ingested = yield* ingestGoodRootEvaluation({
+        const ingested = yield* ingestCompletedSkillLearningTurn({
           authority,
+          assistantMessageId,
           committedTurns: [committed],
           messages,
-          nowEpochMillis: 1_788_000_000_100,
-          reference: evaluation.value,
         });
         expect(ingested._tag).toBe("SkillLearningQueued");
         if (ingested._tag !== "SkillLearningQueued") return;
+        expect(ingested.candidate.evidence).toContainEqual({
+          _tag: "CompletedDirectUserTurn",
+          referenceId: "good-root:personal-skill-learning-v1:submission-journey:assistant-journey",
+        });
+        expect(
+          yield* ingestCompletedSkillLearningTurn({
+            authority: makePersonalSkillAuthority(storage),
+            assistantMessageId,
+            committedTurns: [committed],
+            messages,
+          }),
+        ).toMatchObject({
+          _tag: "SkillLearningAlreadyQueued",
+          candidateId: ingested.candidateId,
+        });
 
-        const recovered = yield* recoverPersonalSkillLearning(authority, 1_788_000_000_101);
+        const recovered = yield* recoverPersonalSkillLearning(authority, learningNowEpochMillis);
         expect(recovered.map(({ candidateId }) => candidateId)).toEqual([
           ingested.candidate.candidateId,
         ]);
@@ -530,8 +542,8 @@ describe("PersonalSkillAuthority", () => {
             requirements: ["personal-agent"],
           },
           candidate: recovered[0] ?? ingested.candidate,
-          load: yield* authority.learningLoad(userId, 1_788_000_000_100),
-          nowEpochMillis: 1_788_000_000_100,
+          load: yield* authority.learningLoad(userId, learningNowEpochMillis),
+          nowEpochMillis: learningNowEpochMillis,
         });
         expect(outcome._tag).toBe("Learned");
 
@@ -596,7 +608,171 @@ describe("PersonalSkillAuthority", () => {
     ),
   );
 
-  it.effect("rejects cross-turn, unsuccessful, and uncommitted evaluator PASS pairings", () =>
+  it.effect("replays a committed direct User turn after an enqueue crash exactly once", () =>
+    withDatabase((storage) =>
+      Effect.gen(function* () {
+        const authority = makePersonalSkillAuthority(storage);
+        const assistantMessageId = AssistantMessageId.make("assistant-replay");
+        const requestId = ThinkRequestId.make("request-replay");
+        const sessionId = "session-replay";
+        const submissionId = ThinkSubmissionId.make("submission-replay");
+        const committed = yield* Schema.decodeEffect(CommittedTurnReceipt)({
+          assistantMessageId,
+          observationSequence: 1,
+          observedAt: "2026-08-27 00:00:00",
+          sessionId,
+          source: "hook",
+          thinkRequestId: requestId,
+        });
+        const messages = journeyMessages({
+          assistantMessageId,
+          requestId,
+          sessionId,
+          submissionId,
+        });
+        const replay = () =>
+          replayCommittedSkillLearningTurns({
+            authority,
+            committedTurns: [committed],
+            nowEpochMillis: Date.UTC(2026, 7, 27, 0, 0, 1),
+            readSessionHistory: (requestedSessionId) => {
+              expect(requestedSessionId).toBe(sessionId);
+              return Effect.succeed(messages);
+            },
+          });
+
+        expect(yield* replay()).toMatchObject([{ _tag: "SkillLearningQueued" }]);
+        expect(yield* replay()).toMatchObject([{ _tag: "SkillLearningAlreadyQueued" }]);
+        expect(
+          (yield* recoverPersonalSkillLearning(authority, Date.UTC(2026, 7, 27, 0, 0, 1))).map(
+            ({ candidateId }) => candidateId,
+          ),
+        ).toEqual(["turn-submission-replay"]);
+      }),
+    ),
+  );
+
+  it.effect("drains live-turn replay before account deletion removes retained candidates", () =>
+    withDatabase((storage) =>
+      Effect.gen(function* () {
+        const authority = makePersonalSkillAuthority(storage);
+        const fence = makeAccountDeletionFence();
+        const replayStarted = yield* Deferred.make<void>();
+        const releaseReplay = yield* Deferred.make<void>();
+        const assistantMessageId = AssistantMessageId.make("assistant-deletion-race");
+        const requestId = ThinkRequestId.make("request-deletion-race");
+        const sessionId = "session-deletion-race";
+        const submissionId = ThinkSubmissionId.make("submission-deletion-race");
+        const committed = yield* Schema.decodeEffect(CommittedTurnReceipt)({
+          assistantMessageId,
+          observationSequence: 1,
+          observedAt: "2026-08-27 00:00:00",
+          sessionId,
+          source: "hook",
+          thinkRequestId: requestId,
+        });
+        const recovery = yield* fence
+          .runTracked(
+            () =>
+              Deferred.succeed(replayStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseReplay)),
+                Effect.andThen(
+                  replayCommittedSkillLearningTurns({
+                    authority,
+                    committedTurns: [committed],
+                    nowEpochMillis: Date.UTC(2026, 7, 27, 0, 0, 1),
+                    readSessionHistory: () =>
+                      Effect.succeed(
+                        journeyMessages({
+                          assistantMessageId,
+                          requestId,
+                          sessionId,
+                          submissionId,
+                        }),
+                      ),
+                  }),
+                ),
+              ),
+            () => "account deletion fenced" as const,
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(replayStarted);
+        const deletion = yield* fence.close.pipe(
+          Effect.andThen(authority.deleteUserData(userId)),
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+
+        yield* Deferred.succeed(releaseReplay, undefined);
+        expect(yield* Fiber.join(recovery)).toMatchObject([{ _tag: "SkillLearningQueued" }]);
+        yield* Fiber.join(deletion);
+
+        expect(
+          yield* recoverPersonalSkillLearning(authority, Date.UTC(2026, 7, 27, 0, 0, 1)),
+        ).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("drains post-turn enqueue before account deletion removes retained candidates", () =>
+    withDatabase((storage) =>
+      Effect.gen(function* () {
+        const authority = makePersonalSkillAuthority(storage);
+        const fence = makeAccountDeletionFence();
+        const enqueueStarted = yield* Deferred.make<void>();
+        const releaseEnqueue = yield* Deferred.make<void>();
+        const assistantMessageId = AssistantMessageId.make("assistant-post-turn-deletion-race");
+        const requestId = ThinkRequestId.make("request-post-turn-deletion-race");
+        const submissionId = ThinkSubmissionId.make("submission-post-turn-deletion-race");
+        const committed = yield* Schema.decodeEffect(CommittedTurnReceipt)({
+          assistantMessageId,
+          observationSequence: 1,
+          observedAt: "2026-08-27 00:00:00",
+          sessionId: "session-post-turn-deletion-race",
+          source: "hook",
+          thinkRequestId: requestId,
+        });
+        const enqueue = yield* fence
+          .runTracked(
+            () =>
+              Deferred.succeed(enqueueStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseEnqueue)),
+                Effect.andThen(
+                  ingestCompletedSkillLearningTurn({
+                    authority,
+                    assistantMessageId,
+                    committedTurns: [committed],
+                    messages: journeyMessages({
+                      assistantMessageId,
+                      requestId,
+                      sessionId: committed.sessionId,
+                      submissionId,
+                    }),
+                  }),
+                ),
+              ),
+            () => "account deletion fenced" as const,
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(enqueueStarted);
+        const deletion = yield* fence.close.pipe(
+          Effect.andThen(authority.deleteUserData(userId)),
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+
+        yield* Deferred.succeed(releaseEnqueue, undefined);
+        expect(yield* Fiber.join(enqueue)).toMatchObject({ _tag: "SkillLearningQueued" });
+        yield* Fiber.join(deletion);
+
+        expect(
+          yield* recoverPersonalSkillLearning(authority, Date.UTC(2026, 7, 27, 0, 0, 1)),
+        ).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("rejects cross-User, proactive, unsuccessful, and uncommitted turns", () =>
     withDatabase((storage) =>
       Effect.gen(function* () {
         const submissionId = ThinkSubmissionId.make("submission-bound");
@@ -610,42 +786,52 @@ describe("PersonalSkillAuthority", () => {
           source: "hook",
           thinkRequestId: requestId,
         });
-        const evaluate = (messages: ReadonlyArray<UIMessage>, receipts = [committed]) =>
-          makeGoodRootOutcomeEvaluator({
-            authority: makeGoodRootOutcomeEvaluatorAuthority(storage),
-            facts: {
-              readCommittedTurns: Effect.succeed(receipts),
-              readMessages: () => messages,
-            },
-          }).evaluate({
+        const ingest = (messages: ReadonlyArray<UIMessage>, receipts = [committed]) =>
+          ingestCompletedSkillLearningTurn({
+            authority: makePersonalSkillAuthority(storage),
             assistantMessageId,
-            evaluatedAtEpochMillis: 1_788_000_000_100,
+            committedTurns: receipts,
+            messages,
           });
 
         expect(
-          Option.isNone(
-            yield* evaluate(
-              journeyMessages({
-                assistantMessageId,
-                requestId,
-                submissionId,
-                terminalSubmissionId: ThinkSubmissionId.make("submission-other"),
-              }),
-            ),
+          yield* ingest(
+            journeyMessages({
+              assistantMessageId,
+              requestId,
+              submissionId,
+              terminalSubmissionId: ThinkSubmissionId.make("submission-other"),
+            }),
           ),
-        ).toBe(true);
+        ).toMatchObject({ _tag: "SkillLearningRejected", reason: "turnIdentity" });
         expect(
-          Option.isNone(
-            yield* evaluate(
-              journeyMessages({ assistantMessageId, requestId, status: "error", submissionId }),
-            ),
+          yield* ingest(
+            journeyMessages({
+              assistantMessageId,
+              requestId,
+              submissionId,
+              terminalUserId: UserId.make("user-other"),
+            }),
           ),
-        ).toBe(true);
+        ).toMatchObject({ _tag: "SkillLearningRejected", reason: "turnIdentity" });
         expect(
-          Option.isNone(
-            yield* evaluate(journeyMessages({ assistantMessageId, requestId, submissionId }), []),
+          yield* ingest(
+            journeyMessages({
+              assistantMessageId,
+              directUserOrigin: false,
+              requestId,
+              submissionId,
+            }),
           ),
-        ).toBe(true);
+        ).toMatchObject({ _tag: "SkillLearningRejected", reason: "turnOrigin" });
+        expect(
+          yield* ingest(
+            journeyMessages({ assistantMessageId, requestId, status: "error", submissionId }),
+          ),
+        ).toMatchObject({ _tag: "SkillLearningRejected", reason: "rootTerminal" });
+        expect(
+          yield* ingest(journeyMessages({ assistantMessageId, requestId, submissionId }), []),
+        ).toMatchObject({ _tag: "SkillLearningRejected", reason: "rootNotCommitted" });
       }),
     ),
   );
@@ -894,33 +1080,19 @@ describe("PersonalSkillAuthority", () => {
         } as const;
         yield* authority.recordLearningCost(costEvidence);
         yield* authority.recordLearningCost(costEvidence);
-        const deletionAssistantId = AssistantMessageId.make("assistant-account-delete");
-        const deletionRequestId = ThinkRequestId.make("request-account-delete");
-        const deletionSubmissionId = ThinkSubmissionId.make("submission-account-delete");
-        const deletionCommit = yield* Schema.decodeEffect(CommittedTurnReceipt)({
-          assistantMessageId: deletionAssistantId,
-          observationSequence: 2,
-          observedAt: "2026-08-27 00:00:01",
-          sessionId: "session-journey",
-          source: "hook",
-          thinkRequestId: deletionRequestId,
-        });
-        const deletionMessages = journeyMessages({
-          assistantMessageId: deletionAssistantId,
-          requestId: deletionRequestId,
-          submissionId: deletionSubmissionId,
-        });
-        const deletionEvaluation = yield* makeGoodRootOutcomeEvaluator({
-          authority: makeGoodRootOutcomeEvaluatorAuthority(storage),
-          facts: {
-            readCommittedTurns: Effect.succeed([deletionCommit]),
-            readMessages: () => deletionMessages,
-          },
-        }).evaluate({
-          assistantMessageId: deletionAssistantId,
-          evaluatedAtEpochMillis: 1_788_000_000_250,
-        });
-        expect(Option.isSome(deletionEvaluation)).toBe(true);
+        storage.sql.exec(
+          `INSERT INTO osfo_good_root_outcome_evaluations
+            (evaluation_id, owner_user_id, receipt_json, retained_at_epoch_millis)
+           VALUES (?, ?, ?, ?), (?, ?, ?, ?)`,
+          "legacy-evaluation-owned",
+          userId,
+          "{}",
+          1_788_000_000_000,
+          "legacy-evaluation-foreign",
+          "foreign-user",
+          "{}",
+          1_788_000_000_000,
+        );
         expect(
           Exit.isFailure(
             yield* Effect.exit(
@@ -961,11 +1133,12 @@ describe("PersonalSkillAuthority", () => {
         ).toBe(0);
         expect(
           storage.sql
-            .exec<{ count: number }>(
-              "SELECT COUNT(*) AS count FROM osfo_good_root_outcome_evaluations",
+            .exec<{ ownerUserId: string }>(
+              `SELECT owner_user_id AS ownerUserId
+               FROM osfo_good_root_outcome_evaluations`,
             )
-            .one().count,
-        ).toBe(0);
+            .toArray(),
+        ).toEqual([{ ownerUserId: "foreign-user" }]);
       }),
     ),
   );
@@ -973,25 +1146,38 @@ describe("PersonalSkillAuthority", () => {
 
 const journeyMessages = ({
   assistantMessageId,
+  directUserOrigin = true,
   requestId,
+  sessionId = "session-journey",
   status = "completed",
   submissionId,
   terminalSubmissionId = submissionId,
+  terminalUserId = userId,
 }: {
   readonly assistantMessageId: AssistantMessageId;
+  readonly directUserOrigin?: boolean;
   readonly requestId: ThinkRequestId;
+  readonly sessionId?: string;
   readonly status?: "aborted" | "completed" | "error";
   readonly submissionId: ThinkSubmissionId;
   readonly terminalSubmissionId?: ThinkSubmissionId;
+  readonly terminalUserId?: UserId;
 }): ReadonlyArray<UIMessage> => {
-  const turnMetadata = Schema.decodeUnknownSync(ManagedTurnMetadata)({
+  const turnMetadata = Schema.decodeSync(ManagedTurnMetadata)({
     _tag: "OsfoManagedTurn",
     allowancePeriodId: "allowance-journey",
-    authorityIdentity: {
-      _tag: "AuthSession",
-      authSessionId: "auth-session-journey",
-      userId,
-    },
+    authorityIdentity: directUserOrigin
+      ? {
+          _tag: "AuthSession",
+          authSessionId: "auth-session-journey",
+          userId,
+        }
+      : {
+          _tag: "DurableTrigger",
+          triggerId: "trigger-journey",
+          triggerType: "workflow",
+          userId,
+        },
     capabilityCatalogVersion: "governed-capabilities-v1",
     capabilityTurnState: {
       eligiblePersonalSkills: [],
@@ -1001,11 +1187,6 @@ const journeyMessages = ({
       skillLearningDraft: {
         availableCapabilityIds: ["document-generation"],
         availableRequirements: ["personal-agent"],
-        origin: "authSession",
-        ownerUserId: userId,
-        priorSkillId: null,
-        priorSkillVersion: null,
-        submissionId,
         taskDescription: "Always put the summary first in every weekly report.",
       },
     },
@@ -1033,7 +1214,7 @@ const journeyMessages = ({
     planPolicyVersion: "launch-v1",
     route: "@cf/test/model",
     routeId: "route-journey",
-    sessionId: "session-journey",
+    sessionId,
     submissionId,
     targetInputTokens: 18_000,
   });
@@ -1042,7 +1223,7 @@ const journeyMessages = ({
       allowancePeriodId: turnMetadata.allowancePeriodId,
       executionMode: "normalPlanUsage",
       sessionId: turnMetadata.sessionId,
-      userId,
+      userId: terminalUserId,
     },
     requestId,
     status,

@@ -64,7 +64,6 @@ import {
   currentCapabilityCatalog,
 } from "../../domain/capability-catalog";
 import {
-  type GoodRootOutcomeEvaluationReference,
   PersonalSkillId,
   PersonalSkillVersion,
   PersonalSkillVersionId,
@@ -131,9 +130,11 @@ import {
   withCommittedTurnTerminal,
 } from "./committed-turn-terminal";
 import {
-  ingestGoodRootEvaluation,
+  ingestCompletedSkillLearningTurn,
   recoverPersonalSkillLearning,
+  replayCommittedSkillLearningTurns,
   selectPersonalSkillsForTurn,
+  skillLearningReplayWindow,
 } from "./personal-skill-runtime";
 import { makePersonalSkillControl, PersonalSkillApprovalInvalid } from "./personal-skill-control";
 import {
@@ -226,7 +227,7 @@ import {
 } from "../../services/session-recall";
 import { makeSessionRecallAuthorization } from "../../services/session-recall-authorization";
 import { PromptAssembly } from "../../services/prompt-assembly";
-import { PromptUtilization } from "../../services/prompt-utilization";
+import { contextOverflowPolicy } from "../../services/context-overflow-policy";
 import { ResearchReportFollowUp } from "../../services/research-report-follow-up";
 import { ResearchReport } from "../../services/research-report";
 import { ScheduledEmail } from "../../services/scheduled-email";
@@ -339,11 +340,9 @@ import { DocumentBuildFileResolution } from "./document-build-file-resolution";
 import { FileAnalysisReconciliation } from "./file-analysis-reconciliation";
 import { ManagedCapabilityState } from "./managed-capability-turn-state";
 import {
-  makeGoodRootOutcomeEvaluatorAuthority,
   makePersonalSkillAuthority,
   type PersonalSkillAvailability,
 } from "./personal-skill-authority";
-import { makeGoodRootOutcomeEvaluator } from "./good-root-outcome-evaluator";
 import {
   makePersonalSkillTools,
   SkillInspectInput,
@@ -719,27 +718,7 @@ export class OsfoAgent extends Think<Env> {
   /** Let Think classify and recover provider context-window failures. */
   override classifyChatError = defaultContextOverflowClassifier;
 
-  #promptUtilizationObserver: PromptUtilization.Observer | undefined;
-  #promptUtilizationSubmissionId: ThinkSubmissionId | undefined;
-
-  /** Preserve Agents SDK diagnostics and export only numeric compaction evidence to Osfo logs. */
-  override observability = PromptUtilization.makeThinkObservability({
-    delegate: genericObservability,
-    onCompacted: (event) => {
-      const observer = this.#promptUtilizationObserver;
-      if (observer === undefined) return;
-      const evidence = PromptUtilization.compactionEvidence(
-        observer,
-        event,
-        this.contextOverflow?.maxRetries ?? 0,
-      );
-      this.ctx.waitUntil(
-        Effect.runPromise(
-          Effect.forEach(evidence, PromptUtilization.emit, { concurrency: 1, discard: true }),
-        ),
-      );
-    },
-  });
+  override observability = genericObservability;
 
   readonly #db = makeAgentDb(this.ctx.storage);
   readonly #reminders = makeReminderAuthority({
@@ -1068,13 +1047,7 @@ export class OsfoAgent extends Think<Env> {
   readonly #promptAssembly = PromptAssembly.makeRetainedPromptAssembly();
   readonly #store = makeAgentStore(this.#db);
   readonly #personalSkillAuthority = makePersonalSkillAuthority(this.ctx.storage);
-  readonly #goodRootOutcomeEvaluator = makeGoodRootOutcomeEvaluator({
-    authority: makeGoodRootOutcomeEvaluatorAuthority(this.ctx.storage),
-    facts: {
-      readCommittedTurns: this.#store.readCommittedTurns,
-      readMessages: () => this.messages,
-    },
-  });
+  #liveTurnSkillLearningReplay: Promise<boolean> | undefined;
   readonly #personalSkillTools = makePersonalSkillTools({
     authority: this.#personalSkillAuthority,
     availability: () => this.#personalSkillAvailability,
@@ -1638,10 +1611,17 @@ export class OsfoAgent extends Think<Env> {
 
   /** Apply only the route and limits pinned to the current durable Think Submission. */
   override async beforeTurn(context: TurnContext): Promise<TurnConfig> {
-    const system = await this.session.refreshSystemPrompt();
     const metadata = await Effect.runPromise(
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
     );
+    if (
+      !context.continuation &&
+      (metadata.authorityIdentity._tag === "AuthSession" ||
+        metadata.authorityIdentity._tag === "ChannelLink")
+    ) {
+      await this.#replaySkillLearningOnLiveUserTurn();
+    }
+    const system = await this.session.refreshSystemPrompt();
     this.#activeCapabilityMetadata = metadata;
     const firstInitialization = !metadata.capabilityTurnState.initialized;
     const capabilityTurnState = ManagedCapabilityState.initialize(this.messages, metadata);
@@ -1783,37 +1763,12 @@ export class OsfoAgent extends Think<Env> {
       this.ctx.waitUntil(this.#recordProviderRecallCompanyCost(metadata, prompt.usage));
     }
     this.#completedModelSteps.clear();
-    const promptUtilizationObserver =
-      this.#promptUtilizationSubmissionId === metadata.submissionId &&
-      this.#promptUtilizationObserver !== undefined
-        ? this.#promptUtilizationObserver
-        : PromptUtilization.makeObserver({ contextWindowTokens: metadata.maxInputTokens });
-    this.#promptUtilizationObserver = promptUtilizationObserver;
-    this.#promptUtilizationSubmissionId = metadata.submissionId;
-    this.contextOverflow = PromptUtilization.compactionPolicy({
+    this.contextOverflow = contextOverflowPolicy({
       contextWindowTokens: metadata.maxInputTokens,
       proactiveCompactionLimit: 1,
       reactiveRetryLimit: 1,
       targetInputTokens: metadata.targetInputTokens,
     });
-    const estimatedInputTokens = PromptUtilization.estimateInputTokens({
-      instructions: capabilityStep.instructions,
-      messages: prompt.messages,
-    });
-    this.ctx.waitUntil(
-      Effect.runPromise(
-        PromptUtilization.emit(
-          promptUtilizationObserver.promptAssembled({
-            categoryTokens: PromptUtilization.categoryTokensForTurn({
-              conversationMessages: context.messages,
-              providerContext: prompt.providerContext,
-              systemInstructions: capabilityStep.instructions,
-            }),
-            estimatedInputTokens,
-          }),
-        ),
-      ),
-    );
     return {
       maxOutputTokens: metadata.maxOutputTokens,
       maxRetries: metadata.maxRetries,
@@ -1889,22 +1844,6 @@ export class OsfoAgent extends Think<Env> {
     if (context.stepNumber > 0) {
       this.#recordCapabilityAccounting(step.bundle, step.index);
     }
-    const observer = this.#promptUtilizationObserver;
-    if (observer !== undefined) {
-      this.ctx.waitUntil(
-        Effect.runPromise(
-          PromptUtilization.emit(
-            observer.stepStarted({
-              estimatedInputTokens: PromptUtilization.estimateInputTokens({
-                instructions: step.instructions,
-                messages: context.messages,
-              }),
-              stepNumber: context.stepNumber + 1,
-            }),
-          ),
-        ),
-      );
-    }
     return {
       activeTools: [...step.activeToolNames],
       instructions: step.instructions,
@@ -1974,39 +1913,12 @@ export class OsfoAgent extends Think<Env> {
   override async onStepEnd(context: StepContext): Promise<void> {
     const stepNumber = ModelStepNumber.make(context.stepNumber + 1);
     await this.#recordCurrentModelUsage(stepNumber, context);
-    const observer = this.#promptUtilizationObserver;
-    if (observer !== undefined) {
-      const inputTokens = context.usage.inputTokens ?? context.usage.totalTokens ?? 0;
-      await Effect.runPromise(
-        PromptUtilization.emit(
-          observer.stepCompleted({
-            inputTokens,
-            outputTokens: context.usage.outputTokens ?? 0,
-            stepNumber,
-            toolCallCount: context.toolCalls.length,
-            toolResultCount: context.toolResults.length,
-          }),
-        ),
-      );
-    }
     this.#completedModelSteps.add(stepNumber);
   }
 
   /** Preserve conservative cost evidence when a provider turn ends ambiguously. */
   // oxlint-disable-next-line osfo/no-unknown-parameters, osfo/no-unknown-returns -- Think owns the error hook's unknown protocol contract.
   override onChatError(error: unknown, context?: ChatErrorContext): unknown {
-    if (context?.classification === "context_overflow") {
-      const observer = this.#promptUtilizationObserver;
-      if (observer !== undefined) {
-        this.ctx.waitUntil(
-          Effect.runPromise(
-            PromptUtilization.emit(
-              observer.overflowTerminal({ retryLimit: this.contextOverflow?.maxRetries ?? 0 }),
-            ),
-          ),
-        );
-      }
-    }
     if (context?.stage === "turn" || context?.stage === "stream" || context?.stage === "recovery") {
       if (!this.#completedModelSteps.has(this.#activeModelStepNumber)) {
         this.ctx.waitUntil(this.#recordCurrentModelUsage(this.#activeModelStepNumber));
@@ -3206,12 +3118,11 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
-  /** Reconcile committed Think messages when a new Agent activation starts. */
+  /** Recover activation-safe durable work without reading unbounded Think Session history. */
   override async onStart(): Promise<void> {
     await this.#migrationsReady;
     await Effect.runPromise(this.#reminders.reconcileSchedules());
     await this.#reconcileModelCallUsageOrSchedule();
-    await Effect.runPromise(this.#reconcileCommittedTurns());
     const immediateGmailSends = Option.getOrUndefined(this.#immediateGmailSends);
     if (immediateGmailSends !== undefined) {
       await Effect.runPromise(
@@ -3234,7 +3145,7 @@ export class OsfoAgent extends Think<Env> {
           ),
       );
     }
-    this.ctx.waitUntil(this.#recoverSkillLearning());
+    this.ctx.waitUntil(this.#recoverRetainedSkillLearning());
     this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
   }
 
@@ -3375,36 +3286,101 @@ export class OsfoAgent extends Think<Env> {
     await Effect.runPromise(this.#reminders.exposeSources(userId, committed));
   }
 
-  async #recordGoodRootOutcome(input: GoodRootOutcomeEvaluationReference) {
-    const committed = await Effect.runPromise(this.#store.readCommittedTurns);
+  async #enqueueSkillLearning(assistantMessageId: AssistantMessageId): Promise<void> {
     const outcome = await Effect.runPromise(
-      ingestGoodRootEvaluation({
-        authority: this.#personalSkillAuthority,
-        committedTurns: committed,
-        messages: this.messages,
-        nowEpochMillis: Date.now(),
-        reference: input,
-      }),
+      this.#accountDeletionFence.runTracked(
+        () =>
+          this.#store.readCommittedTurns.pipe(
+            Effect.flatMap((committedTurns) =>
+              ingestCompletedSkillLearningTurn({
+                authority: this.#personalSkillAuthority,
+                assistantMessageId,
+                committedTurns,
+                messages: this.messages,
+              }),
+            ),
+          ),
+        () => ({ _tag: "AccountDeletionFenced" as const }),
+      ),
     );
-    if (outcome._tag !== "SkillLearningQueued") return outcome;
+    if (outcome._tag !== "SkillLearningQueued") return;
     this.ctx.waitUntil(this.#runSkillLearning(outcome.candidate));
-    return { _tag: outcome._tag, candidateId: outcome.candidateId } as const;
   }
 
-  async #evaluateGoodRootOutcome(assistantMessageId: AssistantMessageId): Promise<void> {
-    const evaluation = await Effect.runPromise(
-      this.#goodRootOutcomeEvaluator.evaluate({
-        assistantMessageId,
-        evaluatedAtEpochMillis: Date.now(),
-      }),
+  async #recoverRetainedSkillLearning(): Promise<void> {
+    await Effect.runPromise(
+      this.#accountDeletionFence
+        .runTracked(
+          () =>
+            Effect.tryPromise({
+              try: () => this.#recoverRetainedSkillLearningUnfenced(),
+              catch: (cause) => ({ _tag: "SkillLearningRecoveryUnavailable" as const, cause }),
+            }),
+          () => ({ _tag: "AccountDeletionFenced" as const }),
+        )
+        .pipe(
+          Effect.catch((failure) =>
+            Effect.logWarning("Personal Skill Learning recovery was isolated").pipe(
+              Effect.annotateLogs({ failure: failure._tag }),
+            ),
+          ),
+        ),
     );
-    if (Option.isNone(evaluation)) return;
-    await this.#recordGoodRootOutcome(evaluation.value);
   }
 
-  async #recoverSkillLearning(): Promise<void> {
+  async #replaySkillLearningOnLiveUserTurn(): Promise<void> {
+    const running =
+      this.#liveTurnSkillLearningReplay ??
+      Effect.runPromise(
+        this.#accountDeletionFence.runTracked(
+          () =>
+            Effect.tryPromise({
+              try: () => this.#replaySkillLearningUnfenced(),
+              catch: (cause) => ({ _tag: "SkillLearningReplayUnavailable" as const, cause }),
+            }),
+          () => ({ _tag: "AccountDeletionFenced" as const }),
+        ),
+      ).then(
+        () => true,
+        async (failure: unknown) => {
+          await Effect.runPromise(
+            Effect.logWarning("Committed personal Skill Learning replay was isolated").pipe(
+              Effect.annotateLogs({ failure }),
+            ),
+          );
+          return false;
+        },
+      );
+    this.#liveTurnSkillLearningReplay = running;
+    const completed = await running;
+    if (!completed && this.#liveTurnSkillLearningReplay === running) {
+      this.#liveTurnSkillLearningReplay = undefined;
+    }
+  }
+
+  async #replaySkillLearningUnfenced(): Promise<void> {
+    const nowEpochMillis = Date.now();
+    await Effect.runPromise(
+      this.#reconcileCommittedTurns().pipe(
+        Effect.andThen(
+          this.#store.readCommittedTurnWindow(skillLearningReplayWindow(nowEpochMillis)),
+        ),
+        Effect.flatMap((committedTurns) =>
+          replayCommittedSkillLearningTurns({
+            authority: this.#personalSkillAuthority,
+            committedTurns,
+            nowEpochMillis,
+            readSessionHistory: (sessionId) => readThinkHistory(Session.create(this), sessionId),
+          }),
+        ),
+      ),
+    );
+    await this.#recoverRetainedSkillLearningUnfenced(nowEpochMillis);
+  }
+
+  async #recoverRetainedSkillLearningUnfenced(nowEpochMillis = Date.now()): Promise<void> {
     const recoverable = await Effect.runPromise(
-      recoverPersonalSkillLearning(this.#personalSkillAuthority, Date.now()),
+      recoverPersonalSkillLearning(this.#personalSkillAuthority, nowEpochMillis),
     );
     await Promise.all(recoverable.map((candidate) => this.#runSkillLearning(candidate)));
     await this.#deliverPendingSkillLearningNotifications();
@@ -7181,13 +7157,13 @@ export class OsfoAgent extends Think<Env> {
       this.ctx.waitUntil(
         Effect.runPromise(
           Effect.tryPromise({
-            try: () => this.#evaluateGoodRootOutcome(assistantMessageId),
-            catch: (cause) => ({ _tag: "GoodRootEvaluationUnavailable" as const, cause }),
+            try: () => this.#enqueueSkillLearning(assistantMessageId),
+            catch: (cause) => ({ _tag: "SkillLearningUnavailable" as const, cause }),
           }).pipe(
             Effect.catch((failure) =>
-              Effect.logWarning("Good Root evaluation was isolated from the committed turn").pipe(
-                Effect.annotateLogs({ failure: failure._tag }),
-              ),
+              Effect.logWarning(
+                "Post-turn Skill Learning was isolated from the committed turn",
+              ).pipe(Effect.annotateLogs({ failure: failure._tag })),
             ),
           ),
         ),

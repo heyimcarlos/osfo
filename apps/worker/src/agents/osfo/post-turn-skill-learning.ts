@@ -11,12 +11,8 @@ import {
   PersonalSkillVersionId,
   SkillDescriptionText,
   SkillKeywordText,
-  SkillLearningCandidate,
-  SkillLearningCandidateId,
   SkillTaskDescriptionText,
   TrustedSkillLearningText,
-  GoodRootOutcomeReceipt,
-  goodRootOutcomeReferenceId,
   type SkillTaskKind,
   type SkillTurnOrigin,
 } from "../../domain/personal-skill";
@@ -58,53 +54,6 @@ export const projectSkillLearningDraft = (
   Result.isSuccess(Schema.decodeResult(SkillTaskDescriptionText)(input.taskDescription))
     ? Option.some(input)
     : Option.none();
-
-/** Finalize a bounded candidate only after the root assistant outcome has committed. */
-export const finalizeSkillLearningCandidate = (
-  draft: SkillLearningDraft,
-  input: typeof GoodRootOutcomeReceipt.Encoded,
-  nowEpochMillis: number,
-): Result.Result<SkillLearningCandidate, Schema.SchemaError> => {
-  const decodedOutcome = Schema.decodeResult(GoodRootOutcomeReceipt, {
-    onExcessProperty: "error",
-  })(input);
-  if (Result.isFailure(decodedOutcome)) return Result.fail(decodedOutcome.failure);
-  const goodRootOutcome = decodedOutcome.success;
-  if (
-    draft.submissionId !== goodRootOutcome.submissionId ||
-    draft.ownerUserId !== goodRootOutcome.userId
-  ) {
-    return Schema.decodeUnknownResult(SkillLearningCandidate)({});
-  }
-  const rootOutcomeReferenceId = goodRootOutcomeReferenceId(goodRootOutcome);
-  const unencoded = {
-    availableCapabilityIds: draft.availableCapabilityIds,
-    availableRequirements: draft.availableRequirements,
-    candidateBytes: "1",
-    candidateId: SkillLearningCandidateId.make(`turn-${draft.submissionId}`),
-    corrections: [draft.taskDescription],
-    createdAtEpochMillis: nowEpochMillis,
-    decisions: [],
-    evidence: [
-      { _tag: "UserDecision" as const, referenceId: draft.submissionId },
-      { _tag: "ConfirmedRootOutcome" as const, referenceId: rootOutcomeReferenceId },
-      ...goodRootOutcome.ownedArtifactContentIds.map((referenceId) => ({
-        _tag: "OwnedArtifact" as const,
-        referenceId,
-      })),
-    ],
-    ownerUserId: draft.ownerUserId,
-    priorSkillId: draft.priorSkillId,
-    priorSkillVersion: draft.priorSkillVersion,
-    rootAssistantMessageId: goodRootOutcome.assistantMessageId,
-    rootOutcomeReferenceId,
-    taskDescription: draft.taskDescription,
-  };
-  return Schema.decodeResult(SkillLearningCandidate, { onExcessProperty: "error" })({
-    ...unencoded,
-    candidateBytes: String(new TextEncoder().encode(JSON.stringify(unencoded)).byteLength),
-  });
-};
 
 /** Conservative closed proposal used for explicit User-confirmed learning. */
 export const proposeConfirmedSkillChange = ({
