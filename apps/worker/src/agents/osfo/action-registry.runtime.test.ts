@@ -4,7 +4,11 @@ import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 import { presentOsfoAction, scheduledEmailStartActionName } from "./action-presentation";
-import { decodeScheduledEmailActionInput, sanitizePendingApproval } from "./action-registry";
+import {
+  decodeGmailActionInput,
+  decodeScheduledEmailActionInput,
+  sanitizePendingApproval,
+} from "./action-registry";
 import { ActionPresentationId } from "./think-action-approvals";
 
 it.effect("preserves encoded Scheduled Email input through the pending Approval boundary", () =>
@@ -64,5 +68,48 @@ it.effect("decodes retained Scheduled Email input before approved Action executi
 
     expect(resumed).toEqual(initial);
     expect(resumed.scheduledAt.toISOString()).toBe(retained.scheduledAt);
+  }),
+);
+
+it.effect("normalizes a pre-deploy parked Gmail Action through presentation and resume", () =>
+  Effect.gen(function* () {
+    const legacyInput = {
+      body: "Legacy parked body",
+      recipients: ["recipient@example.test"],
+      subject: "Legacy parked subject",
+    } as const;
+    const pending = {
+      descriptor: {
+        action: "gmailSendEmail",
+        input: legacyInput,
+        kind: "durable-pause",
+        permissions: ["integrations:gmail:send"],
+        requestId: "request-legacy-gmail",
+        risk: "high",
+        summary: "Send one legacy parked Gmail Action",
+        toolCallId: "tool-call-legacy-gmail",
+      },
+      executionId: "execution-legacy-gmail",
+      source: "action",
+    } satisfies PendingApproval;
+
+    const sanitized = sanitizePendingApproval(pending);
+    expect(sanitized.descriptor.input).toEqual({ ...legacyInput, gmailResource: "primary" });
+    const presentation = yield* presentOsfoAction({
+      descriptor: { ...sanitized.descriptor, kind: "durable-pause" },
+      executionId: ActionPresentationId.make(sanitized.executionId),
+      source: "action",
+    });
+    expect(presentation.fields).toEqual([
+      { label: "Gmail mailbox", name: "gmailResource", value: "primary" },
+      { label: "Integration manifest", name: "manifestVersion", value: "gmail-v1" },
+      { label: "Recipients", name: "recipients", value: '["recipient@example.test"]' },
+      { label: "Subject", name: "subject", value: "Legacy parked subject" },
+      { label: "Message", name: "body", value: "Legacy parked body" },
+    ]);
+    expect(yield* decodeGmailActionInput(legacyInput)).toEqual({
+      ...legacyInput,
+      gmailResource: "primary",
+    });
   }),
 );

@@ -39,7 +39,8 @@ const providerTools = [
   "GOOGLEDRIVE_DOWNLOAD_FILE",
   "GOOGLEDRIVE_UPLOAD_FILE",
 ] as const;
-const pendingEvidenceDelayMilliseconds = 120_000;
+export const initialActionReconciliationDelayMilliseconds = 120_000;
+export const providerEvidenceHorizonMilliseconds = 300_000;
 
 /** Exact provider session confinement applied to every Osfo User mapping. */
 export const directIntegrationProviderConfig = {
@@ -150,10 +151,16 @@ export type PersistedIntegrationAction =
       readonly correlation: ProviderAttemptCorrelation | null;
       readonly digest: string;
     }
+  | {
+      readonly _tag: "TerminalAmbiguous";
+      readonly correlation: ProviderAttemptCorrelation;
+      readonly digest: string;
+    }
   | { readonly _tag: "NotApplied"; readonly digest: string; readonly providerLogId: string | null }
   | {
       readonly _tag: "Applied";
       readonly digest: string;
+      readonly providerRequestId: string | null;
       readonly result: IntegrationEffectCompleted;
     };
 
@@ -247,9 +254,25 @@ export class IntegrationActionAmbiguous extends Schema.TaggedError<IntegrationAc
   { actionId: Schema.String, message: Schema.String },
 ) {}
 
+export class IntegrationActionNotApplied extends Schema.TaggedError<IntegrationActionNotApplied>()(
+  "IntegrationActionNotApplied",
+  { actionId: Schema.String, message: Schema.String, providerLogId: Schema.NullOr(Schema.String) },
+) {}
+
+export class IntegrationEffectFinalizationUnavailable extends Schema.TaggedError<IntegrationEffectFinalizationUnavailable>()(
+  "IntegrationEffectFinalizationUnavailable",
+  { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
+) {}
+
+export const IntegrationConnectionBinding = Schema.String.check(
+  Schema.isPattern(/^[0-9a-f]{64}$/u),
+).pipe(Schema.brand("IntegrationConnectionBinding"));
+export type IntegrationConnectionBinding = typeof IntegrationConnectionBinding.Type;
+
 export type IntegrationConnectionEvidence =
   | {
       readonly _tag: "IntegrationConnectionConnected";
+      readonly connectionBinding: IntegrationConnectionBinding;
       readonly toolkit: string;
       readonly userId: UserId;
     }
@@ -289,9 +312,16 @@ export interface IntegrationEffectCompleted {
   readonly toolkit: string;
 }
 
-export interface ExecuteIntegrationInput<E> {
+export type IntegrationEffectFinalOutcome =
+  | { readonly _tag: "Applied"; readonly result: IntegrationEffectCompleted }
+  | { readonly _tag: "NotApplied"; readonly providerLogId: string | null }
+  | { readonly _tag: "Ambiguous" };
+
+export interface ExecuteIntegrationInput<E, F = never> {
   readonly actionId?: ActionId;
   readonly authorize: Effect.Effect<void, E>;
+  readonly expectedConnectionBinding?: IntegrationConnectionBinding;
+  readonly finalizeEffect?: (outcome: IntegrationEffectFinalOutcome) => Effect.Effect<void, F>;
   readonly identity: {
     readonly manifestVersion: ManifestVersion;
     readonly operation: string;
@@ -301,8 +331,9 @@ export interface ExecuteIntegrationInput<E> {
   readonly userId: UserId;
 }
 
-export interface InspectIntegrationActionInput {
+export interface InspectIntegrationActionInput<F = never> {
   readonly actionId: ActionId;
+  readonly finalizeEffect?: ExecuteIntegrationInput<never, F>["finalizeEffect"];
   readonly identity: ExecuteIntegrationInput<never>["identity"];
   readonly input: unknown;
   readonly userId: UserId;
@@ -311,7 +342,8 @@ export interface InspectIntegrationActionInput {
 export type IntegrationActionInspection =
   | { readonly _tag: "NotStarted" }
   | { readonly _tag: "Pending" }
-  | { readonly _tag: "Ambiguous" }
+  | { readonly _tag: "Ambiguous"; readonly retryAfterMilliseconds: number }
+  | { readonly _tag: "TerminalAmbiguous" }
   | { readonly _tag: "NotApplied"; readonly providerLogId: string | null }
   | { readonly _tag: "Applied"; readonly result: IntegrationEffectCompleted };
 
@@ -351,13 +383,15 @@ export interface Interface {
     | IntegrationPersistenceUnavailable
     | IntegrationProviderUnavailable
   >;
-  readonly execute: <E>(
-    input: ExecuteIntegrationInput<E>,
+  readonly execute: <E, F = never>(
+    input: ExecuteIntegrationInput<E, F>,
   ) => Effect.Effect<
     IntegrationEffectCompleted | IntegrationReadCompleted,
     | E
+    | F
     | IntegrationActionAmbiguous
     | IntegrationActionConflict
+    | IntegrationActionNotApplied
     | IntegrationConnectionUnavailable
     | IntegrationExecutionRejected
     | IntegrationManifestUnavailable
@@ -365,16 +399,26 @@ export interface Interface {
     | IntegrationPersistenceUnavailable
     | IntegrationProviderUnavailable
   >;
-  readonly inspectAction: (
-    input: InspectIntegrationActionInput,
+  readonly inspectAction: <F = never>(
+    input: InspectIntegrationActionInput<F>,
   ) => Effect.Effect<
     IntegrationActionInspection,
+    | F
     | IntegrationActionConflict
     | IntegrationExecutionRejected
     | IntegrationManifestUnavailable
     | IntegrationManifestValueInvalid
     | IntegrationPersistenceUnavailable
     | IntegrationProviderUnavailable
+  >;
+  readonly readActionStatus: (
+    input: Omit<InspectIntegrationActionInput, "finalizeEffect" | "userId">,
+  ) => Effect.Effect<
+    IntegrationActionInspection,
+    | IntegrationActionConflict
+    | IntegrationManifestUnavailable
+    | IntegrationManifestValueInvalid
+    | IntegrationPersistenceUnavailable
   >;
   readonly resolveSession: (userId: UserId) => Effect.Effect<
     {
@@ -463,6 +507,7 @@ export const make = (
           connectedAccountId: candidate.connectedAccount.id,
           evidence: {
             _tag: "IntegrationConnectionConnected" as const,
+            connectionBinding: yield* connectionBindingFor(candidate.connectedAccount.id),
             toolkit: input.toolkit,
             userId: input.userId,
           },
@@ -512,189 +557,251 @@ export const make = (
       ),
     );
 
-  const execute = <E>(input: ExecuteIntegrationInput<E>) =>
-    Effect.gen(function* () {
-      const resolved = resolveManifest(input.identity);
-      if (Result.isFailure(resolved)) return yield* resolved.failure;
-      const manifest = resolved.success;
-      const decoded = manifest.decodeInput(input.input);
-      if (Result.isFailure(decoded)) return yield* decoded.failure;
-      let providerInput = providerInputFor(manifest, decoded.success);
-      if (manifest.operationKind === "read") {
-        yield* input.authorize;
-        const connection = yield* requireConnection(manifest.toolkit, input.userId);
-        const execution = yield* connection.session.execute(
-          manifest.providerTool,
-          providerInput,
-          connection.connectedAccountId,
-          providerConstraintsFor(manifest, decoded.success),
+  const execute = Effect.fn("Integrations.execute")(function* <E, F = never>(
+    input: ExecuteIntegrationInput<E, F>,
+  ) {
+    const resolved = resolveManifest(input.identity);
+    if (Result.isFailure(resolved)) return yield* resolved.failure;
+    const manifest = resolved.success;
+    const decoded = manifest.decodeInput(input.input);
+    if (Result.isFailure(decoded)) return yield* decoded.failure;
+    let providerInput = providerInputFor(manifest, decoded.success);
+    if (manifest.operationKind === "read") {
+      yield* input.authorize;
+      const connection = yield* requireConnection(manifest.toolkit, input.userId);
+      const execution = yield* connection.session.execute(
+        manifest.providerTool,
+        providerInput,
+        connection.connectedAccountId,
+        providerConstraintsFor(manifest, decoded.success),
+      );
+      return yield* normalizeRead(manifest, execution, decoded.success);
+    }
+    if (input.actionId === undefined) {
+      return yield* new IntegrationActionConflict({
+        actionId: "missing",
+        message: "An integration effect requires one durable Osfo Action identity",
+      });
+    }
+    const actionId = input.actionId;
+    const digest = yield* actionDigest(manifest, decoded.success);
+    return yield* actionLock.withPermits(1)(
+      Effect.gen(function* () {
+        const retained = yield* ports.readAction(actionId);
+        if (retained?._tag === "Applied" && retained.digest === digest) {
+          yield* finalizeEffect(input.finalizeEffect, {
+            _tag: "Applied",
+            result: retained.result,
+          });
+          return retained.result;
+        }
+        if (retained !== null && retained.digest !== digest) {
+          return yield* new IntegrationActionConflict({
+            actionId,
+            message: "The Action identity is already bound to different integration facts",
+          });
+        }
+        if (retained?._tag === "NotApplied") {
+          yield* finalizeEffect(input.finalizeEffect, {
+            _tag: "NotApplied",
+            providerLogId: retained.providerLogId,
+          });
+          return yield* new IntegrationActionNotApplied({
+            actionId,
+            message: "The integration Action is finally not applied",
+            providerLogId: retained.providerLogId,
+          });
+        }
+        if (
+          retained?._tag === "Pending" ||
+          retained?._tag === "Ambiguous" ||
+          retained?._tag === "TerminalAmbiguous"
+        ) {
+          return yield* new IntegrationActionAmbiguous({
+            actionId,
+            message: "The integration Action has an unresolved provider outcome",
+          });
+        }
+        const actionSession = yield* ports.createSession(
+          input.userId,
+          directIntegrationProviderConfig,
         );
-        return yield* normalizeRead(manifest, execution, decoded.success);
-      }
-      if (input.actionId === undefined) {
-        return yield* new IntegrationActionConflict({
-          actionId: "missing",
-          message: "An integration effect requires one durable Osfo Action identity",
-        });
-      }
-      const actionId = input.actionId;
-      const digest = yield* actionDigest(manifest, decoded.success);
-      return yield* actionLock.withPermits(1)(
-        Effect.gen(function* () {
-          const retained = yield* ports.readAction(actionId);
-          if (retained?._tag === "Applied" && retained.digest === digest) return retained.result;
-          if (retained !== null && retained.digest !== digest) {
-            return yield* new IntegrationActionConflict({
-              actionId,
-              message: "The Action identity is already bound to different integration facts",
-            });
-          }
-          if (retained?._tag === "Pending" || retained?._tag === "Ambiguous") {
-            return yield* new IntegrationActionAmbiguous({
-              actionId,
-              message: "The integration Action has an unresolved provider outcome",
-            });
-          }
-          const actionSession = yield* ports.createSession(
-            input.userId,
-            directIntegrationProviderConfig,
+        const inspectedConnection = yield* inspectConnectionInSession(
+          { toolkit: manifest.toolkit, userId: input.userId },
+          actionSession.session,
+        );
+        if (!("connectedAccountId" in inspectedConnection)) {
+          return yield* new IntegrationConnectionUnavailable({
+            message: "The required Integration Connection is not current and unambiguous",
+            toolkit: manifest.toolkit,
+            userId: input.userId,
+          });
+        }
+        yield* input.authorize;
+        if (
+          input.expectedConnectionBinding !== undefined &&
+          inspectedConnection.evidence.connectionBinding !== input.expectedConnectionBinding
+        ) {
+          return yield* new IntegrationConnectionUnavailable({
+            message: "The approved Integration Connection changed before execution",
+            toolkit: manifest.toolkit,
+            userId: input.userId,
+          });
+        }
+        const connection = {
+          connectedAccountId: inspectedConnection.connectedAccountId,
+          session: actionSession.session,
+        };
+        const correlation = {
+          connectedAccountId: connection.connectedAccountId,
+          providerRequestId: crypto.randomUUID(),
+          providerSessionId: actionSession.providerSessionId,
+          providerTool: manifest.providerTool,
+          startedAt: yield* Clock.currentTimeMillis,
+        } satisfies ProviderAttemptCorrelation;
+        yield* ports.retainAction(actionId, { _tag: "Pending", correlation, digest });
+        if (manifest.operation === "DRIVE_DELIVER_ARTIFACT") {
+          const request = yield* Schema.decodeUnknownEffect(DriveDeliverArtifactInput)(
+            decoded.success,
+          ).pipe(
+            Effect.mapError(
+              () =>
+                new IntegrationExecutionRejected({
+                  code: "resultInvalid",
+                  message: "The approved artifact delivery input is invalid",
+                  operation: manifest.operation,
+                  toolkit: manifest.toolkit,
+                }),
+            ),
           );
-          const inspectedConnection = yield* inspectConnectionInSession(
-            { toolkit: manifest.toolkit, userId: input.userId },
-            actionSession.session,
-          );
-          if (!("connectedAccountId" in inspectedConnection)) {
-            return yield* new IntegrationConnectionUnavailable({
-              message: "The required Integration Connection is not current and unambiguous",
+          if (ports.readOwned === undefined) {
+            yield* ports.retainAction(actionId, {
+              _tag: "NotApplied",
+              digest,
+              providerLogId: null,
+            });
+            return yield* new IntegrationExecutionRejected({
+              code: "providerUnavailable",
+              message: "Owned artifact delivery is unavailable",
+              operation: manifest.operation,
               toolkit: manifest.toolkit,
-              userId: input.userId,
             });
           }
-          yield* input.authorize;
-          const connection = {
-            connectedAccountId: inspectedConnection.connectedAccountId,
-            session: actionSession.session,
-          };
-          const correlation = {
-            connectedAccountId: connection.connectedAccountId,
-            providerRequestId: crypto.randomUUID(),
-            providerSessionId: actionSession.providerSessionId,
-            providerTool: manifest.providerTool,
-            startedAt: yield* Clock.currentTimeMillis,
-          } satisfies ProviderAttemptCorrelation;
-          yield* ports.retainAction(actionId, { _tag: "Pending", correlation, digest });
-          if (manifest.operation === "DRIVE_DELIVER_ARTIFACT") {
-            const request = yield* Schema.decodeUnknownEffect(DriveDeliverArtifactInput)(
-              decoded.success,
-            ).pipe(
-              Effect.mapError(
-                () =>
-                  new IntegrationExecutionRejected({
-                    code: "resultInvalid",
-                    message: "The approved artifact delivery input is invalid",
-                    operation: manifest.operation,
-                    toolkit: manifest.toolkit,
-                  }),
-              ),
-            );
-            if (ports.readOwned === undefined) {
-              yield* ports.retainAction(actionId, {
+          const artifact = yield* ports.readOwned({ ...request, userId: input.userId }).pipe(
+            Effect.mapError(
+              () =>
+                new IntegrationExecutionRejected({
+                  code: "resultInvalid",
+                  message: "The owned artifact does not match the approved delivery",
+                  operation: manifest.operation,
+                  toolkit: manifest.toolkit,
+                }),
+            ),
+            Effect.tapError(() =>
+              ports.retainAction(actionId, {
                 _tag: "NotApplied",
                 digest,
                 providerLogId: null,
-              });
-              return yield* new IntegrationExecutionRejected({
-                code: "providerUnavailable",
-                message: "Owned artifact delivery is unavailable",
-                operation: manifest.operation,
-                toolkit: manifest.toolkit,
-              });
-            }
-            const artifact = yield* ports.readOwned({ ...request, userId: input.userId }).pipe(
-              Effect.mapError(
-                () =>
-                  new IntegrationExecutionRejected({
-                    code: "resultInvalid",
-                    message: "The owned artifact does not match the approved delivery",
-                    operation: manifest.operation,
-                    toolkit: manifest.toolkit,
-                  }),
-              ),
-              Effect.tapError(() =>
-                ports.retainAction(actionId, {
-                  _tag: "NotApplied",
-                  digest,
-                  providerLogId: null,
-                }),
-              ),
-            );
-            const stageAttempt = yield* Effect.exit(connection.session.stageFile(artifact));
-            if (Predicate.isTagged(stageAttempt, "Failure")) {
-              yield* ports.retainAction(actionId, { _tag: "Ambiguous", correlation, digest });
-              return yield* new IntegrationActionAmbiguous({
-                actionId,
-                message: "The integration file staging outcome is unknown",
-              });
-            }
-            providerInput = {
-              file_to_upload: stageAttempt.value,
-              folder_to_upload_to: request.targetFolderId,
-            };
-          }
-          const attempted = yield* Effect.exit(
-            connection.session.execute(
-              manifest.providerTool,
-              providerInput,
-              connection.connectedAccountId,
-              undefined,
-              correlation,
+              }),
             ),
           );
-          if (Predicate.isTagged(attempted, "Failure")) {
+          const stageAttempt = yield* Effect.exit(connection.session.stageFile(artifact));
+          if (Predicate.isTagged(stageAttempt, "Failure")) {
             yield* ports.retainAction(actionId, { _tag: "Ambiguous", correlation, digest });
             return yield* new IntegrationActionAmbiguous({
               actionId,
-              message: "The integration provider outcome is unknown",
+              message: "The integration file staging outcome is unknown",
             });
           }
-          if (attempted.value.error !== null) {
-            const settled = yield* ports.settleAction(actionId, correlation.providerRequestId, {
-              _tag: "NotApplied",
-              digest,
-              providerLogId: attempted.value.logId,
-            });
-            if (settled._tag === "Applied") return settled.result;
-            if (settled._tag !== "NotApplied") {
-              return yield* new IntegrationActionAmbiguous({
-                actionId,
-                message: "The integration provider evidence belongs to another Action",
-              });
-            }
-            return yield* providerRejection(manifest, attempted.value);
-          }
-          const result = yield* normalizeEffect(manifest, attempted.value, decoded.success).pipe(
-            Effect.tapError(() =>
-              ports.retainAction(actionId, { _tag: "Ambiguous", correlation, digest }),
-            ),
-          );
-          const settled = yield* ports.settleAction(actionId, correlation.providerRequestId, {
-            _tag: "Applied",
-            digest,
-            result,
+          providerInput = {
+            file_to_upload: stageAttempt.value,
+            folder_to_upload_to: request.targetFolderId,
+          };
+        }
+        const attempted = yield* Effect.exit(
+          connection.session.execute(
+            manifest.providerTool,
+            providerInput,
+            connection.connectedAccountId,
+            undefined,
+            correlation,
+          ),
+        );
+        if (Predicate.isTagged(attempted, "Failure")) {
+          yield* ports.retainAction(actionId, { _tag: "Ambiguous", correlation, digest });
+          return yield* new IntegrationActionAmbiguous({
+            actionId,
+            message: "The integration provider outcome is unknown",
           });
-          if (settled._tag !== "Applied") {
+        }
+        if (attempted.value.error !== null) {
+          const settled = yield* ports.settleAction(actionId, correlation.providerRequestId, {
+            _tag: "NotApplied",
+            digest,
+            providerLogId: attempted.value.logId,
+          });
+          if (settled._tag === "Applied") {
+            yield* finalizeEffect(input.finalizeEffect, {
+              _tag: "Applied",
+              result: settled.result,
+            });
+            return settled.result;
+          }
+          if (settled._tag !== "NotApplied") {
             return yield* new IntegrationActionAmbiguous({
               actionId,
               message: "The integration provider evidence belongs to another Action",
             });
           }
-          return settled.result;
-        }),
-      );
-    });
+          yield* finalizeEffect(input.finalizeEffect, {
+            _tag: "NotApplied",
+            providerLogId: settled.providerLogId,
+          });
+          return yield* providerRejection(manifest, attempted.value);
+        }
+        const result = yield* normalizeEffect(manifest, attempted.value, decoded.success).pipe(
+          Effect.tapError(() =>
+            ports.retainAction(actionId, { _tag: "Ambiguous", correlation, digest }),
+          ),
+        );
+        const settled = yield* ports.settleAction(actionId, correlation.providerRequestId, {
+          _tag: "Applied",
+          digest,
+          providerRequestId: correlation.providerRequestId,
+          result,
+        });
+        if (settled._tag !== "Applied") {
+          return yield* new IntegrationActionAmbiguous({
+            actionId,
+            message: "The integration provider evidence belongs to another Action",
+          });
+        }
+        yield* finalizeEffect(input.finalizeEffect, {
+          _tag: "Applied",
+          result: settled.result,
+        });
+        return settled.result;
+      }),
+    );
+  });
 
-  const inspectAction = Effect.fn("Integrations.inspectAction")(function* (
-    input: InspectIntegrationActionInput,
+  const terminalizeAmbiguous = Effect.fn("Integrations.terminalizeAmbiguous")(function* <F>(
+    actionId: ActionId,
+    correlation: ProviderAttemptCorrelation,
+    digest: string,
+    finalizer: ExecuteIntegrationInput<never, F>["finalizeEffect"],
+  ) {
+    yield* ports.retainAction(actionId, {
+      _tag: "TerminalAmbiguous",
+      correlation,
+      digest,
+    });
+    yield* finalizeEffect(finalizer, { _tag: "Ambiguous" });
+    return { _tag: "TerminalAmbiguous" as const };
+  });
+
+  const inspectAction = Effect.fn("Integrations.inspectAction")(function* <F = never>(
+    input: InspectIntegrationActionInput<F>,
   ) {
     const resolved = resolveManifest(input.identity);
     if (Result.isFailure(resolved)) return yield* resolved.failure;
@@ -720,67 +827,242 @@ export const make = (
           });
         }
         if (retained._tag === "Applied") {
+          yield* finalizeEffect(input.finalizeEffect, {
+            _tag: "Applied",
+            result: retained.result,
+          });
           return { _tag: "Applied" as const, result: retained.result };
         }
         if (retained._tag === "NotApplied") {
+          yield* finalizeEffect(input.finalizeEffect, {
+            _tag: "NotApplied",
+            providerLogId: retained.providerLogId,
+          });
           return { _tag: "NotApplied" as const, providerLogId: retained.providerLogId };
+        }
+        if (retained._tag === "TerminalAmbiguous") {
+          yield* finalizeEffect(input.finalizeEffect, { _tag: "Ambiguous" });
+          return { _tag: "TerminalAmbiguous" as const };
         }
         if (retained._tag === "Pending") {
           const now = yield* Clock.currentTimeMillis;
           if (
             retained.correlation !== null &&
-            now - retained.correlation.startedAt < pendingEvidenceDelayMilliseconds
+            now - retained.correlation.startedAt < initialActionReconciliationDelayMilliseconds
           ) {
             return { _tag: "Pending" as const };
           }
           retained = { _tag: "Ambiguous", correlation: retained.correlation, digest };
           yield* ports.retainAction(input.actionId, retained);
         }
-        if (retained.correlation === null) return { _tag: "Ambiguous" as const };
+        if (retained.correlation === null) {
+          return { _tag: "TerminalAmbiguous" as const };
+        }
+        const now = yield* Clock.currentTimeMillis;
+        const retryAfterMilliseconds =
+          retained.correlation.startedAt + providerEvidenceHorizonMilliseconds - now;
         if (retained.correlation.providerSessionId === null) {
-          return { _tag: "Ambiguous" as const };
+          if (retryAfterMilliseconds > 0) {
+            return { _tag: "Ambiguous" as const, retryAfterMilliseconds };
+          }
+          return yield* terminalizeAmbiguous(
+            input.actionId,
+            retained.correlation,
+            digest,
+            input.finalizeEffect,
+          );
         }
         if (retained.correlation.providerRequestId === null) {
-          return { _tag: "Ambiguous" as const };
+          if (retryAfterMilliseconds > 0) {
+            return { _tag: "Ambiguous" as const, retryAfterMilliseconds };
+          }
+          return yield* terminalizeAmbiguous(
+            input.actionId,
+            retained.correlation,
+            digest,
+            input.finalizeEffect,
+          );
         }
-        const session = yield* ports.useSession(
-          input.userId,
-          retained.correlation.providerSessionId,
-        );
-        if (session.inspectExecution === undefined) return { _tag: "Ambiguous" as const };
-        const evidence = yield* session.inspectExecution(retained.correlation, providerInput);
-        if (evidence._tag === "Unknown") return { _tag: "Ambiguous" as const };
-        if (evidence._tag === "NotApplied") {
+        const session = yield* ports
+          .useSession(input.userId, retained.correlation.providerSessionId)
+          .pipe(
+            Effect.map(Option.some),
+            Effect.catchTag("IntegrationProviderUnavailable", (failure) =>
+              retryAfterMilliseconds > 0 && failure.reason === "unavailable"
+                ? Effect.fail(failure)
+                : Effect.succeed(Option.none()),
+            ),
+          );
+        if (Option.isNone(session)) {
+          if (retryAfterMilliseconds > 0) {
+            return { _tag: "Ambiguous" as const, retryAfterMilliseconds };
+          }
+          return yield* terminalizeAmbiguous(
+            input.actionId,
+            retained.correlation,
+            digest,
+            input.finalizeEffect,
+          );
+        }
+        if (session.value.inspectExecution === undefined) {
+          if (retryAfterMilliseconds > 0) {
+            return { _tag: "Ambiguous" as const, retryAfterMilliseconds };
+          }
+          return yield* terminalizeAmbiguous(
+            input.actionId,
+            retained.correlation,
+            digest,
+            input.finalizeEffect,
+          );
+        }
+        const evidence = yield* session.value
+          .inspectExecution(retained.correlation, providerInput)
+          .pipe(
+            Effect.map(Option.some),
+            Effect.catchTag("IntegrationProviderUnavailable", (failure) =>
+              retryAfterMilliseconds > 0 && failure.reason === "unavailable"
+                ? Effect.fail(failure)
+                : Effect.succeed(Option.none()),
+            ),
+          );
+        if (Option.isNone(evidence)) {
+          if (retryAfterMilliseconds > 0) {
+            return { _tag: "Ambiguous" as const, retryAfterMilliseconds };
+          }
+          return yield* terminalizeAmbiguous(
+            input.actionId,
+            retained.correlation,
+            digest,
+            input.finalizeEffect,
+          );
+        }
+        if (evidence.value._tag === "Unknown") {
+          if (retryAfterMilliseconds > 0) {
+            return { _tag: "Ambiguous" as const, retryAfterMilliseconds };
+          }
+          return yield* terminalizeAmbiguous(
+            input.actionId,
+            retained.correlation,
+            digest,
+            input.finalizeEffect,
+          );
+        }
+        if (evidence.value._tag === "NotApplied") {
           const settled = yield* ports.settleAction(
             input.actionId,
             retained.correlation.providerRequestId,
             {
               _tag: "NotApplied",
               digest,
-              providerLogId: evidence.providerLogId,
+              providerLogId: evidence.value.providerLogId,
             },
           );
           if (settled._tag === "Applied") {
+            yield* finalizeEffect(input.finalizeEffect, {
+              _tag: "Applied",
+              result: settled.result,
+            });
             return { _tag: "Applied" as const, result: settled.result };
           }
-          if (settled._tag !== "NotApplied") return { _tag: "Ambiguous" as const };
-          return { _tag: "NotApplied" as const, providerLogId: evidence.providerLogId };
+          if (settled._tag !== "NotApplied") {
+            return { _tag: "Ambiguous" as const, retryAfterMilliseconds: 0 };
+          }
+          yield* finalizeEffect(input.finalizeEffect, {
+            _tag: "NotApplied",
+            providerLogId: settled.providerLogId,
+          });
+          return { _tag: "NotApplied" as const, providerLogId: evidence.value.providerLogId };
         }
-        const result = yield* normalizeEffect(manifest, evidence.execution, decoded.success);
+        const normalized = yield* Effect.result(
+          normalizeEffect(manifest, evidence.value.execution, decoded.success),
+        );
+        if (Result.isFailure(normalized)) {
+          if (normalized.failure.code !== "resultInvalid") {
+            return yield* normalized.failure;
+          }
+          if (retryAfterMilliseconds <= 0) {
+            return yield* terminalizeAmbiguous(
+              input.actionId,
+              retained.correlation,
+              digest,
+              input.finalizeEffect,
+            );
+          }
+          return {
+            _tag: "Ambiguous" as const,
+            retryAfterMilliseconds,
+          };
+        }
+        const result = normalized.success;
         const settled = yield* ports.settleAction(
           input.actionId,
           retained.correlation.providerRequestId,
           {
             _tag: "Applied",
             digest,
+            providerRequestId: retained.correlation.providerRequestId,
             result,
           },
         );
         if (settled._tag === "NotApplied") {
           return { _tag: "NotApplied" as const, providerLogId: settled.providerLogId };
         }
-        if (settled._tag !== "Applied") return { _tag: "Ambiguous" as const };
+        if (settled._tag !== "Applied") {
+          return { _tag: "Ambiguous" as const, retryAfterMilliseconds: 0 };
+        }
+        yield* finalizeEffect(input.finalizeEffect, {
+          _tag: "Applied",
+          result: settled.result,
+        });
         return { _tag: "Applied" as const, result: settled.result };
+      }),
+    );
+  });
+
+  const readActionStatus = Effect.fn("Integrations.readActionStatus")(function* (
+    input: Omit<InspectIntegrationActionInput, "finalizeEffect" | "userId">,
+  ) {
+    const resolved = resolveManifest(input.identity);
+    if (Result.isFailure(resolved)) return yield* resolved.failure;
+    const manifest = resolved.success;
+    if (manifest.operationKind !== "effect") {
+      return yield* new IntegrationActionConflict({
+        actionId: input.actionId,
+        message: "Only an integration effect has a durable Action identity",
+      });
+    }
+    const decoded = manifest.decodeInput(input.input);
+    if (Result.isFailure(decoded)) return yield* decoded.failure;
+    const digest = yield* actionDigest(manifest, decoded.success);
+    return yield* actionLock.withPermits(1)(
+      Effect.gen(function* () {
+        const retained = yield* ports.readAction(input.actionId);
+        if (retained === null) return { _tag: "NotStarted" as const };
+        if (retained.digest !== digest) {
+          return yield* new IntegrationActionConflict({
+            actionId: input.actionId,
+            message: "The Action identity is already bound to different integration facts",
+          });
+        }
+        if (retained._tag === "Applied") {
+          return { _tag: "Applied" as const, result: retained.result };
+        }
+        if (retained._tag === "NotApplied") {
+          return { _tag: "NotApplied" as const, providerLogId: retained.providerLogId };
+        }
+        if (retained._tag === "TerminalAmbiguous") {
+          return { _tag: "TerminalAmbiguous" as const };
+        }
+        if (retained._tag === "Pending") return { _tag: "Pending" as const };
+        const now = yield* Clock.currentTimeMillis;
+        const retryAfterMilliseconds =
+          retained.correlation === null
+            ? 0
+            : Math.max(
+                0,
+                retained.correlation.startedAt + providerEvidenceHorizonMilliseconds - now,
+              );
+        return { _tag: "Ambiguous" as const, retryAfterMilliseconds };
       }),
     );
   });
@@ -823,6 +1105,7 @@ export const make = (
     }),
     execute,
     inspectAction,
+    readActionStatus,
     resolveSession: Effect.fn("Integrations.resolveSession")(function* (userId) {
       const resolved = yield* resolveProviderSession(userId);
       return {
@@ -845,6 +1128,11 @@ const connectionInspection = (
   evidence: { _tag: tag, toolkit: input.toolkit, userId: input.userId },
   session,
 });
+
+const finalizeEffect = <F>(
+  finalize: ExecuteIntegrationInput<never, F>["finalizeEffect"],
+  outcome: IntegrationEffectFinalOutcome,
+) => (finalize === undefined ? Effect.void : finalize(outcome));
 
 const normalizeRead = (
   manifest: ResolvedIntegrationManifestOperation,
@@ -1164,11 +1452,7 @@ const actionDigest = (
           toolkit: manifest.toolkit,
         }),
       );
-      return crypto.subtle
-        .digest("SHA-256", encoded)
-        .then((digest) =>
-          [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
-        );
+      return sha256Hex(encoded);
     },
     catch: (cause) =>
       new IntegrationPersistenceUnavailable({
@@ -1177,5 +1461,28 @@ const actionDigest = (
         operation: "digestAction",
       }),
   });
+
+const connectionBindingFor = (
+  connectedAccountId: string,
+): Effect.Effect<IntegrationConnectionBinding, IntegrationPersistenceUnavailable> =>
+  Effect.tryPromise({
+    try: () =>
+      sha256Hex(
+        new TextEncoder().encode(`osfo-integration-connection-v1:${connectedAccountId}`),
+      ).then((digest) => IntegrationConnectionBinding.make(digest)),
+    catch: (cause) =>
+      new IntegrationPersistenceUnavailable({
+        cause,
+        message: "The private Integration Connection binding could not be computed",
+        operation: "bindConnection",
+      }),
+  });
+
+const sha256Hex = (value: Uint8Array): Promise<string> =>
+  crypto.subtle
+    .digest("SHA-256", new Uint8Array(value))
+    .then((digest) =>
+      [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+    );
 
 export * as Integrations from "./integrations";

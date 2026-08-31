@@ -1,6 +1,20 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { isDeletionOrDataRightsIntent } from "./capability-intent-policy";
+import { capabilityIntentPolicy, isDeletionOrDataRightsIntent } from "./capability-intent-policy";
+
+it("selects Gmail for the mapped immediate-send verification request", () => {
+  expect(
+    capabilityIntentPolicy.gmail.matches(
+      "Send this exact Gmail message now: recipient=person@example.test; subject=Exact subject; body=Exact body",
+    ),
+  ).toBe(true);
+  expect(capabilityIntentPolicy.gmail.matches("Explain how Gmail sends messages now")).toBe(false);
+  expect(
+    capabilityIntentPolicy.gmail.matches(
+      "Send this exact Gmail message now: recipient=person@example.test; subject=Missing body",
+    ),
+  ).toBe(false);
+});
 
 describe("deletion and data-rights intent", () => {
   it("recognizes direct requests to forget remembered knowledge", () => {

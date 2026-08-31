@@ -3,7 +3,10 @@ import { Effect, Option, Schema } from "effect";
 import { ActionId } from "../../domain/action-execution";
 import type { UserId } from "../../domain";
 import { ContentId } from "../../domain/client-content";
-import type { ActionPresentationPersistence } from "../../services/action-approvals";
+import type {
+  ActionApprovalSelection,
+  ActionPresentationPersistence,
+} from "../../services/action-approvals";
 import { ApprovalPresentation } from "../../services/authorization";
 import {
   ClearCoreMemoryInput,
@@ -51,6 +54,11 @@ export const researchReportStartActionName = "startResearchReport";
 export const documentBuildStartActionName = "startDocumentBuild";
 /** Approval-gated Action that admits one exact future Gmail effect. */
 export const scheduledEmailStartActionName = "scheduleEmail";
+/** Bound Scheduled Email Settings projection before any definition-owned presentation work. */
+export const scheduledEmailApprovalSelection: ActionApprovalSelection = {
+  maximum: 50,
+  select: (pending) => pending.descriptor.action === scheduledEmailStartActionName,
+};
 
 /** Model-visible input for one bounded Research Report admission. */
 export const ResearchReportStartInput = ResearchReport.Request;
@@ -819,6 +827,8 @@ const encodeCalendarRecurrence = Schema.encodeSync(
 );
 
 const gmailPresentationFields = (input: typeof GmailMessageInput.Type) => [
+  { label: "Gmail mailbox", name: "gmailResource", value: input.gmailResource },
+  { label: "Integration manifest", name: "manifestVersion", value: "gmail-v1" },
   { label: "Recipients", name: "recipients", value: encodeGmailRecipients(input.recipients) },
   { label: "Subject", name: "subject", value: input.subject },
   { label: "Message", name: "body", value: input.body },

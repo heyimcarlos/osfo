@@ -107,6 +107,16 @@ export const ApprovalDecisionAccepted = Schema.TaggedStruct("ApprovalDecisionAcc
 /** Accepted handoff of one exact decision to Think. */
 export type ApprovalDecisionAccepted = typeof ApprovalDecisionAccepted.Type;
 
+/** Fail-closed response from Think's inherited client-callable decision RPCs. */
+export const NativeApprovalDecisionDenied = Schema.Struct({
+  error: Schema.String,
+  executionId: Schema.String,
+  status: Schema.Literal("error"),
+});
+
+/** Fail-closed response from Think's inherited client-callable decision RPCs. */
+export type NativeApprovalDecisionDenied = typeof NativeApprovalDecisionDenied.Type;
+
 /** Expected failure when the requested Think Approval is not pending. */
 export class ActionPresentationNotFound extends Schema.TaggedError<ActionPresentationNotFound>()(
   "ActionPresentationNotFound",
@@ -171,6 +181,10 @@ const ThinkDispatchError = Schema.Struct({
   status: Schema.Literal("error"),
 });
 
+const ThinkActionExecutionError = Schema.Struct({
+  error: Schema.Struct({ message: Schema.String, name: Schema.String }),
+});
+
 /** Parsed pending Think Action used only inside the Approval adapter. */
 export type PendingThinkAction = typeof ThinkPendingApproval.Type;
 
@@ -223,33 +237,43 @@ export const makeThinkActionApprovalAdapter = (options: { readonly think: ThinkA
       }),
     );
 
-  const resolve = (
+  const resolve = Effect.fn("ThinkActionApprovals.resolve")(function* (
     presentationId: ActionPresentationId,
     decision: "approved" | "rejected" | "canceled",
     reason?: string,
-  ) =>
-    callThink(decision === "approved" ? "approveExecution" : "rejectExecution", () =>
-      decision === "approved"
-        ? options.think.approve(presentationId)
-        : options.think.reject(presentationId, reason),
-    ).pipe(
-      Effect.flatMap((result) => {
-        const rejected = Schema.decodeUnknownOption(ThinkDispatchError)(result);
-        return Option.isNone(rejected)
-          ? Effect.void
-          : Effect.fail(
-              new ApprovalAlreadyResolved({
-                message: rejected.value.error,
-                presentationId,
-              }),
-            );
-      }),
+  ) {
+    const result = yield* callThink<unknown>(
+      decision === "approved" ? "approveExecution" : "rejectExecution",
+      () =>
+        decision === "approved"
+          ? options.think.approve(presentationId)
+          : options.think.reject(presentationId, reason),
     );
+    const dispatchError = Schema.decodeUnknownOption(ThinkDispatchError)(result);
+    const executionError = Schema.decodeUnknownOption(ThinkActionExecutionError)(result);
+    if (Option.isSome(dispatchError)) {
+      return yield* new ApprovalAlreadyResolved({
+        message: dispatchError.value.error,
+        presentationId,
+      });
+    }
+    if (decision === "approved" && Option.isSome(executionError)) {
+      return yield* new ThinkApprovalUnavailable({
+        cause: result,
+        message: executionError.value.error.message,
+        operation: "approveExecution",
+      });
+    }
+    return undefined;
+  });
 
   return { findPending, listPending, resolve };
 };
 
-const callThink = <A>(operation: string, run: () => Promise<A>) =>
+const callThink = <A>(
+  operation: string,
+  run: () => Promise<A>,
+): Effect.Effect<A, ThinkApprovalUnavailable> =>
   Effect.tryPromise({
     try: run,
     catch: (cause) =>

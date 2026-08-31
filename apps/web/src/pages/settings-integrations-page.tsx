@@ -1,4 +1,6 @@
 import type {
+  GmailSendApproval,
+  GmailSendStatus,
   IntegrationConnectionSummary,
   IntegrationToolkit,
   ScheduledEmailApproval,
@@ -12,9 +14,11 @@ import { useEffect, useState } from "react";
 
 import {
   connectIntegration,
+  decideGmailSendApproval,
   decideScheduledEmailApproval,
   disconnectIntegration,
   inspectIntegrations,
+  inspectGmailSends,
   inspectScheduledEmailApprovals,
   inspectScheduledEmailNotifications,
 } from "../lib/api-client";
@@ -32,6 +36,13 @@ export function SettingsIntegrationsPage() {
   } | null>(null);
   const [scheduledEmailBusy, setScheduledEmailBusy] = useState<string | null>(null);
   const [scheduledEmailError, setScheduledEmailError] = useState<string | null>(null);
+  const [gmailSends, setGmailSends] = useState<{
+    readonly approvals: ReadonlyArray<GmailSendApproval>;
+    readonly statuses: ReadonlyArray<GmailSendStatus>;
+  } | null>(null);
+  const [gmailSendBusy, setGmailSendBusy] = useState<string | null>(null);
+  const [gmailSendError, setGmailSendError] = useState<string | null>(null);
+  const [gmailSendDecision, setGmailSendDecision] = useState<"approved" | "rejected" | null>(null);
 
   const refresh = () => {
     setError(null);
@@ -55,6 +66,15 @@ export function SettingsIntegrationsPage() {
   };
 
   useEffect(refreshScheduledEmail, []);
+
+  const refreshGmailSends = () => {
+    setGmailSendError(null);
+    void Effect.runPromise(inspectGmailSends).then(setGmailSends, () =>
+      setGmailSendError("Immediate Gmail status is temporarily unavailable."),
+    );
+  };
+
+  useEffect(refreshGmailSends, []);
 
   const connect = (toolkit: IntegrationToolkit) => {
     setBusyToolkit(toolkit);
@@ -106,6 +126,29 @@ export function SettingsIntegrationsPage() {
         onDisconnect={disconnect}
         onRefresh={refresh}
       />
+      <GmailSendControlContent
+        busyPresentationId={gmailSendBusy}
+        decision={gmailSendDecision}
+        error={gmailSendError}
+        items={gmailSends}
+        onDecide={(presentationId, decision) => {
+          setGmailSendBusy(presentationId);
+          setGmailSendError(null);
+          setGmailSendDecision(null);
+          void Effect.runPromise(decideGmailSendApproval({ decision, presentationId })).then(
+            (accepted) => {
+              setGmailSendBusy(null);
+              setGmailSendDecision(accepted.decision);
+              refreshGmailSends();
+            },
+            () => {
+              setGmailSendBusy(null);
+              setGmailSendError("The exact Gmail Approval decision could not be recorded.");
+            },
+          );
+        }}
+        onRefresh={refreshGmailSends}
+      />
       <ScheduledEmailControlContent
         busyPresentationId={scheduledEmailBusy}
         error={scheduledEmailError}
@@ -129,6 +172,138 @@ export function SettingsIntegrationsPage() {
     </div>
   );
 }
+
+/** Exact immediate Gmail decision and duplicate-safe provider outcome projection. */
+export function GmailSendControlContent({
+  busyPresentationId,
+  decision,
+  error,
+  items,
+  onDecide,
+  onRefresh,
+}: {
+  readonly busyPresentationId: string | null;
+  readonly decision: "approved" | "rejected" | null;
+  readonly error: string | null;
+  readonly items: {
+    readonly approvals: ReadonlyArray<GmailSendApproval>;
+    readonly statuses: ReadonlyArray<GmailSendStatus>;
+  } | null;
+  readonly onDecide: (presentationId: string, decision: "approve" | "reject") => void;
+  readonly onRefresh: () => void;
+}) {
+  return (
+    <GlassPanel className="p-5 sm:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold">Immediate Gmail Sends</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[#687896]">
+            Review the exact primary mailbox, integration manifest, recipients, subject, and body
+            before Osfo sends one message now.
+          </p>
+        </div>
+        <Button size="sm" type="button" variant="secondary" onClick={onRefresh}>
+          Refresh Gmail Sends
+        </Button>
+      </div>
+      {error === null ? null : (
+        <p className="mt-4 rounded-xl bg-[#fff0f2] p-3 text-sm text-[#a82d3f]" role="alert">
+          {error}
+        </p>
+      )}
+      {decision === null ? null : (
+        <p className="mt-4 rounded-xl bg-[#eef8f2] p-3 text-sm text-[#22613c]" role="status">
+          {decision === "approved"
+            ? "Immediate Gmail send approved."
+            : "Immediate Gmail send rejected. No message was sent."}
+        </p>
+      )}
+      {items === null ? (
+        <p className="mt-4 text-sm text-[#687896]">Loading immediate Gmail Sends...</p>
+      ) : (
+        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+          <section aria-label="Pending immediate Gmail Approvals">
+            <h3 className="font-bold">Pending Approval</h3>
+            {items.approvals.length === 0 ? (
+              <p className="mt-3 text-sm text-[#687896]">
+                No immediate Gmail send awaits Approval.
+              </p>
+            ) : (
+              <ul className="mt-3 grid gap-3">
+                {items.approvals.map((approval) => (
+                  <li
+                    className="rounded-2xl border border-[#dce7f7] bg-[#f7faff] p-4"
+                    key={approval.presentationId}
+                  >
+                    <p className="font-semibold text-[#101936]">{approval.title}</p>
+                    <p className="mt-1 text-sm text-[#687896]">{approval.description}</p>
+                    <dl className="mt-3 grid gap-2 text-sm">
+                      {approval.fields.map((field) => (
+                        <div key={field.name}>
+                          <dt className="font-semibold text-[#41506c]">{field.label}</dt>
+                          <dd className="whitespace-pre-wrap break-words text-[#101936]">
+                            {field.value}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                    <p className="mt-3 text-sm font-medium text-[#7b4d1d]">
+                      {approval.consequences.join(" ")}
+                    </p>
+                    <div className="mt-4 flex gap-2">
+                      <Button
+                        disabled={busyPresentationId !== null}
+                        type="button"
+                        onClick={() => onDecide(approval.presentationId, "approve")}
+                      >
+                        Approve exact Gmail send
+                      </Button>
+                      <Button
+                        disabled={busyPresentationId !== null}
+                        type="button"
+                        variant="secondary"
+                        onClick={() => onDecide(approval.presentationId, "reject")}
+                      >
+                        Reject
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+          <section aria-label="Immediate Gmail outcomes">
+            <h3 className="font-bold">Send status</h3>
+            {items.statuses.length === 0 ? (
+              <p className="mt-3 text-sm text-[#687896]">No immediate Gmail send status yet.</p>
+            ) : (
+              <ul className="mt-3 grid gap-3">
+                {items.statuses.map((item) => (
+                  <li
+                    className="rounded-2xl border border-[#dce7f7] bg-[#f7faff] p-4"
+                    key={item.actionId}
+                  >
+                    <p className="font-semibold text-[#101936]">{gmailStatusLabel(item.status)}</p>
+                    <p className="mt-1 break-all text-xs text-[#687896]">Action: {item.actionId}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
+      )}
+    </GlassPanel>
+  );
+}
+
+const gmailStatusLabel = (status: GmailSendStatus["status"]) => {
+  if (status === "applied") return "Gmail message sent";
+  if (status === "notApplied") return "Gmail message not sent";
+  if (status === "rejected") return "Gmail send rejected — no message was sent";
+  if (status === "invalidated") return "Gmail send invalidated — no message was sent";
+  if (status === "pending") return "Gmail send in progress";
+  return "Gmail delivery unconfirmed — it may have been sent";
+};
 
 /** Exact pending decision and safe delivered outcome projection for Scheduled Email. */
 export function ScheduledEmailControlContent({

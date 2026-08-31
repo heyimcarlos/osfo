@@ -22,6 +22,9 @@ it("admits only an explicit loopback Research provider in test or development", 
   expect(() =>
     loadConfig({
       ...env,
+      // This assertion owns Research configuration. The composed journey environment also
+      // provides a local Integration origin, which is independently invalid in production.
+      INTEGRATION_PROVIDER_BASE_URL: "",
       OSFO_STAGE: "production",
       RESEARCH_REPORT_PROVIDER_BASE_URL: "http://127.0.0.1:43123",
     }),

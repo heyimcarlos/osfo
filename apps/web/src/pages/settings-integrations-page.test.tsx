@@ -3,9 +3,85 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  GmailSendControlContent,
   ScheduledEmailControlContent,
   SettingsIntegrationsContent,
 } from "./settings-integrations-page";
+
+describe("GmailSendControlContent", () => {
+  it("shows the exact immediate send separately from Scheduled Email and safe outcomes only", () => {
+    const html = renderToStaticMarkup(
+      <GmailSendControlContent
+        busyPresentationId={null}
+        decision="rejected"
+        error={null}
+        items={{
+          approvals: [
+            {
+              actionId: "gmail-action",
+              consequences: ["This sends one external message immediately."],
+              description: "Send the exact Gmail message shown.",
+              fields: [
+                { label: "Gmail mailbox", name: "gmailResource", value: "primary" },
+                { label: "Integration manifest", name: "manifestVersion", value: "gmail-v1" },
+                { label: "Recipients", name: "recipients", value: '["recipient@example.test"]' },
+                { label: "Subject", name: "subject", value: "Immediate verification" },
+                { label: "Message", name: "body", value: "Exact immediate body." },
+              ],
+              presentationId: "gmail-presentation",
+              title: "Send Gmail message",
+            },
+          ],
+          statuses: [
+            {
+              actionId: "gmail-applied",
+              presentationId: "gmail-applied-presentation",
+              status: "applied",
+            },
+            {
+              actionId: "gmail-not-applied",
+              presentationId: "gmail-not-applied-presentation",
+              status: "notApplied",
+            },
+            {
+              actionId: "gmail-ambiguous",
+              presentationId: "gmail-ambiguous-presentation",
+              status: "ambiguous",
+            },
+            {
+              actionId: "gmail-rejected",
+              presentationId: "gmail-rejected-presentation",
+              status: "rejected",
+            },
+            {
+              actionId: "gmail-invalidated",
+              presentationId: "gmail-invalidated-presentation",
+              status: "invalidated",
+            },
+          ],
+        }}
+        onDecide={vi.fn<(presentationId: string, decision: "approve" | "reject") => void>()}
+        onRefresh={vi.fn<() => void>()}
+      />,
+    );
+
+    expect(html).toContain("Immediate Gmail Sends");
+    expect(html).toContain("primary");
+    expect(html).toContain("gmail-v1");
+    expect(html).toContain("recipient@example.test");
+    expect(html).toContain("Immediate verification");
+    expect(html).toContain("Exact immediate body.");
+    expect(html).toContain("Approve exact Gmail send");
+    expect(html).toContain("Immediate Gmail send rejected. No message was sent.");
+    expect(html).toContain("Gmail message sent");
+    expect(html).toContain("Gmail message not sent");
+    expect(html).toContain("Gmail send rejected — no message was sent");
+    expect(html).toContain("Gmail send invalidated — no message was sent");
+    expect(html).toContain("Gmail delivery unconfirmed — it may have been sent");
+    expect(html).not.toContain("providerLogId");
+    expect(html).not.toContain("Scheduled Emails");
+  });
+});
 
 describe("SettingsIntegrationsContent", () => {
   it("shows all provider-neutral lifecycle states without account identifiers", () => {

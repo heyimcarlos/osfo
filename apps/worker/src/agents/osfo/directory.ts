@@ -331,11 +331,28 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     });
   }
 
-  /** List one User Agent's exact pending Action presentations. */
-  async listActionPresentations(agentId: string, actor: unknown) {
+  /** Inspect immediate Gmail outcomes through one registered User Agent. */
+  async inspectImmediateGmailSends(
+    agentId: string,
+    actor: { readonly authSessionId: string; readonly userId: string },
+  ) {
     if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
     const agent = await this.subAgent(OsfoAgent, agentId);
-    return agent.listActionPresentations(actor);
+    return agent.inspectImmediateGmailSends({
+      authSessionId: AuthSessionId.make(actor.authSessionId),
+      userId: UserId.make(actor.userId),
+    });
+  }
+
+  /** List one User Agent's exact pending Action presentations. */
+  async listActionPresentations(
+    agentId: string,
+    actor: unknown,
+    selection?: "immediate-gmail" | "scheduled-email",
+  ) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.listActionPresentations(actor, selection);
   }
 
   /** Resolve one User Agent's exact pending Action presentation. */

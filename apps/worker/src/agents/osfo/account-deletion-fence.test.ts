@@ -48,6 +48,69 @@ it.effect("drains an in-flight document writer and prevents resurrection after R
   }),
 );
 
+it.effect("drains immediate Gmail settlement before deletion and rejects a late wake", () =>
+  Effect.gen(function* () {
+    const fence = makeAccountDeletionFence();
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const events: Array<string> = [];
+    const reconciliation = yield* fence
+      .run(
+        Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(Effect.sync(() => events.push("usage", "terminal"))),
+        ),
+        () => "account deletion fenced" as const,
+      )
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(started);
+
+    const deletion = yield* fence.close.pipe(
+      Effect.andThen(Effect.sync(() => events.push("erase"))),
+      Effect.forkChild,
+    );
+    yield* Effect.yieldNow;
+    expect(events).toEqual([]);
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(reconciliation);
+    yield* Fiber.join(deletion);
+    expect(events).toEqual(["usage", "terminal", "erase"]);
+
+    const late = yield* fence
+      .run(
+        Effect.sync(() => events.push("late-terminal")),
+        () => "account deletion fenced" as const,
+      )
+      .pipe(Effect.flip);
+    expect(late).toBe("account deletion fenced");
+    expect(events).toEqual(["usage", "terminal", "erase"]);
+  }),
+);
+
+it.effect("blocks rejected Gmail settlement between deletion prefix listing and erase", () =>
+  Effect.gen(function* () {
+    const fence = makeAccountDeletionFence();
+    const moduleKeys = new Set(["approval", "settlement-obligation"]);
+    yield* fence.close;
+    const listed = [...moduleKeys];
+
+    const settlement = yield* fence
+      .run(
+        Effect.sync(() => {
+          moduleKeys.delete("approval");
+          moduleKeys.delete("settlement-obligation");
+          moduleKeys.add("terminal");
+        }),
+        () => "account deletion fenced" as const,
+      )
+      .pipe(Effect.flip);
+    listed.forEach((key) => moduleKeys.delete(key));
+
+    expect(settlement).toBe("account deletion fenced");
+    expect([...moduleKeys]).toEqual([]);
+  }),
+);
+
 it.effect("drains an admitted Reminder delivery before deletion and rejects a late callback", () =>
   Effect.gen(function* () {
     const fence = makeAccountDeletionFence();

@@ -70,6 +70,7 @@ export {
   researchReportRequiresApproval,
   ResearchReportStartInput,
   RetainedDocumentInput,
+  scheduledEmailApprovalSelection,
   scheduledEmailStartActionName,
   ScheduledEmailIdentityInput,
   ScheduledEmailStartInput,
@@ -300,5 +301,8 @@ const ScheduledEmailActionInput = Schema.Union([
 /** Normalize both the initial validated input and Think's JSON-retained durable-pause input. */
 export const decodeScheduledEmailActionInput =
   Schema.decodeUnknownEffect(ScheduledEmailActionInput);
+
+/** Normalize retained pre-resource Gmail input before an approved Action resumes. */
+export const decodeGmailActionInput = Schema.decodeUnknownEffect(GmailMessageInput);
 
 const withoutInput = (approval: PendingApproval): PendingApproval => withInput(approval, {});

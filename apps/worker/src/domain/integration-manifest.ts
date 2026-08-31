@@ -1,4 +1,4 @@
-import { Result, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 
 import { ManifestVersion } from "../domain";
 import { ConsequenceClass } from "./capability-catalog";
@@ -178,6 +178,9 @@ export const GmailSearchInput = Schema.Struct({
 
 export const GmailMessageInput = Schema.Struct({
   body: boundedSummary,
+  gmailResource: Schema.Literal("primary").pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("primary")),
+  ),
   recipients: Schema.NonEmptyArray(boundedIdentity).check(Schema.isMaxLength(50)),
   subject: nonEmpty.check(Schema.isMaxLength(998)),
 });

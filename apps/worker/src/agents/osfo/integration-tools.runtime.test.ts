@@ -8,7 +8,7 @@ import { Effect, Option, Schema } from "effect";
 
 import { AgentId, ThinkSubmissionId, UserId } from "../../domain";
 import { ManagedTurnMetadata } from "../../domain/managed-conversation";
-import type { Integrations } from "../../services/integrations";
+import { Integrations } from "../../services/integrations";
 import { OsfoAgent } from "./agent";
 import { effectToolSchema } from "./effect-tool-schema";
 import { IntegrationTools, type IntegrationToolExecutor } from "./integration-tools";
@@ -53,7 +53,12 @@ const fakeIntegrations: Integrations.Interface = {
   connectionEvidence: ({ toolkit, userId }) =>
     Effect.succeed(
       toolkit === "gmail"
-        ? { _tag: "IntegrationConnectionConnected" as const, toolkit, userId }
+        ? {
+            _tag: "IntegrationConnectionConnected" as const,
+            connectionBinding: Integrations.IntegrationConnectionBinding.make("a".repeat(64)),
+            toolkit,
+            userId,
+          }
         : { _tag: "IntegrationConnectionMissing" as const, toolkit, userId },
     ),
   disconnect: ({ toolkit }) => Effect.succeed({ _tag: "IntegrationConnectionRevoked", toolkit }),
@@ -76,6 +81,7 @@ const fakeIntegrations: Integrations.Interface = {
       }),
     ),
   inspectAction: () => Effect.succeed({ _tag: "NotStarted" }),
+  readActionStatus: () => Effect.succeed({ _tag: "NotStarted" }),
   resolveSession: (userId) =>
     Effect.succeed({ _tag: "IntegrationSessionResolved", resumed: true, userId }),
 };

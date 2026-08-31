@@ -203,7 +203,12 @@ describe("Integration Capability Manifests", () => {
           providerResourceId: "message-1",
         },
         identity: { manifestVersion: "gmail-v1", operation, toolkit: "gmail" },
-        input: { body: "Message body", recipients: ["person@example.test"], subject: "Subject" },
+        input: {
+          body: "Message body",
+          gmailResource: "primary",
+          recipients: ["person@example.test"],
+          subject: "Subject",
+        },
       })),
       {
         evidence: {

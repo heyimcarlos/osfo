@@ -1,14 +1,25 @@
-/* oxlint-disable eslint/no-underscore-dangle, vitest/no-standalone-expect -- Assertions execute inside Effect Vitest generators and inspect tagged outcomes. */
+/* oxlint-disable effecttsgo/global-date-in-effect, eslint/no-underscore-dangle, vitest/no-standalone-expect -- Tests use fixed Date evidence and inspect tagged Effect outcomes. */
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Option, Schema } from "effect";
 import { TestClock } from "effect/testing";
 
 import { ActionId } from "../domain/action-execution";
-import { ManifestVersion, UserId } from "../domain";
+import { AllowancePeriodId, ManifestVersion, UserId } from "../domain";
+import {
+  ExistingUsage,
+  Recorded,
+  UsageConflict,
+  type AllowanceItem,
+  type AllowanceSource,
+} from "../domain/allowance";
+import { retainedCatalog } from "../domain/plan-policy";
+import { Allowances } from "./allowances";
 import {
   directIntegrationProviderConfig,
   IntegrationProviderUnavailable,
+  IntegrationEffectFinalizationUnavailable,
   make,
+  type IntegrationEffectFinalOutcome,
   type IntegrationPersistence,
   type IntegrationProvider,
   type PersistedIntegrationAction,
@@ -92,8 +103,9 @@ describe("Integrations", () => {
             slug: "gmail",
           },
         ];
-        expect(yield* integrations.connectionEvidence({ toolkit: "gmail", userId })).toEqual({
+        expect(yield* integrations.connectionEvidence({ toolkit: "gmail", userId })).toMatchObject({
           _tag: "IntegrationConnectionConnected",
+          connectionBinding: expect.stringMatching(/^[0-9a-f]{64}$/u),
           toolkit: "gmail",
           userId,
         });
@@ -246,6 +258,7 @@ describe("Integrations", () => {
         },
         input: {
           body: "Hello",
+          gmailResource: "primary",
           recipients: ["person@example.test"],
           subject: "Subject",
         },
@@ -281,6 +294,242 @@ describe("Integrations", () => {
     }),
   );
 
+  it.effect("retains one Gmail-send fact after final Applied evidence across replay", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits = [
+        {
+          connectedAccount: { id: "account-1", status: "ACTIVE" },
+          isActive: true,
+          slug: "gmail",
+        },
+      ];
+      harness.executeResult = {
+        data: { id: "provider-message-accounted" },
+        error: null,
+        logId: "composio-log-accounted",
+      };
+      const integrations = make(harness);
+      const accounting = makeActionAccounting();
+      const finalizeEffect = accounting.finalize(ActionId.make("action-accounted"));
+      const request = {
+        actionId: ActionId.make("action-accounted"),
+        authorize: Effect.void,
+        finalizeEffect,
+        identity: {
+          manifestVersion: ManifestVersion.make("gmail-v1"),
+          operation: "GMAIL_SEND_EMAIL",
+          toolkit: "gmail",
+        },
+        input: {
+          body: "Hello",
+          gmailResource: "primary",
+          recipients: ["person@example.test"],
+          subject: "Subject",
+        },
+        userId,
+      } as const;
+
+      yield* integrations.execute(request);
+      yield* integrations.execute(request);
+
+      expect(accounting.retained).toEqual([
+        {
+          items: [{ allowanceKind: "gmailSends", basis: "observed", quantity: 1n }],
+          source: { sourceId: "action-accounted", sourceType: "integrationAction" },
+        },
+      ]);
+      expect(harness.executed).toHaveLength(1);
+    }),
+  );
+
+  it.effect("leaves initial and reconcilable Gmail ambiguity unaccounted", () =>
+    Effect.gen(function* () {
+      const harness = makeAmbiguousGmailHarness();
+      const actionId = ActionId.make("action-ambiguous-unaccounted");
+      const accounting = makeActionAccounting();
+      const request = gmailEffectRequest(actionId, accounting.finalize(actionId));
+      yield* TestClock.setTime(1);
+
+      expect(yield* make(harness).execute(request).pipe(Effect.result)).toMatchObject({
+        failure: { _tag: "IntegrationActionAmbiguous" },
+      });
+      expect(accounting.retained).toEqual([]);
+
+      yield* TestClock.setTime(120_001);
+      expect(yield* make(harness).inspectAction(request)).toEqual({
+        _tag: "Ambiguous",
+        retryAfterMilliseconds: 180_000,
+      });
+      expect(accounting.retained).toEqual([]);
+      expect(harness.executed).toHaveLength(1);
+    }),
+  );
+
+  it.effect("keeps a reconciled NotApplied Gmail Action at zero across restart", () =>
+    Effect.gen(function* () {
+      const harness = makeAmbiguousGmailHarness();
+      const actionId = ActionId.make("action-reconciled-not-applied");
+      const accounting = makeActionAccounting();
+      const request = gmailEffectRequest(actionId, accounting.finalize(actionId));
+      yield* TestClock.setTime(1);
+      yield* make(harness).execute(request).pipe(Effect.result);
+      harness.inspectionEvidence = {
+        _tag: "NotApplied",
+        providerLogId: "provider-log-not-applied",
+      };
+      yield* TestClock.setTime(120_001);
+
+      expect(yield* make(harness).inspectAction(request)).toEqual({
+        _tag: "NotApplied",
+        providerLogId: "provider-log-not-applied",
+      });
+      expect(yield* make(harness).inspectAction(request)).toEqual({
+        _tag: "NotApplied",
+        providerLogId: "provider-log-not-applied",
+      });
+      expect(accounting.retained).toEqual([]);
+      expect(harness.executed).toHaveLength(1);
+    }),
+  );
+
+  it.effect("records one observed Gmail fact after Applied reconciliation across restart", () =>
+    Effect.gen(function* () {
+      const harness = makeAmbiguousGmailHarness();
+      const actionId = ActionId.make("action-reconciled-applied");
+      const accounting = makeActionAccounting();
+      const request = gmailEffectRequest(actionId, accounting.finalize(actionId));
+      yield* TestClock.setTime(1);
+      yield* make(harness).execute(request).pipe(Effect.result);
+      harness.inspectionEvidence = {
+        _tag: "Applied",
+        execution: {
+          data: { id: "provider-message-reconciled" },
+          error: null,
+          logId: "provider-log-reconciled",
+        },
+      };
+      yield* TestClock.setTime(120_001);
+
+      expect(yield* make(harness).inspectAction(request)).toMatchObject({ _tag: "Applied" });
+      expect(yield* make(harness).inspectAction(request)).toMatchObject({ _tag: "Applied" });
+      expect(accounting.retained).toEqual([
+        {
+          items: [{ allowanceKind: "gmailSends", basis: "observed", quantity: 1n }],
+          source: { sourceId: actionId, sourceType: "integrationAction" },
+        },
+      ]);
+      expect(harness.executed).toHaveLength(1);
+    }),
+  );
+
+  it.effect("records one conservative Gmail fact only after the evidence horizon closes", () =>
+    Effect.gen(function* () {
+      const harness = makeAmbiguousGmailHarness();
+      const actionId = ActionId.make("action-terminal-ambiguous");
+      const accounting = makeActionAccounting();
+      const request = gmailEffectRequest(actionId, accounting.finalize(actionId));
+      yield* TestClock.setTime(1);
+      yield* make(harness).execute(request).pipe(Effect.result);
+      yield* TestClock.setTime(300_000);
+
+      expect(yield* make(harness).inspectAction(request)).toEqual({
+        _tag: "Ambiguous",
+        retryAfterMilliseconds: 1,
+      });
+      expect(accounting.retained).toEqual([]);
+
+      yield* TestClock.setTime(300_001);
+      expect(yield* make(harness).inspectAction(request)).toEqual({ _tag: "TerminalAmbiguous" });
+      harness.inspectionEvidence = {
+        _tag: "Applied",
+        execution: {
+          data: { id: "late-provider-message" },
+          error: null,
+          logId: "late-provider-log",
+        },
+      };
+      expect(yield* make(harness).inspectAction(request)).toEqual({ _tag: "TerminalAmbiguous" });
+      expect(harness.actions.get(actionId)).toMatchObject({ _tag: "TerminalAmbiguous" });
+      expect(accounting.retained).toEqual([
+        {
+          items: [{ allowanceKind: "gmailSends", basis: "conservative", quantity: 1n }],
+          source: { sourceId: actionId, sourceType: "integrationAction" },
+        },
+      ]);
+      expect(harness.executed).toHaveLength(1);
+    }),
+  );
+
+  it.effect("terminalizes malformed Applied evidence conservatively across restart", () =>
+    Effect.gen(function* () {
+      const harness = makeAmbiguousGmailHarness();
+      const actionId = ActionId.make("action-malformed-applied-evidence");
+      const accounting = makeActionAccounting();
+      const request = gmailEffectRequest(actionId, accounting.finalize(actionId));
+      yield* TestClock.setTime(1);
+      yield* make(harness).execute(request).pipe(Effect.result);
+      harness.inspectionEvidence = {
+        _tag: "Applied",
+        execution: { data: {}, error: null, logId: "malformed-applied-log" },
+      };
+
+      yield* TestClock.setTime(120_001);
+      expect(yield* make(harness).inspectAction(request)).toEqual({
+        _tag: "Ambiguous",
+        retryAfterMilliseconds: 180_000,
+      });
+      expect(accounting.retained).toEqual([]);
+
+      yield* TestClock.setTime(300_001);
+      expect(yield* make(harness).inspectAction(request)).toEqual({ _tag: "TerminalAmbiguous" });
+      expect(yield* make(harness).inspectAction(request)).toEqual({ _tag: "TerminalAmbiguous" });
+      expect(harness.actions.get(actionId)).toMatchObject({
+        _tag: "TerminalAmbiguous",
+        correlation: expect.objectContaining({ providerRequestId: expect.any(String) }),
+      });
+      expect(accounting.retained).toEqual([
+        {
+          items: [{ allowanceKind: "gmailSends", basis: "conservative", quantity: 1n }],
+          source: { sourceId: actionId, sourceType: "integrationAction" },
+        },
+      ]);
+      expect(harness.executed).toHaveLength(1);
+    }),
+  );
+
+  it.effect("terminalizes a discarded provider session only after the evidence horizon", () =>
+    Effect.gen(function* () {
+      const harness = makeAmbiguousGmailHarness();
+      const actionId = ActionId.make("action-missing-reconciliation-session");
+      const accounting = makeActionAccounting();
+      const request = gmailEffectRequest(actionId, accounting.finalize(actionId));
+      yield* TestClock.setTime(1);
+      yield* make(harness).execute(request).pipe(Effect.result);
+      expect(harness.created).toHaveLength(1);
+      harness.missingSessions.add("provider-session-1");
+
+      yield* TestClock.setTime(120_001);
+      expect(yield* make(harness).inspectAction(request)).toEqual({
+        _tag: "Ambiguous",
+        retryAfterMilliseconds: 180_000,
+      });
+      expect(accounting.retained).toEqual([]);
+
+      yield* TestClock.setTime(300_001);
+      expect(yield* make(harness).inspectAction(request)).toEqual({
+        _tag: "TerminalAmbiguous",
+      });
+      expect(harness.actions.get(actionId)).toMatchObject({ _tag: "TerminalAmbiguous" });
+      expect(accounting.retained).toEqual([
+        {
+          items: [{ allowanceKind: "gmailSends", basis: "conservative", quantity: 1n }],
+          source: { sourceId: actionId, sourceType: "integrationAction" },
+        },
+      ]);
+    }),
+  );
+
   it.effect("inspects one exact effect Action without provider I/O", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
@@ -306,6 +555,7 @@ describe("Integrations", () => {
         },
         input: {
           body: "Hello",
+          gmailResource: "primary",
           recipients: ["person@example.test"],
           subject: "Subject",
         },
@@ -353,6 +603,7 @@ describe("Integrations", () => {
         },
         input: {
           body: "Hello",
+          gmailResource: "primary",
           recipients: ["person@example.test"],
           subject: "Subject",
         },
@@ -365,7 +616,7 @@ describe("Integrations", () => {
         failure: { _tag: "IntegrationExecutionRejected", code: "resultInvalid" },
       });
       expect(harness.actions.get(actionId)).toMatchObject({ _tag: "Ambiguous" });
-      expect(yield* integrations.inspectAction(exact)).toEqual({ _tag: "Ambiguous" });
+      expect(yield* integrations.inspectAction(exact)).toMatchObject({ _tag: "Ambiguous" });
       expect(harness.executed).toHaveLength(1);
     }),
   );
@@ -392,6 +643,7 @@ describe("Integrations", () => {
           },
           input: {
             body: "Hello",
+            gmailResource: "primary",
             recipients: ["person@example.test"],
             subject: "Subject",
           },
@@ -431,6 +683,7 @@ describe("Integrations", () => {
           },
           input: {
             body: "Hello",
+            gmailResource: "primary",
             recipients: ["person@example.test"],
             subject: "Subject",
           },
@@ -442,6 +695,123 @@ describe("Integrations", () => {
       expect(harness.executed).toEqual([]);
       expect(harness.actions.size).toBe(0);
     }),
+  );
+
+  it.effect(
+    "rejects a snapshotted provider account that differs from the approved connection binding",
+    () =>
+      Effect.gen(function* () {
+        const harness = makeHarness();
+        harness.toolkits = [
+          {
+            connectedAccount: { id: "approved-account", status: "ACTIVE" },
+            isActive: true,
+            slug: "gmail",
+          },
+        ];
+        const integrations = make(harness);
+        const approved = yield* integrations.connectionEvidence({ toolkit: "gmail", userId });
+        if (approved._tag !== "IntegrationConnectionConnected") {
+          return yield* Effect.die(new Error("The approved test connection must be current"));
+        }
+        harness.toolkits = [
+          {
+            connectedAccount: { id: "replacement-account", status: "ACTIVE" },
+            isActive: true,
+            slug: "gmail",
+          },
+        ];
+        let authorityChecks = 0;
+
+        const failure = yield* Effect.flip(
+          integrations.execute({
+            actionId: ActionId.make("action-snapshotted-replacement"),
+            authorize: Effect.sync(() => {
+              authorityChecks += 1;
+              harness.toolkits = [
+                {
+                  connectedAccount: { id: "approved-account", status: "ACTIVE" },
+                  isActive: true,
+                  slug: "gmail",
+                },
+              ];
+            }),
+            expectedConnectionBinding: approved.connectionBinding,
+            identity: {
+              manifestVersion: ManifestVersion.make("gmail-v1"),
+              operation: "GMAIL_SEND_EMAIL",
+              toolkit: "gmail",
+            },
+            input: {
+              body: "Hello",
+              gmailResource: "primary",
+              recipients: ["person@example.test"],
+              subject: "Subject",
+            },
+            userId,
+          }),
+        );
+
+        expect(failure).toMatchObject({ _tag: "IntegrationConnectionUnavailable" });
+        expect(authorityChecks).toBe(1);
+        expect(harness.actions.size).toBe(0);
+        expect(harness.executed).toEqual([]);
+        return undefined;
+      }),
+  );
+
+  it.effect(
+    "executes only the provider account whose snapshot matches the approved connection binding",
+    () =>
+      Effect.gen(function* () {
+        const harness = makeHarness();
+        harness.toolkits = [
+          {
+            connectedAccount: { id: "approved-account", status: "ACTIVE" },
+            isActive: true,
+            slug: "gmail",
+          },
+        ];
+        harness.executeResult = {
+          data: { id: "provider-message-1" },
+          error: null,
+          logId: "composio-log-1",
+        };
+        const integrations = make(harness);
+        const approved = yield* integrations.connectionEvidence({ toolkit: "gmail", userId });
+        if (approved._tag !== "IntegrationConnectionConnected") {
+          return yield* Effect.die(new Error("The approved test connection must be current"));
+        }
+
+        yield* integrations.execute({
+          actionId: ActionId.make("action-snapshotted-approved"),
+          authorize: Effect.sync(() => {
+            harness.toolkits = [
+              {
+                connectedAccount: { id: "replacement-account", status: "ACTIVE" },
+                isActive: true,
+                slug: "gmail",
+              },
+            ];
+          }),
+          expectedConnectionBinding: approved.connectionBinding,
+          identity: {
+            manifestVersion: ManifestVersion.make("gmail-v1"),
+            operation: "GMAIL_SEND_EMAIL",
+            toolkit: "gmail",
+          },
+          input: {
+            body: "Hello",
+            gmailResource: "primary",
+            recipients: ["person@example.test"],
+            subject: "Subject",
+          },
+          userId,
+        });
+
+        expect(harness.executed).toMatchObject([{ connectedAccountId: "approved-account" }]);
+        return undefined;
+      }),
   );
 
   it.effect(
@@ -1064,6 +1434,7 @@ describe("Integrations", () => {
           },
           input: {
             body: "Hello",
+            gmailResource: "primary",
             recipients: ["person@example.test"],
             subject: "Subject",
           },
@@ -1107,6 +1478,7 @@ describe("Integrations", () => {
         },
         input: {
           body: "Identical body",
+          gmailResource: "primary",
           recipients: ["person@example.test"],
           subject: "Identical subject",
         },
@@ -1157,6 +1529,7 @@ describe("Integrations", () => {
         },
         input: {
           body: "Hello",
+          gmailResource: "primary",
           recipients: ["person@example.test"],
           subject: "Subject",
         },
@@ -1166,7 +1539,7 @@ describe("Integrations", () => {
       expect(yield* integrations.execute(request).pipe(Effect.result)).toMatchObject({
         failure: { _tag: "IntegrationActionAmbiguous" },
       });
-      expect(yield* integrations.inspectAction(request)).toEqual({ _tag: "Ambiguous" });
+      expect(yield* integrations.inspectAction(request)).toMatchObject({ _tag: "Ambiguous" });
       harness.inspectionEvidence = {
         _tag: "Applied",
         execution: {
@@ -1215,6 +1588,7 @@ describe("Integrations", () => {
         },
         input: {
           body: "Hello",
+          gmailResource: "primary",
           recipients: ["person@example.test"],
           subject: "Subject",
         },
@@ -1227,7 +1601,10 @@ describe("Integrations", () => {
       harness.actions.set(request.actionId, { ...retained, _tag: "Pending" });
       yield* TestClock.setTime(120_002);
 
-      expect(yield* integrations.inspectAction(request)).toEqual({ _tag: "Ambiguous" });
+      expect(yield* integrations.inspectAction(request)).toEqual({
+        _tag: "Ambiguous",
+        retryAfterMilliseconds: 179_999,
+      });
       expect(harness.actions.get(request.actionId)).toMatchObject({ _tag: "Ambiguous" });
       expect(harness.executed).toHaveLength(1);
     }),
@@ -1253,6 +1630,7 @@ describe("Integrations", () => {
       const integrations = make(harness);
       const input = {
         body: "Hello",
+        gmailResource: "primary",
         recipients: ["person@example.test"],
         subject: "Subject",
       };
@@ -1280,7 +1658,7 @@ describe("Integrations", () => {
     }),
   );
 
-  it.effect("classifies explicit rejection as not applied and permits one safe Action retry", () =>
+  it.effect("classifies explicit rejection as final and requires a new Action for retry", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
       harness.toolkits = [
@@ -1306,6 +1684,7 @@ describe("Integrations", () => {
         },
         input: {
           body: "Hello",
+          gmailResource: "primary",
           recipients: ["person@example.test"],
           subject: "Subject",
         },
@@ -1324,7 +1703,15 @@ describe("Integrations", () => {
         error: null,
         logId: "composio-log-applied",
       };
-      expect(yield* integrations.execute(request)).toMatchObject({
+      expect(yield* integrations.execute(request).pipe(Effect.result)).toMatchObject({
+        failure: {
+          _tag: "IntegrationActionNotApplied",
+          providerLogId: "composio-log-rejected",
+        },
+      });
+      expect(
+        yield* integrations.execute({ ...request, actionId: ActionId.make("action-retry-2") }),
+      ).toMatchObject({
         _tag: "IntegrationEffectCompleted",
         evidence: {
           providerLogId: "composio-log-applied",
@@ -1335,7 +1722,7 @@ describe("Integrations", () => {
     }),
   );
 
-  it.effect("maps a Calendar provider conflict safely and permits an exact retry", () =>
+  it.effect("maps a Calendar provider conflict safely and requires a new Action for retry", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
       harness.toolkits.push({
@@ -1379,7 +1766,18 @@ describe("Integrations", () => {
         error: null,
         logId: "calendar-retry-log",
       };
-      expect(yield* integrations.execute(request)).toMatchObject({
+      expect(yield* integrations.execute(request).pipe(Effect.result)).toMatchObject({
+        failure: {
+          _tag: "IntegrationActionNotApplied",
+          providerLogId: "calendar-conflict-log",
+        },
+      });
+      expect(
+        yield* integrations.execute({
+          ...request,
+          actionId: ActionId.make("calendar-conflict-retry"),
+        }),
+      ).toMatchObject({
         _tag: "IntegrationEffectCompleted",
         evidence: {
           providerLogId: "calendar-retry-log",
@@ -1394,6 +1792,118 @@ describe("Integrations", () => {
 class TestAuthorityLost extends Schema.TaggedError<TestAuthorityLost>()("TestAuthorityLost", {
   message: Schema.String,
 }) {}
+
+const gmailEffectRequest = (
+  actionId: ActionId,
+  finalizeEffect: (
+    outcome: IntegrationEffectFinalOutcome,
+  ) => Effect.Effect<void, IntegrationEffectFinalizationUnavailable>,
+) =>
+  ({
+    actionId,
+    authorize: Effect.void,
+    finalizeEffect,
+    identity: {
+      manifestVersion: ManifestVersion.make("gmail-v1"),
+      operation: "GMAIL_SEND_EMAIL",
+      toolkit: "gmail",
+    },
+    input: {
+      body: "Hello",
+      gmailResource: "primary",
+      recipients: ["person@example.test"],
+      subject: "Subject",
+    },
+    userId,
+  }) as const;
+
+const makeAmbiguousGmailHarness = () => {
+  const harness = makeHarness();
+  harness.toolkits = [
+    {
+      connectedAccount: { id: "account-1", status: "ACTIVE" },
+      isActive: true,
+      slug: "gmail",
+    },
+  ];
+  harness.executeFailure = new IntegrationProviderUnavailable({
+    cause: "execute",
+    message: "The provider response was lost",
+    operation: "execute",
+    reason: "unavailable",
+  });
+  return harness;
+};
+
+const makeActionAccounting = () => {
+  const periodId = AllowancePeriodId.make("gmail-send-period");
+  const retained: Array<{
+    readonly items: ReadonlyArray<AllowanceItem>;
+    readonly source: AllowanceSource;
+  }> = [];
+  const recordUsage: Allowances.Persistence["recordUsage"] = (_periodId, source, items) =>
+    Effect.gen(function* () {
+      const existing = retained.find(
+        (candidate) =>
+          candidate.source.sourceId === source.sourceId &&
+          candidate.source.sourceType === source.sourceType,
+      );
+      if (existing !== undefined) {
+        const retainedItem = existing.items[0];
+        const replayItem = items[0];
+        if (
+          retainedItem === undefined ||
+          replayItem === undefined ||
+          retainedItem.allowanceKind !== replayItem.allowanceKind ||
+          retainedItem.basis !== replayItem.basis ||
+          retainedItem.quantity !== replayItem.quantity
+        ) {
+          return yield* new UsageConflict({
+            allowanceKind: replayItem?.allowanceKind ?? "gmailSends",
+            allowancePeriodId: periodId,
+            message: "The retained Usage Event has different facts",
+            sourceId: source.sourceId,
+            sourceType: source.sourceType,
+          });
+        }
+        return { outcome: ExistingUsage.make({}), period: null, usage: [] };
+      }
+      retained.push({ items, source });
+      return { outcome: Recorded.make({}), period: null, usage: [] };
+    });
+  const allowances = Allowances.make({
+    billing: {
+      inspect: () => Effect.die(new Error("not used by this accounting fixture")),
+      recordUsage,
+      recordUsageForUser: (_userId, allowancePeriodId, source, items) =>
+        recordUsage(allowancePeriodId, source, items),
+    },
+    catalog: retainedCatalog,
+    now: Effect.sync(() => new Date(0)),
+  });
+  return {
+    finalize: (actionId: ActionId) => (outcome: IntegrationEffectFinalOutcome) => {
+      if (outcome._tag === "NotApplied") return Effect.void;
+      const basis = outcome._tag === "Applied" ? "observed" : "conservative";
+      return allowances
+        .record(periodId, { sourceId: actionId, sourceType: "integrationAction" }, [
+          { allowanceKind: "gmailSends", basis, quantity: 1n },
+        ])
+        .pipe(
+          Effect.asVoid,
+          Effect.mapError(
+            (cause) =>
+              new IntegrationEffectFinalizationUnavailable({
+                cause,
+                message: "Gmail-send accounting is unavailable",
+                operation: "accounting.gmailSend",
+              }),
+          ),
+        );
+    },
+    retained,
+  };
+};
 
 const makeHarness = (): IntegrationProvider &
   IntegrationPersistence & {

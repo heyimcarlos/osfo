@@ -1,6 +1,11 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-fetch -- Worker journeys intentionally exercise raw HTTP and provider boundaries. */
 import { exports } from "cloudflare:workers";
-import { AccountDeletionAction } from "@osfo/api";
+import {
+  AccountDeletionAction,
+  GmailSendApprovalDecisionAccepted,
+  GmailSends,
+  IntegrationConnectRedirect,
+} from "@osfo/api";
 import type { AccountDeletionActionPresentation } from "@osfo/api";
 import { Schema } from "effect";
 import { inject } from "vitest";
@@ -32,6 +37,17 @@ const SupermemoryLedger = Schema.Array(
 );
 const SupermemoryContainers = Schema.Array(Schema.String);
 const SupermemorySeedResponse = Schema.Struct({ containerTag: Schema.String });
+const IntegrationLedger = Schema.Array(
+  Schema.Struct({
+    input: Schema.Record(Schema.String, Schema.Unknown),
+    providerTool: Schema.String,
+    userId: Schema.String,
+  }),
+);
+const IntegrationControl = Schema.Struct({ swapAfterInspections: Schema.NullOr(Schema.Finite) });
+const GmailSendUsage = Schema.Array(
+  Schema.Struct({ basis: Schema.String, quantity: Schema.String, source_id: Schema.String }),
+);
 type PresentedAccountDeletionAction = AccountDeletionActionPresentation & {
   readonly presentationVersion: string;
   readonly replayToken: string;
@@ -46,7 +62,10 @@ const StoredAccountDeletion = Schema.Struct({
 
 const StoredRegistration = Schema.Struct({
   agent_id: Schema.String,
+  allowance_ends_at: Schema.DateFromString,
+  allowance_period_id: Schema.String,
   allowance_plan: Schema.String,
+  allowance_starts_at: Schema.DateFromString,
   billing_plan: Schema.String,
   help_areas: Schema.Array(Schema.String),
   locale: Schema.String,
@@ -86,6 +105,12 @@ type JsonRequestBody =
   | PhoneOtpRequest
   | PhoneOtpVerificationRequest
   | RegistrationProfile
+  | { readonly toolkit: "gmail" }
+  | {
+      readonly decision: "approve" | "reject";
+      readonly presentationId: string;
+      readonly reason?: string;
+    }
   | { readonly userId: string }
   | {
       readonly approval: {
@@ -248,6 +273,14 @@ export const spawnApp = async () => {
           await response.json(),
         );
       },
+      gmailSendUsage: async (userId: string) => {
+        const response = await fetch(`${context.databaseObserverOrigin}/gmail-send-usage`, {
+          body: JSON.stringify({ userId }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        });
+        return Schema.decodeUnknownPromise(GmailSendUsage)(await response.json());
+      },
       registration: async (userId: string) => {
         const response = await fetch(`${context.databaseObserverOrigin}/registration`, {
           body: JSON.stringify({ userId }),
@@ -268,6 +301,68 @@ export const spawnApp = async () => {
             : undefined,
           response,
         };
+      },
+    },
+    integrations: {
+      connectionControl: async () => {
+        const response = await fetch(`${context.providerOrigin}/_test/integrations/control`);
+        return Schema.decodeUnknownPromise(IntegrationControl)(await response.json());
+      },
+      connectGmail: async () => {
+        const response = await jsonRequest(request, "/v1/integrations/connect", "POST", {
+          toolkit: "gmail",
+        });
+        return {
+          body: response.ok
+            ? await Schema.decodeUnknownPromise(IntegrationConnectRedirect)(await response.json())
+            : undefined,
+          response,
+        };
+      },
+      decideGmailSend: async (decision: "approve" | "reject", presentationId: string) => {
+        const response = await jsonRequest(
+          request,
+          "/v1/integrations/gmail-sends/approval",
+          "POST",
+          { decision, presentationId },
+        );
+        return {
+          body: response.ok
+            ? await Schema.decodeUnknownPromise(GmailSendApprovalDecisionAccepted)(
+                await response.json(),
+              )
+            : undefined,
+          response,
+        };
+      },
+      disconnectGmail: () =>
+        jsonRequest(request, "/v1/integrations/disconnect", "POST", { toolkit: "gmail" }),
+      gmailSends: async () => {
+        const response = await request("/v1/integrations/gmail-sends");
+        return {
+          body: response.ok
+            ? await Schema.decodeUnknownPromise(GmailSends)(await response.json())
+            : undefined,
+          response,
+        };
+      },
+      ledger: async () => {
+        const response = await fetch(`${context.providerOrigin}/_test/integrations/ledger`);
+        return Schema.decodeUnknownPromise(IntegrationLedger)(await response.json());
+      },
+      nextGmailAction: async (actionId: string) => {
+        const response = await fetch(
+          `${context.providerOrigin}/_test/integrations/next-gmail-action?actionId=${encodeURIComponent(actionId)}`,
+          { method: "POST" },
+        );
+        await requireSuccessfulResponse(response, "Configure immediate Gmail Action identity");
+      },
+      swapGmailConnectionAfterInspections: async (afterInspections: number) => {
+        const response = await fetch(
+          `${context.providerOrigin}/_test/integrations/swap-connection?afterInspections=${afterInspections}`,
+          { method: "POST" },
+        );
+        await requireSuccessfulResponse(response, "Schedule Gmail connection replacement");
       },
     },
     registration: {

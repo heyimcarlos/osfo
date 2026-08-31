@@ -18,7 +18,11 @@ interface DirectoryStub {
     agentId: string,
     input: DecideActionApprovalRequest,
   ) => Promise<unknown>;
-  readonly listActionPresentations: (agentId: string, actor: unknown) => Promise<unknown>;
+  readonly listActionPresentations: (
+    agentId: string,
+    actor: unknown,
+    selection: "scheduled-email",
+  ) => Promise<unknown>;
 }
 
 export interface Bindings {
@@ -84,8 +88,15 @@ const withAgent = <Value>(
     return yield* use(route.agentId, currentUser);
   }).pipe(Effect.mapError(() => unavailable()));
 
-const listApprovals = (stub: DirectoryStub, agentId: string, currentUser: CurrentUserValue) =>
-  rpc(stub.listActionPresentations(agentId, actorFor(currentUser)), ActionPresentationsFound).pipe(
+export const listApprovals = (
+  stub: DirectoryStub,
+  agentId: string,
+  currentUser: CurrentUserValue,
+) =>
+  rpc(
+    stub.listActionPresentations(agentId, actorFor(currentUser), "scheduled-email"),
+    ActionPresentationsFound,
+  ).pipe(
     Effect.map(({ presentations }) => ({
       items: presentations
         .filter(

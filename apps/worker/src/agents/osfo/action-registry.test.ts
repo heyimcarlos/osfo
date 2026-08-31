@@ -1,4 +1,4 @@
-/* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the @effect/vitest Effect callback. */
+/* oxlint-disable oxc/no-map-spread, vitest/no-standalone-expect -- Approval mutation assertions preserve immutable presentation fixtures inside Effect tests. */
 import { expect, it } from "@effect/vitest";
 import { Effect, Result, Schema } from "effect";
 
@@ -516,6 +516,7 @@ it.effect("presents and fences the complete Gmail send", () =>
   Effect.gen(function* () {
     const input = {
       body: "Exact message body",
+      gmailResource: "primary",
       recipients: ["first@example.test", "second@example.test"],
       subject: "Exact subject",
     } satisfies typeof GmailMessageInput.Type;
@@ -545,6 +546,18 @@ it.effect("presents and fences the complete Gmail send", () =>
         ...input,
         body: "Changed after approval",
       }),
+    ).toBe(false);
+    expect(
+      hasExactIntegrationActionInput(
+        {
+          ...presentation,
+          fields: presentation.fields.map((field) =>
+            field.name === "gmailResource" ? { ...field, value: "secondary" } : field,
+          ),
+        },
+        "GMAIL_SEND_EMAIL",
+        input,
+      ),
     ).toBe(false);
   }),
 );

@@ -33,6 +33,7 @@ import {
   Option,
   Predicate,
   Result,
+  Schedule,
   Schema,
   Semaphore,
 } from "effect";
@@ -80,6 +81,7 @@ import { ArtifactGeneration } from "../../services/artifact-generation";
 import { DocumentBuild } from "../../services/document-build";
 import { DocumentBuildFollowUp } from "../../services/document-build-follow-up";
 import { IntegrationComposition } from "../../composition/integrations";
+import { ImmediateGmailSendComposition } from "../../composition/immediate-gmail-send";
 import { Db } from "../../db";
 import { BillingDb } from "../../db/billing";
 import { decodeOsfoStage, loadConfig } from "../../config";
@@ -195,6 +197,7 @@ import {
 } from "./core-memory";
 import { Allowances } from "../../services/allowances";
 import { makeActionApprovals } from "../../services/action-approvals";
+import { ImmediateGmailApprovals } from "../../services/immediate-gmail-approvals";
 import {
   approvalFor,
   type ApprovalPresentation,
@@ -202,6 +205,7 @@ import {
   restoreCoreMemoryAuthorization,
   type ApprovalRequired,
   AuthorizationContext,
+  connectedIntegrationAuthorizationFacts,
   emptyLiveResourceFacts,
   type Denied,
 } from "../../services/authorization";
@@ -264,16 +268,18 @@ import {
   type ActionPresentation,
   type ActionPresentationFound,
   type ActionPresentationNotFound,
-  type ActionPresentationUnavailable,
+  ActionPresentationUnavailable,
   ActionApprovalRequestInvalid,
   ApprovalActor,
   ApprovalActorAuthorizationUnavailable,
   type ApprovalActorUnauthorized,
   type ApprovalAlreadyResolved,
-  type ApprovalDecisionAccepted,
-  CancelActionApprovalRequest,
+  ApprovalDecisionAccepted,
+  type CancelActionApprovalRequest,
   DecideActionApprovalRequest,
   makeThinkActionApprovalAdapter,
+  NativeApprovalDecisionDenied,
+  type PendingThinkAction,
   ReadActionPresentationRequest,
   ThinkApprovalUnavailable,
 } from "./think-action-approvals";
@@ -288,6 +294,7 @@ import {
   ResearchReportIdentityInput,
   researchReportRequiresApproval,
   ResearchReportStartInput,
+  scheduledEmailApprovalSelection,
   scheduledEmailStartActionName,
   ScheduledEmailIdentityInput,
   ScheduledEmailStartInput,
@@ -385,6 +392,7 @@ import {
   type IntegrationToolInput,
 } from "./integration-tools";
 import {
+  GmailMessageInput,
   resolveManifest,
   type ResolvedIntegrationManifestOperation,
 } from "../../domain/integration-manifest";
@@ -411,6 +419,7 @@ import {
 import { WhatsAppWakeUps } from "../../services/whatsapp-wakeups";
 import { deleteAgentOwnedUserData } from "./agent-owned-data-deletion";
 import { activeReminderLimit } from "./reminder-policy";
+import { ImmediateGmailSend } from "./immediate-gmail-send";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle, osfo/no-unknown-parameters -- Cloudflare Agent RPC methods accept untrusted payloads and immediately schema-decode them; Effect results use _tag. */
 /* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect -- Agent hooks and Durable Object callbacks supply the wall-clock boundary for retained metadata. */
@@ -423,6 +432,15 @@ const accountDeletionProviderPollMilliseconds = 250;
 const accountDeletionProviderQuiescenceTimeoutMilliseconds = 10_000;
 const gatewayCostMaximumLookups = 3;
 const requestTimeoutForIntegrationMillis = 30_000;
+const ImmediateGmailSendReconciliation = Schema.Struct({
+  actionId: ActionId,
+  userId: UserId,
+});
+const ActionPresentationListSelection = Schema.Union([
+  Schema.Undefined,
+  Schema.Literal("immediate-gmail"),
+  Schema.Literal("scheduled-email"),
+]);
 
 class MemoryProviderWorkUnavailable extends Data.TaggedError("MemoryProviderWorkUnavailable")<{
   readonly cause: unknown;
@@ -953,6 +971,7 @@ export class OsfoAgent extends Think<Env> {
     ActionId,
     {
       readonly actionPresentation: ActionPresentation;
+      readonly connectionBinding: Integrations.IntegrationConnectionBinding | undefined;
       readonly operation:
         | "artifact.delete"
         | "file.delete"
@@ -970,22 +989,18 @@ export class OsfoAgent extends Think<Env> {
     authorizer: { ownsAgent: (userId) => this.#userOwnsAgent(userId) },
     lifecycle: makeThinkActionApprovalAdapter({
       think: {
-        approve: (executionId) => this.approveExecution(executionId),
+        approve: (executionId) => this.#approveThinkExecution(executionId),
         pending: (executionId) => this.pendingApprovals(executionId),
-        reject: (executionId, reason) => this.rejectExecution(executionId, reason),
+        reject: (executionId, reason) => this.#rejectThinkExecution(executionId, reason),
       },
     }),
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-    present: (pending) =>
-      presentOsfoAction(
-        pending,
-        inspectCoreMemory(this.session),
-        Option.getOrUndefined(
-          Schema.decodeUnknownOption(ManagedTurnMetadata)(this.activeTurnMetadata),
-        )?.authorityIdentity.userId,
-      ),
+    present: (pending, userId) => this.#presentAction(pending, userId),
     presentations: makeActionPresentationPersistence(this.ctx.storage),
   });
+  readonly #immediateGmailSendStore = ImmediateGmailSend.make(
+    ImmediateGmailSend.makeDurableObjectPersistence(this.ctx.storage),
+  );
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
   readonly #memoryProviderOutbox = makeMemoryProviderOutboxStore(this.#db);
   readonly #memoryProviderReconciliationQueue = makeMemoryProviderReconciliationQueue();
@@ -1008,6 +1023,35 @@ export class OsfoAgent extends Think<Env> {
     onSome: (runtime) => runtime.runSync(Capabilities.Service),
   });
   readonly #integrations = this.makeIntegrations();
+  readonly #immediateGmailSends = Option.map(this.#integrations, (integrations) =>
+    ImmediateGmailSend.makeCoordinator({
+      accounting: {
+        record: (context, basis) =>
+          ImmediateGmailSendComposition.recordUsage(this.env.DB, {
+            actionId: context.actionId,
+            allowancePeriodId: context.allowancePeriodId,
+            basis,
+            userId: context.authorityIdentity.userId,
+          }),
+      },
+      approvalPending: (presentationId) =>
+        Effect.tryPromise({
+          try: () => this.pendingApprovals(presentationId).then((pending) => pending.length > 0),
+          catch: (cause) =>
+            new ImmediateGmailSend.Unavailable({
+              cause,
+              message: "The pending Gmail Approval could not be inspected",
+              operation: "approvalRecovery.pending",
+            }),
+        }),
+      integrations,
+      scheduler: {
+        schedule: (actionId, userId, delay, idempotent) =>
+          this.#scheduleImmediateGmailSendReconciliation(actionId, userId, delay, idempotent),
+      },
+      store: this.#immediateGmailSendStore,
+    }),
+  );
   readonly #integrationToolRegistry = Option.map(this.#integrations, () =>
     IntegrationTools.make({
       executeEffect: (identity, input, actionId) =>
@@ -1572,6 +1616,24 @@ export class OsfoAgent extends Think<Env> {
   override async pendingApprovals(executionId?: string): Promise<Array<PendingApproval>> {
     const pending = await super.pendingApprovals(executionId);
     return pending.map(sanitizePendingApproval);
+  }
+
+  /** Approval decisions enter only through the authenticated Directory authority. */
+  override async approveExecution(executionId: string): Promise<NativeApprovalDecisionDenied> {
+    return nativeApprovalDecisionDenied(executionId);
+  }
+
+  /** Approval decisions enter only through the authenticated Directory authority. */
+  override async rejectExecution(executionId: string): Promise<NativeApprovalDecisionDenied> {
+    return nativeApprovalDecisionDenied(executionId);
+  }
+
+  #approveThinkExecution(executionId: string) {
+    return super.approveExecution(executionId);
+  }
+
+  #rejectThinkExecution(executionId: string, reason?: string) {
+    return super.rejectExecution(executionId, reason);
   }
 
   /** Apply only the route and limits pinned to the current durable Think Submission. */
@@ -3150,6 +3212,28 @@ export class OsfoAgent extends Think<Env> {
     await Effect.runPromise(this.#reminders.reconcileSchedules());
     await this.#reconcileModelCallUsageOrSchedule();
     await Effect.runPromise(this.#reconcileCommittedTurns());
+    const immediateGmailSends = Option.getOrUndefined(this.#immediateGmailSends);
+    if (immediateGmailSends !== undefined) {
+      await Effect.runPromise(
+        this.#accountDeletionFence
+          .run(
+            immediateGmailSends.recoverOnActivation(),
+            () =>
+              new ImmediateGmailSend.Unavailable({
+                cause: "account deletion fence",
+                message: "Gmail Action recovery is fenced by account deletion",
+                operation: "recover.accountDeletionFence",
+              }),
+          )
+          .pipe(
+            Effect.catchTag("ImmediateGmailSendUnavailable", (failure) =>
+              failure.operation === "recover.accountDeletionFence"
+                ? Effect.void
+                : Effect.fail(failure),
+            ),
+          ),
+      );
+    }
     this.ctx.waitUntil(this.#recoverSkillLearning());
     this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
   }
@@ -3171,6 +3255,42 @@ export class OsfoAgent extends Think<Env> {
         .pipe(
           Effect.catch((failure) =>
             failure.operation === "deliver.accountDeletionFence"
+              ? Effect.void
+              : Effect.fail(failure),
+          ),
+        ),
+    );
+  }
+
+  /** Reconcile one already-attempted Gmail Action without ever sending it again. */
+  async reconcileImmediateGmailSend(payload: unknown): Promise<void> {
+    await this.#migrationsReady;
+    const coordinator = Option.getOrUndefined(this.#immediateGmailSends);
+    if (coordinator === undefined) throw new Error("Immediate Gmail reconciliation is unavailable");
+    await Effect.runPromise(
+      this.#accountDeletionFence
+        .run(
+          Schema.decodeUnknownEffect(ImmediateGmailSendReconciliation)(payload).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ImmediateGmailSend.Unavailable({
+                  cause,
+                  message: "The Gmail Action reconciliation payload is invalid",
+                  operation: "reconcile.decode",
+                }),
+            ),
+            Effect.flatMap(({ actionId, userId }) => coordinator.reconcile(actionId, userId)),
+          ),
+          () =>
+            new ImmediateGmailSend.Unavailable({
+              cause: "account deletion fence",
+              message: "Gmail Action reconciliation is fenced by account deletion",
+              operation: "reconcile.accountDeletionFence",
+            }),
+        )
+        .pipe(
+          Effect.catchTag("ImmediateGmailSendUnavailable", (failure) =>
+            failure.operation === "reconcile.accountDeletionFence"
               ? Effect.void
               : Effect.fail(failure),
           ),
@@ -3473,6 +3593,15 @@ export class OsfoAgent extends Think<Env> {
       ),
     );
     requireAccountDeletionQuiescence(quiescence);
+    const immediateGmailSends = Option.getOrUndefined(this.#immediateGmailSends);
+    if (immediateGmailSends === undefined) {
+      const retained = await Effect.runPromise(
+        this.#immediateGmailSendStore.listAllForUser(userId),
+      );
+      if (retained.length > 0) throw new Error("Immediate Gmail reconciliation is unavailable");
+    } else {
+      await Effect.runPromise(immediateGmailSends.quiesceUser(userId));
+    }
     await this.#reconcileMemoryProviderOutboxOrSchedule();
     const canSave = await Effect.runPromise(this.#canSaveProviderConversation(userId));
     if (canSave) throw new Error("Account deletion has not fenced provider conversation saves");
@@ -3487,7 +3616,12 @@ export class OsfoAgent extends Think<Env> {
       ).pipe(Effect.timeout(accountDeletionProviderQuiescenceTimeoutMilliseconds)),
     );
     await Effect.runPromise(
-      deleteAgentOwnedUserData(this.#reminders, this.#personalSkillAuthority, userId),
+      deleteAgentOwnedUserData(
+        this.#reminders,
+        this.#personalSkillAuthority,
+        this.#immediateGmailSendStore,
+        userId,
+      ),
     );
   }
 
@@ -4704,10 +4838,13 @@ export class OsfoAgent extends Think<Env> {
   }
 
   /** List immutable pending presentations for an authenticated User. */
-  async listActionPresentations(input: unknown) {
+  async listActionPresentations(input: unknown, selection?: unknown) {
     await this.#migrationsReady;
     return runRpc(
-      Schema.decodeUnknownEffect(ApprovalActor)(input).pipe(
+      Effect.all({
+        actor: Schema.decodeUnknownEffect(ApprovalActor)(input),
+        selection: Schema.decodeUnknownEffect(ActionPresentationListSelection)(selection),
+      }).pipe(
         Effect.mapError(
           () =>
             new ActionApprovalRequestInvalid({
@@ -4715,9 +4852,86 @@ export class OsfoAgent extends Think<Env> {
               operation: "listActionPresentations",
             }),
         ),
-        Effect.flatMap((actor) => this.#actionApprovals.list(actor)),
+        Effect.flatMap(({ actor, selection: selected }) =>
+          this.#actionApprovals.list(
+            actor,
+            selected === "immediate-gmail"
+              ? ImmediateGmailApprovals.selection
+              : selected === "scheduled-email"
+                ? scheduledEmailApprovalSelection
+                : undefined,
+          ),
+        ),
       ),
     );
+  }
+
+  #presentAction(
+    pending: PendingThinkAction,
+    userId: UserId,
+  ): Effect.Effect<ActionPresentation, ActionPresentationUnavailable> {
+    const projected = presentOsfoAction(pending, inspectCoreMemory(this.session), userId);
+    if (pending.descriptor.action !== "gmailSendEmail") return projected;
+    const immediateGmailSendStore = this.#immediateGmailSendStore;
+    const configuredIntegrations = this.#integrations;
+    return Effect.gen(function* () {
+      const presentation = yield* projected;
+      const retainedBinding = yield* immediateGmailSendStore
+        .readApprovalBindingForUser(presentation.presentationId, userId)
+        .pipe(
+          Effect.map(Option.some),
+          Effect.catchTag("ImmediateGmailSendNotFound", () => Effect.succeed(Option.none())),
+          Effect.mapError(
+            () =>
+              new ActionPresentationUnavailable({
+                action: pending.descriptor.action,
+                message: "The retained Gmail Connection identity could not be read",
+              }),
+          ),
+        );
+      if (Option.isSome(retainedBinding)) {
+        if (retainedBinding.value.actionId !== presentation.actionId) {
+          return yield* new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "The retained Gmail Connection identity belongs to another Action",
+          });
+        }
+        return presentation;
+      }
+      // The first exact User-visible presentation is the decision boundary. Bind the
+      // current private Connection identity here; every later read reuses it immutably.
+      const integrations = Option.getOrUndefined(configuredIntegrations);
+      const connectionBinding = yield* integrations === undefined
+        ? Effect.succeed(null)
+        : ImmediateGmailApprovals.connectionBindingForPresentation(
+            integrations.connectionEvidence({ toolkit: "gmail", userId }),
+          ).pipe(
+            Effect.mapError(
+              () =>
+                new ActionPresentationUnavailable({
+                  action: pending.descriptor.action,
+                  message: "The Gmail Connection identity could not be inspected",
+                }),
+            ),
+          );
+      yield* immediateGmailSendStore
+        .retainApprovalBinding({
+          actionId: presentation.actionId,
+          connectionBinding,
+          presentationId: presentation.presentationId,
+          userId,
+        })
+        .pipe(
+          Effect.mapError(
+            () =>
+              new ActionPresentationUnavailable({
+                action: pending.descriptor.action,
+                message: "The Gmail Connection identity could not be retained",
+              }),
+          ),
+        );
+      return presentation;
+    });
   }
 
   /** Record the first authenticated exact Approval decision and dispatch it to Think. */
@@ -4734,6 +4948,14 @@ export class OsfoAgent extends Think<Env> {
     | ThinkApprovalUnavailable
   > {
     await this.#migrationsReady;
+    const actionApprovals = this.#actionApprovals;
+    const currentApprovedActions = this.#currentApprovedActions;
+    const immediateGmailSends = Option.getOrUndefined(this.#immediateGmailSends);
+    const immediateGmailSendStore = this.#immediateGmailSendStore;
+    const completeImmediateGmailDecision = (
+      binding: ImmediateGmailSend.ApprovalConnectionBinding,
+      decision: "approve" | "reject",
+    ) => this.#completeImmediateGmailDecision(binding, decision);
     return runRpc(
       this.#accountDeletionFence.run(
         Schema.decodeEffect(DecideActionApprovalRequest)(input).pipe(
@@ -4745,40 +4967,111 @@ export class OsfoAgent extends Think<Env> {
               }),
           ),
           Effect.flatMap((parsed) =>
-            this.#actionApprovals.read(parsed.actor, parsed.presentationId).pipe(
-              Effect.flatMap((found) => {
-                const actionId = found.presentation.actionId;
-                if (
-                  parsed.decision === "approve" &&
-                  (found.presentation.operation === "artifact.delete" ||
-                    found.presentation.operation === "memory.clear" ||
-                    found.presentation.operation === "file.delete" ||
-                    found.presentation.operation === "memory.forgetKnowledge" ||
-                    found.presentation.operation === "session.delete" ||
-                    found.presentation.operation === "reminder.manage" ||
-                    found.presentation.operation === "skill.manage" ||
-                    found.presentation.operation === "integration.effect" ||
-                    found.presentation.operation === "workflow.manage")
-                ) {
-                  this.#currentApprovedActions.set(actionId, {
-                    actionPresentation: found.presentation,
-                    operation: found.presentation.operation,
-                    presentation: approvalPresentationFor(found.presentation),
-                  });
-                }
-                return this.#actionApprovals
-                  .dispatch(
-                    parsed.actor,
-                    parsed.presentationId,
-                    parsed.decision === "approve" ? "approved" : "rejected",
-                    parsed.reason,
-                  )
-                  .pipe(
-                    Effect.ensuring(
-                      Effect.sync(() => this.#currentApprovedActions.delete(actionId)),
-                    ),
-                  );
-              }),
+            actionApprovals.runDecision(
+              this.#actionApprovals.read(parsed.actor, parsed.presentationId).pipe(
+                Effect.flatMap((found) =>
+                  Effect.gen(function* () {
+                    const actionId = found.presentation.actionId;
+                    const immediateGmail = isImmediateGmailPresentation(found.presentation);
+                    const approvalBinding = immediateGmail
+                      ? yield* immediateGmailSendStore
+                          .readApprovalBindingForUser(parsed.presentationId, parsed.actor.userId)
+                          .pipe(
+                            Effect.mapError(
+                              () =>
+                                new ActionPresentationUnavailable({
+                                  action: "gmailSendEmail",
+                                  message: "The approved Gmail Connection identity is unavailable",
+                                }),
+                            ),
+                          )
+                      : undefined;
+                    const connectionBinding =
+                      parsed.decision === "approve" && approvalBinding !== undefined
+                        ? (approvalBinding.connectionBinding ?? undefined)
+                        : undefined;
+                    const approvalSettlement =
+                      approvalBinding === undefined
+                        ? undefined
+                        : parsed.decision === "reject"
+                          ? ({ ...approvalBinding, status: "rejected" } as const)
+                          : ({ ...approvalBinding, status: "invalidated" } as const);
+                    if (approvalSettlement !== undefined) {
+                      yield* immediateGmailSendStore
+                        .retainApprovalSettlement(approvalSettlement)
+                        .pipe(
+                          Effect.mapError(
+                            () =>
+                              new ActionPresentationUnavailable({
+                                action: "gmailSendEmail",
+                                message: "The Gmail no-effect outcome could not be prepared",
+                              }),
+                          ),
+                        );
+                    }
+                    if (
+                      parsed.decision === "approve" &&
+                      (found.presentation.operation === "artifact.delete" ||
+                        found.presentation.operation === "memory.clear" ||
+                        found.presentation.operation === "file.delete" ||
+                        found.presentation.operation === "memory.forgetKnowledge" ||
+                        found.presentation.operation === "session.delete" ||
+                        found.presentation.operation === "reminder.manage" ||
+                        found.presentation.operation === "skill.manage" ||
+                        found.presentation.operation === "integration.effect" ||
+                        found.presentation.operation === "workflow.manage")
+                    ) {
+                      currentApprovedActions.set(actionId, {
+                        actionPresentation: found.presentation,
+                        connectionBinding,
+                        operation: found.presentation.operation,
+                        presentation: approvalPresentationFor(found.presentation),
+                      });
+                    }
+                    const acceptedDecision = ApprovalDecisionAccepted.make({
+                      decision: parsed.decision === "approve" ? "approved" : "rejected",
+                      presentationId: parsed.presentationId,
+                    });
+                    const result = yield* actionApprovals
+                      .dispatch(
+                        parsed.actor,
+                        parsed.presentationId,
+                        parsed.decision === "approve" ? "approved" : "rejected",
+                        parsed.reason,
+                      )
+                      .pipe(
+                        Effect.catch((failure) =>
+                          approvalSettlement === undefined || immediateGmailSends === undefined
+                            ? Effect.fail(failure)
+                            : immediateGmailSends
+                                .recoverApprovalSettlement(approvalSettlement)
+                                .pipe(
+                                  Effect.mapError(
+                                    (cause) =>
+                                      new ThinkApprovalUnavailable({
+                                        cause,
+                                        message:
+                                          "The Gmail Approval handoff could not be reconciled",
+                                        operation: "decideActionApproval.recoverHandoff",
+                                      }),
+                                  ),
+                                  Effect.flatMap((recovery) =>
+                                    recovery._tag === "Committed" &&
+                                    Schema.is(ThinkApprovalUnavailable)(failure)
+                                      ? Effect.succeed(acceptedDecision)
+                                      : Effect.fail(failure),
+                                  ),
+                                ),
+                        ),
+                        Effect.ensuring(Effect.sync(() => currentApprovedActions.delete(actionId))),
+                      );
+                    if (approvalBinding !== undefined) {
+                      yield* completeImmediateGmailDecision(approvalBinding, parsed.decision);
+                    }
+                    return result;
+                  }),
+                ),
+              ),
             ),
           ),
         ),
@@ -4794,7 +5087,7 @@ export class OsfoAgent extends Think<Env> {
 
   /** Cancel one pending Approval and its owning Think execution. */
   async cancelActionApproval(
-    input: CancelActionApprovalRequest,
+    _input: CancelActionApprovalRequest,
   ): Promise<
     | ActionPresentationNotFound
     | ActionApprovalRequestInvalid
@@ -4805,25 +5098,11 @@ export class OsfoAgent extends Think<Env> {
     | ThinkApprovalUnavailable
   > {
     await this.#migrationsReady;
-    return runRpc(
-      Schema.decodeEffect(CancelActionApprovalRequest)(input).pipe(
-        Effect.mapError(
-          () =>
-            new ActionApprovalRequestInvalid({
-              message: "The Action Approval cancellation is invalid",
-              operation: "cancelActionApproval",
-            }),
-        ),
-        Effect.flatMap((parsed) =>
-          this.#actionApprovals.dispatch(
-            parsed.actor,
-            parsed.presentationId,
-            "canceled",
-            parsed.reason,
-          ),
-        ),
-      ),
-    );
+    return new ThinkApprovalUnavailable({
+      cause: "authenticated Directory authority required",
+      message: "Action Approvals must be resolved through the authenticated Directory authority",
+      operation: "cancelActionApproval",
+    });
   }
 
   /** List the authenticated User's active and archived personal Skills. */
@@ -4842,6 +5121,19 @@ export class OsfoAgent extends Think<Env> {
     return runRpc(
       Schema.decodeEffect(IntegrationSettingsActor)(input).pipe(
         Effect.flatMap((actor) => this.#integrationConnectionSummary(actor.userId)),
+      ),
+    );
+  }
+
+  /** Reconcile and show only the authenticated User's retained immediate Gmail Actions. */
+  async inspectImmediateGmailSends(input: typeof IntegrationSettingsActor.Type) {
+    await this.#migrationsReady;
+    const coordinator = Option.getOrUndefined(this.#immediateGmailSends);
+    if (coordinator === undefined) return settingsIntegrationUnavailable();
+    return runRpc(
+      Schema.decodeEffect(IntegrationSettingsActor)(input).pipe(
+        Effect.flatMap((actor) => this.#authorizeIntegrationSettingsOwner(actor)),
+        Effect.flatMap((actor) => coordinator.inspectForUser(actor.userId)),
       ),
     );
   }
@@ -5070,6 +5362,23 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  #authorizeIntegrationSettingsOwner(actor: typeof IntegrationSettingsActor.Type) {
+    const identity = {
+      _tag: "AuthSession" as const,
+      authSessionId: actor.authSessionId,
+      userId: actor.userId,
+    };
+    return Effect.all([
+      this.#userOwnsAgent(actor.userId),
+      this.#inspectSessionRecallAuthorization(identity),
+    ]).pipe(
+      Effect.flatMap(([ownsAgent]) =>
+        ownsAgent ? Effect.succeed(actor) : Effect.fail(settingsIntegrationUnavailable()),
+      ),
+      Effect.mapError(() => settingsIntegrationUnavailable()),
+    );
+  }
+
   /** Read the current and historical Session identities for one route. */
   async readRoute(
     routeId: string,
@@ -5195,9 +5504,7 @@ export class OsfoAgent extends Think<Env> {
         operation: identity.operation,
       });
     }
-    return Effect.runPromise(
-      this.#executeIntegration(identity, input, actionId, approved?.presentation),
-    );
+    return Effect.runPromise(this.#executeIntegration(identity, input, actionId, approved));
   }
 
   async #manageReminder(input: ReminderManageInput, actionId: ActionId) {
@@ -6013,7 +6320,13 @@ export class OsfoAgent extends Think<Env> {
     identity: IntegrationOperationIdentity,
     input: IntegrationToolInput,
     actionId: ActionId,
-    presentation: ApprovalPresentation | undefined,
+    approved:
+      | {
+          readonly actionPresentation: ActionPresentation;
+          readonly connectionBinding: Integrations.IntegrationConnectionBinding | undefined;
+          readonly presentation: ApprovalPresentation;
+        }
+      | undefined,
   ) {
     const integrations = Option.getOrUndefined(this.#integrations);
     if (integrations === undefined) {
@@ -6034,19 +6347,191 @@ export class OsfoAgent extends Think<Env> {
             operation: identity.operation,
           }),
       ),
-      Effect.flatMap((metadata) =>
-        integrations.execute({
-          actionId,
-          authorize: this.authorizeIntegration(metadata, identity, actionId, presentation),
+      Effect.flatMap((metadata) => {
+        const authorize = this.authorizeIntegration(
+          metadata,
           identity,
-          input,
-          userId: metadata.authorityIdentity.userId,
-        }),
-      ),
+          actionId,
+          approved?.presentation,
+        );
+        if (identity.operation !== "GMAIL_SEND_EMAIL" || approved === undefined) {
+          return integrations.execute({
+            actionId,
+            authorize,
+            identity,
+            input,
+            userId: metadata.authorityIdentity.userId,
+          });
+        }
+        const coordinator = Option.getOrUndefined(this.#immediateGmailSends);
+        if (coordinator === undefined) {
+          return Effect.fail(
+            new IntegrationToolUnavailable({
+              cause: "missing immediate Gmail coordinator",
+              message: "Immediate Gmail sending is unavailable in this environment",
+              operation: identity.operation,
+            }),
+          );
+        }
+        if (approved.connectionBinding === undefined) {
+          const invalidatedBinding = {
+            actionId,
+            connectionBinding: null,
+            presentationId: approved.actionPresentation.presentationId,
+            userId: metadata.authorityIdentity.userId,
+          } as const;
+          return this.#immediateGmailSendStore
+            .retainApprovalSettlement({ ...invalidatedBinding, status: "invalidated" })
+            .pipe(
+              Effect.andThen(
+                this.#immediateGmailSendStore.settleApproval(invalidatedBinding, "invalidated"),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new IntegrationToolUnavailable({
+                    cause,
+                    message: "The invalidated Gmail Action could not be retained",
+                    operation: identity.operation,
+                  }),
+              ),
+              Effect.andThen(
+                Effect.fail(
+                  new IntegrationToolUnavailable({
+                    cause: "missing approved Gmail Connection binding",
+                    message: "The approved Gmail Connection identity is unavailable",
+                    operation: identity.operation,
+                  }),
+                ),
+              ),
+            );
+        }
+        const approvedConnectionBinding = approved.connectionBinding;
+        return Schema.decodeUnknownEffect(GmailMessageInput)(input).pipe(
+          Effect.mapError(
+            (cause) =>
+              new IntegrationToolUnavailable({
+                cause,
+                message: "The approved Gmail input is invalid",
+                operation: identity.operation,
+              }),
+          ),
+          Effect.flatMap((gmailInput) =>
+            coordinator
+              .execute(
+                {
+                  actionId,
+                  authorityIdentity: metadata.authorityIdentity,
+                  connectionBinding: approvedConnectionBinding,
+                  input: gmailInput,
+                  presentationId: approved.actionPresentation.presentationId,
+                },
+                this.#admitImmediateIntegration(
+                  metadata,
+                  identity,
+                  actionId,
+                  approved.presentation,
+                  approvedConnectionBinding,
+                ),
+                this.#recheckIntegration(
+                  metadata,
+                  identity,
+                  actionId,
+                  approved.presentation,
+                  approvedConnectionBinding,
+                ),
+              )
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new IntegrationToolUnavailable({
+                      cause,
+                      message: "The exact Gmail Action could not be completed",
+                      operation: identity.operation,
+                    }),
+                ),
+              ),
+          ),
+        );
+      }),
     );
   }
 
-  protected authorizeIntegration(
+  #scheduleImmediateGmailSendReconciliation(
+    actionId: ActionId,
+    userId: UserId,
+    delayMilliseconds: number,
+    idempotent: boolean,
+  ) {
+    return Effect.tryPromise({
+      try: () =>
+        this.schedule(
+          Math.max(1, Math.ceil(delayMilliseconds / 1_000)),
+          "reconcileImmediateGmailSend",
+          { actionId, userId },
+          {
+            // The executing schedule row is deleted only after its callback returns, so a
+            // reconciliation callback must enqueue its successor non-idempotently.
+            idempotent,
+            retry: { baseDelayMs: 1_000, maxAttempts: 10, maxDelayMs: 60_000 },
+          },
+        ).then(() => undefined),
+      catch: (cause) =>
+        new ImmediateGmailSend.Unavailable({
+          cause,
+          message: "Gmail Action reconciliation could not be scheduled",
+          operation: "schedule",
+        }),
+    });
+  }
+
+  #completeImmediateGmailDecision(
+    binding: ImmediateGmailSend.ApprovalConnectionBinding,
+    decision: "approve" | "reject",
+  ) {
+    return ImmediateGmailSend.completeApprovalDecision({
+      binding,
+      decision,
+      defer: (retry, failure) =>
+        Effect.sync(() => {
+          const fencedRetry = this.#accountDeletionFence
+            .run(
+              retry,
+              () =>
+                new ImmediateGmailSend.Unavailable({
+                  cause: "account deletion fence",
+                  message: "Gmail Approval cleanup is fenced by account deletion",
+                  operation: "approvalCleanup.accountDeletionFence",
+                }),
+            )
+            .pipe(
+              Effect.catchTag("ImmediateGmailSendUnavailable", (retryFailure) =>
+                retryFailure.operation === "approvalCleanup.accountDeletionFence"
+                  ? Effect.void
+                  : Effect.fail(retryFailure),
+              ),
+            );
+          this.ctx.waitUntil(
+            Effect.runPromise(
+              fencedRetry.pipe(
+                Effect.retry(Schedule.recurs(9)),
+                Effect.catch(() =>
+                  Effect.logWarning("Immediate Gmail Approval cleanup remains pending").pipe(
+                    Effect.annotateLogs({
+                      actionId: binding.actionId,
+                      failure: failure._tag,
+                      presentationId: binding.presentationId,
+                    }),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }),
+      store: this.#immediateGmailSendStore,
+    });
+  }
+
+  #admitIntegration(
     metadata: ManagedTurnMetadata,
     identity: IntegrationOperationIdentity,
     actionId: ActionId,
@@ -6102,10 +6587,7 @@ export class OsfoAgent extends Think<Env> {
                     ? null
                     : approvalFor(facts.user.userId, operation, presentation),
                 ...facts,
-                gmailConnection: null,
-                integrationConnections: [
-                  { _tag: "Connected", toolkit: identity.toolkit, userId: facts.user.userId },
-                ],
+                ...connectedIntegrationAuthorizationFacts(facts.user.userId, identity.toolkit),
                 liveFacts: emptyLiveResourceFacts,
                 originatingAuthority,
                 requestVendorUsdMicros: 0n,
@@ -6113,7 +6595,7 @@ export class OsfoAgent extends Think<Env> {
               operation,
             );
             return Predicate.isTagged(result, "Admitted")
-              ? Effect.void
+              ? Effect.succeed(allowance.allowancePeriodId)
               : Effect.fail(
                   new IntegrationToolUnavailable({
                     cause: result,
@@ -6124,6 +6606,152 @@ export class OsfoAgent extends Think<Env> {
           }),
         ),
       ),
+      Effect.mapError((cause) =>
+        Predicate.isTagged(cause, "IntegrationToolUnavailable")
+          ? cause
+          : new IntegrationToolUnavailable({
+              cause,
+              message: "Current integration authority facts are unavailable",
+              operation: identity.operation,
+            }),
+      ),
+    );
+  }
+
+  #admitImmediateIntegration(
+    metadata: ManagedTurnMetadata,
+    identity: IntegrationOperationIdentity,
+    actionId: ActionId,
+    presentation: ApprovalPresentation,
+    expectedConnectionBinding: Integrations.IntegrationConnectionBinding | undefined,
+  ) {
+    const integrations = Option.getOrUndefined(this.#integrations);
+    if (integrations === undefined) {
+      return Effect.fail(
+        new IntegrationToolUnavailable({
+          cause: "missing Composio configuration",
+          message: "Integrations are unavailable in this environment",
+          operation: identity.operation,
+        }),
+      );
+    }
+    return integrations
+      .connectionEvidence({
+        toolkit: identity.toolkit,
+        userId: metadata.authorityIdentity.userId,
+      })
+      .pipe(
+        Effect.flatMap((evidence) =>
+          expectedConnectionBinding !== undefined &&
+          ImmediateGmailSend.hasCurrentConnectionBinding(evidence, expectedConnectionBinding)
+            ? this.#admitIntegration(metadata, identity, actionId, presentation)
+            : Effect.fail(
+                new IntegrationToolUnavailable({
+                  cause: evidence,
+                  message: "The required Integration Connection is not current and unambiguous",
+                  operation: identity.operation,
+                }),
+              ),
+        ),
+        Effect.mapError((cause) =>
+          Predicate.isTagged(cause, "IntegrationToolUnavailable")
+            ? cause
+            : new IntegrationToolUnavailable({
+                cause,
+                message: "Current integration connection facts are unavailable",
+                operation: identity.operation,
+              }),
+        ),
+      );
+  }
+
+  protected authorizeIntegration(
+    metadata: ManagedTurnMetadata,
+    identity: IntegrationOperationIdentity,
+    actionId: ActionId,
+    presentation: ApprovalPresentation | undefined,
+  ) {
+    return this.#admitIntegration(metadata, identity, actionId, presentation).pipe(Effect.asVoid);
+  }
+
+  #recheckIntegration(
+    metadata: ManagedTurnMetadata,
+    identity: IntegrationOperationIdentity,
+    actionId: ActionId,
+    presentation: ApprovalPresentation | undefined,
+    expectedConnectionBinding?: Integrations.IntegrationConnectionBinding,
+  ) {
+    const integrations = Option.getOrUndefined(this.#integrations);
+    if (integrations === undefined) {
+      return Effect.fail(
+        new IntegrationToolUnavailable({
+          cause: "missing Composio configuration",
+          message: "Integrations are unavailable in this environment",
+          operation: identity.operation,
+        }),
+      );
+    }
+    const resolved = resolveManifest(identity);
+    if (Result.isFailure(resolved)) {
+      return Effect.fail(
+        new IntegrationToolUnavailable({
+          cause: resolved.failure,
+          message: "The integration operation is not in the retained manifest",
+          operation: identity.operation,
+        }),
+      );
+    }
+    const operation = integrationAuthorizationOperation(resolved.success, actionId);
+    const recheckConnection =
+      expectedConnectionBinding === undefined
+        ? Effect.void
+        : integrations
+            .connectionEvidence({
+              toolkit: identity.toolkit,
+              userId: metadata.authorityIdentity.userId,
+            })
+            .pipe(
+              Effect.flatMap((evidence) =>
+                ImmediateGmailSend.hasCurrentConnectionBinding(evidence, expectedConnectionBinding)
+                  ? Effect.void
+                  : Effect.fail(
+                      new IntegrationToolUnavailable({
+                        cause: evidence,
+                        message: "The approved Integration Connection is no longer current",
+                        operation: identity.operation,
+                      }),
+                    ),
+              ),
+            );
+    return recheckConnection.pipe(
+      Effect.flatMap(() => this.#inspectSessionRecallAuthorization(metadata.authorityIdentity)),
+      Effect.flatMap((facts) => {
+        const { userId: _userId, ...originatingAuthority } = metadata.authorityIdentity;
+        const result = authorization.recheck(
+          AuthorizationContext.make({
+            allowance: { _tag: "Unavailable" },
+            approval:
+              presentation === undefined
+                ? null
+                : approvalFor(facts.user.userId, operation, presentation),
+            ...facts,
+            ...connectedIntegrationAuthorizationFacts(facts.user.userId, identity.toolkit),
+            liveFacts: emptyLiveResourceFacts,
+            originatingAuthority,
+            requestVendorUsdMicros: 0n,
+          }),
+          operation,
+        );
+        return Predicate.isTagged(result, "Denied")
+          ? Effect.fail(
+              new IntegrationToolUnavailable({
+                cause: result,
+                message: "Current Osfo policy denied the integration operation",
+                operation: identity.operation,
+              }),
+            )
+          : Effect.void;
+      }),
       Effect.mapError((cause) =>
         Predicate.isTagged(cause, "IntegrationToolUnavailable")
           ? cause
@@ -7646,6 +8274,17 @@ const documentBuildUnavailable = (operation: string, cause: unknown = operation)
     cause,
     message: "The Document Build control is temporarily unavailable",
     operation,
+  });
+
+const isImmediateGmailPresentation = (presentation: ActionPresentation) =>
+  presentation.actionDefinitionVersion === "osfo-gmail-send-v1" &&
+  presentation.operation === "integration.effect";
+
+const nativeApprovalDecisionDenied = (executionId: string) =>
+  NativeApprovalDecisionDenied.make({
+    error: "Action Approvals must be resolved through the authenticated Directory authority",
+    executionId,
+    status: "error",
   });
 
 const scheduledEmailUnavailable = (operation: string, cause: unknown = operation) =>

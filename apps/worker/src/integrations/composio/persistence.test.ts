@@ -25,6 +25,7 @@ describe("Composio persistence", () => {
         const retained = {
           _tag: "Applied" as const,
           digest: `${index}`.repeat(64),
+          providerRequestId: `provider-request-${index}`,
           result: {
             _tag: "IntegrationEffectCompleted" as const,
             evidence: {
@@ -72,11 +73,15 @@ describe("Composio persistence", () => {
         });
         const settled = yield* Effect.all(
           [
-            persistence.settleAction(firstActionId, "attempt-request", resultFor(firstDigest)),
+            persistence.settleAction(
+              firstActionId,
+              "attempt-request",
+              resultFor(firstDigest, "attempt-request"),
+            ),
             persistence.settleAction(
               secondActionId,
               "later-attempt-request",
-              resultFor(secondDigest),
+              resultFor(secondDigest, "later-attempt-request"),
             ),
           ],
           { concurrency: "unbounded" },
@@ -89,6 +94,9 @@ describe("Composio persistence", () => {
           persistence.readAction(secondActionId),
         ]);
         expect(retained.filter((action) => action?._tag === "Applied")).toHaveLength(1);
+        expect(retained.find((action) => action?._tag === "Applied")).toMatchObject({
+          providerRequestId: expect.stringMatching(/attempt-request$/u),
+        });
         expect(retained.filter((action) => action?._tag === "Ambiguous")).toHaveLength(1);
       }),
   );
@@ -125,9 +133,10 @@ describe("Composio persistence", () => {
   );
 });
 
-const resultFor = (digest: string) => ({
+const resultFor = (digest: string, providerRequestId: string) => ({
   _tag: "Applied" as const,
   digest,
+  providerRequestId,
   result: {
     _tag: "IntegrationEffectCompleted" as const,
     evidence: {

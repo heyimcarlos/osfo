@@ -86,7 +86,9 @@ export const startDatabaseObserver = (
             ? findBillingCheckout
             : path === "/account-deletion"
               ? findAccountDeletion
-              : null;
+              : path === "/gmail-send-usage"
+                ? findGmailSendUsage
+                : null;
       if (request.method !== "POST" || query === null) {
         respondJson(response, 404, { error: "Not found" });
         return;
@@ -175,7 +177,10 @@ const findRegistration = async (options: DatabaseObserverOptions, userId: string
     const [row] = await client`
       select
         agents.agent_id,
+        allowance_periods.allowance_period_id,
         allowance_periods.plan as allowance_plan,
+        allowance_periods.ends_at as allowance_ends_at,
+        allowance_periods.starts_at as allowance_starts_at,
         billing_subscriptions.plan as billing_plan,
         users.help_areas,
         users.locale,
@@ -186,7 +191,8 @@ const findRegistration = async (options: DatabaseObserverOptions, userId: string
       join agents on agents.user_id = users.id
       join billing_subscriptions on billing_subscriptions.user_id = users.id
       join lateral (
-        select allowance_periods.plan
+        select allowance_periods.allowance_period_id, allowance_periods.ends_at,
+          allowance_periods.plan, allowance_periods.starts_at
         from allowance_periods
         where allowance_periods.user_id = users.id
         order by allowance_periods.starts_at desc
@@ -195,6 +201,29 @@ const findRegistration = async (options: DatabaseObserverOptions, userId: string
       where users.id = ${userId}
     `;
     return row;
+  });
+
+const findGmailSendUsage = async (options: DatabaseObserverOptions, userId: string) =>
+  findJourneyRow(options, async (client) => {
+    const [row] = await client<Array<{ readonly items: unknown }>>`
+      select coalesce(
+        json_agg(
+          json_build_object(
+            'basis', allowance_usage.basis,
+            'quantity', allowance_usage.quantity::text,
+            'source_id', allowance_usage.source_id
+          ) order by allowance_usage.source_id
+        ) filter (where allowance_usage.source_id is not null),
+        '[]'::json
+      ) as items
+      from users
+      left join allowance_usage on allowance_usage.user_id = users.id
+        and allowance_usage.allowance_kind = 'gmailSends'
+        and allowance_usage.source_type = 'integrationAction'
+      where users.id = ${userId}
+      group by users.id
+    `;
+    return row?.items;
   });
 
 const findAccountDeletion = async (options: DatabaseObserverOptions, userId: string) =>
