@@ -13,7 +13,6 @@ import { ChannelPresentationEndpoints } from "../../composition/channel-presenta
 import { Db } from "../../db";
 import { makeTelegramChannel } from "../../integrations/telegram";
 import { makeWhatsAppChannel } from "../../integrations/whatsapp";
-import { invalidOsfoEnvironment, type RuntimeProbeResult } from "../../layers";
 import type { RuntimeSecrets } from "../../runtime-secrets";
 import { AgentDirectory } from "../../services/agent-directory";
 import { ChannelLinks } from "../../services/channel-links";
@@ -115,13 +114,6 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     const agent = await this.subAgent(OsfoAgent, agentId);
     const result = await agent.initialize(input);
     return { _tag: result._tag };
-  }
-
-  /** Probe one registered facet runtime for local smoke verification. */
-  async probeAgent(agentId: string): Promise<RuntimeProbeResult> {
-    if (!this.hasSubAgent(OsfoAgent, agentId)) return invalidOsfoEnvironment;
-    const agent = await this.subAgent(OsfoAgent, agentId);
-    return agent.probeRuntime();
   }
 
   /** Inspect one registered user-owned facet without exposing it to a browser. */

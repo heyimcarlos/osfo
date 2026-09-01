@@ -6,18 +6,12 @@ import { OsfoStage, type SupermemoryConfig } from "./config";
 import { SupermemoryMemoryProvider } from "./integrations/supermemory/memory-provider";
 import { Capabilities } from "./services/capabilities";
 
-/** Schema for a Cloudflare execution unit that owns an Effect runtime. */
-export const ExecutionUnitKind = Schema.Literals(["worker", "osfo-agent", "workflow"]);
-
-/** The Cloudflare execution unit that owns an Effect runtime. */
-export type ExecutionUnitKind = typeof ExecutionUnitKind.Type;
-
 /** Schema for the observable identity of one execution-unit runtime. */
 export const RuntimeProbe = Schema.Struct({
   kind: Schema.Literal("RuntimeProbe"),
   activationId: Schema.String,
-  executionUnit: ExecutionUnitKind,
-  identity: Schema.String,
+  executionUnit: Schema.Literal("worker"),
+  identity: Schema.Literal("request"),
   stage: OsfoStage,
 });
 
@@ -32,12 +26,6 @@ export class InvalidOsfoEnvironment extends Schema.TaggedError<InvalidOsfoEnviro
     message: Schema.String,
   },
 ) {}
-
-/** Schema for results returned by technical runtime probes. */
-export const RuntimeProbeResult = Schema.Union([RuntimeProbe, InvalidOsfoEnvironment]);
-
-/** Result returned by technical runtime probes. */
-export type RuntimeProbeResult = typeof RuntimeProbeResult.Type;
 
 /** Safe result for an invalid Osfo stage binding. */
 export const invalidOsfoEnvironment = new InvalidOsfoEnvironment({
@@ -61,18 +49,13 @@ export const probeExecutionUnit: Effect.Effect<RuntimeProbe, never, ExecutionUni
 );
 
 /** Create a request-scoped Worker runtime. */
-export const makeWorkerRuntime = (stage: OsfoStage) => makeRuntime("worker", "request", stage);
+export const makeWorkerRuntime = (stage: OsfoStage) =>
+  ManagedRuntime.make(makeExecutionUnitLayer(stage));
 
 /** Create an activation-scoped Osfo Agent runtime. */
-export const makeOsfoAgentRuntime = (
-  identity: string,
-  stage: OsfoStage,
-  database: Db.Options,
-  supermemory: SupermemoryConfig,
-) =>
+export const makeOsfoAgentRuntime = (database: Db.Options, supermemory: SupermemoryConfig) =>
   ManagedRuntime.make(
     Layer.mergeAll(
-      makeExecutionUnitLayer("osfo-agent", identity, stage),
       Db.layer(database),
       BrowserCrypto.layer,
       Capabilities.layer,
@@ -81,17 +64,9 @@ export const makeOsfoAgentRuntime = (
   );
 
 /** Create an execution-scoped Workflow runtime. */
-export const makeWorkflowRuntime = (identity: string, stage: OsfoStage) =>
-  makeRuntime("workflow", identity, stage);
+export const makeWorkflowRuntime = () => ManagedRuntime.make(Layer.empty);
 
-const makeRuntime = (executionUnit: ExecutionUnitKind, identity: string, stage: OsfoStage) =>
-  ManagedRuntime.make(makeExecutionUnitLayer(executionUnit, identity, stage));
-
-const makeExecutionUnitLayer = (
-  executionUnit: ExecutionUnitKind,
-  identity: string,
-  stage: OsfoStage,
-) =>
+const makeExecutionUnitLayer = (stage: OsfoStage) =>
   Layer.effect(
     ExecutionUnit,
     Random.next.pipe(
@@ -99,8 +74,8 @@ const makeExecutionUnitLayer = (
         const probe: RuntimeProbe = {
           kind: "RuntimeProbe",
           activationId: random.toString(16),
-          executionUnit,
-          identity,
+          executionUnit: "worker",
+          identity: "request",
           stage,
         };
 

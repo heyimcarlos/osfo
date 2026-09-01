@@ -3,7 +3,6 @@ import { Stack } from "alchemy/Stack";
 import { Config, Effect } from "effect";
 
 import { DatabaseHyperdrive } from "./Db";
-import { ExecutionUnitWorkflow } from "./ExecutionUnitWorkflow";
 import { DocumentBuildTimerWorkflow } from "./DocumentBuildTimerWorkflow";
 import { DocumentBuildWorkflow } from "./DocumentBuildWorkflow";
 import { ResearchReportWorkflow } from "./ResearchReportWorkflow";
@@ -48,7 +47,6 @@ const worker = Worker(
         }),
         DOCUMENT_BUILD_TIMER_WORKFLOW: DocumentBuildTimerWorkflow,
         DOCUMENT_BUILD_WORKFLOW: DocumentBuildWorkflow,
-        EXECUTION_UNIT_WORKFLOW: ExecutionUnitWorkflow,
         RESEARCH_REPORT_WORKFLOW: ResearchReportWorkflow,
         RESEARCH_REPORT_TIMER_WORKFLOW: ResearchReportTimerWorkflow,
         SCHEDULED_EMAIL_WORKFLOW: ScheduledEmailWorkflow,

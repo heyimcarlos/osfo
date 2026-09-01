@@ -154,12 +154,7 @@ import { loadCurrentFileAuthorization } from "../../integrations/postgres/file-a
 import { DeletionCasePostgres } from "../../integrations/postgres/deletion-case";
 import { AgentDirectory } from "../../services/agent-directory";
 import { ChannelLinks } from "../../services/channel-links";
-import {
-  invalidOsfoEnvironment,
-  makeOsfoAgentRuntime,
-  probeExecutionUnit,
-  type RuntimeProbeResult,
-} from "../../layers";
+import { invalidOsfoEnvironment, makeOsfoAgentRuntime } from "../../layers";
 import { makeAgentDb } from "./db/client";
 
 type ChannelProvider = "telegram" | "whatsapp";
@@ -987,14 +982,9 @@ export class OsfoAgent extends Think<Env> {
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
     persistence: this.#modelCallUsagePersistence,
   });
-  readonly #runtime = Option.map(decodeOsfoStage(this.env.OSFO_STAGE), (stage) => {
+  readonly #runtime = Option.map(decodeOsfoStage(this.env.OSFO_STAGE), () => {
     const config = loadConfig(this.env);
-    return makeOsfoAgentRuntime(
-      this.ctx.id.name ?? this.ctx.id.toString(),
-      stage,
-      { db: this.env.DB },
-      config.supermemory,
-    );
+    return makeOsfoAgentRuntime({ db: this.env.DB }, config.supermemory);
   });
   readonly #capabilities = Option.match(this.#runtime, {
     onNone: () => Capabilities.make(),
@@ -7169,14 +7159,6 @@ export class OsfoAgent extends Think<Env> {
       );
       this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
     }
-  }
-
-  /** Return the technical runtime identity for local smoke verification. */
-  probeRuntime(): Promise<RuntimeProbeResult> {
-    return Option.match(this.#runtime, {
-      onNone: () => Promise.resolve(invalidOsfoEnvironment),
-      onSome: (runtime) => runtime.runPromise(probeExecutionUnit),
-    });
   }
 
   async #activateCurrentSession(): Promise<void> {
