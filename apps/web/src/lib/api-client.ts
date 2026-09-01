@@ -4,6 +4,7 @@ import {
   type AccountDeletionRequest,
   type BillingReconciliationRequest,
   ChannelLinkInviteToken,
+  type ChannelLinkId,
   type HelpArea,
   type GmailSendApprovalDecision,
   type IntegrationToolkit,
@@ -54,7 +55,7 @@ export const inspectChannelLinks = Effect.gen(function* () {
 });
 
 /** Revoke one exact active Channel Link owned by the authenticated User. */
-export const revokeChannelLink = (channelLinkId: string) =>
+export const revokeChannelLink = (channelLinkId: ChannelLinkId) =>
   Effect.gen(function* () {
     const client = yield* apiClient;
     return yield* client.channelLinks.revoke({ params: { channelLinkId } });

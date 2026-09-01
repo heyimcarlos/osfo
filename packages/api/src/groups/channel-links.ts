@@ -10,6 +10,10 @@ export const ChannelLinkInviteToken = Schema.String.check(
   ),
 ).pipe(Schema.brand("ChannelLinkInviteToken"));
 
+/** Stable identity for one revocable Channel Link. */
+export const ChannelLinkId = Schema.String.pipe(Schema.brand("ChannelLinkId"));
+export type ChannelLinkId = typeof ChannelLinkId.Type;
+
 /** Safe invitation state exposed before an authenticated acceptance. */
 export const ChannelLinkInviteResponse = Schema.Struct({
   expiresAt: Schema.DateFromString,
@@ -25,7 +29,7 @@ export const ChannelLinkChannel = Schema.Literals(["telegram", "whatsapp"]);
 /** Client-safe active Channel Link without its provider address. */
 export const ChannelLinkSummary = Schema.Struct({
   channel: ChannelLinkChannel,
-  channelLinkId: Schema.String,
+  channelLinkId: ChannelLinkId,
   linkedAt: Schema.DateFromString,
 });
 export type ChannelLinkSummary = typeof ChannelLinkSummary.Type;
@@ -125,7 +129,7 @@ export const ChannelLinksGroup = HttpApiGroup.make("channelLinks")
   .add(
     HttpApiEndpoint.delete("revoke", "/v1/channel-links/:channelLinkId", {
       error: [ChannelLinkUnavailable, ChannelLinksUnavailable],
-      params: { channelLinkId: Schema.String },
+      params: { channelLinkId: ChannelLinkId },
       success: ChannelLinkRevocationResponse,
     })
       .middleware(Auth)

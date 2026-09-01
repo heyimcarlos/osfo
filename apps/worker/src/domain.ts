@@ -1,5 +1,7 @@
 import { Schema } from "effect";
 
+export { ChannelLinkId } from "@osfo/api";
+
 /** Stable identity for one registered User. */
 export const UserId = Schema.String.pipe(Schema.brand("UserId"));
 
@@ -171,12 +173,6 @@ export const AllowancePeriodId = Schema.String.pipe(Schema.brand("AllowancePerio
 
 /** Stable identity for one Usage Allowance period. */
 export type AllowancePeriodId = typeof AllowancePeriodId.Type;
-
-/** Stable identity for one revocable Channel Link. */
-export const ChannelLinkId = Schema.String.pipe(Schema.brand("ChannelLinkId"));
-
-/** Stable identity for one revocable Channel Link. */
-export type ChannelLinkId = typeof ChannelLinkId.Type;
 
 /** Version identity persisted for one retained legacy or shared Usage policy. */
 export const PlanPolicyVersion = Schema.String.pipe(Schema.brand("PlanPolicyVersion"));

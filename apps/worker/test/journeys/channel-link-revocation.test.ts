@@ -1,5 +1,6 @@
 import { BrowserCrypto } from "@effect/platform-browser";
 import { ChannelLinkRevocationResponse, ChannelLinksResponse } from "@osfo/api";
+import type { StreamCallback } from "@cloudflare/think";
 import { allowanceUsage } from "@osfo/db/schema/allowances";
 import { users } from "@osfo/db/schema/auth";
 import {
@@ -18,6 +19,7 @@ import { Db } from "../../src/db";
 import { UserId } from "../../src/domain";
 import { ChannelLinks } from "../../src/services/channel-links";
 import { spawnApp } from "../support/spawn-app";
+import { makeInvitePresenter, type HeldInvite } from "../../src/agents/osfo/company-invitation";
 
 /* oxlint-disable effecttsgo/strict-effect-provide, effecttsgo/global-date-in-effect, eslint/no-underscore-dangle -- This journey owns the real PostgreSQL authority Layer, fixed sentinel evidence, and Effect tagged outcomes. */
 
@@ -138,12 +140,13 @@ it.effect(
           previousChannelLinkId: oldLink.channelLinkId,
         });
 
-        const freshInvite = yield* channelLinksService.ensure(telegramAddress);
-        if (freshInvite._tag !== "Invited") {
-          return yield* Effect.die(new Error("Unlinked Company Conversation received no invite"));
-        }
+        const freshInvite = yield* deliverCompanyInvitation(
+          channelLinksService,
+          telegramAddress,
+          oldLink.channelLinkId,
+        );
         const freshToken = yield* Schema.decodeEffect(ChannelLinks.ChannelLinkInviteToken)(
-          freshInvite.verificationUrl.pathname.split("/").at(-1) ?? "",
+          freshInvite.pathname.split("/").at(-1) ?? "",
         );
         const freshLink = yield* channelLinksService.accept(Redacted.make(freshToken), ownerUserId);
 
@@ -220,6 +223,19 @@ it.effect(
               .where(eq(allowanceUsage.source_id, "channel-link-revocation-exhausted-sentinel")),
           ),
         ).toHaveLength(1);
+
+        yield* inviteAndAccept(
+          channelLinksService,
+          ChannelLinks.ChannelAddress.make({
+            authorId: ChannelLinks.ChannelAuthorId.make("unknown-endpoint-author"),
+            channelId: ChannelLinks.ChannelId.make("unknown-endpoint"),
+          }),
+          ownerUserId,
+        );
+        const unknownEndpointList = yield* Effect.promise(() =>
+          ownerApp.fetch("/v1/channel-links"),
+        );
+        expect(unknownEndpointList.status).toBe(503);
         return undefined;
       }).pipe(Effect.provide(channelLinksLayer())),
     ),
@@ -245,6 +261,42 @@ const inviteAndAccept = (
       ensured.verificationUrl.pathname.split("/").at(-1) ?? "",
     );
     return yield* service.accept(Redacted.make(token), userId);
+  });
+
+const deliverCompanyInvitation = (
+  service: ChannelLinks.Interface,
+  channelAddress: typeof ChannelLinks.ChannelAddress.Type,
+  previousChannelLinkId: ChannelLinks.ChannelLinkId,
+) =>
+  Effect.gen(function* () {
+    let held: HeldInvite | null = null;
+    const events: Array<string> = [];
+    const presenter = makeInvitePresenter({
+      address: channelAddress,
+      channelLinks: service,
+      previousChannelLinkId,
+      readHeld: () => held,
+      requestId: "channel-relink-provider-message",
+      writeHeld: (next) => {
+        held = next;
+      },
+    });
+    const callback = {
+      onDone: () => undefined,
+      onError: () => undefined,
+      onEvent: (event: string) => {
+        events.push(event);
+      },
+      onStart: () => undefined,
+    } satisfies StreamCallback;
+
+    presenter.request();
+    yield* presenter.flush(callback, true);
+    const delivered = events.join("\n").match(/https?:\/\/[^"\s]+\/verify\/[A-Za-z0-9]{8}/u)?.[0];
+    if (delivered === undefined) {
+      return yield* Effect.die(new Error("Company Invitation delivered no fresh private URL"));
+    }
+    return new URL(delivered);
   });
 
 const readUnrelatedSentinels = (

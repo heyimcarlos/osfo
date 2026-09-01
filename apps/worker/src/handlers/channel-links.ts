@@ -1,6 +1,5 @@
 import {
   Api,
-  ChannelLinkChannel,
   ChannelLinkConflict,
   ChannelLinkInviteUnavailable,
   ChannelLinkRegistrationRequired,
@@ -11,7 +10,8 @@ import {
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { ChannelLinkId, UserId } from "../domain";
+import { UserId } from "../domain";
+import { channelPresentationOf } from "../composition/channel-presentations";
 import { ChannelLinks } from "../services/channel-links";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect errors use the standard _tag discriminator. */
@@ -44,20 +44,20 @@ export const layer = Layer.unwrap(
             const links = yield* channelLinks.listActive(UserId.make(currentUser.userId));
             const items = yield* Effect.all(
               links.map((link) =>
-                Schema.decodeUnknownEffect(ChannelLinkChannel)(link.address.channelId).pipe(
-                  Effect.map((channel) => ({
+                Effect.gen(function* () {
+                  const channel = channelPresentationOf(link.address.channelId);
+                  if (channel === null) {
+                    return yield* new ChannelLinks.ChannelLinksUnavailable({
+                      cause: new Error("Channel endpoint has no safe presentation kind"),
+                      operation: "listActive.project",
+                    });
+                  }
+                  return {
                     channel,
                     channelLinkId: link.channelLinkId,
                     linkedAt: link.createdAt,
-                  })),
-                  Effect.mapError(
-                    (cause) =>
-                      new ChannelLinks.ChannelLinksUnavailable({
-                        cause,
-                        operation: "listActive.project",
-                      }),
-                  ),
-                ),
+                  };
+                }),
               ),
             );
             return { items };
@@ -70,7 +70,7 @@ export const layer = Layer.unwrap(
               actorId: ChannelLinks.ChannelLinkActorId.make(
                 `auth-session:${currentUser.authSessionId}`,
               ),
-              channelLinkId: ChannelLinkId.make(params.channelLinkId),
+              channelLinkId: params.channelLinkId,
               ownerUserId: UserId.make(currentUser.userId),
               reason: ChannelLinks.ChannelLinkRevocationReason.make(
                 "User disconnected channel in Settings",

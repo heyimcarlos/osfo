@@ -9,6 +9,7 @@ import { loadConfig } from "../../config";
 import { ResearchReportComposition } from "../../composition/research-report";
 import { DocumentBuildComposition } from "../../composition/document-build";
 import { ScheduledEmailComposition } from "../../composition/scheduled-email";
+import { ChannelPresentationEndpoints } from "../../composition/channel-presentations";
 import { Db } from "../../db";
 import { makeTelegramChannel } from "../../integrations/telegram";
 import { makeWhatsAppChannel } from "../../integrations/whatsapp";
@@ -57,14 +58,14 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
         ),
     });
     return {
-      telegram: makeTelegramChannel({
+      [ChannelPresentationEndpoints.telegram.channelId]: makeTelegramChannel({
         apiBaseURL: config.telegram.apiBaseURL,
         conversation,
         secretToken: Redacted.value(config.telegram.webhookSecret),
         token: Redacted.value(config.telegram.botToken),
         userName: config.telegram.botUsername,
       }),
-      whatsapp: makeWhatsAppChannel({
+      [ChannelPresentationEndpoints.whatsapp.channelId]: makeWhatsAppChannel({
         accessToken: this.env.WHATSAPP_ACCESS_TOKEN,
         apiUrl: config.whatsApp.apiBaseURL,
         appSecret: this.env.WHATSAPP_APP_SECRET,

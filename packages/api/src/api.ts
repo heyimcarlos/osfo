@@ -99,6 +99,7 @@ export {
   ChannelLinkAcceptanceResponse,
   ChannelLinkChannel,
   ChannelLinkConflict,
+  ChannelLinkId,
   ChannelLinkInviteResponse,
   ChannelLinkInviteToken,
   ChannelLinkInviteUnavailable,

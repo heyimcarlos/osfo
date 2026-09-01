@@ -9,31 +9,15 @@ import { inspectChannelLinks, revokeChannelLink } from "../lib/api-client";
 
 type ActiveLink = ChannelLinksResponse["items"][number];
 
-interface Dependencies {
-  readonly confirm: (message: string) => boolean;
-  readonly inspect: typeof inspectChannelLinks;
-  readonly revoke: typeof revokeChannelLink;
-}
-
-const defaultDependencies: Dependencies = {
-  confirm: (message) => globalThis.confirm(message),
-  inspect: inspectChannelLinks,
-  revoke: revokeChannelLink,
-};
-
 /** Authenticated inspection and revocation for the User's messaging channels. */
-export function SettingsChannelsPage({
-  dependencies = defaultDependencies,
-}: {
-  readonly dependencies?: Dependencies;
-}) {
+export function SettingsChannelsPage() {
   const [summary, setSummary] = useState<ChannelLinksResponse | null>(null);
   const [busyLinkId, setBusyLinkId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    void Effect.runPromise(dependencies.inspect).then(
+    void Effect.runPromise(inspectChannelLinks).then(
       (links) => {
         if (active) setSummary(links);
       },
@@ -44,16 +28,14 @@ export function SettingsChannelsPage({
     return () => {
       active = false;
     };
-  }, [dependencies]);
+  }, []);
 
-  const disconnect = (link: ActiveLink, label: string) => {
-    const confirmed = dependencies.confirm(
-      `Disconnect ${label} from Osfo? Messages from this account will no longer reach your agent.`,
-    );
+  const disconnect = (link: ActiveLink, description: string) => {
+    const confirmed = globalThis.confirm(channelLinkRevocationPrompt(description));
     if (!confirmed) return;
     setBusyLinkId(link.channelLinkId);
     setError(null);
-    void Effect.runPromise(dependencies.revoke(link.channelLinkId)).then(
+    void Effect.runPromise(revokeChannelLink(link.channelLinkId)).then(
       () => {
         setBusyLinkId(null);
         setSummary((current) =>
@@ -74,6 +56,28 @@ export function SettingsChannelsPage({
   };
 
   return (
+    <SettingsChannelsView
+      busyLinkId={busyLinkId}
+      error={error}
+      summary={summary}
+      onDisconnect={disconnect}
+    />
+  );
+}
+
+/** Pure rendered state for authenticated Channel Link management. */
+export function SettingsChannelsView({
+  busyLinkId,
+  error,
+  onDisconnect,
+  summary,
+}: {
+  readonly busyLinkId: string | null;
+  readonly error: string | null;
+  readonly onDisconnect: (link: ActiveLink, description: string) => void;
+  readonly summary: ChannelLinksResponse | null;
+}) {
+  return (
     <GlassPanel className="p-6">
       <h2 className="text-xl font-bold">Link a messaging channel</h2>
       <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[#687896]">
@@ -93,7 +97,8 @@ export function SettingsChannelsPage({
           label="Telegram"
           links={summary?.items.filter(({ channel }) => channel === "telegram") ?? []}
           loading={summary === null && error === null}
-          onDisconnect={disconnect}
+          onDisconnect={onDisconnect}
+          unavailable={summary === null && error !== null}
         />
         <ChannelCard
           busyLinkId={busyLinkId}
@@ -102,7 +107,8 @@ export function SettingsChannelsPage({
           label="WhatsApp"
           links={summary?.items.filter(({ channel }) => channel === "whatsapp") ?? []}
           loading={summary === null && error === null}
-          onDisconnect={disconnect}
+          onDisconnect={onDisconnect}
+          unavailable={summary === null && error !== null}
         />
       </div>
     </GlassPanel>
@@ -117,6 +123,7 @@ function ChannelCard({
   links,
   loading,
   onDisconnect,
+  unavailable,
 }: {
   readonly busyLinkId: string | null;
   readonly color: string;
@@ -125,6 +132,7 @@ function ChannelCard({
   readonly links: ReadonlyArray<ActiveLink>;
   readonly loading: boolean;
   readonly onDisconnect: (link: ActiveLink, label: string) => void;
+  readonly unavailable: boolean;
 }) {
   return (
     <section className="rounded-2xl border border-white/85 bg-white/72 p-5">
@@ -135,29 +143,36 @@ function ChannelCard({
         <div className="min-w-0 flex-1">
           <h3 className="text-lg font-black">{label}</h3>
           <p className="text-sm text-muted-foreground">
-            {loading ? "Checking connection..." : links.length > 0 ? "Connected" : "Not connected"}
+            {loading
+              ? "Checking connection..."
+              : unavailable
+                ? "Connection unavailable"
+                : links.length > 0
+                  ? "Connected"
+                  : "Not connected"}
           </p>
         </div>
       </div>
-      {links.length === 0 ? (
+      {unavailable ? null : links.length === 0 ? (
         <p className="mt-4 text-sm text-muted-foreground">Message Osfo privately from {label}.</p>
       ) : (
         <div className="mt-4 grid gap-2">
-          {links.map((link, index) => {
-            const accessibleLabel =
-              links.length === 1 ? `Disconnect ${label}` : `Disconnect ${label} link ${index + 1}`;
+          {links.map((link) => {
+            const description = linkDescription(label, link);
             return (
-              <Button
-                key={link.channelLinkId}
-                aria-label={accessibleLabel}
-                disabled={busyLinkId !== null}
-                size="sm"
-                type="button"
-                variant="destructive"
-                onClick={() => onDisconnect(link, label)}
-              >
-                {busyLinkId === link.channelLinkId ? "Disconnecting..." : "Disconnect"}
-              </Button>
+              <div className="flex items-center justify-between gap-3" key={link.channelLinkId}>
+                <p className="min-w-0 text-sm text-muted-foreground">{description}</p>
+                <Button
+                  aria-label={`Disconnect ${description}`}
+                  disabled={busyLinkId !== null}
+                  size="sm"
+                  type="button"
+                  variant="destructive"
+                  onClick={() => onDisconnect(link, description)}
+                >
+                  {busyLinkId === link.channelLinkId ? "Disconnecting..." : "Disconnect"}
+                </Button>
+              </div>
             );
           })}
         </div>
@@ -165,3 +180,10 @@ function ChannelCard({
     </section>
   );
 }
+
+const linkDescription = (label: string, link: ActiveLink) =>
+  `${label} link …${link.channelLinkId.slice(-8)}, connected ${link.linkedAt.toISOString().slice(0, 10)}`;
+
+/** Exact destructive confirmation copy for one owner-safe Channel Link description. */
+export const channelLinkRevocationPrompt = (description: string) =>
+  `Disconnect ${description} from Osfo? Messages from this account will no longer reach your agent.`;
