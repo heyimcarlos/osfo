@@ -479,12 +479,13 @@ it.effect("rejects settlement when the retained open context changed", () =>
   }),
 );
 
-it.effect("deletes malformed immediate Gmail rows without blocking account deletion", () =>
+it.effect("deletes every immediate Gmail owned key without touching unrelated Agent storage", () =>
   Effect.gen(function* () {
     const { records, storage } = durableStorageFake();
     const persistence = ImmediateGmailSend.makeDurableObjectPersistence(storage);
     records.set("osfo:immediate-gmail-send:open:malformed", { broken: true });
     records.set("osfo:immediate-gmail-send:approval:malformed", { broken: true });
+    records.set("osfo:immediate-gmail-send:approval-settlement:malformed", { broken: true });
     records.set("osfo:immediate-gmail-send:terminal:malformed", { broken: true });
     records.set("osfo:immediate-gmail-send:settlement-sequence", 2);
     records.set("unrelated", { keep: true });

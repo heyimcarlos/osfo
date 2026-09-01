@@ -2,16 +2,16 @@
 
 import { OSFO_DIRECTORY_NAME } from "../../src/agents/osfo/identity";
 import { ImmediateGmailSend } from "../../src/agents/osfo/immediate-gmail-send";
-import { ActionPresentationsFound } from "../../src/agents/osfo/think-action-approvals";
+import { ActionPresentation } from "../../src/agents/osfo/think-action-approvals";
 import { UserId } from "../../src/domain";
-import { AuthSessionId } from "../../src/domain/auth-session";
 import { ContentId } from "../../src/domain/client-content";
 import {
   attemptKeyFor,
   contentKeyFor,
   ownerKeyFor,
 } from "../../src/integrations/cloudflare/document-storage-keys";
-import { OsfoAgent } from "../../src/worker";
+// oxlint-disable-next-line osfo/no-import-alias -- The verification script must export a concrete class named OsfoAgent for the Agents runtime resolver.
+import { OsfoAgent as SourceOsfoAgent } from "../../src/worker";
 import { Schema } from "effect";
 import { getSubAgentByName } from "agents";
 
@@ -44,13 +44,13 @@ const IntegrationSession = Schema.Struct({
   version: Schema.String,
 });
 
-const ImmediateGmailVerificationRequest = Schema.Struct({
+const ImmediateGmailResultVerificationRequest = Schema.Struct({
   actionId: Schema.String,
   presentationId: Schema.String,
   userId: UserId,
 });
 
-type ImmediateGmailVerificationRequest = typeof ImmediateGmailVerificationRequest.Type;
+type ImmediateGmailResultVerificationRequest = typeof ImmediateGmailResultVerificationRequest.Type;
 
 const sha256 = async (value: string) => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
@@ -58,22 +58,70 @@ const sha256 = async (value: string) => {
 };
 
 /** Add read-only, privacy-safe storage evidence only in the local verification Worker. */
-class VerificationOsfoAgent extends OsfoAgent {
-  async inspectImmediateGmailVerificationState(input: ImmediateGmailVerificationRequest) {
-    const parsed = Schema.decodeSync(ImmediateGmailVerificationRequest)(input, {
+export class OsfoAgent extends SourceOsfoAgent {
+  /** The observer reads an already-started Agent and must not start production background work. */
+  override async onStart(): Promise<void> {}
+
+  async inspectImmediateGmailApprovalVerificationState(userId: UserId) {
+    const [presentationValues, bindingValues] = await Promise.all([
+      this.ctx.storage.list({ prefix: "osfo:action-presentation:" }),
+      this.ctx.storage.list({ prefix: "osfo:immediate-gmail-send:approval:" }),
+    ]);
+    const presentations = [...presentationValues.values()].flatMap((value) => {
+      const presentation = Schema.decodeUnknownOption(ActionPresentation)(value, {
+        onExcessProperty: "error",
+      });
+      return presentation._tag === "Some" &&
+        presentation.value.actionDefinitionVersion === "osfo-gmail-send-v1" &&
+        presentation.value.operation === "integration.effect"
+        ? [presentation.value]
+        : [];
+    });
+    const approvalBindings = [...bindingValues.values()].flatMap((value) => {
+      const binding = Schema.decodeUnknownOption(ImmediateGmailSend.ApprovalConnectionBinding)(
+        value,
+        { onExcessProperty: "error" },
+      );
+      return binding._tag === "Some" && binding.value.userId === userId ? [binding.value] : [];
+    });
+    const matches = approvalBindings.flatMap((binding) => {
+      const matchingPresentations = presentations.filter(
+        (presentation) =>
+          presentation.actionId === binding.actionId &&
+          presentation.presentationId === binding.presentationId,
+      );
+      return matchingPresentations.map((presentation) => ({
+        approvalBinding: binding,
+        presentation,
+      }));
+    });
+    const [match] = matches;
+    if (matches.length !== 1 || match === undefined) {
+      return {
+        _tag: "ImmediateGmailApprovalEvidenceUnavailable" as const,
+        approvalBindingCount: approvalBindings.length,
+        presentationCount: presentations.length,
+        reason: matches.length === 0 ? ("missing" as const) : ("ambiguous" as const),
+      };
+    }
+    return {
+      _tag: "ImmediateGmailApprovalEvidenceFound" as const,
+      ...match,
+    };
+  }
+
+  async inspectImmediateGmailResultVerificationState(
+    input: ImmediateGmailResultVerificationRequest,
+  ) {
+    const parsed = Schema.decodeSync(ImmediateGmailResultVerificationRequest)(input, {
       onExcessProperty: "error",
     });
-    const [approvalValue, openValue, terminalValues, integrationValue, sessionValue] =
-      await Promise.all([
-        this.ctx.storage.get(`osfo:immediate-gmail-send:approval:${parsed.presentationId}`),
-        this.ctx.storage.get(`osfo:immediate-gmail-send:open:${parsed.actionId}`),
-        this.ctx.storage.list({ prefix: "osfo:immediate-gmail-send:terminal:" }),
-        this.ctx.storage.get(`integration:action:${parsed.actionId}`),
-        this.ctx.storage.get(`integration:session:${parsed.userId}`),
-      ]);
-    const approvalBinding = Schema.decodeUnknownOption(
-      ImmediateGmailSend.ApprovalConnectionBinding,
-    )(approvalValue, { onExcessProperty: "error" });
+    const [openValue, terminalValues, integrationValue, sessionValue] = await Promise.all([
+      this.ctx.storage.get(`osfo:immediate-gmail-send:open:${parsed.actionId}`),
+      this.ctx.storage.list({ prefix: "osfo:immediate-gmail-send:terminal:" }),
+      this.ctx.storage.get(`integration:action:${parsed.actionId}`),
+      this.ctx.storage.get(`integration:session:${parsed.userId}`),
+    ]);
     const openContext = Schema.decodeUnknownOption(ImmediateGmailSend.Context)(openValue, {
       onExcessProperty: "error",
     });
@@ -93,7 +141,6 @@ class VerificationOsfoAgent extends OsfoAgent {
       onExcessProperty: "error",
     });
     return {
-      approvalBinding: approvalBinding._tag === "Some" ? approvalBinding.value : null,
       integrationAction: integrationAction._tag === "Some" ? integrationAction.value : null,
       integrationSessionHash:
         integrationSession._tag === "Some"
@@ -104,8 +151,6 @@ class VerificationOsfoAgent extends OsfoAgent {
     };
   }
 }
-
-export { VerificationOsfoAgent as OsfoAgent };
 
 interface AgentInspection {
   readonly agentId: string;
@@ -197,7 +242,7 @@ const conversationEvidence = async (
   if (directoryInspection?.agentId !== agentId) {
     return { _tag: "Unavailable", operation: "inspectAgent" } as const;
   }
-  const agent = await getSubAgentByName(directory, VerificationOsfoAgent, agentId);
+  const agent = await getSubAgentByName(directory, OsfoAgent, agentId);
   const inspection = await agent.inspect();
   if (inspection._tag !== "AgentFound") {
     return { _tag: "Unavailable", operation: "inspect", resultTag: inspection._tag } as const;
@@ -219,21 +264,9 @@ const conversationEvidence = async (
   } as const;
 };
 
-const ImmediateGmailStatuses = Schema.Struct({
-  items: Schema.Array(
-    Schema.Struct({
-      actionId: Schema.String,
-      presentationId: Schema.String,
-      status: Schema.String,
-    }),
-  ),
-});
-
 const immediateGmailEvidence = async (input: {
   readonly actionId: string | null;
   readonly agentId: string;
-  readonly authSessionExpiresAt: string;
-  readonly authSessionId: string;
   readonly directory: DirectoryObserver;
   readonly directoryInspection: AgentInspection | null;
   readonly phase: "action" | "result";
@@ -243,45 +276,24 @@ const immediateGmailEvidence = async (input: {
   if (input.directoryInspection?.agentId !== input.agentId) {
     return { _tag: "Unavailable", operation: "inspectAgent" } as const;
   }
-  const agent = await getSubAgentByName(input.directory, VerificationOsfoAgent, input.agentId);
-  const actor = {
-    _tag: "AuthSession" as const,
-    authSessionId: input.authSessionId,
-    expiresAt: input.authSessionExpiresAt,
-    userId: input.userId,
-  };
+  const agent = await getSubAgentByName(input.directory, OsfoAgent, input.agentId);
   if (input.phase === "action") {
-    const found = Schema.decodeUnknownSync(ActionPresentationsFound)(
-      await agent.listActionPresentations(actor, "immediate-gmail"),
-      { onExcessProperty: "error" },
-    );
-    const presentation = found.presentations.length === 1 ? (found.presentations[0] ?? null) : null;
-    if (presentation === null) {
-      return { _tag: "ImmediateGmailActionEvidence", presentation: null } as const;
-    }
-    const storage = await agent.inspectImmediateGmailVerificationState({
-      actionId: presentation.actionId,
-      presentationId: presentation.presentationId,
-      userId: UserId.make(input.userId),
-    });
-    return { _tag: "ImmediateGmailActionEvidence", presentation, storage } as const;
+    return agent.inspectImmediateGmailApprovalVerificationState(UserId.make(input.userId));
   }
   if (input.actionId === null || input.presentationId === null) {
     return { _tag: "Unavailable", operation: "missingImmediateGmailIdentity" } as const;
   }
-  const statuses = Schema.decodeUnknownSync(ImmediateGmailStatuses)(
-    await agent.inspectImmediateGmailSends({
-      authSessionId: AuthSessionId.make(input.authSessionId),
-      userId: UserId.make(input.userId),
-    }),
-    { onExcessProperty: "error" },
-  );
-  const storage = await agent.inspectImmediateGmailVerificationState({
+  const storage = await agent.inspectImmediateGmailResultVerificationState({
     actionId: input.actionId,
     presentationId: input.presentationId,
     userId: UserId.make(input.userId),
   });
-  return { _tag: "ImmediateGmailResultEvidence", statuses: statuses.items, storage } as const;
+  const statuses = storage.terminals.map(({ actionId, presentationId, status }) => ({
+    actionId,
+    presentationId,
+    status,
+  }));
+  return { _tag: "ImmediateGmailResultEvidence", statuses, storage } as const;
 };
 
 /** Observe an exact Agent through the production-owned Directory RPC contract. */
@@ -319,15 +331,10 @@ const worker = {
     ) {
       return Response.json({ error: "Invalid Immediate Gmail phase" }, { status: 400 });
     }
-    const authSessionId = url.searchParams.get("authSessionId");
-    const authSessionExpiresAt = url.searchParams.get("authSessionExpiresAt");
     const immediateGmailActionId = url.searchParams.get("immediateGmailActionId");
     const immediateGmailPresentationId = url.searchParams.get("immediateGmailPresentationId");
-    if (
-      immediateGmailPhase !== null &&
-      (userId === null || authSessionId === null || authSessionExpiresAt === null)
-    ) {
-      return Response.json({ error: "Immediate Gmail authority is incomplete" }, { status: 400 });
+    if (immediateGmailPhase !== null && userId === null) {
+      return Response.json({ error: "Immediate Gmail User is missing" }, { status: 400 });
     }
     const sourceKey =
       userId === null || fileId === null
@@ -405,16 +412,11 @@ const worker = {
       scheduledEmailWorkflow,
     };
     const immediateGmail =
-      immediateGmailPhase === null ||
-      userId === null ||
-      authSessionId === null ||
-      authSessionExpiresAt === null
+      immediateGmailPhase === null || userId === null
         ? null
         : await immediateGmailEvidence({
             actionId: immediateGmailActionId,
             agentId,
-            authSessionExpiresAt,
-            authSessionId,
             directory,
             directoryInspection: inspection,
             phase: immediateGmailPhase,

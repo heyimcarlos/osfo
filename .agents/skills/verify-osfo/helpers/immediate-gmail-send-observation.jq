@@ -38,6 +38,7 @@ def exact_browser($recipient; $subject; $body):
 (.durable.actionId | type == "string" and length > 0) and
 (.durable.presentationId | type == "string" and length > 0) and
 (.durable.userId | type == "string" and length > 0) and
+(.durable.authenticatedSessionCount | type == "number" and . >= 1) and
 (.durable.approvalConnectionBinding | test("^[0-9a-f]{64}$")) and
 .durable.presentation.actionId == .durable.actionId and
 .durable.presentation.presentationId == .durable.presentationId and
@@ -54,7 +55,6 @@ def exact_browser($recipient; $subject; $body):
 (.durable.integrationAction.result.evidence.providerResourceId | type == "string" and length > 0) and
 .postgres.userId == .durable.userId and
 (.postgres.agentId | type == "string" and length > 0) and
-(.postgres.authSessionId | type == "string" and length > 0) and
 .postgres.gmailSendUsage == [{
   allowanceKind: "gmailSends",
   basis: "observed",

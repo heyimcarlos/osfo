@@ -37,6 +37,7 @@ observation_fixture='{
   },
   "durable": {
     "actionId": "verification-gmailSendEmail::cf-wai-tool-call::turn-1",
+    "authenticatedSessionCount": 1,
     "approvalConnectionBinding": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "integrationAction": {
       "_tag": "Applied",
@@ -76,7 +77,6 @@ observation_fixture='{
   "http": {"approvalRequests":1,"approvalSuccesses":1},
   "postgres": {
     "agentId":"agent-1",
-    "authSessionId":"session-1",
     "gmailSendUsage":[{"allowanceKind":"gmailSends","basis":"observed","quantity":"1","sourceId":"verification-gmailSendEmail::cf-wai-tool-call::turn-1","sourceType":"integrationAction"}],
     "userId":"user-1"
   },
@@ -114,6 +114,7 @@ fi
 
 for mutation in \
   '.durable.presentation.actionId = "different-action"' \
+  '.durable.authenticatedSessionCount = 0' \
   '.durable.terminal.actionId = "different-action"' \
   '.durable.terminal.presentationId = "different-presentation"' \
   '.durable.terminal.status = "notApplied"' \
@@ -138,42 +139,62 @@ done
 deletion_fixture='{
   "agentRuntime":{"inspectable":false,"registered":false},
   "immediateGmailActionId":"verification-gmailSendEmail::cf-wai-tool-call::turn-1",
-  "immediateGmailAgentFacetExists":false,
-  "immediateGmailConnectionStateExists":false,
+  "immediateGmailDeletionFeature":"account-deletion-replay",
+  "immediateGmailDeletionQualification":{
+    "commit":"commit-1",
+    "guarantee":"every Immediate Gmail owned key erased while unrelated Agent storage survives",
+    "result":"PASS",
+    "test":"deletes every immediate Gmail owned key without touching unrelated Agent storage"
+  },
   "immediateGmailPresentationId":"presentation-1",
+  "immediateGmailProviderConnectionDeletion":{"issue":"#187","status":"not-qualified"},
   "immediateGmailProofExpected":true,
   "userExists":false
 }'
-if ! jq --exit-status --from-file "$deletion_check" <<<"$deletion_fixture" >/dev/null; then
+if ! jq --exit-status --arg commit commit-1 --from-file "$deletion_check" \
+  <<<"$deletion_fixture" >/dev/null; then
   printf 'Exact Immediate Gmail deletion fixture must pass\n' >&2
   exit 1
 fi
 for mutation in \
   '.immediateGmailActionId = ""' \
   '.immediateGmailPresentationId = ""' \
-  '.immediateGmailAgentFacetExists = true' \
-  '.immediateGmailConnectionStateExists = true' \
+  '.immediateGmailDeletionFeature = "account-deletion"' \
+  '.immediateGmailDeletionQualification = null' \
+  '.immediateGmailDeletionQualification.commit = "different-commit"' \
+  '.immediateGmailProviderConnectionDeletion.status = "deleted"' \
+  '.agentRuntime.inspectable = true' \
   '.agentRuntime.registered = true' \
   '.userExists = true'; do
   if jq "$mutation" <<<"$deletion_fixture" \
-    | jq --exit-status --from-file "$deletion_check" >/dev/null; then
+    | jq --exit-status --arg commit commit-1 --from-file "$deletion_check" >/dev/null; then
     printf 'Immediate Gmail deletion mutation unexpectedly passed: %s\n' "$mutation" >&2
     exit 1
   fi
 done
 
+if grep -E -q 'listActionPresentations|inspectImmediateGmailSends|authSession(Id|ExpiresAt)' \
+  "$observer"; then
+  printf 'Immediate Gmail observer must not mint authority or invoke presentation-producing RPCs\n' >&2
+  exit 1
+fi
+
 deletion_receipt="$(jq '{
   actionId: .immediateGmailActionId,
-  agentFacetExists: .immediateGmailAgentFacetExists,
-  connectionStateExists: .immediateGmailConnectionStateExists,
+  deletionFeature: .immediateGmailDeletionFeature,
+  directoryAgent: .agentRuntime,
+  ownedKeyDeletionQualification: .immediateGmailDeletionQualification,
   observedAt: "2026-09-01T00:00:00Z",
   presentationId: .immediateGmailPresentationId,
+  providerConnectionDeletion: .immediateGmailProviderConnectionDeletion,
   userExists: .userExists
 }' <<<"$deletion_fixture")"
 if ! jq --exit-status '
   .actionId == "verification-gmailSendEmail::cf-wai-tool-call::turn-1" and
-  .presentationId == "presentation-1" and .agentFacetExists == false and
-  .connectionStateExists == false and .userExists == false and
+  .presentationId == "presentation-1" and .deletionFeature == "account-deletion-replay" and
+  .directoryAgent == {inspectable:false,registered:false} and .userExists == false and
+  .providerConnectionDeletion == {issue:"#187",status:"not-qualified"} and
+  .ownedKeyDeletionQualification.result == "PASS" and
   (.observedAt | fromdateiso8601) > 0' <<<"$deletion_receipt" >/dev/null; then
   printf 'Immediate Gmail deletion receipt must preserve the exact absence proof\n' >&2
   exit 1
@@ -191,7 +212,8 @@ for required in \
 done
 
 for required in \
-  'inspectImmediateGmailVerificationState' \
+  'inspectImmediateGmailApprovalVerificationState' \
+  'inspectImmediateGmailResultVerificationState' \
   'integration:action:' \
   'osfo:immediate-gmail-send:approval:' \
   'osfo:immediate-gmail-send:terminal:'; do

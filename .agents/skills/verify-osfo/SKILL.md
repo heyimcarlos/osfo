@@ -83,8 +83,8 @@ FEATURE=registration # registration, channel-linking, conversation-memory, resea
 ```
 
 Immediate Gmail deliberately defers that final command: observe the Gmail result, complete and
-finish account deletion in the normal drive order, then finish Immediate Gmail with the deletion
-receipt. Its feature file gives the exact sequence.
+finish the retained account-deletion replay in the normal drive order, then finish Immediate
+Gmail with the deletion receipt. Its feature file gives the exact sequence.
 
 ## Evidence
 

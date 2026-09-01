@@ -249,7 +249,7 @@ start_worker_process() {
 
 inspect_agent_runtime() {
   local run_id agent_id user_id file_id main_instance_id timer_instance_id artifact_id scheduled_email_instance_id conversation
-  local immediate_gmail_phase auth_session_id auth_session_expires_at immediate_gmail_action_id immediate_gmail_presentation_id
+  local immediate_gmail_phase immediate_gmail_action_id immediate_gmail_presentation_id
   local state_dir artifact_dir observer_origin observer_port inspector_port
   local observer_pid observation status
   local -a observer_query
@@ -263,10 +263,8 @@ inspect_agent_runtime() {
   scheduled_email_instance_id="${8:-}"
   conversation="${9:-}"
   immediate_gmail_phase="${10:-}"
-  auth_session_id="${11:-}"
-  auth_session_expires_at="${12:-}"
-  immediate_gmail_action_id="${13:-}"
-  immediate_gmail_presentation_id="${14:-}"
+  immediate_gmail_action_id="${11:-}"
+  immediate_gmail_presentation_id="${12:-}"
   state_dir="$(state_dir_for "$run_id")"
   artifact_dir="$(artifact_dir_for "$run_id")"
   observer_port="$(pick_port)"
@@ -310,11 +308,7 @@ inspect_agent_runtime() {
         observer_query+=(--data-urlencode 'conversation=1')
       fi
       if [[ -n "$immediate_gmail_phase" ]]; then
-        observer_query+=(
-          --data-urlencode "immediateGmailPhase=$immediate_gmail_phase"
-          --data-urlencode "authSessionId=$auth_session_id"
-          --data-urlencode "authSessionExpiresAt=$auth_session_expires_at"
-        )
+        observer_query+=(--data-urlencode "immediateGmailPhase=$immediate_gmail_phase")
         if [[ -n "$immediate_gmail_action_id" ]]; then
           observer_query+=(--data-urlencode "immediateGmailActionId=$immediate_gmail_action_id")
         fi
@@ -707,15 +701,10 @@ capture_immediate_gmail_action() {
     --command "select json_build_object(
       'userId', u.id,
       'agentId', a.agent_id,
-      'authSessionId', s.id,
-      'authSessionExpiresAt', to_char(s.expires_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')
+      'activeSessionCount', (select count(*) from sessions s
+        where s.user_id = u.id and s.expires_at > now())
     ) from users u
     join agents a on a.user_id = u.id
-    join lateral (
-      select id, expires_at from sessions
-      where user_id = u.id and expires_at > now()
-      order by expires_at desc limit 1
-    ) s on true
     where u.phone_number = '$phone';")"
   if [[ -z "$identity" ]]; then
     printf 'The authenticated Immediate Gmail User could not be resolved\n' >&2
@@ -725,13 +714,12 @@ capture_immediate_gmail_action() {
     "$run_id" \
     "$(jq --exit-status --raw-output '.agentId' <<<"$identity")" \
     "$(jq --exit-status --raw-output '.userId' <<<"$identity")" \
-    '' '' '' '' '' '' action \
-    "$(jq --exit-status --raw-output '.authSessionId' <<<"$identity")" \
-    "$(jq --exit-status --raw-output '.authSessionExpiresAt' <<<"$identity")")"
+    '' '' '' '' '' '' action)"
   jq --exit-status --arg recipient "$recipient" --arg subject "$subject" --arg body "$body" '
-    .immediateGmail._tag == "ImmediateGmailActionEvidence" and
+    .immediateGmail._tag == "ImmediateGmailApprovalEvidenceFound" and
     (.immediateGmail.presentation.actionId | type == "string" and length > 0) and
     (.immediateGmail.presentation.presentationId | type == "string" and length > 0) and
+    .agent.activeSessionCount >= 1 and
     .immediateGmail.presentation.title == "Send Gmail message" and
     .immediateGmail.presentation.description == "Send the exact Gmail message shown here." and
     .immediateGmail.presentation.consequences == ["Send this exact message to the listed external recipients."] and
@@ -742,13 +730,10 @@ capture_immediate_gmail_action() {
       {"label":"Subject","name":"subject","value":$subject},
       {"label":"Message","name":"body","value":$body}
     ] and
-    .immediateGmail.storage.approvalBinding.actionId == .immediateGmail.presentation.actionId and
-    .immediateGmail.storage.approvalBinding.presentationId == .immediateGmail.presentation.presentationId and
-    .immediateGmail.storage.approvalBinding.userId == .agent.userId and
-    (.immediateGmail.storage.approvalBinding.connectionBinding | test("^[0-9a-f]{64}$")) and
-    .immediateGmail.storage.openContextExists == false and
-    .immediateGmail.storage.integrationAction == null and
-    .immediateGmail.storage.terminals == []' \
+    .immediateGmail.approvalBinding.actionId == .immediateGmail.presentation.actionId and
+    .immediateGmail.approvalBinding.presentationId == .immediateGmail.presentation.presentationId and
+    .immediateGmail.approvalBinding.userId == .agent.userId and
+    (.immediateGmail.approvalBinding.connectionBinding | test("^[0-9a-f]{64}$"))' \
     <<<"$(jq --null-input --argjson runtime "$agent_runtime" --argjson agent "$identity" \
       '$runtime + {agent: $agent}')" >/dev/null
   jq --null-input \
@@ -756,7 +741,8 @@ capture_immediate_gmail_action() {
     --argjson immediateGmail "$(jq '.immediateGmail' <<<"$agent_runtime")" '
       {
         actionId: $immediateGmail.presentation.actionId,
-        approvalConnectionBinding: $immediateGmail.storage.approvalBinding.connectionBinding,
+        authenticatedSessionCount: $identity.activeSessionCount,
+        approvalConnectionBinding: $immediateGmail.approvalBinding.connectionBinding,
         presentation: $immediateGmail.presentation,
         presentationId: $immediateGmail.presentation.presentationId,
         userId: $identity.userId
@@ -2301,8 +2287,6 @@ observe_immediate_gmail_send() {
     --command "select json_build_object(
       'userId', u.id,
       'agentId', a.agent_id,
-      'authSessionId', s.id,
-      'authSessionExpiresAt', to_char(s.expires_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),
       'gmailSendUsage', coalesce((
         select json_agg(json_build_object(
           'allowanceKind', au.allowance_kind,
@@ -2317,11 +2301,6 @@ observe_immediate_gmail_send() {
       ), '[]'::json)
     ) from users u
     join agents a on a.user_id = u.id
-    join lateral (
-      select id, expires_at from sessions
-      where user_id = u.id and expires_at > now()
-      order by expires_at desc limit 1
-    ) s on true
     where u.phone_number = '$phone';")"
   if [[ -z "$user_state" ]]; then
     printf 'No registered User exists for the immediate Gmail observation\n' >&2
@@ -2336,10 +2315,7 @@ observe_immediate_gmail_send() {
     "$run_id" \
     "$(jq --exit-status --raw-output '.agentId' <<<"$user_state")" \
     "$(jq --exit-status --raw-output '.userId' <<<"$user_state")" \
-    '' '' '' '' '' '' result \
-    "$(jq --exit-status --raw-output '.authSessionId' <<<"$user_state")" \
-    "$(jq --exit-status --raw-output '.authSessionExpiresAt' <<<"$user_state")" \
-    "$action_id" "$presentation_id")"
+    '' '' '' '' '' '' result "$action_id" "$presentation_id")"
   jq --exit-status --arg actionId "$action_id" --arg presentationId "$presentation_id" '
     .immediateGmail._tag == "ImmediateGmailResultEvidence" and
     .immediateGmail.statuses == [{
@@ -2347,7 +2323,6 @@ observe_immediate_gmail_send() {
       presentationId: $presentationId,
       status: "applied"
     }] and
-    .immediateGmail.storage.approvalBinding == null and
     .immediateGmail.storage.openContextExists == false and
     (.immediateGmail.storage.integrationSessionHash | test("^[0-9a-f]{64}$")) and
     (.immediateGmail.storage.integrationAction.providerRequestId | length > 0) and
@@ -2610,7 +2585,7 @@ observe_account_deletion() {
   local document_attempt_key document_owner_key document_file_id document_artifact_id
   local document_main_instance_id document_timer_instance_id artifacts_bucket
   local immediate_state immediate_expected immediate_action_id immediate_presentation_id
-  local immediate_agent_facet_exists immediate_connection_state_exists
+  local immediate_deletion_qualification
   run_id="$1"
   feature="$2"
   if [[ "$feature" == account-deletion-replay ]]; then
@@ -2744,9 +2719,12 @@ observe_account_deletion() {
   immediate_expected=false
   immediate_action_id=''
   immediate_presentation_id=''
-  immediate_agent_facet_exists=false
-  immediate_connection_state_exists=false
+  immediate_deletion_qualification=null
   if [[ -s "$immediate_state" ]]; then
+    if [[ "$feature" != account-deletion-replay ]]; then
+      printf 'Immediate Gmail qualification requires the retained account-deletion replay drive\n' >&2
+      exit 1
+    fi
     immediate_expected=true
     immediate_action_id="$(jq --exit-status --raw-output '.durable.actionId' "$immediate_state")"
     immediate_presentation_id="$(jq --exit-status --raw-output \
@@ -2755,11 +2733,18 @@ observe_account_deletion() {
       printf 'The Immediate Gmail evidence belongs to another deletion User\n' >&2
       exit 1
     fi
-    if jq --exit-status '.inspectable == true or .registered == true' \
-      <<<"$agent_runtime" >/dev/null; then
-      immediate_agent_facet_exists=true
-      immediate_connection_state_exists=true
-    fi
+    bun run --cwd "$repo_root/apps/worker" vitest run \
+      --config vitest.modules.config.ts \
+      src/agents/osfo/immediate-gmail-send.test.ts \
+      --testNamePattern '^deletes every immediate Gmail owned key without touching unrelated Agent storage$' \
+      >"$feature_dir/immediate-gmail-deletion-qualification.log" 2>&1
+    immediate_deletion_qualification="$(jq --null-input \
+      --arg commit "$(state_value "$run_id" commit)" '{
+        commit: $commit,
+        guarantee: "every Immediate Gmail owned key erased while unrelated Agent storage survives",
+        result: "PASS",
+        test: "deletes every immediate Gmail owned key without touching unrelated Agent storage"
+      }')"
   fi
   account_http="$("$script_dir/inspect-account-http-log" "$worker_log" "$proof_shape")"
   jq --null-input \
@@ -2778,11 +2763,11 @@ observe_account_deletion() {
     --argjson documentAttemptExists "$document_attempt_exists" \
     --argjson documentOwnerExists "$document_owner_exists" \
     --argjson immediateGmailProofExpected "$immediate_expected" \
-    --argjson immediateGmailAgentFacetExists "$immediate_agent_facet_exists" \
-    --argjson immediateGmailConnectionStateExists "$immediate_connection_state_exists" \
+    --argjson immediateGmailDeletionQualification "$immediate_deletion_qualification" \
     --argjson accountHttp "$account_http" \
     --arg immediateGmailActionId "$immediate_action_id" \
     --arg immediateGmailPresentationId "$immediate_presentation_id" \
+    --arg immediateGmailDeletionFeature "$feature" \
     --arg targetR2Key "$target_key" \
     --arg unrelatedR2Key "$unrelated_key" \
     '$postgres + {
@@ -2805,8 +2790,9 @@ observe_account_deletion() {
       immediateGmailProofExpected: $immediateGmailProofExpected,
       immediateGmailActionId: $immediateGmailActionId,
       immediateGmailPresentationId: $immediateGmailPresentationId,
-      immediateGmailAgentFacetExists: $immediateGmailAgentFacetExists,
-      immediateGmailConnectionStateExists: $immediateGmailConnectionStateExists
+      immediateGmailDeletionFeature: $immediateGmailDeletionFeature,
+      immediateGmailDeletionQualification: $immediateGmailDeletionQualification,
+      immediateGmailProviderConnectionDeletion: {issue: "#187", status: "not-qualified"}
     }' >"$feature_dir/state.json"
   cp "$state_dir/account-deletion-agent-runtime-before.json" \
     "$feature_dir/agent-runtime-before.json"
@@ -2846,7 +2832,8 @@ observe_account_deletion() {
     "$feature_dir/state.json" >/dev/null
   "$script_dir/assert-document-build-deletion-state" "$feature_dir/state.json"
   if [[ "$immediate_expected" == true ]]; then
-    jq --exit-status --from-file "$script_dir/immediate-gmail-send-deletion.jq" \
+    jq --exit-status --arg commit "$(state_value "$run_id" commit)" \
+      --from-file "$script_dir/immediate-gmail-send-deletion.jq" \
       "$feature_dir/state.json" >/dev/null
   fi
   jq --exit-status \
@@ -2866,10 +2853,12 @@ observe_account_deletion() {
   if [[ "$immediate_expected" == true ]]; then
     jq '{
       actionId: .immediateGmailActionId,
-      agentFacetExists: .immediateGmailAgentFacetExists,
-      connectionStateExists: .immediateGmailConnectionStateExists,
+      deletionFeature: .immediateGmailDeletionFeature,
+      directoryAgent: (.agentRuntime | {inspectable, registered}),
+      ownedKeyDeletionQualification: .immediateGmailDeletionQualification,
       observedAt: now | todateiso8601,
       presentationId: .immediateGmailPresentationId,
+      providerConnectionDeletion: .immediateGmailProviderConnectionDeletion,
       userExists: .userExists
     }' "$feature_dir/state.json" \
       >"$(feature_artifact_dir_for "$run_id" immediate-gmail-send)/deletion-observed.json"
@@ -2933,7 +2922,7 @@ evidence_finish() {
   fi
   if [[ "$feature" == immediate-gmail-send ]]; then
     local deletion_dir recipient subject body
-    deletion_dir="$(feature_artifact_dir_for "$run_id" account-deletion)"
+    deletion_dir="$(feature_artifact_dir_for "$run_id" account-deletion-replay)"
     recipient="$(state_value "$run_id" gmail-send-recipient)"
     subject="$(state_value "$run_id" gmail-send-subject)"
     body="$(state_value "$run_id" gmail-send-body)"
@@ -2948,7 +2937,7 @@ evidence_finish() {
     if [[ ! -s "$deletion_dir/observation-passed.txt" || ! -s "$deletion_dir/result.txt" ]] || \
       ! grep -F -q 'result=PASS' "$deletion_dir/result.txt" || \
       ! grep -F -q "commit=$current_commit" "$deletion_dir/result.txt"; then
-      printf 'Finish permanent account-deletion evidence before Immediate Gmail evidence\n' >&2
+      printf 'Finish retained account-deletion replay evidence before Immediate Gmail evidence\n' >&2
       exit 1
     fi
     jq --exit-status \
@@ -2958,10 +2947,19 @@ evidence_finish() {
       "$feature_dir/state.json" >/dev/null
     jq --exit-status \
       --arg actionId "$(jq --raw-output '.durable.actionId' "$feature_dir/state.json")" \
-      --arg presentationId "$(jq --raw-output '.durable.presentationId' "$feature_dir/state.json")" '
+      --arg presentationId "$(jq --raw-output '.durable.presentationId' "$feature_dir/state.json")" \
+      --arg commit "$current_commit" '
         .actionId == $actionId and .presentationId == $presentationId and
-        .agentFacetExists == false and .connectionStateExists == false and
+        .deletionFeature == "account-deletion-replay" and
+        .directoryAgent == {inspectable:false, registered:false} and
         .userExists == false and
+        .providerConnectionDeletion == {issue:"#187", status:"not-qualified"} and
+        .ownedKeyDeletionQualification == {
+          commit: $commit,
+          guarantee: "every Immediate Gmail owned key erased while unrelated Agent storage survives",
+          result: "PASS",
+          test: "deletes every immediate Gmail owned key without touching unrelated Agent storage"
+        } and
         (.observedAt | fromdateiso8601) > 0' \
       "$feature_dir/deletion-observed.json" >/dev/null
   fi

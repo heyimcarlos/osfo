@@ -22,13 +22,15 @@ This drive proves the local Gmail provider boundary, not live Gmail OAuth. The l
    ```
 
 6. Run `observe immediate-gmail-send`. This proves the live one-POST path and runs the same-commit composed replay qualification. Do not finish Immediate Gmail evidence yet.
-7. Continue through [account deletion](account-deletion.md), including its observer and evidence finish. The deletion observer writes the captured Action's deletion receipt back to this feature.
+7. Continue through [retained account-deletion replay](account-deletion-replay.md), including its observer and evidence finish. Use the same disposable User. The deletion observer writes the captured Action's deletion receipt back to this feature.
 8. Finish Immediate Gmail evidence. `result.txt` is withheld until the structured browser record, live identity chain, replay qualification, and later deletion receipt all agree at the launch commit.
 
-PASS requires one exact authenticated Approval presentation and decision, one applied local provider request/log/resource identity retained under the same terminal Action, one observed Gmail-send fact whose source is that exact Action, and one matching provider send. The live browser proof allows one Approval POST. The named same-commit composed journey separately submits that presentation a second time, requires rejection, and proves unchanged provider and accounting ledgers. The later deletion proof requires the User and the whole Agent facet containing that Action and Integration Connection state to be absent.
+PASS requires one exact authenticated Approval presentation and decision, one applied local provider request/log/resource identity retained under the same terminal Action, one observed Gmail-send fact whose source is that exact Action, and one matching provider send. The live browser proof allows one Approval POST. The named same-commit composed journey separately submits that presentation a second time, requires rejection, and proves unchanged provider and accounting ledgers. The later retained-request deletion replay proves the User and Agent are absent from PostgreSQL and the Directory. A named same-commit store test separately proves that deletion erases every Immediate Gmail-owned key while preserving unrelated Agent storage.
+
+This verifier does not claim that the local Gmail provider Connection was revoked. Integration authority deletion is not delivered in this runtime; #187 owns that provider-deletion proof.
 
 ## Gotchas
 
 - Refreshing the Approval or status projection is safe. Approve only the exact run-owned presentation once in Chrome. The committed replay journey owns the deliberate second POST.
 - The provider connect form is a real Chrome action across the configured Integration boundary. It does not claim live Gmail OAuth coverage.
-- Immediate Gmail `observe` is not final PASS. Finish account deletion first, then return to `evidence <run-id> immediate-gmail-send finish`.
+- Immediate Gmail `observe` is not final PASS. Finish retained account-deletion replay first, then return to `evidence <run-id> immediate-gmail-send finish`.

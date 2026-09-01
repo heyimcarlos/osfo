@@ -17,4 +17,9 @@ After the first confirmed deletion request loses its browser response, refresh o
 7. Run `control-osfo reconcile-account-deletion <run-id>`. This invokes the same production scheduled entry point that owns irreversible deletion after both the initial request and its retained retry.
 8. Run `observe account-deletion-replay` and finish the evidence.
 
+When the same run already observed Immediate Gmail, this observer also records the captured Action
+identity, exact Directory and User absence, and the same-commit Immediate Gmail owned-key deletion
+qualification. It writes that receipt back to the Immediate Gmail evidence directory. Provider
+Connection revocation is outside this drive and remains owned by #187.
+
 PASS requires one successful presentation request, two successful account DELETE requests, exactly one target provider-container deletion, the same complete target-absence and unrelated-survival assertions as the happy path, the exact retained presentation after refresh, and the signed-out result. A 503 retry or an edited/stale browser record is not this proof.
