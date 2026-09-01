@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 /* oxlint-disable effecttsgo/async-function -- Testing Library interaction waits intentionally exercise React state transitions. */
 
+import { AccountDeletionActionUnavailable } from "@osfo/api";
 import { Unauthorized } from "@osfo/api/middleware/auth";
 import { afterEach, expect, it } from "@effect/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -59,5 +60,31 @@ it("clears a non-resumable replay without claiming deletion completed", async ()
   expect(screen.queryByRole("button", { name: "Retry Account Deletion" })).toBeNull();
   expect(screen.queryByText(/account deletion is complete/iu)).toBeNull();
   expect(screen.queryByText(/access.*fenced/iu)).toBeNull();
+  expect(localStorage.getItem("osfo-account-deletion-replay")).toBeNull();
+});
+
+it("returns a proven pre-fence rejection to Privacy for a fresh confirmation", async () => {
+  renderRecovery({
+    requestAccountDeletion: () =>
+      Effect.fail(
+        new AccountDeletionActionUnavailable({
+          message: "Request a fresh account deletion confirmation",
+          requestState: "notAccepted",
+        }),
+      ),
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Retry Account Deletion" }));
+
+  await waitFor(() =>
+    expect(
+      screen.getByText(
+        "This saved request was not accepted. Request a fresh confirmation from Privacy.",
+      ),
+    ).toBeDefined(),
+  );
+  expect(screen.getByRole("link", { name: "Open Privacy" }).getAttribute("href")).toBe(
+    "/settings/privacy",
+  );
   expect(localStorage.getItem("osfo-account-deletion-replay")).toBeNull();
 });

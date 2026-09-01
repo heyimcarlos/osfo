@@ -111,15 +111,19 @@ function RecoveryTerminal({
 }: {
   readonly disposition: Exclude<AccountDeletionFailureDisposition, "recover">;
 }) {
+  const needsFreshPresentation = disposition === "freshPresentation";
   return (
     <div className="mt-5">
       <p role="alert">
-        {disposition === "freshPresentation"
-          ? "This saved request was not accepted. Request a fresh confirmation after signing in."
+        {needsFreshPresentation
+          ? "This saved request was not accepted. Request a fresh confirmation from Privacy."
           : "This saved request can no longer be resumed."}
       </p>
-      <a className="mt-4 inline-block font-semibold text-[#2f7df4]" href="/login">
-        Sign in
+      <a
+        className="mt-4 inline-block font-semibold text-[#2f7df4]"
+        href={needsFreshPresentation ? "/settings/privacy" : "/login"}
+      >
+        {needsFreshPresentation ? "Open Privacy" : "Sign in"}
       </a>
     </div>
   );

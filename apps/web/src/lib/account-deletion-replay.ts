@@ -157,9 +157,6 @@ export const accountDeletionFailureDisposition = (
 ): AccountDeletionFailureDisposition => {
   if (Schema.is(AccountDeletionActionUnavailable)(cause)) return "freshPresentation";
   if (Schema.is(Unauthorized)(cause)) return "notResumable";
-  if (HttpClientError.isHttpClientError(cause) && cause.response?.status === 410) {
-    return "freshPresentation";
-  }
   if (
     HttpClientError.isHttpClientError(cause) &&
     (cause.response?.status === 400 || cause.response?.status === 401)

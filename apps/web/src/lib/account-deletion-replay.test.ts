@@ -217,27 +217,6 @@ it.effect("clears an exact replay after the Worker proves the request was not ac
   }),
 );
 
-it.effect("clears an exact replay after a raw pre-fence rejection status", () =>
-  Effect.gen(function* () {
-    const httpRequest = HttpClientRequest.delete("https://api.osfo.ai/v1/account");
-    const rejected = new HttpClientError.HttpClientError({
-      reason: new HttpClientError.StatusCodeError({
-        request: httpRequest,
-        response: HttpClientResponse.fromWeb(httpRequest, new Response(null, { status: 410 })),
-      }),
-    });
-    const submission = prepareAccountDeletionSubmission(
-      localStorage,
-      request,
-      () => Effect.fail(rejected),
-      () => undefined,
-    );
-
-    expect(Exit.isFailure(yield* Effect.exit(submission.effect))).toBe(true);
-    expect(loadAccountDeletionReplay(localStorage)).toEqual({ status: "missing" });
-  }),
-);
-
 it.effect("retains the exact replay when the destructive response is lost", () =>
   Effect.gen(function* () {
     const submission = prepareAccountDeletionSubmission(
