@@ -1,5 +1,7 @@
-import { AccountDeletionRequest } from "@osfo/api";
+import { AccountDeletionActionUnavailable, AccountDeletionRequest } from "@osfo/api";
+import { Unauthorized } from "@osfo/api/middleware/auth";
 import { Data, Effect, Option, Schema } from "effect";
+import { HttpClientError } from "effect/unstable/http";
 
 const storageKey = "osfo-account-deletion-replay";
 
@@ -136,11 +138,36 @@ export const prepareAccountDeletionSubmission = <A, E, R>(
   onSuccess: () => void,
 ): PreparedAccountDeletionSubmission<A, E, R> => ({
   effect: Effect.suspend(() => submit(request)).pipe(
+    Effect.tapError((failure) =>
+      accountDeletionFailureDisposition(failure) === "recover"
+        ? Effect.void
+        : Effect.sync(() => clearAccountDeletionReplay(storage)),
+    ),
     Effect.tap(() => Effect.sync(() => clearAccountDeletionReplay(storage))),
     Effect.tap(() => Effect.sync(onSuccess)),
   ),
   replayAvailable: saveAccountDeletionReplay(storage, request) === "saved",
 });
+
+export type AccountDeletionFailureDisposition = "freshPresentation" | "notResumable" | "recover";
+
+/** Classify only authoritative responses; unknown transport and server failures remain recoverable. */
+export const accountDeletionFailureDisposition = (
+  cause: unknown,
+): AccountDeletionFailureDisposition => {
+  if (Schema.is(AccountDeletionActionUnavailable)(cause)) return "freshPresentation";
+  if (Schema.is(Unauthorized)(cause)) return "notResumable";
+  if (HttpClientError.isHttpClientError(cause) && cause.response?.status === 410) {
+    return "freshPresentation";
+  }
+  if (
+    HttpClientError.isHttpClientError(cause) &&
+    (cause.response?.status === 400 || cause.response?.status === 401)
+  ) {
+    return "notResumable";
+  }
+  return "recover";
+};
 
 /** Prepare primary deletion from one captured browser-storage lookup. */
 export const prepareBrowserAccountDeletionSubmission = <A, E, R>(

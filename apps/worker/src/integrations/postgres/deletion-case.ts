@@ -134,6 +134,7 @@ export const make = Effect.gen(function* () {
             actionId: accountDeletionActions.action_id,
             consumedAt: accountDeletionActions.consumed_at,
             deletionCaseId: accountDeletionActions.deletion_case_id,
+            invalidatedAt: accountDeletionActions.invalidated_at,
             isUnexpired: sql<boolean>`${accountDeletionActions.expires_at} > clock_timestamp()`,
           })
           .from(accountDeletionActions)
@@ -145,12 +146,22 @@ export const make = Effect.gen(function* () {
               eq(accountDeletionActions.presentation, approval.presentation),
               eq(accountDeletionActions.presentation_version, approval.presentationVersion),
               eq(accountDeletionActions.replay_token_hash, approval.replayTokenHash),
-              isNull(accountDeletionActions.invalidated_at),
             ),
           )
           .for("update")
           .limit(1);
-        if (retainedAction === undefined) return { _tag: "AuthorityChanged" } as const;
+        const unavailableWithoutFence = async () => {
+          const [existingCase] = await transaction
+            .select({ deletionCaseId: deletionCases.deletion_case_id })
+            .from(deletionCases)
+            .where(eq(deletionCases.user_id, userId))
+            .for("update")
+            .limit(1);
+          return existingCase === undefined
+            ? ({ _tag: "ActionUnavailable" } as const)
+            : ({ _tag: "AuthorityChanged" } as const);
+        };
+        if (retainedAction === undefined) return unavailableWithoutFence();
         if (retainedAction.consumedAt !== null) {
           if (retainedAction.deletionCaseId === null) return { _tag: "AuthorityChanged" } as const;
           const [exactCase] = await transaction
@@ -176,7 +187,9 @@ export const make = Effect.gen(function* () {
                 deletionCaseId: DeletionCaseId.make(exactCase.deletionCaseId),
               } as const);
         }
-        if (!retainedAction.isUnexpired) return { _tag: "AuthorityChanged" } as const;
+        if (retainedAction.invalidatedAt !== null || !retainedAction.isUnexpired) {
+          return unavailableWithoutFence();
+        }
         const [[authSession], [subscription], [latestSuspension]] = await Promise.all([
           transaction
             .select({ id: sessions.id })

@@ -49,6 +49,7 @@ const GmailSendUsage = Schema.Array(
   Schema.Struct({ basis: Schema.String, quantity: Schema.String, source_id: Schema.String }),
 );
 type PresentedAccountDeletionAction = AccountDeletionActionPresentation & {
+  readonly expiresAt: Date;
   readonly presentationVersion: string;
   readonly replayToken: string;
 };
@@ -206,7 +207,8 @@ export const spawnApp = async () => {
         return {
           body: response.ok
             ? await Schema.decodeUnknownPromise(AccountDeletionAction)(await response.json()).then(
-                ({ presentation, presentationVersion, replayToken }) => ({
+                ({ expiresAt, presentation, presentationVersion, replayToken }) => ({
+                  expiresAt,
                   ...presentation,
                   presentationVersion,
                   replayToken,

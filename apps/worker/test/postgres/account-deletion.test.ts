@@ -71,15 +71,37 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
           approval,
           { ...authority, authSessionId: AuthSessionId.make("revoked-session") },
         ),
-      ).toEqual({ _tag: "AuthorityChanged" });
+      ).toEqual({ _tag: "ActionUnavailable" });
+      const staleSubscriptionApproval = {
+        ...approval,
+        actionId: ActionId.make("account-delete-stale-subscription"),
+      };
+      expect(
+        yield* deletionCasesPersistence.presentSelf(userId, {
+          ...staleSubscriptionApproval,
+          authSessionId: authority.authSessionId,
+          expiresAt: retrySessionExpiresAt,
+        }),
+      ).toEqual({ _tag: "Presented" });
       expect(
         yield* deletionCasesPersistence.requestSelf(
           userId,
           DeletionCaseId.make("stale-subscription-case"),
-          approval,
+          staleSubscriptionApproval,
           { ...authority, plan: "adventurer" },
         ),
       ).toEqual({ _tag: "AuthorityChanged" });
+      const suspendedApproval = {
+        ...approval,
+        actionId: ActionId.make("account-delete-suspended"),
+      };
+      expect(
+        yield* deletionCasesPersistence.presentSelf(userId, {
+          ...suspendedApproval,
+          authSessionId: authority.authSessionId,
+          expiresAt: retrySessionExpiresAt,
+        }),
+      ).toEqual({ _tag: "Presented" });
       yield* Effect.promise(() =>
         database.insert(userSuspensionEvents).values({
           action: "suspended",
@@ -94,7 +116,7 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
         yield* deletionCasesPersistence.requestSelf(
           userId,
           DeletionCaseId.make("suspended-user-case"),
-          approval,
+          suspendedApproval,
           authority,
         ),
       ).toEqual({ _tag: "AuthorityChanged" });
@@ -522,7 +544,7 @@ it.effect("consumes only one exact current server-owned self-service deletion Ac
           forgedApproval,
           initialAuthority,
         ),
-      ).toEqual({ _tag: "AuthorityChanged" });
+      ).toEqual({ _tag: "ActionUnavailable" });
 
       const expiredApproval = selfDeletionApproval("expired");
       expect(
@@ -548,7 +570,7 @@ it.effect("consumes only one exact current server-owned self-service deletion Ac
           expiredApproval,
           initialAuthority,
         ),
-      ).toEqual({ _tag: "AuthorityChanged" });
+      ).toEqual({ _tag: "ActionUnavailable" });
 
       const versionApproval = selfDeletionApproval("version");
       yield* persistence.presentSelf(userId, {
@@ -563,7 +585,7 @@ it.effect("consumes only one exact current server-owned self-service deletion Ac
           { ...versionApproval, presentationVersion: "account-deletion-v2" },
           initialAuthority,
         ),
-      ).toEqual({ _tag: "AuthorityChanged" });
+      ).toEqual({ _tag: "ActionUnavailable" });
 
       const presentationApproval = selfDeletionApproval("presentation");
       yield* persistence.presentSelf(userId, {
@@ -581,7 +603,7 @@ it.effect("consumes only one exact current server-owned self-service deletion Ac
           },
           initialAuthority,
         ),
-      ).toEqual({ _tag: "AuthorityChanged" });
+      ).toEqual({ _tag: "ActionUnavailable" });
 
       const revokedApproval = selfDeletionApproval("revoked-session");
       yield* persistence.presentSelf(userId, {
@@ -634,7 +656,7 @@ it.effect("consumes only one exact current server-owned self-service deletion Ac
           invalidatedApproval,
           currentAuthority,
         ),
-      ).toEqual({ _tag: "AuthorityChanged" });
+      ).toEqual({ _tag: "ActionUnavailable" });
 
       const concurrent = yield* Effect.all(
         [

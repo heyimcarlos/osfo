@@ -1,5 +1,12 @@
-import { AccountDeletionCaller, AccountDeletionUnavailable, Api, CurrentUser } from "@osfo/api";
-import { Effect, Layer } from "effect";
+import {
+  AccountDeletionActionUnavailable,
+  AccountDeletionCaller,
+  AccountDeletionPresentationUnavailable,
+  AccountDeletionUnavailable,
+  Api,
+  CurrentUser,
+} from "@osfo/api";
+import { Effect, Layer, Predicate } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { AccountDeletionRequestService } from "../composition/account-deletion-request";
@@ -22,7 +29,7 @@ export const layer = Layer.unwrap(
           }).pipe(
             Effect.mapError(
               () =>
-                new AccountDeletionUnavailable({
+                new AccountDeletionPresentationUnavailable({
                   message: "Account deletion could not be presented",
                 }),
             ),
@@ -45,11 +52,16 @@ export const layer = Layer.unwrap(
             });
             return { status: "deletion-pending" as const };
           }).pipe(
-            Effect.mapError(
-              () =>
-                new AccountDeletionUnavailable({
-                  message: "Account deletion could not be started",
-                }),
+            Effect.mapError((failure) =>
+              Predicate.isTagged(failure, "AccountDeletionRequest.ActionUnavailable")
+                ? new AccountDeletionActionUnavailable({
+                    message: "Request a fresh account deletion confirmation",
+                    requestState: "notAccepted",
+                  })
+                : new AccountDeletionUnavailable({
+                    message: "Osfo could not confirm whether account deletion started",
+                    requestState: "mayBeAccepted",
+                  }),
             ),
           ),
         ),

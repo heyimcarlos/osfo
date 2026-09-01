@@ -75,6 +75,9 @@ export type RequestResult =
   | { readonly _tag: "Existing"; readonly deletionCaseId: DeletionCaseId }
   | { readonly _tag: "MissingUser" };
 
+/** Self-service result proving the exact request is unusable and no Case or fence exists. */
+export type SelfRequestResult = RequestResult | { readonly _tag: "ActionUnavailable" };
+
 /** Persistence result when presenting one server-owned self-service deletion Action. */
 export type PresentSelfResult =
   | { readonly _tag: "AuthorityChanged" }
@@ -116,7 +119,7 @@ export interface PersistencePort {
     deletionCaseId: DeletionCaseId,
     approval: SelfDeletionApproval,
     authority: SelfDeletionAuthority,
-  ) => Effect.Effect<RequestResult, DbUnavailable>;
+  ) => Effect.Effect<SelfRequestResult, DbUnavailable>;
 }
 
 /** Deletion Case persistence capability supplied by Postgres. */
@@ -144,6 +147,7 @@ export interface Interface {
     authority: SelfDeletionAuthority,
   ) => Effect.Effect<
     | { readonly _tag: "DeletionAlreadyRequested"; readonly deletionCaseId: DeletionCaseId }
+    | { readonly _tag: "DeletionActionUnavailable" }
     | { readonly _tag: "DeletionAuthorityChanged" }
     | { readonly _tag: "DeletionRequested"; readonly deletionCaseId: DeletionCaseId }
     | { readonly _tag: "UserMissing" },
@@ -173,6 +177,9 @@ export const make = Effect.gen(function* () {
   ) {
     const deletionCaseId = DeletionCaseId.make(yield* secureId);
     const result = yield* persistence.requestSelf(userId, deletionCaseId, approval, authority);
+    if (result._tag === "ActionUnavailable") {
+      return { _tag: "DeletionActionUnavailable" } as const;
+    }
     if (result._tag === "AuthorityChanged") return { _tag: "DeletionAuthorityChanged" } as const;
     if (result._tag === "MissingUser") return { _tag: "UserMissing" } as const;
     return result._tag === "Existing"

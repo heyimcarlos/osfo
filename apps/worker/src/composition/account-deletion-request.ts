@@ -7,7 +7,17 @@ import {
 } from "@osfo/api";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { eq } from "drizzle-orm";
-import { Crypto, DateTime, Effect, Encoding, Option, Predicate, Redacted, Schema } from "effect";
+import {
+  Crypto,
+  Data,
+  DateTime,
+  Effect,
+  Encoding,
+  Option,
+  Predicate,
+  Redacted,
+  Schema,
+} from "effect";
 
 import { Db } from "../db";
 import { PlanPolicyVersion, UserId } from "../domain";
@@ -50,16 +60,18 @@ export const make = Effect.gen(function* () {
       Effect.mapError(() => unavailable("presentIdentity")),
     );
     const now = yield* DateTime.now;
+    const expiresAt = DateTime.toDateUtc(DateTime.add(now, { minutes: 5 }));
     const result = yield* authorities.deletionCases.presentSelf(userId, {
       actionId,
       authSessionId,
-      expiresAt: DateTime.toDateUtc(DateTime.add(now, { minutes: 5 })),
+      expiresAt,
       presentation: ApprovalPresentation.make(encodeAccountDeletionPresentation(presentation)),
       presentationVersion: accountDeletionPresentationVersion,
       replayTokenHash: yield* DeletionCase.hashReplayToken(crypto, Redacted.make(replayToken)),
     });
     if (!Predicate.isTagged(result, "Presented")) return yield* unavailable("presentAuthority");
     return {
+      expiresAt,
       presentation,
       presentationVersion: accountDeletionPresentationVersion,
       replayToken,
@@ -156,6 +168,9 @@ export const make = Effect.gen(function* () {
       yield* deletion.quiesceCase(userId, requested.deletionCaseId);
       return undefined;
     }
+    if (Predicate.isTagged(requested, "DeletionActionUnavailable")) {
+      return yield* new ActionUnavailable();
+    }
     return yield* unavailable("fence");
   });
   const acknowledgeRetained = Effect.fn("AccountDeletionRequest.acknowledgeRetained")(function* (
@@ -166,6 +181,11 @@ export const make = Effect.gen(function* () {
   });
   return { acknowledgeRetained, present, request };
 });
+
+/** Exact request was rejected before any Deletion Case or access fence committed. */
+export class ActionUnavailable extends Data.TaggedError(
+  "AccountDeletionRequest.ActionUnavailable",
+) {}
 
 type AccountDeletionPresentation = AccountDeletionActionPresentation;
 

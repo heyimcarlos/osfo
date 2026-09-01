@@ -25,3 +25,14 @@ if "$inspector" "$script_dir/fixtures/account-http-exact.log" retained-replay >/
   printf 'A retained replay proof requires two successful DELETE requests\n' >&2
   exit 1
 fi
+
+expiry_counts="$($inspector "$script_dir/fixtures/account-http-expiry-refresh.log" expiry-refresh)"
+jq --exit-status '
+  .presentationRequests == 2 and .presentationSuccesses == 2 and
+  .deleteRequests == 1 and .deleteSuccesses == 1
+' <<<$expiry_counts >/dev/null
+
+if "$inspector" "$script_dir/fixtures/account-http-exact.log" expiry-refresh >/dev/null 2>&1; then
+  printf 'An expiry-refresh proof requires two successful presentations\n' >&2
+  exit 1
+fi

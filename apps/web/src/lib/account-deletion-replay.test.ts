@@ -1,7 +1,10 @@
 // @vitest-environment happy-dom
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
+import { AccountDeletionActionUnavailable } from "@osfo/api";
+import { Unauthorized } from "@osfo/api/middleware/auth";
 import { afterEach, beforeEach, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
+import { HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 
 import {
   accessBrowserAccountDeletionReplayStorage,
@@ -191,6 +194,91 @@ it.effect("does not let a post-success replay clear failure override deletion", 
     expect(yield* submission.effect).toEqual({ status: "deletion-pending" });
     expect(submissions).toBe(1);
     expect(signedOut).toBe(true);
+  }),
+);
+
+it.effect("clears an exact replay after the Worker proves the request was not accepted", () =>
+  Effect.gen(function* () {
+    const rejected = new AccountDeletionActionUnavailable({
+      message: "Request a fresh account deletion confirmation",
+      requestState: "notAccepted",
+    });
+    const submission = prepareAccountDeletionSubmission(
+      localStorage,
+      request,
+      () => Effect.fail(rejected),
+      () => undefined,
+    );
+
+    expect(submission.replayAvailable).toBe(true);
+    expect(loadAccountDeletionReplay(localStorage)).toEqual({ request, status: "available" });
+    expect(Exit.isFailure(yield* Effect.exit(submission.effect))).toBe(true);
+    expect(loadAccountDeletionReplay(localStorage)).toEqual({ status: "missing" });
+  }),
+);
+
+it.effect("clears an exact replay after a raw pre-fence rejection status", () =>
+  Effect.gen(function* () {
+    const httpRequest = HttpClientRequest.delete("https://api.osfo.ai/v1/account");
+    const rejected = new HttpClientError.HttpClientError({
+      reason: new HttpClientError.StatusCodeError({
+        request: httpRequest,
+        response: HttpClientResponse.fromWeb(httpRequest, new Response(null, { status: 410 })),
+      }),
+    });
+    const submission = prepareAccountDeletionSubmission(
+      localStorage,
+      request,
+      () => Effect.fail(rejected),
+      () => undefined,
+    );
+
+    expect(Exit.isFailure(yield* Effect.exit(submission.effect))).toBe(true);
+    expect(loadAccountDeletionReplay(localStorage)).toEqual({ status: "missing" });
+  }),
+);
+
+it.effect("retains the exact replay when the destructive response is lost", () =>
+  Effect.gen(function* () {
+    const submission = prepareAccountDeletionSubmission(
+      localStorage,
+      request,
+      () => Effect.die(new Error("response lost")),
+      () => undefined,
+    );
+
+    expect(Exit.isFailure(yield* Effect.exit(submission.effect))).toBe(true);
+    expect(loadAccountDeletionReplay(localStorage)).toEqual({ request, status: "available" });
+  }),
+);
+
+it.effect("clears an exact replay after terminal 400 or 401 responses", () =>
+  Effect.gen(function* () {
+    const httpRequest = HttpClientRequest.delete("https://api.osfo.ai/v1/account");
+    const badRequestResponse = HttpClientResponse.fromWeb(
+      httpRequest,
+      new Response(null, { status: 400 }),
+    );
+    const failures = [
+      new Unauthorized({}),
+      new HttpClientError.HttpClientError({
+        reason: new HttpClientError.StatusCodeError({
+          request: httpRequest,
+          response: badRequestResponse,
+        }),
+      }),
+    ];
+
+    for (const failure of failures) {
+      const submission = prepareAccountDeletionSubmission(
+        localStorage,
+        request,
+        () => Effect.fail(failure),
+        () => undefined,
+      );
+      expect(Exit.isFailure(yield* Effect.exit(submission.effect))).toBe(true);
+      expect(loadAccountDeletionReplay(localStorage)).toEqual({ status: "missing" });
+    }
   }),
 );
 
