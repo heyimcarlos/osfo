@@ -82,6 +82,10 @@ FEATURE=registration # registration, channel-linking, conversation-memory, resea
 ./.agents/skills/verify-osfo/helpers/control-osfo evidence "$RUN_ID" "$FEATURE" finish
 ```
 
+Immediate Gmail deliberately defers that final command: observe the Gmail result, complete and
+finish account deletion in the normal drive order, then finish Immediate Gmail with the deletion
+receipt. Its feature file gives the exact sequence.
+
 ## Evidence
 
 Complete browser evidence lives under `artifacts/verification/osfo/<run-id>/<feature>/`:
@@ -91,6 +95,8 @@ Complete browser evidence lives under `artifacts/verification/osfo/<run-id>/<fea
 - `action.png` and `result.png` capture both halves of the User journey;
 - `state.json` is a read-only observation of committed product state;
 - `provider.json` captures the local production-boundary ledger;
+- Immediate Gmail also records `approval.json`, `browser-evidence.json`, a same-commit
+  replay qualification, and the later account-deletion receipt;
 - `observation-passed.txt` exists only after the state and provider assertions pass;
 - `result.txt` records PASS, the exact commit, and completion time.
 
