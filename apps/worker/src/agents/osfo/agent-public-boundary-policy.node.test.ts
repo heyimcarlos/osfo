@@ -67,7 +67,6 @@ const publicBoundaryPolicy = {
   presentPersonalSkillDeletion: ["read", "none"],
   quiesceAccountDeletion: ["cancellationReconciliationDeletion", "none"],
   readActionPresentation: ["read", "none"],
-  readCommittedTurns: ["cancellationReconciliationDeletion", "none"],
   readFile: ["read", "none"],
   resolveDocumentBuildFiles: ["read", "accountDeletionFence"],
   readRoute: ["read", "none"],

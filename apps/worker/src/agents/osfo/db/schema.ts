@@ -501,23 +501,6 @@ export const personalSkillLearningModelAttempts = sqliteTable(
   ],
 );
 
-/** Legacy receipt storage retained only for owner deletion until a later contract migration. */
-export const legacyGoodRootOutcomeEvaluations = sqliteTable(
-  "osfo_good_root_outcome_evaluations",
-  {
-    evaluation_id: text().primaryKey(),
-    owner_user_id: userId().notNull(),
-    receipt_json: text().notNull(),
-    retained_at_epoch_millis: integer().notNull(),
-  },
-  (table) => [
-    index("osfo_good_root_outcome_evaluations_by_owner").on(
-      table.owner_user_id,
-      table.retained_at_epoch_millis,
-    ),
-  ],
-);
-
 /** Idempotent bounded public-web operations owned by one User turn. */
 export const webOperations = sqliteTable(
   "osfo_web_operations",
