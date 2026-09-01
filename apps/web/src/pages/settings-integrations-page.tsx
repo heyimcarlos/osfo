@@ -70,8 +70,8 @@ export function SettingsIntegrationsPage({
   const [gmailSendError, setGmailSendError] = useState<string | null>(null);
   const [gmailSendDecision, setGmailSendDecision] = useState<"approved" | "rejected" | null>(null);
 
-  const refresh = useCallback(
-    (preserveError = false) => {
+  const refreshConnections = useCallback(
+    (preserveError: boolean) => {
       if (!preserveError) setError(null);
       void Effect.runPromise(dependencies.inspectIntegrations).then(setSummary, () => {
         if (!preserveError) {
@@ -81,6 +81,8 @@ export function SettingsIntegrationsPage({
     },
     [dependencies.inspectIntegrations],
   );
+  const refresh = useCallback(() => refreshConnections(false), [refreshConnections]);
+  const refreshPreservingError = useCallback(() => refreshConnections(true), [refreshConnections]);
 
   useEffect(refresh, [refresh]);
 
@@ -134,7 +136,7 @@ export function SettingsIntegrationsPage({
       () => {
         setBusyToolkit(null);
         setError("The connection could not be disconnected. Please try again.");
-        refresh(true);
+        refreshPreservingError();
       },
     );
   };

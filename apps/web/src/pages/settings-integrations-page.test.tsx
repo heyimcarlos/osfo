@@ -35,7 +35,7 @@ const pageDependencies = (
 });
 
 describe("SettingsIntegrationsPage", () => {
-  it("refreshes partial provider truth after disconnect fails without hiding the failure", async () => {
+  it("refreshes partial provider truth and keeps manual refresh errors truthful", async () => {
     let inspections = 0;
     const disconnected: Array<string> = [];
     vi.stubGlobal(
@@ -48,6 +48,9 @@ describe("SettingsIntegrationsPage", () => {
           ...pageDependencies(
             Effect.suspend(() => {
               inspections += 1;
+              if (inspections === 5) {
+                return Effect.die(new Error("integration inspection unavailable"));
+              }
               return Effect.succeed({
                 connections: [
                   {
@@ -80,6 +83,31 @@ describe("SettingsIntegrationsPage", () => {
       expect(screen.queryByText("Connected")).toBeNull();
       expect(disconnected).toEqual(["gmail"]);
       expect(inspections).toBe(2);
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(inspections).toBe(3);
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain(
+        "The connection could not be disconnected",
+      );
+      expect(inspections).toBe(4);
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain(
+        "Integration connections are temporarily unavailable",
+      );
+      expect(screen.getByRole("alert").textContent).not.toContain(
+        "The connection could not be disconnected",
+      );
+      expect(disconnected).toEqual(["gmail", "gmail"]);
+      expect(inspections).toBe(5);
     });
   });
 });
