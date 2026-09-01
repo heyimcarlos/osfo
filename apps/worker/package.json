@@ -12,7 +12,7 @@
     "agent-db:generate": "drizzle-kit generate --config drizzle.agent.config.ts",
     "build": "wrangler deploy --dry-run --outdir dist",
     "dev": "bun --cwd ../..  alchemy dev --stage development --env-file apps/worker/.env",
-    "test": "vitest run --config vitest.modules.config.ts && vitest run --config vitest.runtime.config.ts && node ../../node_modules/.bin/vitest run --config vitest.node.config.ts && vitest run --config vitest.file-task.config.ts && bun run test:renderer",
+    "test": "vitest run --config vitest.modules.config.ts && vitest run --config vitest.runtime.config.ts && vitest run --config vitest.observer.config.ts && node ../../node_modules/.bin/vitest run --config vitest.node.config.ts && vitest run --config vitest.file-task.config.ts && bun run test:renderer",
     "test:journeys:account-deletion-envelope": "vitest run --config vitest.composed.config.ts test/composed/account-deletion-envelope.test.ts",
     "test:journeys": "vitest run --config vitest.journeys.config.ts",
     "test:live:supermemory": "bun --env-file=.env --bun x vitest run --config vitest.live.config.ts",
