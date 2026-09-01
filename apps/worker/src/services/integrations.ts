@@ -1088,19 +1088,31 @@ export const make = (
         return yield* unsupportedToolkit(input.toolkit, "DISCONNECT");
       }
       const { session } = yield* resolveProviderSession(input.userId);
-      const activeAccounts = (yield* session.inspectToolkits([input.toolkit])).flatMap(
+      const retainedAccounts = (yield* session.inspectToolkits([input.toolkit])).flatMap(
         ({ connectedAccount, isActive, slug }) =>
-          slug === input.toolkit &&
-          isActive &&
-          connectedAccount !== null &&
-          connectedAccount.status === "ACTIVE"
-            ? [connectedAccount]
+          slug === input.toolkit && connectedAccount !== null
+            ? [{ connectedAccount, isActive }]
             : [],
+      );
+      const activeAccounts = retainedAccounts.flatMap(({ connectedAccount, isActive }) =>
+        isActive && connectedAccount.status === "ACTIVE" ? [connectedAccount] : [],
       );
       yield* Effect.forEach(activeAccounts, ({ id }) => session.disconnect(id), {
         concurrency: 1,
         discard: true,
       });
+      const hasStaleAccount = retainedAccounts.some(
+        ({ connectedAccount, isActive }) =>
+          connectedAccount.status !== "REVOKED" &&
+          !(isActive && connectedAccount.status === "ACTIVE"),
+      );
+      if (hasStaleAccount) {
+        return yield* new IntegrationConnectionUnavailable({
+          message: "The Integration Connection retains stale provider authority",
+          toolkit: input.toolkit,
+          userId: input.userId,
+        });
+      }
       return { _tag: "IntegrationConnectionRevoked" as const, toolkit: input.toolkit };
     }),
     execute,

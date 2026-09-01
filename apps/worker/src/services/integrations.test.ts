@@ -152,7 +152,7 @@ describe("Integrations", () => {
     }),
   );
 
-  it.effect("revokes only active toolkit authorities while retaining other stale evidence", () =>
+  it.effect("revokes active toolkit authorities before failing on retained stale evidence", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
       harness.toolkits.push(
@@ -172,9 +172,12 @@ describe("Integrations", () => {
       expect(yield* integrations.connectionEvidence({ toolkit: "gmail", userId })).toMatchObject({
         _tag: "IntegrationConnectionConnected",
       });
-      expect(yield* integrations.disconnect({ toolkit: "gmail", userId })).toEqual({
-        _tag: "IntegrationConnectionRevoked",
+      expect(
+        yield* Effect.flip(integrations.disconnect({ toolkit: "gmail", userId })),
+      ).toMatchObject({
+        _tag: "IntegrationConnectionUnavailable",
         toolkit: "gmail",
+        userId,
       });
       expect(harness.disconnected).toEqual(["active-account"]);
       expect(yield* integrations.connectionEvidence({ toolkit: "gmail", userId })).toEqual({
@@ -215,23 +218,71 @@ describe("Integrations", () => {
     }),
   );
 
-  it.effect("treats a disconnect with no active toolkit authority as idempotently complete", () =>
+  it.effect("revokes one active toolkit authority and refreshes it as missing", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits.push({
+        connectedAccount: { id: "active-account", status: "ACTIVE" },
+        isActive: true,
+        slug: "gmail",
+      });
+      const integrations = make(harness);
+
+      expect(yield* integrations.disconnect({ toolkit: "gmail", userId })).toEqual({
+        _tag: "IntegrationConnectionRevoked",
+        toolkit: "gmail",
+      });
+      expect(harness.disconnected).toEqual(["active-account"]);
+      expect(yield* integrations.connectionEvidence({ toolkit: "gmail", userId })).toEqual({
+        _tag: "IntegrationConnectionMissing",
+        toolkit: "gmail",
+        userId,
+      });
+    }),
+  );
+
+  it.effect("fails a stale-only disconnect without claiming a provider mutation", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
       harness.toolkits.push(
-        {
-          connectedAccount: { id: "revoked-account", status: "REVOKED" },
-          isActive: false,
-          slug: "gmail",
-        },
         {
           connectedAccount: { id: "expired-account", status: "EXPIRED" },
           isActive: false,
           slug: "gmail",
         },
+        {
+          connectedAccount: { id: "inactive-account", status: "INACTIVE" },
+          isActive: false,
+          slug: "gmail",
+        },
       );
 
-      expect(yield* make(harness).disconnect({ toolkit: "gmail", userId })).toEqual({
+      expect(
+        yield* Effect.flip(make(harness).disconnect({ toolkit: "gmail", userId })),
+      ).toMatchObject({
+        _tag: "IntegrationConnectionUnavailable",
+        toolkit: "gmail",
+        userId,
+      });
+      expect(harness.disconnected).toEqual([]);
+    }),
+  );
+
+  it.effect("treats no retained authority and REVOKED-only authority as idempotent success", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const integrations = make(harness);
+
+      expect(yield* integrations.disconnect({ toolkit: "gmail", userId })).toEqual({
+        _tag: "IntegrationConnectionRevoked",
+        toolkit: "gmail",
+      });
+      harness.toolkits.push({
+        connectedAccount: { id: "revoked-account", status: "REVOKED" },
+        isActive: false,
+        slug: "gmail",
+      });
+      expect(yield* integrations.disconnect({ toolkit: "gmail", userId })).toEqual({
         _tag: "IntegrationConnectionRevoked",
         toolkit: "gmail",
       });
