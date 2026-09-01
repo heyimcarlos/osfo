@@ -11,7 +11,6 @@ import { Routes } from "./routes";
 import { ChannelLinks } from "./services/channel-links";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/identity";
 import { AccountDeletionComposition } from "./composition/account-deletion";
-import { ComposioAccountDeletion } from "./integrations/composio/account-deletion";
 import { SupermemoryMemoryProvider } from "./integrations/supermemory/memory-provider";
 import { AccountDeletion } from "./services/account-deletion";
 
@@ -121,13 +120,9 @@ export const reconcileAccountDeletions = (env: CloudflareEnv) => {
 const adaptBindings = (env: CloudflareEnv, config: CloudflareConfig): Bindings => ({
   ARTIFACTS: env.ARTIFACTS,
   FILES: env.FILES,
-  integrationAuthorityDeletion:
-    config.composio === null
-      ? AccountDeletionComposition.integrationAuthorityDeletionNotDelivered
-      : {
-          _tag: "Delivered",
-          adapter: ComposioAccountDeletion.make(config.composio.apiKey),
-        },
+  integrationAuthorityDeletion: AccountDeletionComposition.integrationAuthorityDeletion(
+    config.integrationProvider,
+  ),
   DB: env.DB,
   DOCUMENT_BUILD_TIMER_WORKFLOW: env.DOCUMENT_BUILD_TIMER_WORKFLOW,
   DOCUMENT_BUILD_WORKFLOW: env.DOCUMENT_BUILD_WORKFLOW,

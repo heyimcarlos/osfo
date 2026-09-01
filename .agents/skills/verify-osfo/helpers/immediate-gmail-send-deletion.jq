@@ -8,7 +8,11 @@
   result: "PASS",
   test: "deletes every immediate Gmail owned key without touching unrelated Agent storage"
 } and
-.immediateGmailProviderConnectionDeletion == {issue: "#187", status: "not-qualified"} and
+.immediateGmailProviderConnectionDeletion.status == "deleted" and
+.immediateGmailProviderConnectionDeletion.directProviderAbsence == true and
+.immediateGmailProviderConnectionDeletion.unrelatedConnectionPreserved == true and
+(.immediateGmailProviderConnectionDeletion.connectionBinding |
+  test("^[0-9a-f]{64}$")) and
 .agentRuntime.inspectable == false and
 .agentRuntime.registered == false and
 .userExists == false

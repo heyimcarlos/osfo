@@ -11,13 +11,16 @@ if
     test: "deletes every immediate Gmail owned key without touching unrelated Agent storage"
   } and
   (.observedAt | fromdateiso8601) > 0 and
-  .providerConnectionDeletion == {issue: "#187", status: "not-qualified"}
+  .providerConnectionDeletion == {
+    connectionBinding: $connectionBinding,
+    directProviderAbsence: true,
+    status: "deleted",
+    unrelatedConnectionPreserved: true
+  }
 then
   {
     commit: $commit,
-    issue: "#187",
-    missing: "providerConnectionDeletion",
-    result: "MISSING"
+    result: "PASS"
   }
 else
   error("Immediate Gmail finish evidence is invalid")

@@ -148,7 +148,12 @@ deletion_fixture='{
     "test":"deletes every immediate Gmail owned key without touching unrelated Agent storage"
   },
   "immediateGmailPresentationId":"presentation-1",
-  "immediateGmailProviderConnectionDeletion":{"issue":"#187","status":"not-qualified"},
+  "immediateGmailProviderConnectionDeletion":{
+    "connectionBinding":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "directProviderAbsence":true,
+    "status":"deleted",
+    "unrelatedConnectionPreserved":true
+  },
   "immediateGmailProofExpected":true,
   "userExists":false
 }'
@@ -163,7 +168,9 @@ for mutation in \
   '.immediateGmailDeletionFeature = "account-deletion"' \
   '.immediateGmailDeletionQualification = null' \
   '.immediateGmailDeletionQualification.commit = "different-commit"' \
-  '.immediateGmailProviderConnectionDeletion.status = "deleted"' \
+  '.immediateGmailProviderConnectionDeletion.status = "not-qualified"' \
+  '.immediateGmailProviderConnectionDeletion.directProviderAbsence = false' \
+  '.immediateGmailProviderConnectionDeletion.unrelatedConnectionPreserved = false' \
   '.agentRuntime.inspectable = true' \
   '.agentRuntime.registered = true' \
   '.userExists = true'; do
@@ -194,7 +201,12 @@ if ! jq --exit-status '
   .actionId == "verification-gmailSendEmail::cf-wai-tool-call::turn-1" and
   .presentationId == "presentation-1" and .deletionFeature == "account-deletion-replay" and
   .directoryAgent == {inspectable:false,registered:false} and .userExists == false and
-  .providerConnectionDeletion == {issue:"#187",status:"not-qualified"} and
+  .providerConnectionDeletion == {
+    connectionBinding:("a" * 64),
+    directProviderAbsence:true,
+    status:"deleted",
+    unrelatedConnectionPreserved:true
+  } and
   .ownedKeyDeletionQualification.result == "PASS" and
   (.observedAt | fromdateiso8601) > 0' <<<"$deletion_receipt" >/dev/null; then
   printf 'Immediate Gmail deletion receipt must preserve the exact absence proof\n' >&2
@@ -203,32 +215,31 @@ fi
 
 finish_outcome="$(jq --exit-status \
   --arg actionId 'verification-gmailSendEmail::cf-wai-tool-call::turn-1' \
+  --arg connectionBinding 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
   --arg presentationId presentation-1 \
   --arg commit commit-1 \
   --from-file "$finish_check" <<<"$deletion_receipt")"
-if ! jq --exit-status '
-  . == {
-    commit:"commit-1",
-    issue:"#187",
-    missing:"providerConnectionDeletion",
-    result:"MISSING"
-  }' <<<"$finish_outcome" >/dev/null; then
-  printf 'Missing provider deletion must produce the exact non-PASS outcome\n' >&2
+if ! jq --exit-status '. == {commit:"commit-1",result:"PASS"}' \
+  <<<"$finish_outcome" >/dev/null; then
+  printf 'Complete provider deletion must produce the exact PASS outcome\n' >&2
   exit 1
 fi
 for mutation in \
   '.providerConnectionDeletion = null' \
-  '.providerConnectionDeletion.issue = "#different"' \
-  '.providerConnectionDeletion.status = "deleted"' \
+  '.providerConnectionDeletion.status = "not-qualified"' \
+  '.providerConnectionDeletion.directProviderAbsence = false' \
+  '.providerConnectionDeletion.unrelatedConnectionPreserved = false' \
+  '.providerConnectionDeletion.connectionBinding = ("b" * 64)' \
   '.directoryAgent.inspectable = true' \
   '.ownedKeyDeletionQualification.commit = "different-commit"'; do
   if jq "$mutation" <<<"$deletion_receipt" \
     | jq --exit-status \
       --arg actionId 'verification-gmailSendEmail::cf-wai-tool-call::turn-1' \
+      --arg connectionBinding 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
       --arg presentationId presentation-1 \
       --arg commit commit-1 \
       --from-file "$finish_check" >/dev/null 2>&1; then
-    printf 'Immediate Gmail finish mutation unexpectedly produced MISSING: %s\n' "$mutation" >&2
+    printf 'Immediate Gmail finish mutation unexpectedly produced PASS: %s\n' "$mutation" >&2
     exit 1
   fi
 done

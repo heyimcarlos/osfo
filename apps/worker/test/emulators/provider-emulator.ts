@@ -33,8 +33,15 @@ interface ResearchControl {
 }
 
 interface IntegrationConnectionControl {
+  deleteFailuresRemaining: number;
   nextOrdinal: number;
+  revokeFailuresRemaining: number;
   swapAfterInspections: number | null;
+}
+
+interface IntegrationConnectionState {
+  readonly id: string;
+  readonly status: "ACTIVE" | "REVOKED";
 }
 
 /** One observed Supermemory request. */
@@ -165,7 +172,9 @@ const ResearchRequestFromJson = Schema.fromJsonString(ResearchRequest);
 const LocalIntegrationRequestFromJson = Schema.fromJsonString(
   Schema.StructWithRest(
     Schema.Struct({
+      account_type: Schema.optional(Schema.String),
       callbackUrl: Schema.optional(Schema.String),
+      connected_account_ids: Schema.optional(Schema.Array(Schema.String)),
       connectedAccountId: Schema.optional(Schema.String),
       correlation: Schema.optional(
         Schema.Struct({
@@ -180,6 +189,7 @@ const LocalIntegrationRequestFromJson = Schema.fromJsonString(
       providerTool: Schema.optional(Schema.String),
       toolkit: Schema.optional(Schema.String),
       toolkits: Schema.optional(Schema.Array(Schema.String)),
+      user_ids: Schema.optional(Schema.Array(Schema.String)),
       userId: Schema.optional(Schema.String),
     }),
     [Schema.Record(Schema.String, Schema.Unknown)],
@@ -218,9 +228,11 @@ const startProvider = (options: {
     let latestAgentSequence = 0;
     const integrationLedger: Array<IntegrationLedgerEntry> = [];
     const integrationSessions = new Map<string, string>();
-    const integrationConnections = new Map<string, string>();
+    const integrationConnections = new Map<string, IntegrationConnectionState>();
     const integrationConnectionControl: IntegrationConnectionControl = {
+      deleteFailuresRemaining: 0,
       nextOrdinal: 1,
+      revokeFailuresRemaining: 0,
       swapAfterInspections: null,
     };
     const researchControl: ResearchControl = {
@@ -260,6 +272,8 @@ const startProvider = (options: {
         integrationSessions.clear();
         integrationConnections.clear();
         integrationConnectionControl.nextOrdinal = 1;
+        integrationConnectionControl.deleteFailuresRemaining = 0;
+        integrationConnectionControl.revokeFailuresRemaining = 0;
         integrationConnectionControl.swapAfterInspections = null;
         whatsAppNextResponseStatus = null;
         whatsAppTemplateOnly = false;
@@ -374,6 +388,48 @@ const startProvider = (options: {
         respondJson(response, 200, {
           swapAfterInspections: integrationConnectionControl.swapAfterInspections,
         });
+        return;
+      }
+      if (request.method === "GET" && pathname === "/_test/integrations/connections") {
+        respondJson(
+          response,
+          200,
+          [...integrationConnections].map(([userId, connection]) => ({
+            connectedAccountId: connection.id,
+            status: connection.status,
+            userId,
+          })),
+        );
+        return;
+      }
+      if (request.method === "POST" && pathname === "/_test/integrations/fail-next-delete") {
+        integrationConnectionControl.deleteFailuresRemaining = 1;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      if (request.method === "POST" && pathname === "/_test/integrations/fail-next-revoke") {
+        integrationConnectionControl.revokeFailuresRemaining = 1;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      if (request.method === "POST" && pathname === "/_test/integrations/seed-connection") {
+        readTextBody(request)
+          .then(Schema.decodeUnknownPromise(LocalIntegrationRequestFromJson))
+          .then((input) => {
+            if (input.userId === undefined) {
+              respondJson(response, 400, { error: "User is required" });
+              return;
+            }
+            const connection = integrationConnections.get(input.userId) ?? {
+              id: integrationAccountId(input.userId, integrationConnectionControl.nextOrdinal++),
+              status: "ACTIVE" as const,
+            };
+            integrationConnections.set(input.userId, connection);
+            respondJson(response, 201, { connectedAccountId: connection.id });
+          })
+          .catch((cause: unknown) => respondJson(response, 400, { error: String(cause) }));
         return;
       }
       if (request.method === "POST" && pathname === "/_test/integrations/next-gmail-action") {
@@ -635,11 +691,12 @@ const handleLocalIntegrations = (
   response: ServerResponse,
   url: URL,
   sessions: Map<string, string>,
-  connections: Map<string, string>,
+  connections: Map<string, IntegrationConnectionState>,
   control: IntegrationConnectionControl,
   ledger: Array<IntegrationLedgerEntry>,
 ): void => {
   const segments = url.pathname.split("/").filter(Boolean);
+  const resource = segments[2];
   const sessionId = segments[3];
   const operation = segments[4];
   if (request.method === "GET" && operation === undefined && sessionId !== undefined) {
@@ -662,6 +719,55 @@ const handleLocalIntegrations = (
   readTextBody(request)
     .then(Schema.decodeUnknownPromise(LocalIntegrationRequestFromJson))
     .then((input) => {
+      if (resource === "connected-accounts" && request.method === "POST") {
+        if (sessionId === undefined) {
+          const userIds = input.user_ids ?? [];
+          const connectedAccountIds = input.connected_account_ids;
+          const items = [...connections]
+            .filter(
+              ([userId, connection]) =>
+                userIds.includes(userId) &&
+                (connectedAccountIds === undefined || connectedAccountIds.includes(connection.id)),
+            )
+            .map(([, connection]) => ({ id: connection.id, status: connection.status }));
+          respondJson(response, 200, { items, next_cursor: null });
+          return;
+        }
+        if (operation === "revoke") {
+          if (control.revokeFailuresRemaining > 0) {
+            control.revokeFailuresRemaining -= 1;
+            respondJson(response, 503, { error: "Revocation is temporarily unavailable" });
+            return;
+          }
+          const owned = [...connections].find(([, connection]) => connection.id === sessionId);
+          if (owned === undefined) {
+            respondJson(response, 404, { error: "Connected account not found" });
+            return;
+          }
+          const [owner] = owned;
+          connections.set(owner, { id: sessionId, status: "REVOKED" });
+          respondJson(response, 200, { id: sessionId, status: "REVOKED" });
+          return;
+        }
+        if (operation === "delete") {
+          if (control.deleteFailuresRemaining > 0) {
+            control.deleteFailuresRemaining -= 1;
+            respondJson(response, 503, { error: "Deletion is temporarily unavailable" });
+            return;
+          }
+          const owned = [...connections].find(([, connection]) => connection.id === sessionId);
+          if (owned !== undefined && owned[1].status !== "REVOKED") {
+            respondJson(response, 409, { error: "Connected account is not revoked" });
+            return;
+          }
+          const owner = owned?.[0];
+          if (owner !== undefined) connections.delete(owner);
+          respondJson(response, 200, { success: true });
+          return;
+        }
+        respondJson(response, 400, { error: "Connected account request is invalid" });
+        return;
+      }
       if (request.method === "POST" && sessionId === undefined && operation === undefined) {
         const userId = input.userId;
         if (userId === undefined) {
@@ -698,28 +804,36 @@ const handleLocalIntegrations = (
           if (control.swapAfterInspections === 0) {
             const userId = input.userId ?? "";
             if (connections.has(userId)) {
-              connections.set(userId, integrationAccountId(userId, control.nextOrdinal++));
+              connections.set(userId, {
+                id: integrationAccountId(userId, control.nextOrdinal++),
+                status: "ACTIVE",
+              });
             }
             control.swapAfterInspections = null;
           }
         }
         const requested = input.toolkits ?? [];
+        const connection = connections.get(input.userId ?? "");
         respondJson(
           response,
           200,
           requested.map((toolkit) => ({
             connectedAccount:
-              toolkit === "gmail" && connections.has(input.userId ?? "")
-                ? { id: connections.get(input.userId ?? ""), status: "ACTIVE" }
+              toolkit === "gmail" && connection !== undefined
+                ? { id: connection.id, status: connection.status }
                 : null,
-            isActive: toolkit === "gmail" && connections.has(input.userId ?? ""),
+            isActive: toolkit === "gmail" && connection?.status === "ACTIVE",
             slug: toolkit,
           })),
         );
         return;
       }
       if (operation === "disconnect") {
-        connections.delete(input.userId ?? "");
+        const userId = input.userId ?? "";
+        const connection = connections.get(userId);
+        if (connection !== undefined) {
+          connections.set(userId, { ...connection, status: "REVOKED" });
+        }
         respondJson(response, 200, { disconnected: true });
         return;
       }
@@ -781,7 +895,7 @@ const completeLocalIntegrationConnect = (
   url: URL,
   sessionId: string,
   sessions: ReadonlyMap<string, string>,
-  connections: Map<string, string>,
+  connections: Map<string, IntegrationConnectionState>,
   control: IntegrationConnectionControl,
 ): void => {
   const userId = sessions.get(sessionId);
@@ -790,7 +904,10 @@ const completeLocalIntegrationConnect = (
     respondJson(response, 400, { error: "Connect request is invalid" });
     return;
   }
-  connections.set(userId, integrationAccountId(userId, control.nextOrdinal++));
+  connections.set(userId, {
+    id: integrationAccountId(userId, control.nextOrdinal++),
+    status: "ACTIVE",
+  });
   response.statusCode = 303;
   response.setHeader("location", callback);
   response.end();
@@ -800,7 +917,7 @@ const executeLocalIntegration = (
   response: ServerResponse,
   sessionId: string,
   input: typeof LocalIntegrationRequestFromJson.Type,
-  connections: ReadonlyMap<string, string>,
+  connections: ReadonlyMap<string, IntegrationConnectionState>,
   ledger: Array<IntegrationLedgerEntry>,
 ): void => {
   const userId = input.userId ?? "";
@@ -810,7 +927,8 @@ const executeLocalIntegration = (
     !connections.has(userId) ||
     input.providerTool !== "GMAIL_SEND_EMAIL" ||
     connectedAccountId === undefined ||
-    connectedAccountId !== connections.get(userId) ||
+    connectedAccountId !== connections.get(userId)?.id ||
+    connections.get(userId)?.status !== "ACTIVE" ||
     message === undefined ||
     input.correlation?.providerRequestId === null ||
     input.correlation?.providerRequestId === undefined

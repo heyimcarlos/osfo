@@ -8,7 +8,7 @@ import {
   startProviderEmulator,
   startRunProviderEmulator,
 } from "../../../test/emulators/provider-emulator";
-import { directIntegrationProviderConfig } from "../../services/integrations";
+import { directIntegrationProviderConfig, type ProviderSession } from "../../services/integrations";
 import { ResearchVerificationProvider } from "../cloudflare/research-verification-provider";
 import { LocalVerificationIntegrationProvider } from "./provider";
 
@@ -224,6 +224,131 @@ it.effect("connects and sends through one deterministic local Gmail provider bou
           userId,
         },
       ]);
+      yield* created.session.disconnect(accountId);
+      expect(yield* created.session.inspectToolkits(["gmail"])).toEqual([
+        {
+          connectedAccount: { id: accountId, status: "REVOKED" },
+          isActive: false,
+          slug: "gmail",
+        },
+      ]);
     }),
   ),
 );
+
+it.effect(
+  "deletes only the selected User connection and preserves the immutable send ledger on replay",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const emulator = yield* Effect.acquireRelease(
+          Effect.promise(startProviderEmulator),
+          (provider) => Effect.promise(() => provider.close()),
+        );
+        const provider = LocalVerificationIntegrationProvider.make(emulator.origin);
+        const deletingUserId = UserId.make("local-deleting-user");
+        const unrelatedUserId = UserId.make("local-unrelated-user");
+        const deleting = yield* provider.createSession(
+          deletingUserId,
+          directIntegrationProviderConfig,
+        );
+        const unrelated = yield* provider.createSession(
+          unrelatedUserId,
+          directIntegrationProviderConfig,
+        );
+        const deletingAccountId = yield* connectLocalGmail(deleting.session);
+        const unrelatedAccountId = yield* connectLocalGmail(unrelated.session);
+        const correlation = {
+          connectedAccountId: deletingAccountId,
+          providerRequestId: "local-deletion-send-request-1",
+          providerSessionId: deleting.providerSessionId,
+          providerTool: "GMAIL_SEND_EMAIL",
+          startedAt: 0,
+        } as const;
+        yield* deleting.session.execute(
+          "GMAIL_SEND_EMAIL",
+          {
+            body: "Immutable send ledger proof.",
+            is_html: false,
+            recipient_email: "recipient@example.test",
+            subject: "Provider deletion verification",
+            user_id: "me",
+          },
+          deletingAccountId,
+          undefined,
+          correlation,
+        );
+        const ledgerBefore = yield* Effect.promise(() =>
+          fetch(new URL("/_test/integrations/ledger", emulator.origin)).then((response) =>
+            response.json(),
+          ),
+        );
+        const deletion = LocalVerificationIntegrationProvider.makeAccountDeletion(emulator.origin);
+        const targets = yield* deletion.pending(deletingUserId);
+        expect(targets).toEqual([{ connectionId: deletingAccountId, userId: deletingUserId }]);
+        const target = targets[0];
+        if (target === undefined) return yield* Effect.die(new Error("target is missing"));
+
+        yield* Effect.promise(() =>
+          fetch(new URL("/_test/integrations/fail-next-revoke", emulator.origin), {
+            method: "POST",
+          }),
+        );
+        expect(yield* deletion.revoke(target).pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+        });
+        expect(yield* deletion.pending(deletingUserId)).toEqual(targets);
+
+        yield* deletion.revoke(target);
+        yield* Effect.promise(() =>
+          fetch(new URL("/_test/integrations/fail-next-delete", emulator.origin), {
+            method: "POST",
+          }),
+        );
+        expect(yield* deletion.remove(target).pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+        });
+        expect(yield* deletion.pending(deletingUserId)).toEqual(targets);
+        yield* deletion.remove(target);
+        yield* deletion.remove(target);
+        expect(yield* deletion.pending(deletingUserId)).toEqual([]);
+        expect(yield* deletion.pending(unrelatedUserId)).toEqual([
+          { connectionId: unrelatedAccountId, userId: unrelatedUserId },
+        ]);
+        expect(yield* deleting.session.inspectToolkits(["gmail"])).toEqual([
+          { connectedAccount: null, isActive: false, slug: "gmail" },
+        ]);
+        expect(yield* unrelated.session.inspectToolkits(["gmail"])).toMatchObject([
+          {
+            connectedAccount: { id: unrelatedAccountId, status: "ACTIVE" },
+            isActive: true,
+            slug: "gmail",
+          },
+        ]);
+        expect(
+          yield* Effect.promise(() =>
+            fetch(new URL("/_test/integrations/ledger", emulator.origin)).then((response) =>
+              response.json(),
+            ),
+          ),
+        ).toEqual(ledgerBefore);
+        return undefined;
+      }),
+    ),
+);
+
+const connectLocalGmail = (providerSession: ProviderSession) =>
+  Effect.gen(function* () {
+    const redirect = yield* providerSession.authorize(
+      "gmail",
+      new URL("http://127.0.0.1:4173/settings/integrations"),
+    );
+    const completed = yield* Effect.promise(() =>
+      fetch(redirect, { method: "POST", redirect: "manual" }),
+    );
+    expect(completed.status).toBe(303);
+    const evidence = yield* providerSession.inspectToolkits(["gmail"]);
+    const accountId = evidence[0]?.connectedAccount?.id;
+    if (accountId === undefined) return yield* Effect.die(new Error("connection is missing"));
+    return accountId;
+  });

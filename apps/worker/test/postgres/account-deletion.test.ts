@@ -884,18 +884,35 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
         connectionId: AccountDeletion.IntegrationAuthorityTargetId.make("connection-2"),
         userId,
       };
+      const pendingFirstTarget = { ...firstTarget, status: "pending" as const };
+      const pendingSecondTarget = { ...secondTarget, status: "pending" as const };
+      const revokedFirstTarget = { ...firstTarget, status: "revoked" as const };
       expect(
         yield* accountDeletion.stageIntegrationTargets(candidate, [
           firstTarget,
           firstTarget,
           secondTarget,
         ]),
-      ).toEqual([firstTarget, secondTarget]);
+      ).toEqual([pendingFirstTarget, pendingSecondTarget]);
+      expect(
+        Result.isFailure(
+          yield* accountDeletion
+            .confirmIntegrationTarget(candidate, firstTarget)
+            .pipe(Effect.result),
+        ),
+      ).toBe(true);
+      yield* accountDeletion.markIntegrationTargetRevoked(candidate, firstTarget);
+      expect(yield* accountDeletion.stageIntegrationTargets(candidate, [])).toEqual([
+        revokedFirstTarget,
+        pendingSecondTarget,
+      ]);
       yield* accountDeletion.confirmIntegrationTarget(candidate, firstTarget);
-      expect(yield* accountDeletion.stageIntegrationTargets(candidate, [])).toEqual([secondTarget]);
+      expect(yield* accountDeletion.stageIntegrationTargets(candidate, [])).toEqual([
+        pendingSecondTarget,
+      ]);
       expect(
         yield* accountDeletion.stageIntegrationTargets(candidate, [firstTarget, secondTarget]),
-      ).toEqual([secondTarget]);
+      ).toEqual([pendingSecondTarget]);
       const retainedProgress = [
         { ...firstTarget, status: "confirmed" as const },
         { ...secondTarget, status: "pending" as const },
@@ -967,7 +984,11 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
       const authorityDriftedConfirmation = yield* accountDeletion
         .confirmIntegrationTarget(candidate, firstTarget)
         .pipe(Effect.result);
+      const authorityDriftedRevocation = yield* accountDeletion
+        .markIntegrationTargetRevoked(candidate, secondTarget)
+        .pipe(Effect.result);
       expect(Result.isFailure(authorityDriftedConfirmation)).toBe(true);
+      expect(Result.isFailure(authorityDriftedRevocation)).toBe(true);
       expect(
         yield* Effect.promise(() =>
           database
@@ -992,15 +1013,27 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
       const malformedStage = yield* accountDeletion
         .stageIntegrationTargets(candidate, [firstTarget])
         .pipe(Effect.result);
+      const malformedRevocation = yield* accountDeletion
+        .markIntegrationTargetRevoked(candidate, firstTarget)
+        .pipe(Effect.result);
       const malformedConfirmation = yield* accountDeletion
         .confirmIntegrationTarget(candidate, firstTarget)
         .pipe(Effect.result);
       expect(Result.isFailure(malformedStage)).toBe(true);
+      expect(Result.isFailure(malformedRevocation)).toBe(true);
       expect(Result.isFailure(malformedConfirmation)).toBe(true);
-      if (Result.isFailure(malformedStage) && Result.isFailure(malformedConfirmation)) {
+      if (
+        Result.isFailure(malformedStage) &&
+        Result.isFailure(malformedRevocation) &&
+        Result.isFailure(malformedConfirmation)
+      ) {
         expect(malformedStage.failure).toMatchObject({
           _tag: "AccountDeletionUnavailable",
           operation: "stageIntegrationTargets",
+        });
+        expect(malformedRevocation.failure).toMatchObject({
+          _tag: "AccountDeletionUnavailable",
+          operation: "markIntegrationTargetRevoked",
         });
         expect(malformedConfirmation.failure).toMatchObject({
           _tag: "AccountDeletionUnavailable",
