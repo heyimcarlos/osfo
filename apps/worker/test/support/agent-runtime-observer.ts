@@ -8,10 +8,11 @@ import {
   contentKeyFor,
   ownerKeyFor,
 } from "../../src/integrations/cloudflare/document-storage-keys";
+import { OsfoAgent } from "../../src/worker";
+import { getSubAgentByName } from "agents";
 
 export {
   ExecutionUnitWorkflow,
-  OsfoAgent,
   OsfoDirectory,
   DocumentBuildTimerWorkflow,
   DocumentBuildWorkflow,
@@ -21,6 +22,7 @@ export {
   ScheduledEmailWorkflow,
   ThinkMessengerStateAgent,
 } from "../../src/worker";
+export { OsfoAgent };
 
 interface AgentInspection {
   readonly agentId: string;
@@ -104,6 +106,36 @@ const r2Evidence = async (bucket: R2Bucket, key: string) => {
       };
 };
 
+const conversationEvidence = async (
+  directory: DirectoryObserver,
+  agentId: string,
+  directoryInspection: AgentInspection | null,
+) => {
+  if (directoryInspection?.agentId !== agentId) {
+    return { _tag: "Unavailable", operation: "inspectAgent" } as const;
+  }
+  const agent = await getSubAgentByName(directory, OsfoAgent, agentId);
+  const inspection = await agent.inspect();
+  if (inspection._tag !== "AgentFound") {
+    return { _tag: "Unavailable", operation: "inspect", resultTag: inspection._tag } as const;
+  }
+  const route = await agent.readRoute(inspection.routeId);
+  if (route._tag !== "ConversationRouteFound") {
+    return { _tag: "Unavailable", operation: "readRoute", resultTag: route._tag } as const;
+  }
+  const [currentSession, historicalSessions] = await Promise.all([
+    agent.readSession(route.currentSessionId),
+    Promise.all(route.historicalSessionIds.map((sessionId) => agent.readSession(sessionId))),
+  ]);
+  return {
+    _tag: "ConversationEvidence",
+    agent: inspection,
+    currentSession,
+    historicalSessions,
+    route,
+  } as const;
+};
+
 /** Observe an exact Agent through the production-owned Directory RPC contract. */
 const worker = {
   async fetch(request: Request, env: ObserverBindings): Promise<Response> {
@@ -117,6 +149,11 @@ const worker = {
       return Response.json({ error: "Invalid Agent ID" }, { status: 400 });
     }
     const directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
+    const conversation = url.searchParams.get("conversation");
+    if (conversation !== null && conversation !== "1") {
+      return Response.json({ error: "Invalid conversation flag" }, { status: 400 });
+    }
+    const includeConversation = conversation === "1";
     const userId = url.searchParams.get("userId");
     if (userId !== null && !/^[A-Za-z0-9_-]+$/u.test(userId)) {
       return Response.json({ error: "Invalid User ID" }, { status: 400 });
@@ -181,7 +218,7 @@ const worker = {
             () => null,
           ),
     ]);
-    return Response.json({
+    const evidence = {
       agentId,
       inspectable: inspection?.agentId === agentId,
       registered: agents.some(
@@ -200,7 +237,15 @@ const worker = {
       documentOwner,
       documentSourceObject,
       scheduledEmailWorkflow,
-    });
+    };
+    return Response.json(
+      includeConversation
+        ? {
+            ...evidence,
+            conversation: await conversationEvidence(directory, agentId, inspection),
+          }
+        : evidence,
+    );
   },
 } satisfies ExportedHandler<ObserverBindings>;
 
