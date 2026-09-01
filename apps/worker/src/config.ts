@@ -397,7 +397,12 @@ const parseIntegrationProvider = (
     env.COMPOSIO_API_KEY === undefined || env.COMPOSIO_API_KEY.trim().length === 0
       ? null
       : { apiKey: Redacted.make(env.COMPOSIO_API_KEY) };
-  if (value === undefined || value.length === 0) return { _tag: "Composio", config: composio };
+  if (value === undefined || value.length === 0) {
+    if (stage === "production" && composio === null) {
+      return invalid("COMPOSIO_API_KEY is required in production");
+    }
+    return { _tag: "Composio", config: composio };
+  }
   if (composio !== null) {
     return invalid("COMPOSIO_API_KEY cannot be configured with INTEGRATION_PROVIDER_BASE_URL");
   }
