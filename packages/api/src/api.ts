@@ -97,12 +97,18 @@ export {
 } from "./groups/account";
 export {
   ChannelLinkAcceptanceResponse,
+  ChannelLinkChannel,
   ChannelLinkConflict,
+  ChannelLinkId,
   ChannelLinkInviteResponse,
   ChannelLinkInviteToken,
   ChannelLinkInviteUnavailable,
   ChannelLinkRegistrationRequired,
+  ChannelLinkRevocationResponse,
+  ChannelLinkSummary,
+  ChannelLinksResponse,
   ChannelLinksGroup,
+  ChannelLinkUnavailable,
   ChannelLinksUnavailable,
 } from "./groups/channel-links";
 export {

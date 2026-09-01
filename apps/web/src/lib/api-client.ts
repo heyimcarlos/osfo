@@ -4,6 +4,7 @@ import {
   type AccountDeletionRequest,
   type BillingReconciliationRequest,
   ChannelLinkInviteToken,
+  type ChannelLinkId,
   type HelpArea,
   type GmailSendApprovalDecision,
   type IntegrationToolkit,
@@ -45,6 +46,19 @@ export const acceptChannelLinkInvite = (token: string) =>
     const parsedToken = yield* Schema.decodeEffect(ChannelLinkInviteToken)(token);
     const client = yield* apiClient;
     return yield* client.channelLinks.accept({ params: { token: parsedToken } });
+  });
+
+/** Inspect the authenticated User's active Channel Links without provider addresses. */
+export const inspectChannelLinks = Effect.gen(function* () {
+  const client = yield* apiClient;
+  return yield* client.channelLinks.list();
+});
+
+/** Revoke one exact active Channel Link owned by the authenticated User. */
+export const revokeChannelLink = (channelLinkId: ChannelLinkId) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    return yield* client.channelLinks.revoke({ params: { channelLinkId } });
   });
 
 /** Complete authenticated registration through the shared typed contract. */

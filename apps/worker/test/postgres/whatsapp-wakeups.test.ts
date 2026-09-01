@@ -696,6 +696,7 @@ it.effect("reconciles a revoked in-flight request as canceled while sending is i
         yield* channelLinks.revoke({
           actorId: ChannelLinks.ChannelLinkActorId.make(`user:${userId}`),
           channelLinkId: link.channelLinkId,
+          ownerUserId: userId,
           reason: ChannelLinks.ChannelLinkRevocationReason.make("User disconnected WhatsApp"),
         });
         yield* Fiber.interrupt(drain);
@@ -748,6 +749,7 @@ it.effect("cancels a pending latch atomically with Channel Link revocation", () 
       yield* channelLinks.revoke({
         actorId: ChannelLinks.ChannelLinkActorId.make(`user:${userId}`),
         channelLinkId: link.channelLinkId,
+        ownerUserId: userId,
         reason: ChannelLinks.ChannelLinkRevocationReason.make("User disconnected WhatsApp"),
       });
       expect((yield* wakeUps.drainPending()).accepted).toBe(0);
@@ -787,6 +789,7 @@ it.effect("records a Channel Link revocation that races an already-started provi
         yield* channelLinks.revoke({
           actorId: ChannelLinks.ChannelLinkActorId.make(`user:${userId}`),
           channelLinkId: link.channelLinkId,
+          ownerUserId: userId,
           reason: ChannelLinks.ChannelLinkRevocationReason.make("User disconnected WhatsApp"),
         });
         yield* Deferred.succeed(senderRelease, undefined);

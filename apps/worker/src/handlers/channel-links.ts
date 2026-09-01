@@ -3,6 +3,7 @@ import {
   ChannelLinkConflict,
   ChannelLinkInviteUnavailable,
   ChannelLinkRegistrationRequired,
+  ChannelLinkUnavailable,
   ChannelLinksUnavailable,
   CurrentUser,
 } from "@osfo/api";
@@ -10,6 +11,7 @@ import { Effect, Layer, Redacted, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { UserId } from "../domain";
+import { channelPresentationOf } from "../composition/channel-presentations";
 import { ChannelLinks } from "../services/channel-links";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect errors use the standard _tag discriminator. */
@@ -35,6 +37,47 @@ export const layer = Layer.unwrap(
             yield* channelLinks.accept(token, UserId.make(currentUser.userId));
             return { state: "linked" as const };
           }).pipe(Effect.mapError(toPublicError)),
+        )
+        .handle("list", () =>
+          Effect.gen(function* () {
+            const currentUser = yield* CurrentUser;
+            const links = yield* channelLinks.listActive(UserId.make(currentUser.userId));
+            const items = yield* Effect.all(
+              links.map((link) =>
+                Effect.gen(function* () {
+                  const channel = channelPresentationOf(link.address.channelId);
+                  if (channel === null) {
+                    return yield* new ChannelLinks.ChannelLinksUnavailable({
+                      cause: new Error("Channel endpoint has no safe presentation kind"),
+                      operation: "listActive.project",
+                    });
+                  }
+                  return {
+                    channel,
+                    channelLinkId: link.channelLinkId,
+                    linkedAt: link.createdAt,
+                  };
+                }),
+              ),
+            );
+            return { items };
+          }).pipe(Effect.mapError(toListPublicError)),
+        )
+        .handle("revoke", ({ params }) =>
+          Effect.gen(function* () {
+            const currentUser = yield* CurrentUser;
+            yield* channelLinks.revoke({
+              actorId: ChannelLinks.ChannelLinkActorId.make(
+                `auth-session:${currentUser.authSessionId}`,
+              ),
+              channelLinkId: params.channelLinkId,
+              ownerUserId: UserId.make(currentUser.userId),
+              reason: ChannelLinks.ChannelLinkRevocationReason.make(
+                "User disconnected channel in Settings",
+              ),
+            });
+            return { state: "unlinked" as const };
+          }).pipe(Effect.mapError(toRevokePublicError)),
         ),
     ),
   ),
@@ -76,6 +119,22 @@ const toInspectPublicError = (
       })
     : new ChannelLinksUnavailable({
         message: "Channel linking is temporarily unavailable. Please try again.",
+      });
+
+const toListPublicError = () =>
+  new ChannelLinksUnavailable({
+    message: "Channel links are temporarily unavailable. Please try again.",
+  });
+
+const toRevokePublicError = (
+  error: ChannelLinks.ChannelLinkNotFound | ChannelLinks.ChannelLinksUnavailable,
+) =>
+  error._tag === "ChannelLinkNotFound"
+    ? new ChannelLinkUnavailable({
+        message: "This channel link is not active. Refresh and try again.",
+      })
+    : new ChannelLinksUnavailable({
+        message: "Channel links are temporarily unavailable. Please try again.",
       });
 
 export * as ChannelLinksHandlers from "./channel-links";
