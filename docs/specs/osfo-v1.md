@@ -655,7 +655,6 @@ promises no response time.
 alchemy.run.ts
 infra/cloudflare/
   Db.ts
-  ExecutionUnitWorkflow.ts
   Worker.ts
 
 apps/worker/
@@ -848,7 +847,7 @@ and contract releases.
 
 The root `alchemy.run.ts` selects Stack, stage, provider state, concrete resources,
 and safe outputs. It contains no product behavior. `infra/cloudflare` declares
-the database, Osfo Worker, and execution-unit Workflow. One retained Neon project
+the database, Osfo Worker, and product Workflows. One retained Neon project
 owns the production branch. Development uses a retained child branch, and each
 pull-request preview uses an expiring child branch. Each deployed stage owns its
 Cloudflare resources and secrets. Secrets never enter stage outputs.

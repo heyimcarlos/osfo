@@ -12,7 +12,6 @@ import { OsfoAgent } from "../../src/worker";
 import { getSubAgentByName } from "agents";
 
 export {
-  ExecutionUnitWorkflow,
   OsfoDirectory,
   DocumentBuildTimerWorkflow,
   DocumentBuildWorkflow,

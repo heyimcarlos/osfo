@@ -80,7 +80,7 @@ export class DocumentBuildWorkflow extends WorkflowEntrypoint<Env, DocumentBuild
             }),
           );
           return await runInvocationEffect(
-            makeWorkflowRuntime(event.instanceId, stage.value),
+            makeWorkflowRuntime(),
             DocumentBuildComposition.executionEffect(
               bindings,
               DocumentBuildComposition.makePreviewReadyFollowUpCommitter(bindings),

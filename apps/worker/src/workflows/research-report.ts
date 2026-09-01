@@ -4,7 +4,7 @@ import { Effect, Predicate, Result, Schema } from "effect";
 import { runInvocationEffect } from "../adapters/host";
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { ResearchReportComposition } from "../composition/research-report";
-import { decodeOsfoStage, type OsfoStage } from "../config";
+import { decodeOsfoStage } from "../config";
 import { makeWorkflowRuntime } from "../layers";
 import { ResearchCollector } from "../services/research-collector";
 import type { Denied } from "../services/authorization";
@@ -77,7 +77,7 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
         }),
       );
       const result = await runInvocationEffect(
-        makeWorkflowRuntime(event.instanceId, stage.value),
+        makeWorkflowRuntime(),
         ResearchReportComposition.executionEffect(
           ResearchReportComposition.bindingsFromEnv(this.env),
           serviceEffect,
@@ -90,7 +90,6 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
         await this.#claimAndSubmitTerminalFollowUp(
           step,
           event.instanceId,
-          stage.value,
           event.payload,
           "after admission cancellation",
         );
@@ -141,7 +140,7 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
         }),
       );
       const result = await runInvocationEffect(
-        makeWorkflowRuntime(event.instanceId, stage.value),
+        makeWorkflowRuntime(),
         ResearchReportComposition.executionEffect(
           ResearchReportComposition.bindingsFromEnv(this.env),
           serviceEffect,
@@ -154,7 +153,6 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
       await this.#claimAndSubmitTerminalFollowUp(
         step,
         event.instanceId,
-        stage.value,
         event.payload,
         "after source collection",
       );
@@ -190,7 +188,7 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
         }),
       );
       const result = await runInvocationEffect(
-        makeWorkflowRuntime(event.instanceId, stage.value),
+        makeWorkflowRuntime(),
         ResearchReportComposition.executionEffect(
           ResearchReportComposition.bindingsFromEnv(this.env),
           serviceEffect,
@@ -202,7 +200,6 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
       await this.#claimAndSubmitTerminalFollowUp(
         step,
         event.instanceId,
-        stage.value,
         event.payload,
         "after report publication",
       );
@@ -213,7 +210,6 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
   async #claimAndSubmitTerminalFollowUp(
     step: WorkflowStep,
     instanceId: string,
-    stage: OsfoStage,
     encodedPayload: ResearchReport.WorkflowPayload,
     phase: string,
   ) {
@@ -221,7 +217,7 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
     if (Result.isFailure(payload)) return;
     const terminal = await step.do(`claim terminal follow-up ${phase}`, () =>
       runInvocationEffect(
-        makeWorkflowRuntime(instanceId, stage),
+        makeWorkflowRuntime(),
         ResearchReportComposition.followUpEffect(
           { DB: this.env.DB },
           ResearchReportFollowUp.Service.pipe(

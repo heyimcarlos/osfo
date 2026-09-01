@@ -4,7 +4,7 @@ import { Effect, Result, Schema } from "effect";
 import { runInvocationEffect } from "../adapters/host";
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { ResearchReportComposition } from "../composition/research-report";
-import { decodeOsfoStage, type OsfoStage } from "../config";
+import { decodeOsfoStage } from "../config";
 import { makeWorkflowRuntime } from "../layers";
 import { ResearchReport } from "../services/research-report";
 import { ResearchReportDocument } from "../services/research-report-document";
@@ -42,7 +42,7 @@ export class ResearchReportTimerWorkflow extends WorkflowEntrypoint<
     if (Result.isFailure(decoded)) throw new Error("Research Report timer payload is invalid");
     const payload = decoded.success;
     const schedule = await step.do("read admitted report schedule", () =>
-      this.#run(event.instanceId, stage.value, (followUps) => followUps.inspectSchedule(payload)),
+      this.#run((followUps) => followUps.inspectSchedule(payload)),
     );
     const milestoneAt = schedule.admittedAt.getTime() + milestoneDelayMilliseconds;
     await step.sleepUntil("wait for sources-collected milestone guard", milestoneAt);
@@ -50,7 +50,7 @@ export class ResearchReportTimerWorkflow extends WorkflowEntrypoint<
     let milestone: TimerResult["milestone"] = "pending";
     for (let poll = 0; poll < maximumMilestonePolls; poll += 1) {
       const claimed = await step.do(`claim sources-collected milestone ${poll + 1}`, () =>
-        this.#run(event.instanceId, stage.value, (followUps) => followUps.claimMilestone(payload)),
+        this.#run((followUps) => followUps.claimMilestone(payload)),
       );
       if (claimed._tag === "Claimed" || claimed._tag === "AlreadyClaimed") {
         if (claimed.notification === null) {
@@ -69,7 +69,7 @@ export class ResearchReportTimerWorkflow extends WorkflowEntrypoint<
         break;
       }
       if (claimed._tag === "Terminal") {
-        await this.#claimAndSubmitTerminal(step, event.instanceId, stage.value, payload);
+        await this.#claimAndSubmitTerminal(step, payload);
         return {
           deadline: "terminal",
           milestone,
@@ -87,10 +87,10 @@ export class ResearchReportTimerWorkflow extends WorkflowEntrypoint<
     }
 
     const afterMilestone = await step.do("inspect report after milestone", () =>
-      this.#run(event.instanceId, stage.value, (followUps) => followUps.inspectSchedule(payload)),
+      this.#run((followUps) => followUps.inspectSchedule(payload)),
     );
     if (ResearchReport.terminalStates.has(afterMilestone.state)) {
-      await this.#claimAndSubmitTerminal(step, event.instanceId, stage.value, payload);
+      await this.#claimAndSubmitTerminal(step, payload);
       return {
         deadline: "terminal",
         milestone,
@@ -101,15 +101,13 @@ export class ResearchReportTimerWorkflow extends WorkflowEntrypoint<
 
     await step.sleepUntil("wait for hard report deadline", schedule.deadlineAt);
     const deadline = await step.do("enforce hard report deadline", () =>
-      this.#run(event.instanceId, stage.value, (followUps) => followUps.enforceDeadline(payload)),
+      this.#run((followUps) => followUps.enforceDeadline(payload)),
     );
     const terminalFollowUp = await settleDeadlineOutcome(
       deadline,
       (report) =>
-        step.do("discard canceled report publication", () =>
-          this.#discardPublication(event.instanceId, stage.value, report),
-        ),
-      () => this.#claimAndSubmitTerminal(step, event.instanceId, stage.value, payload),
+        step.do("discard canceled report publication", () => this.#discardPublication(report)),
+      () => this.#claimAndSubmitTerminal(step, payload),
     );
     return {
       deadline:
@@ -126,12 +124,10 @@ export class ResearchReportTimerWorkflow extends WorkflowEntrypoint<
 
   async #claimAndSubmitTerminal(
     step: WorkflowStep,
-    instanceId: string,
-    stage: OsfoStage,
     payload: ResearchReport.WorkflowPayload,
   ): Promise<TimerResult["terminalFollowUp"]> {
     const terminal = await step.do("claim terminal report follow-up", () =>
-      this.#run(instanceId, stage, (followUps) => followUps.claimTerminal(payload)),
+      this.#run((followUps) => followUps.claimTerminal(payload)),
     );
     if (terminal._tag === "NotTerminal" || terminal._tag === "Suppressed") return "notTerminal";
     await step.do("submit terminal Agent follow-up", () =>
@@ -140,9 +136,9 @@ export class ResearchReportTimerWorkflow extends WorkflowEntrypoint<
     return "claimed";
   }
 
-  #discardPublication(instanceId: string, stage: OsfoStage, report: ResearchReport.Record) {
+  #discardPublication(report: ResearchReport.Record) {
     return runInvocationEffect(
-      makeWorkflowRuntime(instanceId, stage),
+      makeWorkflowRuntime(),
       ResearchReportComposition.executionEffect(
         ResearchReportComposition.bindingsFromEnv(this.env),
         Effect.gen(function* () {
@@ -155,14 +151,12 @@ export class ResearchReportTimerWorkflow extends WorkflowEntrypoint<
   }
 
   #run<A>(
-    instanceId: string,
-    stage: OsfoStage,
     operation: (
       followUps: ResearchReportFollowUp.Interface,
     ) => Effect.Effect<A, ResearchReportFollowUp.Conflict | ResearchReportFollowUp.Unavailable>,
   ) {
     return runInvocationEffect(
-      makeWorkflowRuntime(instanceId, stage),
+      makeWorkflowRuntime(),
       ResearchReportComposition.followUpEffect(
         { DB: this.env.DB },
         ResearchReportFollowUp.Service.pipe(Effect.flatMap(operation), Effect.orDie),

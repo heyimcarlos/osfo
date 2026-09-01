@@ -3,7 +3,7 @@ import { Effect, Result, Schema } from "effect";
 
 import { runInvocationEffect } from "../adapters/host";
 import { DocumentBuildComposition } from "../composition/document-build";
-import { decodeOsfoStage, type OsfoStage } from "../config";
+import { decodeOsfoStage } from "../config";
 import { makeWorkflowRuntime } from "../layers";
 import { DocumentBuild } from "../services/document-build";
 import { DocumentBuildDocument } from "../services/document-build-document";
@@ -52,8 +52,7 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
     const schedule = await step.do(
       "read admitted document schedule",
       recoverableDocumentBuildStepConfig,
-      () =>
-        this.#run(event.instanceId, stage.value, (followUps) => followUps.inspectSchedule(payload)),
+      () => this.#run((followUps) => followUps.inspectSchedule(payload)),
     );
     const previewAt = schedule.admittedAt.getTime() + previewDelayMilliseconds;
     await step.sleepUntil("wait for validated preview milestone guard", previewAt);
@@ -64,8 +63,7 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
       const claimed = await step.do(
         `claim validated preview milestone ${poll + 1}`,
         recoverableDocumentBuildStepConfig,
-        () =>
-          this.#run(event.instanceId, stage.value, (followUps) => followUps.claimPreview(payload)),
+        () => this.#run((followUps) => followUps.claimPreview(payload)),
       );
       if (claimed._tag === "Claimed" || claimed._tag === "AlreadyClaimed") {
         if (claimed.notification === null) {
@@ -82,14 +80,9 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
           const recovered = await step.do(
             "recover preview-superseded publication",
             recoverableDocumentBuildStepConfig,
-            () => this.#recoverPublication(event.instanceId, stage.value, payload),
+            () => this.#recoverPublication(payload),
           );
-          const terminalFollowUp = await this.#claimAndSubmitTerminal(
-            step,
-            event.instanceId,
-            stage.value,
-            payload,
-          );
+          const terminalFollowUp = await this.#claimAndSubmitTerminal(step, payload);
           return {
             deadline: DocumentBuild.terminalStates.has(recovered.state) ? "terminal" : "notDue",
             preview: "suppressed",
@@ -109,14 +102,9 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
         const terminalSchedule = await step.do(
           "recover committed document publication",
           recoverableDocumentBuildStepConfig,
-          () => this.#recoverPublication(event.instanceId, stage.value, payload),
+          () => this.#recoverPublication(payload),
         );
-        const terminalFollowUp = await this.#claimAndSubmitTerminal(
-          step,
-          event.instanceId,
-          stage.value,
-          payload,
-        );
+        const terminalFollowUp = await this.#claimAndSubmitTerminal(step, payload);
         return {
           deadline: DocumentBuild.terminalStates.has(terminalSchedule.state)
             ? "terminal"
@@ -139,25 +127,17 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
       const afterPreview = await step.do(
         `inspect document after preview ${poll}`,
         recoverableDocumentBuildStepConfig,
-        () =>
-          this.#run(event.instanceId, stage.value, (followUps) =>
-            followUps.inspectSchedule(payload),
-          ),
+        () => this.#run((followUps) => followUps.inspectSchedule(payload)),
       );
       if (postPreviewDisposition(afterPreview.state) !== "continue") {
         if (afterPreview.state === "publication_committed") {
           await step.do(
             "recover committed document publication",
             recoverableDocumentBuildStepConfig,
-            () => this.#recoverPublication(event.instanceId, stage.value, payload),
+            () => this.#recoverPublication(payload),
           );
         }
-        const terminalFollowUp = await this.#claimAndSubmitTerminal(
-          step,
-          event.instanceId,
-          stage.value,
-          payload,
-        );
+        const terminalFollowUp = await this.#claimAndSubmitTerminal(step, payload);
         return { deadline: "terminal", preview, terminalFollowUp, workflowId: payload.workflowId };
       }
       const nextPollAt = Math.min(
@@ -172,24 +152,23 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
     const deadline = await step.do(
       "enforce hard document deadline",
       recoverableDocumentBuildStepConfig,
-      () =>
-        this.#run(event.instanceId, stage.value, (followUps) => followUps.enforceDeadline(payload)),
+      () => this.#run((followUps) => followUps.enforceDeadline(payload)),
     );
     if (deadline._tag === "Canceled") {
       await step.do(
         "discard canceled document and commit terminal follow-up",
         recoverableDocumentBuildStepConfig,
-        () => this.#settleCanceled(event.instanceId, stage.value, payload),
+        () => this.#settleCanceled(payload),
       );
     }
     if (deadline._tag === "Terminal" && deadline.build.state === "publication_committed") {
       await step.do("recover deadline publication winner", recoverableDocumentBuildStepConfig, () =>
-        this.#recoverPublication(event.instanceId, stage.value, payload),
+        this.#recoverPublication(payload),
       );
     }
     const terminalFollowUp =
       deadline._tag === "Canceled" || deadline._tag === "Terminal"
-        ? await this.#claimAndSubmitTerminal(step, event.instanceId, stage.value, payload)
+        ? await this.#claimAndSubmitTerminal(step, payload)
         : "notTerminal";
     return {
       deadline:
@@ -204,10 +183,10 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
     };
   }
 
-  #settleCanceled(instanceId: string, stage: OsfoStage, payload: DocumentBuild.WorkflowPayload) {
+  #settleCanceled(payload: DocumentBuild.WorkflowPayload) {
     const bindings = DocumentBuildComposition.bindingsFromEnv(this.env);
     return runInvocationEffect(
-      makeWorkflowRuntime(instanceId, stage),
+      makeWorkflowRuntime(),
       DocumentBuildComposition.executionEffect(
         bindings,
         DocumentBuildComposition.makePreviewReadyFollowUpCommitter(bindings),
@@ -221,14 +200,10 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
     );
   }
 
-  #recoverPublication(
-    instanceId: string,
-    stage: OsfoStage,
-    payload: DocumentBuild.WorkflowPayload,
-  ) {
+  #recoverPublication(payload: DocumentBuild.WorkflowPayload) {
     const bindings = DocumentBuildComposition.bindingsFromEnv(this.env);
     return runInvocationEffect(
-      makeWorkflowRuntime(instanceId, stage),
+      makeWorkflowRuntime(),
       DocumentBuildComposition.executionEffect(
         bindings,
         DocumentBuildComposition.makePreviewReadyFollowUpCommitter(bindings),
@@ -250,14 +225,12 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
 
   async #claimAndSubmitTerminal(
     step: WorkflowStep,
-    instanceId: string,
-    stage: OsfoStage,
     payload: DocumentBuild.WorkflowPayload,
   ): Promise<TimerResult["terminalFollowUp"]> {
     const claimed = await step.do(
       "claim terminal document follow-up",
       recoverableDocumentBuildStepConfig,
-      () => this.#run(instanceId, stage, (followUps) => followUps.claimTerminal(payload)),
+      () => this.#run((followUps) => followUps.claimTerminal(payload)),
     );
     if (claimed._tag === "NotTerminal" || claimed._tag === "Suppressed") return "notTerminal";
     const submitted = await step.do(
@@ -272,14 +245,12 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
   }
 
   #run<A>(
-    instanceId: string,
-    stage: OsfoStage,
     operation: (
       followUps: DocumentBuildFollowUp.Interface,
     ) => Effect.Effect<A, DocumentBuildFollowUp.Conflict | DocumentBuildFollowUp.Unavailable>,
   ) {
     return runInvocationEffect(
-      makeWorkflowRuntime(instanceId, stage),
+      makeWorkflowRuntime(),
       DocumentBuildComposition.followUpEffect(
         { DB: this.env.DB },
         DocumentBuildFollowUp.Service.pipe(
