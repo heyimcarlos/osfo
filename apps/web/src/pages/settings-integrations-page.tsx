@@ -10,7 +10,7 @@ import { Button } from "@osfo/ui/components/button";
 import { GlassPanel } from "@osfo/ui/components/glass-panel";
 import { Effect } from "effect";
 import { CalendarDays, FileText, Mail } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import {
   connectIntegration,
@@ -25,8 +25,34 @@ import {
 
 type Connection = IntegrationConnectionSummary["connections"][number];
 
+export interface SettingsIntegrationsDependencies {
+  readonly connectIntegration: typeof connectIntegration;
+  readonly decideGmailSendApproval: typeof decideGmailSendApproval;
+  readonly decideScheduledEmailApproval: typeof decideScheduledEmailApproval;
+  readonly disconnectIntegration: typeof disconnectIntegration;
+  readonly inspectGmailSends: typeof inspectGmailSends;
+  readonly inspectIntegrations: typeof inspectIntegrations;
+  readonly inspectScheduledEmailApprovals: typeof inspectScheduledEmailApprovals;
+  readonly inspectScheduledEmailNotifications: typeof inspectScheduledEmailNotifications;
+}
+
+const defaultDependencies: SettingsIntegrationsDependencies = {
+  connectIntegration,
+  decideGmailSendApproval,
+  decideScheduledEmailApproval,
+  disconnectIntegration,
+  inspectGmailSends,
+  inspectIntegrations,
+  inspectScheduledEmailApprovals,
+  inspectScheduledEmailNotifications,
+};
+
 /** Authenticated connection lifecycle for the three curated capability packs. */
-export function SettingsIntegrationsPage() {
+export function SettingsIntegrationsPage({
+  dependencies = defaultDependencies,
+}: {
+  readonly dependencies?: SettingsIntegrationsDependencies;
+} = {}) {
   const [summary, setSummary] = useState<IntegrationConnectionSummary | null>(null);
   const [busyToolkit, setBusyToolkit] = useState<IntegrationToolkit | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,42 +70,50 @@ export function SettingsIntegrationsPage() {
   const [gmailSendError, setGmailSendError] = useState<string | null>(null);
   const [gmailSendDecision, setGmailSendDecision] = useState<"approved" | "rejected" | null>(null);
 
-  const refresh = () => {
-    setError(null);
-    void Effect.runPromise(inspectIntegrations).then(setSummary, () => {
-      setError("Integration connections are temporarily unavailable. Please try again.");
-    });
-  };
+  const refresh = useCallback(
+    (preserveError = false) => {
+      if (!preserveError) setError(null);
+      void Effect.runPromise(dependencies.inspectIntegrations).then(setSummary, () => {
+        if (!preserveError) {
+          setError("Integration connections are temporarily unavailable. Please try again.");
+        }
+      });
+    },
+    [dependencies.inspectIntegrations],
+  );
 
-  useEffect(refresh, []);
+  useEffect(refresh, [refresh]);
 
-  const refreshScheduledEmail = () => {
+  const refreshScheduledEmail = useCallback(() => {
     setScheduledEmailError(null);
     void Promise.all([
-      Effect.runPromise(inspectScheduledEmailApprovals),
-      Effect.runPromise(inspectScheduledEmailNotifications),
+      Effect.runPromise(dependencies.inspectScheduledEmailApprovals),
+      Effect.runPromise(dependencies.inspectScheduledEmailNotifications),
     ]).then(
       ([approvals, notifications]) =>
         setScheduledEmail({ approvals: approvals.items, notifications: notifications.items }),
       () => setScheduledEmailError("Scheduled Email status is temporarily unavailable."),
     );
-  };
+  }, [
+    dependencies.inspectScheduledEmailApprovals,
+    dependencies.inspectScheduledEmailNotifications,
+  ]);
 
-  useEffect(refreshScheduledEmail, []);
+  useEffect(refreshScheduledEmail, [refreshScheduledEmail]);
 
-  const refreshGmailSends = () => {
+  const refreshGmailSends = useCallback(() => {
     setGmailSendError(null);
-    void Effect.runPromise(inspectGmailSends).then(setGmailSends, () =>
+    void Effect.runPromise(dependencies.inspectGmailSends).then(setGmailSends, () =>
       setGmailSendError("Immediate Gmail status is temporarily unavailable."),
     );
-  };
+  }, [dependencies.inspectGmailSends]);
 
-  useEffect(refreshGmailSends, []);
+  useEffect(refreshGmailSends, [refreshGmailSends]);
 
   const connect = (toolkit: IntegrationToolkit) => {
     setBusyToolkit(toolkit);
     setError(null);
-    void Effect.runPromise(connectIntegration(toolkit)).then(
+    void Effect.runPromise(dependencies.connectIntegration(toolkit)).then(
       ({ url }) => globalThis.location.assign(url.href),
       () => {
         setBusyToolkit(null);
@@ -92,7 +126,7 @@ export function SettingsIntegrationsPage() {
     if (!globalThis.confirm("Disconnect this account from Osfo?")) return;
     setBusyToolkit(toolkit);
     setError(null);
-    void Effect.runPromise(disconnectIntegration(toolkit)).then(
+    void Effect.runPromise(dependencies.disconnectIntegration(toolkit)).then(
       () => {
         setBusyToolkit(null);
         refresh();
@@ -100,6 +134,7 @@ export function SettingsIntegrationsPage() {
       () => {
         setBusyToolkit(null);
         setError("The connection could not be disconnected. Please try again.");
+        refresh(true);
       },
     );
   };
@@ -135,7 +170,9 @@ export function SettingsIntegrationsPage() {
           setGmailSendBusy(presentationId);
           setGmailSendError(null);
           setGmailSendDecision(null);
-          void Effect.runPromise(decideGmailSendApproval({ decision, presentationId })).then(
+          void Effect.runPromise(
+            dependencies.decideGmailSendApproval({ decision, presentationId }),
+          ).then(
             (accepted) => {
               setGmailSendBusy(null);
               setGmailSendDecision(accepted.decision);
@@ -156,7 +193,9 @@ export function SettingsIntegrationsPage() {
         onDecide={(presentationId, decision) => {
           setScheduledEmailBusy(presentationId);
           setScheduledEmailError(null);
-          void Effect.runPromise(decideScheduledEmailApproval({ decision, presentationId })).then(
+          void Effect.runPromise(
+            dependencies.decideScheduledEmailApproval({ decision, presentationId }),
+          ).then(
             () => {
               setScheduledEmailBusy(null);
               refreshScheduledEmail();
