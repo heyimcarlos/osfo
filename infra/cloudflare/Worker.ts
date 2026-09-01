@@ -1,6 +1,6 @@
 import { Container, DurableObject, Worker, Workers } from "alchemy/Cloudflare";
 import { Stack } from "alchemy/Stack";
-import { Config, Effect, Redacted } from "effect";
+import { Config, Effect } from "effect";
 
 import { DatabaseHyperdrive } from "./Db";
 import { ExecutionUnitWorkflow } from "./ExecutionUnitWorkflow";
@@ -11,6 +11,7 @@ import { ResearchReportTimerWorkflow } from "./ResearchReportTimerWorkflow";
 import { ScheduledEmailWorkflow } from "./ScheduledEmailWorkflow";
 import { Files } from "./Files";
 import { Artifacts } from "./Artifacts";
+import { composioApiKeyConfig } from "./WorkerConfig";
 
 /** Cloudflare Worker and execution-unit bindings for one Osfo runtime stage. */
 const worker = Worker(
@@ -35,9 +36,7 @@ const worker = Worker(
         BETTER_AUTH_BASE_URL: authBaseUrl,
         BETTER_AUTH_SECRET: Config.redacted("BETTER_AUTH_SECRET"),
         BETTER_AUTH_TRUSTED_ORIGINS: authTrustedOrigins,
-        COMPOSIO_API_KEY: Config.redacted("COMPOSIO_API_KEY").pipe(
-          Config.withDefault(Redacted.make("")),
-        ),
+        COMPOSIO_API_KEY: composioApiKeyConfig(stage),
         COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT: Config.string(
           "COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT",
         ).pipe(Config.withDefault("")),
