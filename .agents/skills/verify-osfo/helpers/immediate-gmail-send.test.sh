@@ -8,6 +8,7 @@ emulator="$repo_root/apps/worker/test/emulators/provider-emulator.ts"
 observer="$repo_root/apps/worker/test/support/agent-runtime-observer.ts"
 observation_check="$repo_root/.agents/skills/verify-osfo/helpers/immediate-gmail-send-observation.jq"
 deletion_check="$repo_root/.agents/skills/verify-osfo/helpers/immediate-gmail-send-deletion.jq"
+finish_check="$repo_root/.agents/skills/verify-osfo/helpers/immediate-gmail-send-finish.jq"
 workspace_manifest="$repo_root/package.json"
 
 observation_fixture='{
@@ -199,6 +200,38 @@ if ! jq --exit-status '
   printf 'Immediate Gmail deletion receipt must preserve the exact absence proof\n' >&2
   exit 1
 fi
+
+finish_outcome="$(jq --exit-status \
+  --arg actionId 'verification-gmailSendEmail::cf-wai-tool-call::turn-1' \
+  --arg presentationId presentation-1 \
+  --arg commit commit-1 \
+  --from-file "$finish_check" <<<"$deletion_receipt")"
+if ! jq --exit-status '
+  . == {
+    commit:"commit-1",
+    issue:"#187",
+    missing:"providerConnectionDeletion",
+    result:"MISSING"
+  }' <<<"$finish_outcome" >/dev/null; then
+  printf 'Missing provider deletion must produce the exact non-PASS outcome\n' >&2
+  exit 1
+fi
+for mutation in \
+  '.providerConnectionDeletion = null' \
+  '.providerConnectionDeletion.issue = "#different"' \
+  '.providerConnectionDeletion.status = "deleted"' \
+  '.directoryAgent.inspectable = true' \
+  '.ownedKeyDeletionQualification.commit = "different-commit"'; do
+  if jq "$mutation" <<<"$deletion_receipt" \
+    | jq --exit-status \
+      --arg actionId 'verification-gmailSendEmail::cf-wai-tool-call::turn-1' \
+      --arg presentationId presentation-1 \
+      --arg commit commit-1 \
+      --from-file "$finish_check" >/dev/null 2>&1; then
+    printf 'Immediate Gmail finish mutation unexpectedly produced MISSING: %s\n' "$mutation" >&2
+    exit 1
+  fi
+done
 
 for required in \
   'immediate-gmail-send)' \

@@ -84,7 +84,9 @@ FEATURE=registration # registration, channel-linking, conversation-memory, resea
 
 Immediate Gmail deliberately defers that final command: observe the Gmail result, complete and
 finish the retained account-deletion replay in the normal drive order, then finish Immediate
-Gmail with the deletion receipt. Its feature file gives the exact sequence.
+Gmail with the deletion receipt. Until #187 supplies provider Connection deletion proof, finish
+preserves the local evidence, records `MISSING`, and returns nonzero. Its feature file gives the
+exact sequence.
 
 ## Evidence
 
@@ -98,7 +100,8 @@ Complete browser evidence lives under `artifacts/verification/osfo/<run-id>/<fea
 - Immediate Gmail also records `approval.json`, `browser-evidence.json`, a same-commit
   replay qualification, and the later account-deletion receipt;
 - `observation-passed.txt` exists only after the state and provider assertions pass;
-- `result.txt` records PASS, the exact commit, and completion time.
+- `result.txt` records the feature outcome, exact commit, and completion time. `MISSING` is a
+  non-PASS outcome and never qualifies a feature for release.
 
 Each feature file owns its visible result and durable PASS criterion. Do not substitute one feature's proof for another.
 

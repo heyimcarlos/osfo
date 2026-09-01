@@ -2869,13 +2869,14 @@ observe_account_deletion() {
 }
 
 evidence_finish() {
-  local run_id feature feature_dir current_commit launch_commit launch_checkout
+  local run_id feature feature_dir current_commit launch_commit launch_checkout immediate_finish_outcome
   run_id="$1"
   feature="$2"
   feature_dir="$(feature_artifact_dir_for "$run_id" "$feature")"
   launch_commit="$(state_value "$run_id" commit)"
   launch_checkout="$(state_value "$run_id" launch-checkout)"
   current_commit="$(git -C "$repo_root" rev-parse HEAD)"
+  immediate_finish_outcome=""
   if [[ "$launch_commit" != "$current_commit" ]]; then
     printf 'Evidence is stale because HEAD changed after launch\n' >&2
     exit 1
@@ -2945,23 +2946,12 @@ evidence_finish() {
       --arg commit "$current_commit" \
       --from-file "$script_dir/immediate-gmail-send-observation.jq" \
       "$feature_dir/state.json" >/dev/null
-    jq --exit-status \
+    immediate_finish_outcome="$(jq --exit-status \
       --arg actionId "$(jq --raw-output '.durable.actionId' "$feature_dir/state.json")" \
       --arg presentationId "$(jq --raw-output '.durable.presentationId' "$feature_dir/state.json")" \
-      --arg commit "$current_commit" '
-        .actionId == $actionId and .presentationId == $presentationId and
-        .deletionFeature == "account-deletion-replay" and
-        .directoryAgent == {inspectable:false, registered:false} and
-        .userExists == false and
-        .providerConnectionDeletion == {issue:"#187", status:"not-qualified"} and
-        .ownedKeyDeletionQualification == {
-          commit: $commit,
-          guarantee: "every Immediate Gmail owned key erased while unrelated Agent storage survives",
-          result: "PASS",
-          test: "deletes every immediate Gmail owned key without touching unrelated Agent storage"
-        } and
-        (.observedAt | fromdateiso8601) > 0' \
-      "$feature_dir/deletion-observed.json" >/dev/null
+      --arg commit "$current_commit" \
+      --from-file "$script_dir/immediate-gmail-send-finish.jq" \
+      "$feature_dir/deletion-observed.json")"
   fi
   if ! grep -q 'phase=action ' "$feature_dir/browser-actions.txt" || \
     ! grep -q 'phase=result ' "$feature_dir/browser-actions.txt"; then
@@ -3001,6 +2991,17 @@ evidence_finish() {
         "$feature_dir/browser-actions.txt"; }; then
     printf 'WhatsApp Wake-up evidence needs linked authority, exact Reminder Approvals and exposure, revocation no-send, and permanent deletion browser records\n' >&2
     exit 1
+  fi
+  if [[ -n "$immediate_finish_outcome" ]]; then
+    printf 'completed_at=%s\nresult=%s\ncommit=%s\nmissing=%s\nissue=%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      "$(jq --raw-output '.result' <<<"$immediate_finish_outcome")" \
+      "$(jq --raw-output '.commit' <<<"$immediate_finish_outcome")" \
+      "$(jq --raw-output '.missing' <<<"$immediate_finish_outcome")" \
+      "$(jq --raw-output '.issue' <<<"$immediate_finish_outcome")" \
+      >"$feature_dir/result.txt"
+    printf 'Immediate Gmail verification is MISSING provider Connection deletion proof owned by #187\n' >&2
+    return 1
   fi
   printf 'completed_at=%s\nresult=PASS\ncommit=%s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$current_commit" >"$feature_dir/result.txt"
