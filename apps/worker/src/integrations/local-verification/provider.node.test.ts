@@ -136,6 +136,12 @@ it.effect("renders delivered Telegram replies in the run-owned provider inbox", 
       expect(inbox.body).toContain(deliveredReply);
       expect(inbox.body).toContain("editMessageText");
       expect(inbox.body).not.toContain("Earlier Telegram delivery.");
+
+      const history = yield* Effect.promise(() =>
+        fetch(new URL("/inbox?history=1", emulator.origin)).then((response) => response.text()),
+      );
+      expect(history).toContain("Earlier Telegram delivery.");
+      expect(history).toContain(deliveredReply);
     }),
   ),
 );

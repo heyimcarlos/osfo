@@ -16,9 +16,10 @@ usage() {
     '  control-osfo identity <run-id>' \
     '  control-osfo journeys <run-id>' \
     '  control-osfo account-deletion-envelope-journey <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> start' \
-    '  control-osfo record <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> <action|result> <summary>' \
-    '  control-osfo observe <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|conversation-memory|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> start' \
+    '  control-osfo record <run-id> <registration|channel-linking|conversation-memory|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> <action|result> <summary>' \
+    '  control-osfo observe <run-id> <registration|channel-linking|conversation-memory|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay>' \
+    '  control-osfo assert-conversation-memory-evidence <run-id> <state-json> <provider-json>' \
     '  control-osfo channel-invite <run-id>' \
     '  control-osfo telegram-reply <run-id> <message>' \
     '  control-osfo document-build-free-denial <run-id> <file-id>' \
@@ -31,7 +32,7 @@ usage() {
     '  control-osfo whatsapp-reply <run-id> <message>' \
     '  control-osfo seed-account-deletion <run-id>' \
     '  control-osfo reconcile-account-deletion <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> finish' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|conversation-memory|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> finish' \
     '  control-osfo cleanup <run-id>'
 }
 
@@ -45,7 +46,7 @@ require_run_id() {
 
 require_feature() {
   case "${1:-}" in
-    registration|channel-linking|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay) ;;
+    registration|channel-linking|conversation-memory|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay) ;;
     *)
       printf 'Unknown browser feature: %s\n' "${1:-}" >&2
       exit 2
@@ -247,7 +248,7 @@ start_worker_process() {
 }
 
 inspect_agent_runtime() {
-  local run_id agent_id user_id file_id main_instance_id timer_instance_id artifact_id scheduled_email_instance_id state_dir artifact_dir observer_origin observer_port inspector_port
+  local run_id agent_id user_id file_id main_instance_id timer_instance_id artifact_id scheduled_email_instance_id conversation state_dir artifact_dir observer_origin observer_port inspector_port
   local observer_pid observation status
   local -a observer_query
   run_id="$1"
@@ -258,6 +259,7 @@ inspect_agent_runtime() {
   timer_instance_id="${6:-}"
   artifact_id="${7:-}"
   scheduled_email_instance_id="${8:-}"
+  conversation="${9:-}"
   state_dir="$(state_dir_for "$run_id")"
   artifact_dir="$(artifact_dir_for "$run_id")"
   observer_port="$(pick_port)"
@@ -296,6 +298,9 @@ inspect_agent_runtime() {
       if [[ -n "$artifact_id" ]]; then observer_query+=(--data-urlencode "artifactId=$artifact_id"); fi
       if [[ -n "$scheduled_email_instance_id" ]]; then
         observer_query+=(--data-urlencode "scheduledEmailInstanceId=$scheduled_email_instance_id")
+      fi
+      if [[ "$conversation" == '1' ]]; then
+        observer_query+=(--data-urlencode 'conversation=1')
       fi
       if ! observation="$(curl --fail --silent --show-error --get \
         "${observer_query[@]}" "$observer_origin/agent")"; then
@@ -596,6 +601,17 @@ evidence_start() {
     provider_origin="$(state_value "$run_id" provider-origin)"
     printf 'provider_browser_boundary=telegram-delivery-ledger\nprovider_inbox_url=%s/inbox\n' \
       "$provider_origin" >>"$feature_dir/metadata.txt"
+  fi
+  if [[ "$feature" == conversation-memory ]]; then
+    provider_origin="$(state_value "$run_id" provider-origin)"
+    curl --fail --silent --show-error "$provider_origin/_test/research/ledger" \
+      | jq 'length' >"$(state_dir_for "$run_id")/conversation-memory-model-ledger-before-count"
+    curl --fail --silent --show-error "$provider_origin/_test/telegram/ledger" \
+      | jq 'length' >"$(state_dir_for "$run_id")/conversation-memory-telegram-ledger-before-count"
+    curl --fail --silent --show-error "$provider_origin/_test/supermemory/ledger" \
+      | jq 'length' >"$(state_dir_for "$run_id")/conversation-memory-supermemory-ledger-before-count"
+    printf 'provider_browser_boundary=telegram-delivery-ledger\nprovider_inbox_url=%s/inbox?history=1\nsuperseded_marker=spruce-soda-%s\ncorrected_marker=cedar-cocoa-%s\n' \
+      "$provider_origin" "$run_id" "$run_id" >>"$feature_dir/metadata.txt"
   fi
   printf 'evidence_ready feature=%s action_screenshot=%s result_screenshot=%s\n' \
     "$feature" "$feature_dir/action.png" "$feature_dir/result.png"
@@ -1406,6 +1422,227 @@ observe_channel_linking() {
     "$feature_dir/provider.json" >/dev/null
   complete_observation "$run_id" "$feature_dir"
   printf 'observed channel-linking state=%s provider=%s\n' \
+    "$feature_dir/state.json" "$feature_dir/provider.json"
+}
+
+assert_conversation_memory_evidence() {
+  local run_id state_file provider_file superseded corrected
+  run_id="$1"
+  state_file="$2"
+  provider_file="$3"
+  superseded="spruce-soda-$run_id"
+  corrected="cedar-cocoa-$run_id"
+  jq --exit-status --arg runId "$run_id" --arg superseded "$superseded" --arg corrected "$corrected" \
+    'def isSetContextTrace:
+      .state? == "output-available" and
+      ((.toolName? == "set_context") or (.type? == "tool-set_context"));
+    def isPersistedToolCallId($operationId):
+      type == "string" and
+      ((split("::cf-wai-tool-call::")) as $parts |
+        ($parts | length) == 2 and
+        $parts[0] == $operationId and
+        ($parts[1] | length) > 0);
+    .conversation.historicalSessions[0] as $history |
+    ([$history.messages[]?.parts[]? | select(isSetContextTrace)]) as $sessionWrites |
+    ([$history.messages[3].parts[]? | select(isSetContextTrace)]) as $initialSessionWrites |
+    ([$history.messages[5].parts[]? | select(isSetContextTrace)]) as $correctionSessionWrites |
+    .registered == true and
+      .inspectable == true and
+      .identity.activeTelegramLinkCount == 1 and
+      .conversation._tag == "ConversationEvidence" and
+      .conversation.agent.currentSessionId == .conversation.route.currentSessionId and
+      (.conversation.route.historicalSessionIds | length) == 1 and
+      (.conversation.historicalSessions | length) == 1 and
+      .conversation.route.currentSessionId != .conversation.route.historicalSessionIds[0] and
+      .conversation.currentSession._tag == "SessionHistoryFound" and
+      .conversation.currentSession.sessionId == .conversation.route.currentSessionId and
+      $history._tag == "SessionHistoryFound" and
+      $history.sessionId == .conversation.route.historicalSessionIds[0] and
+      ($history.messages | length) == 6 and
+      ($history.messages | map(.role)) == [
+        "user", "assistant", "user", "assistant", "user", "assistant"
+      ] and
+      ($history.messages | map(.id) | unique | length) == 6 and
+      all($history.messages[]; (.id | length) > 0) and
+      ($history.messages[0].parts | length) == 1 and
+      $history.messages[0].parts[0] == {
+        type: "text", text: ("Give me a normal run-owned reply for " + $runId + ".")
+      } and
+      ([$history.messages[1].parts[] | select(.type? == "text") | .text]) == [
+        ("Committed Osfo result: Give me a normal run-owned reply for " + $runId + ".")
+      ] and
+      ($history.messages[2].parts | length) == 1 and
+      $history.messages[2].parts[0] == {
+        type: "text", text: ("Remember that my run-owned verification drink is " + $superseded + ".")
+      } and
+      ([$history.messages[3].parts[] | select(.type? == "text") | .text]) == [
+        "I remembered your run-owned verification drink."
+      ] and
+      ($initialSessionWrites | length) == 1 and
+      ($initialSessionWrites[0].toolCallId |
+        isPersistedToolCallId("verification-set_context-initial")) and
+      ($history.messages[4].parts | length) == 1 and
+      $history.messages[4].parts[0] == {
+        type: "text",
+        text: ("Correction: remember that my run-owned verification drink is " + $corrected + ", not " + $superseded + ".")
+      } and
+      ([$history.messages[5].parts[] | select(.type? == "text") | .text]) == [
+        "I corrected your run-owned verification drink."
+      ] and
+      ($correctionSessionWrites | length) == 1 and
+      ($correctionSessionWrites[0].toolCallId |
+        isPersistedToolCallId("verification-set_context-correction")) and
+      $initialSessionWrites[0].toolCallId != $correctionSessionWrites[0].toolCallId and
+      ($sessionWrites | length) == 2 and
+      (.conversation.currentSession.messages | length) == 2 and
+      (.conversation.currentSession.messages[0].id | length) > 0 and
+      (.conversation.currentSession.messages[1].id | length) > 0 and
+      .conversation.currentSession.messages[0].id != .conversation.currentSession.messages[1].id and
+      .conversation.currentSession.messages[0].role == "user" and
+      (.conversation.currentSession.messages[0].parts | length) == 1 and
+      .conversation.currentSession.messages[0].parts[0] == {
+        type: "text", text: "What is my run-owned verification drink?"
+      } and
+      .conversation.currentSession.messages[1].role == "assistant" and
+      .conversation.currentSession.messages[1].parts == [
+        { type: "step-start" },
+        {
+          type: "text",
+          text: ("Your run-owned verification drink is " + $corrected + "."),
+          state: "done"
+        }
+      ] and
+      (.conversation.currentSession | tostring | contains($superseded) | not) and
+      (.conversation.currentSession | tostring | contains("normal run-owned reply") | not) and
+      (.conversation.currentSession | tostring | contains("Correction: remember that") | not) and
+      (.conversation.currentSession | tostring | contains("set_context") | not) and
+      (.conversation.currentSession | tostring | contains("sessionRecall") | not)' \
+    "$state_file" >/dev/null
+  jq --exit-status --arg runId "$run_id" --arg superseded "$superseded" --arg corrected "$corrected" \
+    '([.model[] | select(.kind == "tool-selection")]) as $selections |
+      ([.model[] | select(.kind == "tool-selection" and .selectedTool == "set_context")]) as $writes |
+      ([.model[] | select(.kind == "agent" and .recallRequest? != null)]) as $recalls |
+      ([.supermemory.ledger[] | select(.path == "/v4/profile")]) as $profiles |
+      ([.supermemory.ledger[] | select(.path == "/v4/search")]) as $searches |
+      $recalls[0] as $recall |
+      ([.supermemory.ledger[] |
+        select(.sequence == ($recall.sequence - 2) or .sequence == ($recall.sequence - 1))
+      ]) as $recallMemory |
+      ($selections | length) == 2 and
+      all($selections[]; .selectedTool == "set_context") and
+      ($writes | length) == 2 and
+      $writes[0].operationId == "verification-set_context-initial" and
+      $writes[0].arguments == {
+        action: "append", block: "userContext",
+        content: ("My run-owned verification drink is " + $superseded + ".")
+      } and
+      $writes[1].operationId == "verification-set_context-correction" and
+      $writes[1].arguments == {
+        action: "replace", block: "userContext",
+        content: ("My run-owned verification drink is " + $corrected + ".")
+      } and
+      ($writes[1].arguments.content | contains($superseded) | not) and
+      ([.model[] | select(.kind == "tool-selection" and .selectedTool == "sessionRecall")] | length) == 0 and
+      ($recalls | length) == 1 and
+      ($recall.sequence | type) == "number" and
+      $recall.latestAgentSequence == $recall.sequence and
+      $recall.recallRequest.nonSystemMessages == [
+        { content: "What is my run-owned verification drink?", role: "user" }
+      ] and
+      $recall.recallRequest.requestMessageCount ==
+        ($recall.recallRequest.systemMessageCount + 1) and
+      $recall.recallRequest.systemMessageCount >= 1 and
+      $recall.recallRequest.userContextSections == [
+        ("My run-owned verification drink is " + $corrected + ".")
+      ] and
+      $recall.recallRequest.correctedOutsideUserContextCount == 0 and
+      $recall.recallRequest.supersededCount == 0 and
+      $recall.recallRequest.copiedHistoricalTurnCount == 0 and
+      ($recallMemory | length) == 2 and
+      ([$recallMemory[].path] | sort) == ["/v4/profile", "/v4/search"] and
+      ([$recallMemory[].sequence] | sort) == [($recall.sequence - 2), ($recall.sequence - 1)] and
+      ([ $recallMemory[] | select(
+        .path == "/v4/profile" and .method == "POST" and
+        .dynamicProfileCount == 0 and .staticProfileCount == 0 and .searchResultCount == 0
+      ) ] | length) == 1 and
+      ([ $recallMemory[] | select(
+        .path == "/v4/search" and .method == "POST" and .searchResultCount == 0
+      ) ] | length) == 1 and
+      any(.telegram[];
+        (.body | fromjson? | (.text? // .rich_message.markdown? // "")) ==
+          ("Committed Osfo result: Give me a normal run-owned reply for " + $runId + ".")) and
+      any(.telegram[];
+        (.body | fromjson? | (.text? // .rich_message.markdown? // "")) == "Started a new Osfo session.") and
+      any(.telegram[];
+        (.body | fromjson? | (.text? // .rich_message.markdown? // "")) ==
+          ("Your run-owned verification drink is " + $corrected + ".")) and
+      (all(.telegram[];
+        (.body | fromjson? | (.text? // .rich_message.markdown? // "")) |
+          (contains("Your run-owned verification drink is " + $superseded + ".") | not))) and
+      (.supermemory.containers | length) == 0 and
+      ($profiles | length) >= 1 and
+      all($profiles[];
+        .method == "POST" and .dynamicProfileCount == 0 and
+        .staticProfileCount == 0 and .searchResultCount == 0) and
+      ($searches | length) >= 1 and
+      all($searches[]; .method == "POST" and .searchResultCount == 0) and
+      (.supermemory.ledger | length) == (($profiles | length) + ($searches | length))' \
+    "$provider_file" >/dev/null
+}
+
+observe_conversation_memory() {
+  local run_id state_dir feature_dir container_id provider_origin phone identity user_id agent_id
+  local runtime model_before telegram_before supermemory_before
+  run_id="$1"
+  state_dir="$(state_dir_for "$run_id")"
+  feature_dir="$(feature_artifact_dir_for "$run_id" conversation-memory)"
+  begin_observation "$feature_dir"
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  identity="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userId', u.id,
+      'agentId', a.agent_id,
+      'activeTelegramLinkCount', count(cl.channel_link_id)
+    ) from users u
+    join agents a on a.user_id = u.id
+    join channel_links cl on cl.user_id = u.id
+    where u.phone_number = '$phone' and cl.channel_id = 'telegram' and cl.revoked_at is null
+    group by u.id, a.agent_id;")"
+  if [[ -z "$identity" ]]; then
+    printf 'Complete registration and Telegram channel linking before conversation memory\n' >&2
+    exit 1
+  fi
+  user_id="$(jq --exit-status --raw-output '.userId' <<<"$identity")"
+  agent_id="$(jq --exit-status --raw-output '.agentId' <<<"$identity")"
+  require_owned_identifier 'User ID' "$user_id"
+  require_owned_identifier 'Agent ID' "$agent_id"
+  runtime="$(inspect_agent_runtime "$run_id" "$agent_id" "$user_id" '' '' '' '' '' 1)"
+  jq --argjson identity "$identity" '. + { identity: $identity }' <<<"$runtime" \
+    >"$feature_dir/state.json"
+
+  model_before="$(state_value "$run_id" conversation-memory-model-ledger-before-count)"
+  telegram_before="$(state_value "$run_id" conversation-memory-telegram-ledger-before-count)"
+  supermemory_before="$(state_value "$run_id" conversation-memory-supermemory-ledger-before-count)"
+  jq --null-input \
+    --argjson model "$(curl --fail --silent --show-error \
+      "$provider_origin/_test/research/ledger" | jq --argjson before "$model_before" '.[ $before: ]')" \
+    --argjson telegram "$(curl --fail --silent --show-error \
+      "$provider_origin/_test/telegram/ledger" | jq --argjson before "$telegram_before" '.[ $before: ]')" \
+    --argjson supermemoryLedger "$(curl --fail --silent --show-error \
+      "$provider_origin/_test/supermemory/ledger" | jq --argjson before "$supermemory_before" '.[ $before: ]')" \
+    --argjson supermemoryContainers "$(curl --fail --silent --show-error \
+      "$provider_origin/_test/supermemory/containers")" \
+    '{ model: $model, telegram: $telegram,
+      supermemory: { containers: $supermemoryContainers, ledger: $supermemoryLedger } }' \
+    >"$feature_dir/provider.json"
+
+  assert_conversation_memory_evidence \
+    "$run_id" "$feature_dir/state.json" "$feature_dir/provider.json"
+  complete_observation "$run_id" "$feature_dir"
+  printf 'observed conversation-memory state=%s provider=%s\n' \
     "$feature_dir/state.json" "$feature_dir/provider.json"
 }
 
@@ -2346,6 +2583,15 @@ evidence_finish() {
     printf 'Free Document Build denial evidence needs the exact Agent request, safe reply, and browser record\n' >&2
     exit 1
   fi
+  if [[ "$feature" == conversation-memory ]] && \
+    { ! grep -F -q 'ordinary Telegram reply and two Core Memory writes' \
+        "$feature_dir/browser-actions.txt" || \
+      ! grep -F -q 'Started a new Osfo session.' "$feature_dir/browser-actions.txt" || \
+      ! grep -F -q 'corrected value visible and superseded value absent' \
+        "$feature_dir/browser-actions.txt"; }; then
+    printf 'Conversation Memory evidence needs the ordinary reply, both writes, exact new-Session reply, and corrected recall browser records\n' >&2
+    exit 1
+  fi
   if ! grep -q 'phase=action ' "$feature_dir/browser-actions.txt" || \
     ! grep -q 'phase=result ' "$feature_dir/browser-actions.txt"; then
     printf 'Evidence needs both action and result browser records\n' >&2
@@ -2460,6 +2706,7 @@ case "$command_name" in
     case "$3" in
       registration) observe_registration "$2" ;;
       channel-linking) observe_channel_linking "$2" ;;
+      conversation-memory) observe_conversation_memory "$2" ;;
       research-report) observe_research_report "$2" ;;
       document-build-free-denial) observe_document_build_free_denial "$2" ;;
       document-build) observe_document_build "$2" ;;
@@ -2469,6 +2716,14 @@ case "$command_name" in
       whatsapp-wakeup) observe_whatsapp_wakeup "$2" ;;
       account-deletion|account-deletion-replay) observe_account_deletion "$2" "$3" ;;
     esac
+    ;;
+  assert-conversation-memory-evidence)
+    require_run_id "${2:-}"
+    if [[ ! -s "${3:-}" || ! -s "${4:-}" ]]; then
+      printf 'Conversation Memory state and provider evidence files are required\n' >&2
+      exit 2
+    fi
+    assert_conversation_memory_evidence "$2" "$3" "$4"
     ;;
   channel-invite)
     require_run_id "${2:-}"

@@ -39,8 +39,12 @@ interface IntegrationConnectionControl {
 
 /** One observed Supermemory request. */
 export interface SupermemoryLedgerEntry {
+  readonly dynamicProfileCount?: number;
   readonly method: string;
   readonly path: string;
+  readonly searchResultCount?: number;
+  readonly sequence?: number;
+  readonly staticProfileCount?: number;
 }
 
 /** One observed Telegram Bot API request. */
@@ -59,10 +63,24 @@ export interface WhatsAppLedgerEntry {
 
 /** One observed deterministic Research Report provider operation. */
 export interface ResearchLedgerEntry {
+  readonly arguments?: JsonObject;
   readonly kind: "agent" | "discover" | "page" | "synthesize" | "tool-selection";
+  readonly latestAgentSequence?: number;
   readonly operationId: string | null;
+  readonly recallRequest?: RecallRequestEvidence;
   readonly selectedTool?: string;
+  readonly sequence?: number;
   readonly subject: string;
+}
+
+interface RecallRequestEvidence {
+  readonly copiedHistoricalTurnCount: number;
+  readonly correctedOutsideUserContextCount: number;
+  readonly nonSystemMessages: ReadonlyArray<JsonObject>;
+  readonly requestMessageCount: number;
+  readonly supersededCount: number;
+  readonly systemMessageCount: number;
+  readonly userContextSections: ReadonlyArray<string>;
 }
 
 /** One exact local Integration provider execution observed at the provider boundary. */
@@ -192,10 +210,12 @@ const startProvider = (options: {
     const supermemoryContainers = new Set<string>();
     let supermemoryDeleteFailuresRemaining = 0;
     const supermemoryLedger: Array<SupermemoryLedgerEntry> = [];
+    let promptBoundarySequence = 0;
     const telegramLedger: Array<TelegramLedgerEntry> = [];
     const twilioLedger: Array<TwilioLedgerEntry> = [];
     const whatsAppLedger: Array<WhatsAppLedgerEntry> = [];
     const researchLedger: Array<ResearchLedgerEntry> = [];
+    let latestAgentSequence = 0;
     const integrationLedger: Array<IntegrationLedgerEntry> = [];
     const integrationSessions = new Map<string, string>();
     const integrationConnections = new Map<string, string>();
@@ -214,7 +234,12 @@ const startProvider = (options: {
       const url = new URL(rawUrl.startsWith("//") ? rawUrl.slice(1) : rawUrl, "http://localhost");
       const pathname = url.pathname;
       if (request.method === "GET" && pathname === "/inbox") {
-        renderTelegramInbox(response, options.verificationRunId ?? "standalone", telegramLedger);
+        renderTelegramInbox(
+          response,
+          options.verificationRunId ?? "standalone",
+          telegramLedger,
+          url.searchParams.get("history") === "1",
+        );
         return;
       }
       if (request.method === "POST" && pathname === "/_test/reset") {
@@ -223,10 +248,12 @@ const startProvider = (options: {
         supermemoryContainers.clear();
         supermemoryDeleteFailuresRemaining = 0;
         supermemoryLedger.length = 0;
+        promptBoundarySequence = 0;
         telegramLedger.length = 0;
         twilioLedger.length = 0;
         whatsAppLedger.length = 0;
         researchLedger.length = 0;
+        latestAgentSequence = 0;
         researchControl.nextDocumentBuildActionId = null;
         researchControl.nextImmediateGmailActionId = null;
         integrationLedger.length = 0;
@@ -312,7 +339,13 @@ const startProvider = (options: {
         return;
       }
       if (request.method === "GET" && pathname === "/_test/research/ledger") {
-        respondJson(response, 200, researchLedger);
+        respondJson(
+          response,
+          200,
+          researchLedger.map((entry) =>
+            entry.recallRequest === undefined ? entry : { ...entry, latestAgentSequence },
+          ),
+        );
         return;
       }
       if (request.method === "POST" && pathname === "/_test/research/next-document-build-action") {
@@ -391,7 +424,9 @@ const startProvider = (options: {
         return;
       }
       if (request.method === "POST" && pathname.startsWith("/_local/research/")) {
-        handleResearch(request, response, pathname, researchLedger, researchControl);
+        const sequence = pathname.endsWith("/agent") ? ++promptBoundarySequence : null;
+        if (sequence !== null) latestAgentSequence = sequence;
+        handleResearch(request, response, pathname, researchLedger, researchControl, sequence);
         return;
       }
       if (request.method === "GET" && pathname === "/_test/whatsapp/ledger") {
@@ -436,13 +471,37 @@ const startProvider = (options: {
         return;
       }
       if (request.method === "POST" && pathname === "/v4/profile") {
+        const sequence = ++promptBoundarySequence;
         readTextBody(request)
-          .then(() =>
+          .then(() => {
+            supermemoryLedger.push({
+              dynamicProfileCount: 0,
+              method: request.method ?? "POST",
+              path: pathname,
+              searchResultCount: 0,
+              sequence,
+              staticProfileCount: 0,
+            });
             respondJson(response, 200, {
               profile: { dynamic: [], static: [] },
               searchResults: { results: [], timing: 0, total: 0 },
-            }),
-          )
+            });
+          })
+          .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
+        return;
+      }
+      if (request.method === "POST" && pathname === "/v4/search") {
+        const sequence = ++promptBoundarySequence;
+        readTextBody(request)
+          .then(() => {
+            supermemoryLedger.push({
+              method: request.method ?? "POST",
+              path: pathname,
+              searchResultCount: 0,
+              sequence,
+            });
+            respondJson(response, 200, { results: [], timing: 0, total: 0 });
+          })
           .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
         return;
       }
@@ -803,6 +862,7 @@ const handleResearch = (
   pathname: string,
   ledger: Array<ResearchLedgerEntry>,
   control: ResearchControl,
+  sequence: number | null,
 ): void => {
   readTextBody(request)
     .then(Schema.decodeUnknownPromise(ResearchRequestFromJson))
@@ -810,11 +870,18 @@ const handleResearch = (
       if (pathname.endsWith("/agent")) {
         const toolNames = availableToolNames(input);
         const lastMessage = lastMessageContent(input);
-        ledger.push({
+        const currentUserInstruction = latestUserInstruction(input);
+        const recallContext = runOwnedRecallContext(input, currentUserInstruction);
+        const agentEntry: ResearchLedgerEntry = {
           kind: "agent",
           operationId: null,
           subject: lastMessageText(input).slice(0, 500),
-        });
+        };
+        ledger.push(
+          recallContext === null || sequence === null
+            ? agentEntry
+            : { ...agentEntry, recallRequest: recallContext.evidence, sequence },
+        );
         const documentBuildRequest = latestUserMessageContent(input);
         const documentBuildFileId = /web:[0-9a-f-]{36}/iu.exec(documentBuildRequest)?.[0];
         const documentBuildWorkflowId = /document-build:[\w:-]{8,300}/iu.exec(
@@ -859,6 +926,97 @@ const handleResearch = (
         }
         if (toolNames.includes("present_link") && lastMessageRole(input) === "user") {
           respondJson(response, 200, toolResponse("present_link", {}));
+          return;
+        }
+        const correctedCoreMemoryDrink =
+          /^Correction: remember that my run-owned verification drink is ([a-z0-9-]+), not [a-z0-9-]+\.?$/iu.exec(
+            currentUserInstruction,
+          )?.[1];
+        const initialCoreMemoryDrink =
+          /^Remember that my run-owned verification drink is ([a-z0-9-]+)\.?$/iu.exec(
+            currentUserInstruction,
+          )?.[1];
+        const expectedCoreMemoryToolCallId =
+          correctedCoreMemoryDrink === undefined
+            ? initialCoreMemoryDrink === undefined
+              ? null
+              : "verification-set_context-initial"
+            : "verification-set_context-correction";
+        const currentMessage = input.messages?.at(-1);
+        if (
+          currentMessage?.role === "tool" &&
+          currentMessage.name === "set_context" &&
+          currentMessage.tool_call_id === expectedCoreMemoryToolCallId
+        ) {
+          respondJson(response, 200, {
+            finish_reason: "stop",
+            response:
+              correctedCoreMemoryDrink === undefined
+                ? "I remembered your run-owned verification drink."
+                : "I corrected your run-owned verification drink.",
+            usage: { completion_tokens: 1, prompt_tokens: 1 },
+          });
+          return;
+        }
+        if (
+          correctedCoreMemoryDrink !== undefined &&
+          toolNames.includes("set_context") &&
+          lastMessageRole(input) === "user"
+        ) {
+          const toolArguments = {
+            action: "replace",
+            block: "userContext",
+            content: `My run-owned verification drink is ${correctedCoreMemoryDrink}.`,
+          } as const;
+          ledger.push({
+            arguments: toolArguments,
+            kind: "tool-selection",
+            operationId: "verification-set_context-correction",
+            selectedTool: "set_context",
+            subject: correctedCoreMemoryDrink,
+          });
+          respondJson(
+            response,
+            200,
+            toolResponse("set_context", toolArguments, "verification-set_context-correction"),
+          );
+          return;
+        }
+        if (
+          initialCoreMemoryDrink !== undefined &&
+          toolNames.includes("set_context") &&
+          lastMessageRole(input) === "user"
+        ) {
+          const toolArguments = {
+            action: "append",
+            block: "userContext",
+            content: `My run-owned verification drink is ${initialCoreMemoryDrink}.`,
+          } as const;
+          ledger.push({
+            arguments: toolArguments,
+            kind: "tool-selection",
+            operationId: "verification-set_context-initial",
+            selectedTool: "set_context",
+            subject: initialCoreMemoryDrink,
+          });
+          respondJson(
+            response,
+            200,
+            toolResponse("set_context", toolArguments, "verification-set_context-initial"),
+          );
+          return;
+        }
+        const coreMemoryDrink = recallContext?.drink ?? null;
+        if (
+          coreMemoryDrink !== null &&
+          lastMessageRole(input) === "user" &&
+          /^What is my run-owned verification drink\?$/iu.test(currentUserInstruction)
+        ) {
+          respondJson(response, 200, {
+            finish_reason: "stop",
+            response: `Your run-owned verification drink is ${coreMemoryDrink}.`,
+            usage: { completion_tokens: 1, prompt_tokens: 1 },
+          });
           return;
         }
         const workflowId = /research[:\w-]{8,300}/iu.exec(lastMessage)?.[0];
@@ -1051,7 +1209,10 @@ const handleResearch = (
         }
         respondJson(response, 200, {
           finish_reason: "stop",
-          response: `Committed Osfo result: ${lastMessageContent(input).slice(0, 1_800)}`,
+          response: `Committed Osfo result: ${(lastMessageRole(input) === "user"
+            ? currentUserInstruction
+            : lastMessageContent(input)
+          ).slice(0, 1_800)}`,
           usage: { completion_tokens: 1, prompt_tokens: 1 },
         });
         return;
@@ -1152,6 +1313,9 @@ const latestUserMessageContent = (input: ResearchRequest): string => {
   return JSON.stringify(message.content);
 };
 
+const latestUserInstruction = (input: ResearchRequest): string =>
+  latestUserMessageContent(input).trimEnd().split(/\r?\n/u).at(-1)?.trim() ?? "";
+
 const latestUserMessageMatch = (input: ResearchRequest, pattern: RegExp): RegExpExecArray | null =>
   input.messages?.reduceRight<RegExpExecArray | null>((found, message) => {
     if (found !== null || message.role !== "user" || typeof message.content !== "string") {
@@ -1159,6 +1323,87 @@ const latestUserMessageMatch = (input: ResearchRequest, pattern: RegExp): RegExp
     }
     return pattern.exec(message.content);
   }, null) ?? null;
+
+const runOwnedRecallContext = (
+  input: ResearchRequest,
+  currentUserInstruction: string,
+): { readonly drink: string; readonly evidence: RecallRequestEvidence } | null => {
+  if (!/^What is my run-owned verification drink\?$/iu.test(currentUserInstruction)) return null;
+  const messages = input.messages ?? [];
+  const latestUserIndex = messages.reduce(
+    (found, message, index) => (message.role === "user" ? index : found),
+    -1,
+  );
+  const consideredMessages = messages.map((message, index) =>
+    index === latestUserIndex ? { ...message, content: currentUserInstruction } : message,
+  );
+  const systemMessages = messages.filter(
+    (message) => message.role === "system" && typeof message.content === "string",
+  );
+  const userContextSections = systemMessages.flatMap((message) =>
+    typeof message.content === "string" ? extractUserContextSections(message.content) : [],
+  );
+  const drink = userContextSections.reduceRight<string | null>(
+    (found, section) =>
+      found ?? /My run-owned verification drink is ([a-z0-9-]+)\./iu.exec(section)?.[1] ?? null,
+    null,
+  );
+  if (drink === null) return null;
+
+  const allRequestText = consideredMessages.map(messageText).join("\n");
+  const userContextText = userContextSections.join("\n");
+  const suffix = /^cedar-cocoa-(.+)$/u.exec(drink)?.[1] ?? "";
+  const superseded = suffix.length === 0 ? "" : `spruce-soda-${suffix}`;
+  const historicalTurns =
+    suffix.length === 0
+      ? []
+      : [
+          `Give me a normal run-owned reply for ${suffix}.`,
+          `Committed Osfo result: Give me a normal run-owned reply for ${suffix}.`,
+          `Remember that my run-owned verification drink is ${superseded}.`,
+          "I remembered your run-owned verification drink.",
+          `Correction: remember that my run-owned verification drink is ${drink}, not ${superseded}.`,
+          "I corrected your run-owned verification drink.",
+        ];
+  return {
+    drink,
+    evidence: {
+      copiedHistoricalTurnCount: historicalTurns.reduce(
+        (count, turn) => count + countOccurrences(allRequestText, turn),
+        0,
+      ),
+      correctedOutsideUserContextCount:
+        countOccurrences(allRequestText, drink) - countOccurrences(userContextText, drink),
+      nonSystemMessages: consideredMessages
+        .filter((message) => message.role !== "system")
+        .map((message) => ({ content: message.content ?? null, role: message.role ?? null })),
+      requestMessageCount: messages.length,
+      supersededCount: superseded.length === 0 ? 0 : countOccurrences(allRequestText, superseded),
+      systemMessageCount: messages.filter((message) => message.role === "system").length,
+      userContextSections,
+    },
+  };
+};
+
+const extractUserContextSections = (content: string): ReadonlyArray<string> => {
+  const sections: Array<string> = [];
+  const collect = (heading: RegExp, nextHeading: RegExp) =>
+    [...content.matchAll(heading)].forEach((match) => {
+      if (match.index === undefined) return;
+      const remainder = content.slice(match.index + match[0].length);
+      const next = nextHeading.exec(remainder);
+      sections.push(remainder.slice(0, next?.index ?? remainder.length).trim());
+    });
+  collect(/(?:^|\r?\n)═{46}\r?\nUSER CONTEXT[^\r\n]*\r?\n═{46}\r?\n/gu, /\r?\n\r?\n═{46}\r?\n/u);
+  collect(/(?:^|\r?\n)(?:##[ \t]+)?User Context[ \t]*\r?\n/giu, /\r?\n##[ \t]+[^\r\n]+/u);
+  return sections;
+};
+
+const messageText = (message: NonNullable<ResearchRequest["messages"]>[number]): string =>
+  typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? null);
+
+const countOccurrences = (value: string, needle: string): number =>
+  needle.length === 0 ? 0 : value.split(needle).length - 1;
 
 const isDocumentBuildSkillLoadResult = (input: ResearchRequest): boolean => {
   const message = lastMessage(input);
@@ -1380,6 +1625,7 @@ const renderTelegramInbox = (
   response: ServerResponse,
   verificationRunId: string,
   ledger: ReadonlyArray<TelegramLedgerEntry>,
+  includeHistory: boolean,
 ): void => {
   const deliveries = ledger.flatMap((entry, index) => {
     const decoded = Option.getOrUndefined(Schema.decodeOption(TelegramRequestFromJson)(entry.body));
@@ -1387,7 +1633,7 @@ const renderTelegramInbox = (
     return text === undefined ? [] : [{ index: index + 1, method: entry.method, text }];
   });
   const delivery = deliveries[deliveries.length - 1];
-  const message =
+  const latestMessage =
     delivery === undefined
       ? "<p>No delivered Telegram messages.</p>"
       : `<article>
@@ -1395,6 +1641,17 @@ const renderTelegramInbox = (
 <p>Telegram method: <code>${escapeHtml(delivery.method)}</code></p>
 <pre>${escapeHtml(delivery.text)}</pre>
 </article>`;
+  const message = includeHistory
+    ? deliveries
+        .map(
+          (item) => `<article>
+<h2>Delivery ${item.index}</h2>
+<p>Telegram method: <code>${escapeHtml(item.method)}</code></p>
+<pre>${escapeHtml(item.text)}</pre>
+</article>`,
+        )
+        .join("\n") || "<p>No delivered Telegram messages.</p>"
+    : latestMessage;
   response.statusCode = 200;
   response.setHeader("cache-control", "no-store");
   response.setHeader("content-type", "text/html; charset=utf-8");
