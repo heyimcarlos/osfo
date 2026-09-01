@@ -1383,7 +1383,9 @@ require_owned_identifier() {
 seed_account_deletion() {
   local run_id state_dir container_id provider_origin phone seed_state user_id agent_id
   local channel_link_id target_seed unrelated_seed target_tag unrelated_tag files_bucket
-  local target_key unrelated_key containers_json agent_runtime
+  local target_key unrelated_key containers_json agent_runtime integration_connections
+  local target_connection_id unrelated_connection_id unrelated_connection_seed
+  local unrelated_connection_before unrelated_integration_user_id
   run_id="$1"
   doctor_run "$run_id" >/dev/null
   state_dir="$(state_dir_for "$run_id")"
@@ -1424,6 +1426,52 @@ seed_account_deletion() {
     <<<"$agent_runtime" >/dev/null
   jq . <<<"$agent_runtime" >"$state_dir/account-deletion-agent-runtime-before.json"
 
+  integration_connections="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/integrations/connections")"
+  target_connection_id="$(jq --exit-status --raw-output --arg userId "$user_id" '
+    [.[] | select(.userId == $userId)] |
+    if length == 0 then "" elif length == 1 then .[0].connectedAccountId
+    else error("multiple target Integration connections") end
+  ' <<<"$integration_connections")"
+  if [[ -z "$target_connection_id" ]]; then
+    target_connection_id="$(curl --fail --silent --show-error \
+      --header 'content-type: application/json' \
+      --data "$(jq --null-input --compact-output --arg userId "$user_id" '{ userId: $userId }')" \
+      "$provider_origin/_test/integrations/seed-connection" \
+      | jq --exit-status --raw-output '.connectedAccountId')"
+  fi
+  unrelated_integration_user_id="unrelated-$run_id"
+  unrelated_connection_seed="$(curl --fail --silent --show-error \
+    --header 'content-type: application/json' \
+    --data "$(jq --null-input --compact-output --arg userId "$unrelated_integration_user_id" \
+      '{ userId: $userId }')" \
+    "$provider_origin/_test/integrations/seed-connection")"
+  unrelated_connection_id="$(jq --exit-status --raw-output \
+    '.connectedAccountId' <<<"$unrelated_connection_seed")"
+  require_owned_identifier 'target Integration connection ID' "$target_connection_id"
+  require_owned_identifier 'unrelated Integration connection ID' "$unrelated_connection_id"
+  printf '%s\n' "$target_connection_id" \
+    >"$state_dir/account-deletion-target-integration-connection-id"
+  printf '%s\n' "$unrelated_connection_id" \
+    >"$state_dir/account-deletion-unrelated-integration-connection-id"
+  integration_connections="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/integrations/connections")"
+  unrelated_connection_before="$(jq --exit-status --arg connectionId "$unrelated_connection_id" \
+    --arg userId "$unrelated_integration_user_id" '
+      [.[] | select(
+        .connectedAccountId == $connectionId and .userId == $userId
+      )] |
+      if length == 1 and .[0].status == "ACTIVE" then .[0]
+      else error("unrelated Integration connection is not an exact ACTIVE sentinel") end
+    ' <<<"$integration_connections")"
+  jq . <<<"$unrelated_connection_before" \
+    >"$state_dir/account-deletion-unrelated-integration-connection-before.json"
+  curl --fail --silent --show-error \
+    "$provider_origin/_test/integrations/authority-operations" \
+    | jq . >"$state_dir/account-deletion-integration-authority-operations-before.json"
+  curl --fail --silent --show-error "$provider_origin/_test/integrations/ledger" \
+    | jq . >"$state_dir/account-deletion-integration-ledger-before.json"
+
   target_seed="$(curl --fail --silent --show-error \
     --header 'content-type: application/json' \
     --data "$(jq --null-input --compact-output --arg userId "$user_id" '{ userId: $userId }')" \
@@ -1458,8 +1506,9 @@ seed_account_deletion() {
   printf '%s\n' "$agent_id" >"$state_dir/account-deletion-agent-id"
   printf '%s\n' "$channel_link_id" >"$state_dir/account-deletion-channel-link-id"
 
-  printf 'deletion_seed_ready user=%s agent=%s channel_link=%s provider_target=%s r2_target=%s unrelated_sentinels=provider,r2\n' \
-    "$user_id" "$agent_id" "$channel_link_id" "$target_tag" "$target_key"
+  printf 'deletion_seed_ready user=%s agent=%s channel_link=%s provider_target=%s integration_target=%s r2_target=%s unrelated_sentinels=provider,integration,r2\n' \
+    "$user_id" "$agent_id" "$channel_link_id" "$target_tag" \
+    "$target_connection_id" "$target_key"
 }
 
 reconcile_account_deletion() {
@@ -2585,7 +2634,13 @@ observe_account_deletion() {
   local document_attempt_key document_owner_key document_file_id document_artifact_id
   local document_main_instance_id document_timer_instance_id artifacts_bucket
   local immediate_state immediate_expected immediate_action_id immediate_presentation_id
-  local immediate_deletion_qualification
+  local immediate_deletion_qualification target_integration_connection_id
+  local unrelated_integration_connection_id integration_connections integration_ledger_before
+  local integration_ledger_after target_integration_exists
+  local target_connection_binding immediate_provider_connection_deletion
+  local unrelated_connection_before unrelated_connection_after
+  local integration_authority_operations_before integration_authority_operations_after
+  local revoke_operation_count delete_operation_count
   run_id="$1"
   feature="$2"
   if [[ "$feature" == account-deletion-replay ]]; then
@@ -2604,6 +2659,10 @@ observe_account_deletion() {
   channel_link_id="$(state_value "$run_id" account-deletion-channel-link-id)"
   target_tag="$(state_value "$run_id" account-deletion-target-provider-tag)"
   unrelated_tag="$(state_value "$run_id" account-deletion-unrelated-provider-tag)"
+  target_integration_connection_id="$(state_value \
+    "$run_id" account-deletion-target-integration-connection-id)"
+  unrelated_integration_connection_id="$(state_value \
+    "$run_id" account-deletion-unrelated-integration-connection-id)"
   files_bucket="$(state_value "$run_id" account-deletion-files-bucket)"
   target_key="$(state_value "$run_id" account-deletion-target-r2-key)"
   unrelated_key="$(state_value "$run_id" account-deletion-unrelated-r2-key)"
@@ -2720,6 +2779,7 @@ observe_account_deletion() {
   immediate_action_id=''
   immediate_presentation_id=''
   immediate_deletion_qualification=null
+  immediate_provider_connection_deletion=null
   if [[ -s "$immediate_state" ]]; then
     if [[ "$feature" != account-deletion-replay ]]; then
       printf 'Immediate Gmail qualification requires the retained account-deletion replay drive\n' >&2
@@ -2733,6 +2793,14 @@ observe_account_deletion() {
       printf 'The Immediate Gmail evidence belongs to another deletion User\n' >&2
       exit 1
     fi
+    target_connection_binding="$(printf 'osfo-integration-connection-v1:%s' \
+      "$target_integration_connection_id" | sha256sum | awk '{print $1}')"
+    if [[ "$target_connection_binding" != \
+        "$(jq --exit-status --raw-output '.durable.approvalConnectionBinding' \
+          "$immediate_state")" ]]; then
+      printf 'The deletion target does not match the captured Gmail Connection\n' >&2
+      exit 1
+    fi
     bun run --cwd "$repo_root/apps/worker" vitest run \
       --config vitest.modules.config.ts \
       src/agents/osfo/immediate-gmail-send.test.ts \
@@ -2744,6 +2812,58 @@ observe_account_deletion() {
         guarantee: "every Immediate Gmail owned key erased while unrelated Agent storage survives",
         result: "PASS",
         test: "deletes every immediate Gmail owned key without touching unrelated Agent storage"
+      }')"
+  fi
+  integration_connections="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/integrations/connections")"
+  integration_ledger_before="$(<"$state_dir/account-deletion-integration-ledger-before.json")"
+  integration_ledger_after="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/integrations/ledger")"
+  unrelated_connection_before="$(
+    <"$state_dir/account-deletion-unrelated-integration-connection-before.json"
+  )"
+  unrelated_connection_after="$(jq --arg connectionId "$unrelated_integration_connection_id" '
+    [.[] | select(.connectedAccountId == $connectionId)] |
+    if length == 1 then .[0] else null end
+  ' <<<"$integration_connections")"
+  integration_authority_operations_before="$(
+    <"$state_dir/account-deletion-integration-authority-operations-before.json"
+  )"
+  integration_authority_operations_after="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/integrations/authority-operations")"
+  revoke_operation_count="$(jq --null-input \
+    --argjson before "$integration_authority_operations_before" \
+    --argjson after "$integration_authority_operations_after" \
+    --arg connectionId "$target_integration_connection_id" '
+      [$after[($before | length):][] |
+        select(.connectedAccountId == $connectionId and .operation == "revoke")] |
+      length
+    ')"
+  delete_operation_count="$(jq --null-input \
+    --argjson before "$integration_authority_operations_before" \
+    --argjson after "$integration_authority_operations_after" \
+    --arg connectionId "$target_integration_connection_id" '
+      [$after[($before | length):][] |
+        select(.connectedAccountId == $connectionId and .operation == "delete")] |
+      length
+    ')"
+  target_integration_exists="$(jq --arg connectionId "$target_integration_connection_id" \
+    'any(.[]; .connectedAccountId == $connectionId)' <<<"$integration_connections")"
+  if [[ "$immediate_expected" == true ]]; then
+    immediate_provider_connection_deletion="$(jq --null-input \
+      --arg connectionBinding "$target_connection_binding" \
+      --argjson deleteOperationCount "$delete_operation_count" \
+      --argjson directProviderAbsence "$([[ "$target_integration_exists" == false ]] && printf true || printf false)" \
+      --argjson revokeOperationCount "$revoke_operation_count" \
+      --argjson unrelatedConnectionAfter "$unrelated_connection_after" \
+      --argjson unrelatedConnectionBefore "$unrelated_connection_before" '{
+        connectionBinding: $connectionBinding,
+        deleteOperationCount: $deleteOperationCount,
+        directProviderAbsence: $directProviderAbsence,
+        revokeOperationCount: $revokeOperationCount,
+        status: "deleted",
+        unrelatedConnectionAfter: $unrelatedConnectionAfter,
+        unrelatedConnectionBefore: $unrelatedConnectionBefore
       }')"
   fi
   account_http="$("$script_dir/inspect-account-http-log" "$worker_log" "$proof_shape")"
@@ -2764,6 +2884,7 @@ observe_account_deletion() {
     --argjson documentOwnerExists "$document_owner_exists" \
     --argjson immediateGmailProofExpected "$immediate_expected" \
     --argjson immediateGmailDeletionQualification "$immediate_deletion_qualification" \
+    --argjson immediateGmailProviderConnectionDeletion "$immediate_provider_connection_deletion" \
     --argjson accountHttp "$account_http" \
     --arg immediateGmailActionId "$immediate_action_id" \
     --arg immediateGmailPresentationId "$immediate_presentation_id" \
@@ -2792,7 +2913,7 @@ observe_account_deletion() {
       immediateGmailPresentationId: $immediateGmailPresentationId,
       immediateGmailDeletionFeature: $immediateGmailDeletionFeature,
       immediateGmailDeletionQualification: $immediateGmailDeletionQualification,
-      immediateGmailProviderConnectionDeletion: {issue: "#187", status: "not-qualified"}
+      immediateGmailProviderConnectionDeletion: $immediateGmailProviderConnectionDeletion
     }' >"$feature_dir/state.json"
   cp "$state_dir/account-deletion-agent-runtime-before.json" \
     "$feature_dir/agent-runtime-before.json"
@@ -2804,9 +2925,32 @@ observe_account_deletion() {
   jq --null-input \
     --argjson containers "$provider_containers" \
     --argjson ledger "$provider_ledger" \
+    --argjson integrationConnections "$integration_connections" \
+    --argjson integrationLedgerBefore "$integration_ledger_before" \
+    --argjson integrationLedgerAfter "$integration_ledger_after" \
+    --argjson integrationAuthorityOperationsBefore "$integration_authority_operations_before" \
+    --argjson integrationAuthorityOperationsAfter "$integration_authority_operations_after" \
+    --argjson unrelatedIntegrationConnectionBefore "$unrelated_connection_before" \
     --arg targetTag "$target_tag" \
     --arg unrelatedTag "$unrelated_tag" \
-    '{ containers: $containers, ledger: $ledger, targetTag: $targetTag, unrelatedTag: $unrelatedTag }' \
+    --arg targetIntegrationConnectionId "$target_integration_connection_id" \
+    --arg unrelatedIntegrationConnectionId "$unrelated_integration_connection_id" '
+      {
+        containers: $containers,
+        integration: {
+          connections: $integrationConnections,
+          authorityOperationsAfter: $integrationAuthorityOperationsAfter,
+          authorityOperationsBefore: $integrationAuthorityOperationsBefore,
+          ledgerAfter: $integrationLedgerAfter,
+          ledgerBefore: $integrationLedgerBefore,
+          targetConnectionId: $targetIntegrationConnectionId,
+          unrelatedConnectionBefore: $unrelatedIntegrationConnectionBefore,
+          unrelatedConnectionId: $unrelatedIntegrationConnectionId
+        },
+        ledger: $ledger,
+        targetTag: $targetTag,
+        unrelatedTag: $unrelatedTag
+      }' \
     >"$feature_dir/provider.json"
 
   jq --exit-status \
@@ -2844,11 +2988,34 @@ observe_account_deletion() {
       .reminderVerification.activeScheduleBindingCount >= 0' \
     "$feature_dir/agent-runtime-before.json" >/dev/null
   jq --exit-status --arg target "$target_tag" --arg unrelated "$unrelated_tag" \
-    '(.containers | index($target)) == null and
+    --arg integrationUserId "$user_id" \
+    '.integration as $integration |
+      (.containers | index($target)) == null and
       (.containers | index($unrelated)) != null and
       [.ledger[] | select(.method == "DELETE")] == [
         { method: "DELETE", path: ("/v3/container-tags/" + $target) }
-      ]' "$feature_dir/provider.json" >/dev/null
+      ] and
+      $integration.ledgerAfter == $integration.ledgerBefore and
+      $integration.authorityOperationsAfter ==
+        ($integration.authorityOperationsBefore + [
+          {
+            connectedAccountId: $integration.targetConnectionId,
+            operation: "revoke",
+            userId: $integrationUserId
+          },
+          {
+            connectedAccountId: $integration.targetConnectionId,
+            operation: "delete",
+            userId: $integrationUserId
+          }
+        ]) and
+      (any($integration.connections[];
+        .connectedAccountId == $integration.targetConnectionId) | not) and
+      $integration.unrelatedConnectionBefore.status == "ACTIVE" and
+      [$integration.connections[] |
+        select(.connectedAccountId == $integration.unrelatedConnectionId)] ==
+        [$integration.unrelatedConnectionBefore]' \
+    "$feature_dir/provider.json" >/dev/null
   complete_observation "$run_id" "$feature_dir"
   if [[ "$immediate_expected" == true ]]; then
     jq '{
@@ -2948,6 +3115,8 @@ evidence_finish() {
       "$feature_dir/state.json" >/dev/null
     immediate_finish_outcome="$(jq --exit-status \
       --arg actionId "$(jq --raw-output '.durable.actionId' "$feature_dir/state.json")" \
+      --arg connectionBinding "$(jq --raw-output \
+        '.durable.approvalConnectionBinding' "$feature_dir/state.json")" \
       --arg presentationId "$(jq --raw-output '.durable.presentationId' "$feature_dir/state.json")" \
       --arg commit "$current_commit" \
       --from-file "$script_dir/immediate-gmail-send-finish.jq" \
@@ -2993,15 +3162,7 @@ evidence_finish() {
     exit 1
   fi
   if [[ -n "$immediate_finish_outcome" ]]; then
-    printf 'completed_at=%s\nresult=%s\ncommit=%s\nmissing=%s\nissue=%s\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      "$(jq --raw-output '.result' <<<"$immediate_finish_outcome")" \
-      "$(jq --raw-output '.commit' <<<"$immediate_finish_outcome")" \
-      "$(jq --raw-output '.missing' <<<"$immediate_finish_outcome")" \
-      "$(jq --raw-output '.issue' <<<"$immediate_finish_outcome")" \
-      >"$feature_dir/result.txt"
-    printf 'Immediate Gmail verification is MISSING provider Connection deletion proof owned by #187\n' >&2
-    return 1
+    jq --exit-status '.result == "PASS"' <<<"$immediate_finish_outcome" >/dev/null
   fi
   printf 'completed_at=%s\nresult=PASS\ncommit=%s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$current_commit" >"$feature_dir/result.txt"

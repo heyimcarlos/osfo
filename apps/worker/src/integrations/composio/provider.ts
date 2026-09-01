@@ -15,6 +15,7 @@ import {
   type ProviderToolkitEvidence,
   type directIntegrationProviderConfig,
 } from "../../services/integrations";
+import { ComposioConnectedAccountAuthority } from "./connected-account-authority";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-await-in-loop -- Composio log cursors must be scanned sequentially under one bounded AbortSignal. */
 
@@ -223,7 +224,7 @@ export const make = (apiKey: Redacted.Redacted): IntegrationProvider => {
         providerRequestId,
       ),
     disconnect: (connectedAccountId) =>
-      composio.connectedAccounts.delete(connectedAccountId).then(() => undefined),
+      ComposioConnectedAccountAuthority.revoke(filesClient, connectedAccountId),
     listConnectedAccounts: (userId, toolkit) =>
       listConnectedAccounts(composio.connectedAccounts, userId, toolkit),
     listToolLogs: ({ cursor, from, signal, to }) =>

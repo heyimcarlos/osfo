@@ -1,12 +1,116 @@
+// @vitest-environment happy-dom
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date -- Testing Library owns browser Promises and fixtures use fixed wire timestamps. */
+
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { Effect } from "effect";
 import { renderToStaticMarkup } from "react-dom/server";
-/* oxlint-disable effecttsgo/global-date -- Browser rendering fixtures use fixed wire timestamps. */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   GmailSendControlContent,
   ScheduledEmailControlContent,
+  type SettingsIntegrationsDependencies,
   SettingsIntegrationsContent,
+  SettingsIntegrationsPage,
 } from "./settings-integrations-page";
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+const pageDependencies = (
+  inspectIntegrations: SettingsIntegrationsDependencies["inspectIntegrations"],
+): SettingsIntegrationsDependencies => ({
+  connectIntegration: () => Effect.die(new Error("not used")),
+  decideGmailSendApproval: () => Effect.die(new Error("not used")),
+  decideScheduledEmailApproval: () => Effect.die(new Error("not used")),
+  disconnectIntegration: () => Effect.die(new Error("not used")),
+  inspectGmailSends: Effect.succeed({ approvals: [], statuses: [] }),
+  inspectIntegrations,
+  inspectScheduledEmailApprovals: Effect.succeed({ items: [] }),
+  inspectScheduledEmailNotifications: Effect.succeed({ items: [] }),
+});
+
+describe("SettingsIntegrationsPage", () => {
+  it("refreshes partial provider truth and keeps manual refresh errors truthful", async () => {
+    let inspections = 0;
+    const disconnected: Array<string> = [];
+    vi.stubGlobal(
+      "confirm",
+      vi.fn(() => true),
+    );
+    render(
+      <SettingsIntegrationsPage
+        dependencies={{
+          ...pageDependencies(
+            Effect.suspend(() => {
+              inspections += 1;
+              if (inspections === 5) {
+                return Effect.die(new Error("integration inspection unavailable"));
+              }
+              return Effect.succeed({
+                connections: [
+                  {
+                    description: "Search and read email on demand.",
+                    label: "Gmail",
+                    status: inspections === 1 ? ("connected" as const) : ("stale" as const),
+                    toolkit: "gmail" as const,
+                  },
+                ],
+              });
+            }),
+          ),
+          disconnectIntegration: (toolkit) => {
+            disconnected.push(toolkit);
+            return Effect.die(new Error("partial provider mutation"));
+          },
+        }}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Connected")).toBeDefined());
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain(
+        "The connection could not be disconnected",
+      );
+      expect(screen.getByText("Needs attention")).toBeDefined();
+      expect(screen.getByRole("button", { name: "Reconnect" })).toBeDefined();
+      expect(screen.queryByText("Connected")).toBeNull();
+      expect(disconnected).toEqual(["gmail"]);
+      expect(inspections).toBe(2);
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(inspections).toBe(3);
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain(
+        "The connection could not be disconnected",
+      );
+      expect(inspections).toBe(4);
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain(
+        "Integration connections are temporarily unavailable",
+      );
+      expect(screen.getByRole("alert").textContent).not.toContain(
+        "The connection could not be disconnected",
+      );
+      expect(disconnected).toEqual(["gmail", "gmail"]);
+      expect(inspections).toBe(5);
+    });
+  });
+});
 
 describe("GmailSendControlContent", () => {
   it("shows the exact immediate send separately from Scheduled Email and safe outcomes only", () => {
@@ -120,6 +224,30 @@ describe("SettingsIntegrationsContent", () => {
     expect(html).toContain("Disconnect");
     expect(html).toContain("Connect");
     expect(html).not.toContain("connectedAccountId");
+  });
+
+  it("renders a provider-retained revoked connection summarized as missing as disconnected", () => {
+    const html = renderToStaticMarkup(
+      <SettingsIntegrationsContent
+        busyToolkit={null}
+        connections={[
+          {
+            description: "Search and read email on demand.",
+            label: "Gmail",
+            status: "missing",
+            toolkit: "gmail",
+          },
+        ]}
+        onConnect={vi.fn<(toolkit: "gmail" | "googlecalendar" | "googledrive") => void>()}
+        onDisconnect={vi.fn<(toolkit: "gmail" | "googlecalendar" | "googledrive") => void>()}
+        onRefresh={vi.fn<() => void>()}
+      />,
+    );
+
+    expect(html).toContain("Not connected");
+    expect(html).toContain("Connect");
+    expect(html).not.toContain("Needs attention");
+    expect(html).not.toContain("Disconnect");
   });
 });
 

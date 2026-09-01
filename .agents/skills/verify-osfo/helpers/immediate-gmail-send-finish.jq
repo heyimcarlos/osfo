@@ -11,13 +11,21 @@ if
     test: "deletes every immediate Gmail owned key without touching unrelated Agent storage"
   } and
   (.observedAt | fromdateiso8601) > 0 and
-  .providerConnectionDeletion == {issue: "#187", status: "not-qualified"}
+  .providerConnectionDeletion.connectionBinding == $connectionBinding and
+  .providerConnectionDeletion.deleteOperationCount == 1 and
+  .providerConnectionDeletion.directProviderAbsence == true and
+  .providerConnectionDeletion.revokeOperationCount == 1 and
+  .providerConnectionDeletion.status == "deleted" and
+  (.providerConnectionDeletion.unrelatedConnectionBefore as $before |
+    .providerConnectionDeletion.unrelatedConnectionAfter == $before and
+    ($before | keys | sort) == ["connectedAccountId", "status", "userId"] and
+    ($before.connectedAccountId | type == "string" and length > 0) and
+    $before.status == "ACTIVE" and
+    ($before.userId | type == "string" and length > 0))
 then
   {
     commit: $commit,
-    issue: "#187",
-    missing: "providerConnectionDeletion",
-    result: "MISSING"
+    result: "PASS"
   }
 else
   error("Immediate Gmail finish evidence is invalid")

@@ -223,7 +223,10 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
   });
   const updateIntegrationTargets = Effect.fn("AccountDeletionPostgres.updateIntegrationTargets")(
     function* <A>(
-      operation: "confirmIntegrationTarget" | "stageIntegrationTargets",
+      operation:
+        | "confirmIntegrationTarget"
+        | "markIntegrationTargetRevoked"
+        | "stageIntegrationTargets",
       candidate: AccountDeletion.PendingAccountDeletion,
       mutate: (
         retained: ReadonlyArray<AccountDeletion.IntegrationAuthorityTargetProgress>,
@@ -316,23 +319,44 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
         return Result.succeed({
           progress,
           value: progress.flatMap(({ connectionId, status, userId }) =>
-            status === "pending" ? [{ connectionId, userId }] : [],
+            status === "pending" || status === "revoked" ? [{ connectionId, status, userId }] : [],
           ),
         });
       });
     },
   );
+  const markIntegrationTargetRevoked = Effect.fn(
+    "AccountDeletionPostgres.markIntegrationTargetRevoked",
+  )(function* (
+    candidate: AccountDeletion.PendingAccountDeletion,
+    target: AccountDeletion.IntegrationAuthorityTarget,
+  ) {
+    yield* updateIntegrationTargets("markIntegrationTargetRevoked", candidate, (retained) => {
+      const found = retained.find(
+        (item) => item.connectionId === target.connectionId && item.userId === target.userId,
+      );
+      if (found === undefined || found.status === "confirmed") {
+        return Result.fail(new Error("Integration target was not pending before revocation"));
+      }
+      const progress = retained.map((item) =>
+        item.connectionId === target.connectionId && item.userId === target.userId
+          ? { ...item, status: "revoked" as const }
+          : item,
+      );
+      return Result.succeed({ progress, value: undefined });
+    });
+  });
   const confirmIntegrationTarget = Effect.fn("AccountDeletionPostgres.confirmIntegrationTarget")(
     function* (
       candidate: AccountDeletion.PendingAccountDeletion,
       target: AccountDeletion.IntegrationAuthorityTarget,
     ) {
       yield* updateIntegrationTargets("confirmIntegrationTarget", candidate, (retained) => {
-        const found = retained.some(
+        const found = retained.find(
           (item) => item.connectionId === target.connectionId && item.userId === target.userId,
         );
-        if (!found) {
-          return Result.fail(new Error("Integration target was not staged before confirmation"));
+        if (found?.status !== "revoked") {
+          return Result.fail(new Error("Integration target was not revoked before confirmation"));
         }
         const progress = retained.map((item) => {
           if (item.connectionId !== target.connectionId || item.userId !== target.userId) {
@@ -351,6 +375,7 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
   return {
     confirmIntegrationTarget,
     ensureAccessFence,
+    markIntegrationTargetRevoked,
     pending: pending(),
     removeUser,
     stageIntegrationTargets,

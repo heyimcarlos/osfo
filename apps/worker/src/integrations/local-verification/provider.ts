@@ -2,6 +2,7 @@
 import { Effect, Schema } from "effect";
 
 import type { UserId } from "../../domain";
+import { ComposioAccountDeletion } from "../composio/account-deletion";
 import {
   IntegrationProviderUnavailable,
   type IntegrationArtifact,
@@ -31,8 +32,30 @@ const ExecutionEvidence = Schema.Union([
   Schema.TaggedStruct("NotApplied", { providerLogId: Schema.String }),
   Schema.TaggedStruct("Unknown", {}),
 ]);
+const ConnectedAccountList = Schema.Struct({
+  items: Schema.Array(Schema.Struct({ id: Schema.String, status: Schema.String })),
+  next_cursor: Schema.NullOr(Schema.String),
+});
+const ConnectedAccountDeleted = Schema.Struct({
+  success: Schema.Boolean,
+});
+const ConnectedAccountRevoked = Schema.Struct({
+  connected_account: Schema.Struct({
+    id: Schema.String,
+    status: Schema.Literal("REVOKED"),
+  }),
+  revoked_tokens: Schema.Array(Schema.String),
+});
 
 type LocalVerificationRequest =
+  | {
+      readonly connected_account_ids?: Array<string>;
+      readonly cursor?: string;
+      readonly limit: number;
+      readonly account_type: "PRIVATE";
+      readonly toolkit_slugs: Array<string>;
+      readonly user_ids: Array<string>;
+    }
   | { readonly callbackUrl: string; readonly toolkit: string; readonly userId: UserId }
   | { readonly connectedAccountId: string; readonly userId: UserId }
   | {
@@ -74,6 +97,40 @@ export const make = (
       fetchRequest,
     ).pipe(Effect.as(session(baseURL, userId, providerSessionId, fetchRequest))),
 });
+
+/** Exercise account deletion against the same loopback provider authority as local sessions. */
+export const makeAccountDeletion = (
+  baseURL: string,
+  fetchRequest: LocalVerificationFetch = fetch,
+) =>
+  ComposioAccountDeletion.makeFromClient({
+    delete: (connectionId) =>
+      Effect.runPromise(
+        request(
+          baseURL,
+          `connected-accounts/${encodeURIComponent(connectionId)}/delete`,
+          "POST",
+          undefined,
+          ConnectedAccountDeleted,
+          fetchRequest,
+        ),
+      ),
+    revoke: (connectionId) =>
+      Effect.runPromise(
+        request(
+          baseURL,
+          `connected-accounts/${encodeURIComponent(connectionId)}/revoke`,
+          "POST",
+          undefined,
+          ConnectedAccountRevoked,
+          fetchRequest,
+        ).pipe(Effect.map(({ connected_account }) => connected_account)),
+      ),
+    list: (options) =>
+      Effect.runPromise(
+        request(baseURL, "connected-accounts", "POST", options, ConnectedAccountList, fetchRequest),
+      ),
+  });
 
 const session = (
   baseURL: string,
@@ -167,7 +224,7 @@ const request = <S extends Schema.Top>(
           });
         }
         return fetchRequest(url, {
-          body: encoded ?? null,
+          body: encoded ?? "{}",
           headers: { "content-type": "application/json" },
           method: "POST",
           redirect: "manual",

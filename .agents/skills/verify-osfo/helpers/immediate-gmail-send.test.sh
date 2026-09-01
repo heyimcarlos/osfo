@@ -148,7 +148,23 @@ deletion_fixture='{
     "test":"deletes every immediate Gmail owned key without touching unrelated Agent storage"
   },
   "immediateGmailPresentationId":"presentation-1",
-  "immediateGmailProviderConnectionDeletion":{"issue":"#187","status":"not-qualified"},
+  "immediateGmailProviderConnectionDeletion":{
+    "connectionBinding":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "deleteOperationCount":1,
+    "directProviderAbsence":true,
+    "revokeOperationCount":1,
+    "status":"deleted",
+    "unrelatedConnectionAfter":{
+      "connectedAccountId":"unrelated-connection-1",
+      "status":"ACTIVE",
+      "userId":"unrelated-user-1"
+    },
+    "unrelatedConnectionBefore":{
+      "connectedAccountId":"unrelated-connection-1",
+      "status":"ACTIVE",
+      "userId":"unrelated-user-1"
+    }
+  },
   "immediateGmailProofExpected":true,
   "userExists":false
 }'
@@ -163,7 +179,13 @@ for mutation in \
   '.immediateGmailDeletionFeature = "account-deletion"' \
   '.immediateGmailDeletionQualification = null' \
   '.immediateGmailDeletionQualification.commit = "different-commit"' \
-  '.immediateGmailProviderConnectionDeletion.status = "deleted"' \
+  '.immediateGmailProviderConnectionDeletion.status = "not-qualified"' \
+  '.immediateGmailProviderConnectionDeletion.revokeOperationCount = 0' \
+  '.immediateGmailProviderConnectionDeletion.deleteOperationCount = 2' \
+  '.immediateGmailProviderConnectionDeletion.directProviderAbsence = false' \
+  '.immediateGmailProviderConnectionDeletion.unrelatedConnectionAfter.status = "REVOKED"' \
+  '.immediateGmailProviderConnectionDeletion.unrelatedConnectionAfter.userId = "changed-user"' \
+  '.immediateGmailProviderConnectionDeletion.unrelatedConnectionBefore.connectedAccountId = "changed-connection"' \
   '.agentRuntime.inspectable = true' \
   '.agentRuntime.registered = true' \
   '.userExists = true'; do
@@ -194,7 +216,23 @@ if ! jq --exit-status '
   .actionId == "verification-gmailSendEmail::cf-wai-tool-call::turn-1" and
   .presentationId == "presentation-1" and .deletionFeature == "account-deletion-replay" and
   .directoryAgent == {inspectable:false,registered:false} and .userExists == false and
-  .providerConnectionDeletion == {issue:"#187",status:"not-qualified"} and
+  .providerConnectionDeletion == {
+    connectionBinding:("a" * 64),
+    deleteOperationCount:1,
+    directProviderAbsence:true,
+    revokeOperationCount:1,
+    status:"deleted",
+    unrelatedConnectionAfter:{
+      connectedAccountId:"unrelated-connection-1",
+      status:"ACTIVE",
+      userId:"unrelated-user-1"
+    },
+    unrelatedConnectionBefore:{
+      connectedAccountId:"unrelated-connection-1",
+      status:"ACTIVE",
+      userId:"unrelated-user-1"
+    }
+  } and
   .ownedKeyDeletionQualification.result == "PASS" and
   (.observedAt | fromdateiso8601) > 0' <<<"$deletion_receipt" >/dev/null; then
   printf 'Immediate Gmail deletion receipt must preserve the exact absence proof\n' >&2
@@ -203,32 +241,35 @@ fi
 
 finish_outcome="$(jq --exit-status \
   --arg actionId 'verification-gmailSendEmail::cf-wai-tool-call::turn-1' \
+  --arg connectionBinding 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
   --arg presentationId presentation-1 \
   --arg commit commit-1 \
   --from-file "$finish_check" <<<"$deletion_receipt")"
-if ! jq --exit-status '
-  . == {
-    commit:"commit-1",
-    issue:"#187",
-    missing:"providerConnectionDeletion",
-    result:"MISSING"
-  }' <<<"$finish_outcome" >/dev/null; then
-  printf 'Missing provider deletion must produce the exact non-PASS outcome\n' >&2
+if ! jq --exit-status '. == {commit:"commit-1",result:"PASS"}' \
+  <<<"$finish_outcome" >/dev/null; then
+  printf 'Complete provider deletion must produce the exact PASS outcome\n' >&2
   exit 1
 fi
 for mutation in \
   '.providerConnectionDeletion = null' \
-  '.providerConnectionDeletion.issue = "#different"' \
-  '.providerConnectionDeletion.status = "deleted"' \
+  '.providerConnectionDeletion.status = "not-qualified"' \
+  '.providerConnectionDeletion.revokeOperationCount = 0' \
+  '.providerConnectionDeletion.deleteOperationCount = 2' \
+  '.providerConnectionDeletion.directProviderAbsence = false' \
+  '.providerConnectionDeletion.unrelatedConnectionAfter.status = "REVOKED"' \
+  '.providerConnectionDeletion.unrelatedConnectionAfter.userId = "changed-user"' \
+  '.providerConnectionDeletion.unrelatedConnectionBefore.connectedAccountId = "changed-connection"' \
+  '.providerConnectionDeletion.connectionBinding = ("b" * 64)' \
   '.directoryAgent.inspectable = true' \
   '.ownedKeyDeletionQualification.commit = "different-commit"'; do
   if jq "$mutation" <<<"$deletion_receipt" \
     | jq --exit-status \
       --arg actionId 'verification-gmailSendEmail::cf-wai-tool-call::turn-1' \
+      --arg connectionBinding 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
       --arg presentationId presentation-1 \
       --arg commit commit-1 \
       --from-file "$finish_check" >/dev/null 2>&1; then
-    printf 'Immediate Gmail finish mutation unexpectedly produced MISSING: %s\n' "$mutation" >&2
+    printf 'Immediate Gmail finish mutation unexpectedly produced PASS: %s\n' "$mutation" >&2
     exit 1
   fi
 done
@@ -237,6 +278,9 @@ for required in \
   'immediate-gmail-send)' \
   'gmail_send_request()' \
   'observe_immediate_gmail_send()' \
+  'account-deletion-integration-authority-operations-before.json' \
+  'authorityOperationsAfter ==' \
+  'unrelatedConnectionBefore.status == "ACTIVE"' \
   'provider_boundary=local-loopback-gmail-not-live-oauth'; do
   if ! grep -F -q -- "$required" "$control"; then
     printf 'Immediate Gmail verifier is missing invariant: %s\n' "$required" >&2
@@ -261,6 +305,7 @@ for required in \
   'verification-gmailSendEmail' \
   'gmailResource: "primary"' \
   'kind: "tool-selection"' \
+  '/_test/integrations/authority-operations' \
   '/_test/integrations/reset-ledger'; do
   if ! grep -F -q "$required" "$emulator"; then
     printf 'Provider emulator is missing Immediate Gmail evidence: %s\n' "$required" >&2

@@ -60,7 +60,7 @@ export interface IntegrationAuthorityTarget {
 /** One case-owned integration target retained before provider contact. */
 export const IntegrationAuthorityTargetProgress = Schema.Struct({
   connectionId: IntegrationAuthorityTargetId,
-  status: Schema.Literals(["confirmed", "pending"]),
+  status: Schema.Literals(["confirmed", "pending", "revoked"]),
   userId: UserId,
 });
 
@@ -69,6 +69,11 @@ export const IntegrationAuthorityTargetProgresses = Schema.Array(
   IntegrationAuthorityTargetProgress,
 );
 export type IntegrationAuthorityTargetProgress = typeof IntegrationAuthorityTargetProgress.Type;
+
+/** One retained provider target that still has a provider-side deletion step to finish. */
+export interface ActionableIntegrationAuthorityTarget extends IntegrationAuthorityTarget {
+  readonly status: "pending" | "revoked";
+}
 
 /** Current mutable facts retained outside the durable Deletion Case authority. */
 export interface CurrentAuthorizationFacts {
@@ -106,8 +111,12 @@ export interface PortInterface {
     readonly pending: (
       userId: UserId,
     ) => Effect.Effect<ReadonlyArray<IntegrationAuthorityTarget>, AccountDeletionUnavailable>;
-    /** Return only after this exact provider connection is confirmed absent. */
+    /** Return only after this exact provider connection is synchronously revoked. */
     readonly revoke: (
+      target: IntegrationAuthorityTarget,
+    ) => Effect.Effect<void, AccountDeletionUnavailable>;
+    /** Soft-delete one durably revoked provider connection and confirm exact absence. */
+    readonly remove: (
       target: IntegrationAuthorityTarget,
     ) => Effect.Effect<void, AccountDeletionUnavailable>;
   };
@@ -134,7 +143,15 @@ export interface PortInterface {
     readonly stageIntegrationTargets: (
       candidate: PendingAccountDeletion,
       discovered: ReadonlyArray<IntegrationAuthorityTarget>,
-    ) => Effect.Effect<ReadonlyArray<IntegrationAuthorityTarget>, AccountDeletionUnavailable>;
+    ) => Effect.Effect<
+      ReadonlyArray<ActionableIntegrationAuthorityTarget>,
+      AccountDeletionUnavailable
+    >;
+    /** Retain provider-confirmed credential revocation before soft deletion can begin. */
+    readonly markIntegrationTargetRevoked: (
+      candidate: PendingAccountDeletion,
+      target: IntegrationAuthorityTarget,
+    ) => Effect.Effect<void, AccountDeletionUnavailable>;
     /** Mark one exact target confirmed only after the provider proves it absent. */
     readonly confirmIntegrationTarget: (
       candidate: PendingAccountDeletion,
@@ -167,6 +184,8 @@ export interface Interface {
 /** Shared provider-first account-deletion service. */
 // oxlint-disable-next-line effecttsgo/lazy-effect -- The service intentionally exposes named zero-argument reconciliation.
 export class Service extends Context.Service<Service, Interface>()("@osfo/AccountDeletion") {}
+
+const maximumIntegrationDeletionRounds = 10;
 
 /** Construct the idempotent provider-first account deletion reconciler. */
 export const make = Effect.gen(function* () {
@@ -302,34 +321,58 @@ export const make = Effect.gen(function* () {
         operation: "deleteProviderKnowledge",
       });
     }
-    yield* requireAuthority("before integration authority discovery");
-    const discoveredIntegrationTargets = yield* dependencies.integrations.pending(candidate.userId);
-    for (const target of discoveredIntegrationTargets) {
-      if (target.userId !== candidate.userId) {
-        return yield* new AccountDeletionUnavailable({
-          cause: target,
-          message: "Integration authority discovery crossed the deleting User fence",
-          operation: "deleteIntegrationAuthority",
-        });
+    let integrationDeletionConverged = false;
+    for (let round = 0; round < maximumIntegrationDeletionRounds; round += 1) {
+      yield* requireAuthority("before integration authority discovery");
+      const discovered = yield* dependencies.integrations.pending(candidate.userId);
+      for (const target of discovered) {
+        if (target.userId !== candidate.userId) {
+          return yield* new AccountDeletionUnavailable({
+            cause: target,
+            message: "Integration authority discovery crossed the deleting User fence",
+            operation: "deleteIntegrationAuthority",
+          });
+        }
+      }
+      yield* requireAuthority("before retaining integration authority targets");
+      const actionable = yield* dependencies.persistence.stageIntegrationTargets(
+        candidate,
+        discovered,
+      );
+      if (discovered.length === 0 && actionable.length === 0) {
+        integrationDeletionConverged = true;
+        break;
+      }
+      for (const progress of actionable) {
+        const target = {
+          connectionId: progress.connectionId,
+          userId: progress.userId,
+        };
+        if (target.userId !== candidate.userId) {
+          return yield* new AccountDeletionUnavailable({
+            cause: progress,
+            message: "Retained integration authority crossed the deleting User fence",
+            operation: "deleteIntegrationAuthority",
+          });
+        }
+        if (progress.status === "pending") {
+          yield* requireAuthority("before an integration authority revocation");
+          yield* dependencies.integrations.revoke(target);
+          yield* requireAuthority("before retaining integration authority revocation");
+          yield* dependencies.persistence.markIntegrationTargetRevoked(candidate, target);
+        }
+        yield* requireAuthority("before a revoked integration authority removal");
+        yield* dependencies.integrations.remove(target);
+        yield* requireAuthority("before confirming an integration authority deletion");
+        yield* dependencies.persistence.confirmIntegrationTarget(candidate, target);
       }
     }
-    yield* requireAuthority("before retaining integration authority targets");
-    const integrationTargets = yield* dependencies.persistence.stageIntegrationTargets(
-      candidate,
-      discoveredIntegrationTargets,
-    );
-    for (const target of integrationTargets) {
-      if (target.userId !== candidate.userId) {
-        return yield* new AccountDeletionUnavailable({
-          cause: target,
-          message: "Retained integration authority crossed the deleting User fence",
-          operation: "deleteIntegrationAuthority",
-        });
-      }
-      yield* requireAuthority("before an integration authority deletion");
-      yield* dependencies.integrations.revoke(target);
-      yield* requireAuthority("before confirming an integration authority deletion");
-      yield* dependencies.persistence.confirmIntegrationTarget(candidate, target);
+    if (!integrationDeletionConverged) {
+      return yield* new AccountDeletionUnavailable({
+        cause: candidate.userId,
+        message: "Integration authority deletion did not converge",
+        operation: "deleteIntegrationAuthority",
+      });
     }
     yield* dependencies.objects.remove(
       candidate.userId,

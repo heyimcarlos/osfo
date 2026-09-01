@@ -3,10 +3,13 @@ import { and, eq, inArray } from "drizzle-orm";
 import { DateTime, Effect, Layer } from "effect";
 
 import type { Database } from "@osfo/db";
+import type { IntegrationProviderConfig } from "../config";
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { AllowancePeriodId, type AgentId, type UserId } from "../domain";
 import { Db } from "../db";
 import { AccountDeletionCloudflare } from "../integrations/cloudflare/account-deletion";
+import { ComposioAccountDeletion } from "../integrations/composio/account-deletion";
+import { LocalVerificationIntegrationProvider } from "../integrations/local-verification/provider";
 import { AccountDeletionPostgres } from "../integrations/postgres/account-deletion";
 import { ResearchReportPostgres } from "../integrations/postgres/research-report";
 import { DocumentBuildPostgres } from "../integrations/postgres/document-build";
@@ -32,9 +35,26 @@ export type IntegrationAuthorityDeletionCapability =
       readonly adapter: AccountDeletion.PortInterface["integrations"] | null;
     };
 
-/** Current production truth: no integration connection persistence has been delivered. */
+/** Explicit unavailable integration deletion capability used by fail-closed composition. */
 export const integrationAuthorityDeletionNotDelivered: IntegrationAuthorityDeletionCapability = {
   _tag: "NotDelivered",
+};
+
+/** Select account deletion from the same provider configuration used by Integration sessions. */
+export const integrationAuthorityDeletion = (
+  selected: IntegrationProviderConfig,
+): IntegrationAuthorityDeletionCapability => {
+  if (selected._tag === "LocalVerification") {
+    return {
+      _tag: "Delivered",
+      adapter: LocalVerificationIntegrationProvider.makeAccountDeletion(selected.baseURL),
+    };
+  }
+  if (selected.config === null) return integrationAuthorityDeletionNotDelivered;
+  return {
+    _tag: "Delivered",
+    adapter: ComposioAccountDeletion.make(selected.config.apiKey),
+  };
 };
 
 /** Concrete bindings used by the broader account-deletion flow. */
@@ -264,11 +284,16 @@ export const integrationDeletionPort = (
   capability: IntegrationAuthorityDeletionCapability,
 ): AccountDeletion.PortInterface["integrations"] => {
   if (capability._tag === "NotDelivered") {
-    return { pending: () => Effect.succeed([]), revoke: integrationDeletionUnavailable };
+    return {
+      pending: () => integrationDeletionUnavailable("integration authority deletion is missing"),
+      remove: integrationDeletionUnavailable,
+      revoke: integrationDeletionUnavailable,
+    };
   }
   if (capability.adapter !== null) return capability.adapter;
   return {
     pending: () => integrationDeletionUnavailable("enabled integration authority discovery"),
+    remove: (target) => integrationDeletionUnavailable(target),
     revoke: (target) => integrationDeletionUnavailable(target),
   };
 };

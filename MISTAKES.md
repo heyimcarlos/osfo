@@ -34,3 +34,6 @@ short, specific, and actionable.
 - Never pipe an unchecked issue-body transform directly into `gh issue edit`.
   Build and validate the complete replacement first, then write it; a failed
   upstream transform can otherwise replace the issue body with empty input.
+- Before claiming a provider boundary is not composed, trace the active
+  configuration path through the app and composition roots, and distinguish a
+  production wiring defect from missing local-verification parity.
