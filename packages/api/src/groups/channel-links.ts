@@ -19,6 +19,25 @@ export const ChannelLinkInviteResponse = Schema.Struct({
 /** Minimal acknowledgement after authenticated Channel Link acceptance. */
 export const ChannelLinkAcceptanceResponse = Schema.Struct({ state: Schema.Literal("linked") });
 
+/** Supported direct-message transport for one client-safe active Channel Link. */
+export const ChannelLinkChannel = Schema.Literals(["telegram", "whatsapp"]);
+
+/** Client-safe active Channel Link without its provider address. */
+export const ChannelLinkSummary = Schema.Struct({
+  channel: ChannelLinkChannel,
+  channelLinkId: Schema.String,
+  linkedAt: Schema.DateFromString,
+});
+export type ChannelLinkSummary = typeof ChannelLinkSummary.Type;
+
+/** Authenticated User's active Channel Links. */
+export const ChannelLinksResponse = Schema.Struct({ items: Schema.Array(ChannelLinkSummary) });
+export type ChannelLinksResponse = typeof ChannelLinksResponse.Type;
+
+/** Minimal acknowledgement after an authenticated owner revokes one Channel Link. */
+export const ChannelLinkRevocationResponse = Schema.Struct({ state: Schema.Literal("unlinked") });
+export type ChannelLinkRevocationResponse = typeof ChannelLinkRevocationResponse.Type;
+
 /** Stable client error for an expired, consumed, replaced, or invalid invite. */
 export class ChannelLinkInviteUnavailable extends Schema.TaggedError<ChannelLinkInviteUnavailable>()(
   "ChannelLinkInviteUnavailable",
@@ -45,6 +64,13 @@ export class ChannelLinksUnavailable extends Schema.TaggedError<ChannelLinksUnav
   "ChannelLinksUnavailable",
   { message: Schema.String },
   { httpApiStatus: 503 },
+) {}
+
+/** Stable non-disclosing error for a missing, stale, or wrong-owner Channel Link. */
+export class ChannelLinkUnavailable extends Schema.TaggedError<ChannelLinkUnavailable>()(
+  "ChannelLinkUnavailable",
+  { message: Schema.String },
+  { httpApiStatus: 404 },
 ) {}
 
 /** Public inspection and server-authenticated acceptance of Channel Link Invites. */
@@ -79,6 +105,35 @@ export const ChannelLinksGroup = HttpApiGroup.make("channelLinks")
           description: "Accept an invite for the server-authenticated registered User.",
           identifier: "channelLinks.accept",
           summary: "Accept Channel Link Invite",
+        }),
+      ),
+  )
+  .add(
+    HttpApiEndpoint.get("list", "/v1/channel-links", {
+      error: ChannelLinksUnavailable,
+      success: ChannelLinksResponse,
+    })
+      .middleware(Auth)
+      .annotateMerge(
+        OpenApi.annotations({
+          description: "List the authenticated User's active Telegram and WhatsApp links.",
+          identifier: "channelLinks.list",
+          summary: "List active Channel Links",
+        }),
+      ),
+  )
+  .add(
+    HttpApiEndpoint.delete("revoke", "/v1/channel-links/:channelLinkId", {
+      error: [ChannelLinkUnavailable, ChannelLinksUnavailable],
+      params: { channelLinkId: Schema.String },
+      success: ChannelLinkRevocationResponse,
+    })
+      .middleware(Auth)
+      .annotateMerge(
+        OpenApi.annotations({
+          description: "Revoke one active Channel Link owned by the authenticated User.",
+          identifier: "channelLinks.revoke",
+          summary: "Revoke a Channel Link",
         }),
       ),
   );

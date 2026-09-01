@@ -50,6 +50,7 @@ it.effect("advances the unlinked conversation attempt after acceptance and revoc
       yield* channelLinks.revoke({
         actorId: ChannelLinks.ChannelLinkActorId.make("system:test"),
         channelLinkId: link.channelLinkId,
+        ownerUserId: UserId.make(identity.userId),
         reason: ChannelLinks.ChannelLinkRevocationReason.make("attempt isolation contract"),
       });
       const nextAttempt = yield* channelLinks.resolveConversation(address);

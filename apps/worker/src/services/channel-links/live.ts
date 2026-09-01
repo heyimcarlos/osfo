@@ -118,11 +118,15 @@ interface InviteDraw {
 export interface RevokeInput {
   readonly actorId: typeof ChannelLinkActorId.Type;
   readonly channelLinkId: ChannelLinkId;
+  readonly ownerUserId: UserId;
   readonly reason: typeof ChannelLinkRevocationReason.Type;
 }
 
 /** Public Channel Links authority. */
 export interface Interface {
+  readonly listActive: (
+    userId: UserId,
+  ) => Effect.Effect<ReadonlyArray<typeof ChannelLink.Type>, ChannelLinksUnavailable>;
   readonly resolveConversation: (
     address: typeof ChannelAddress.Type,
   ) => Effect.Effect<ConversationResolution, ChannelLinksUnavailable>;
@@ -205,6 +209,25 @@ export const layer = (options: Options) =>
             return row === undefined ? Effect.succeed(null) : decodeChannelLinkRow(row);
           }),
         ),
+      );
+
+      const listActive = Effect.fn("ChannelLinks.listActive")((userId: UserId) =>
+        Effect.tryPromise({
+          try: () =>
+            db
+              .select({
+                authorId: channelLinks.author_id,
+                channelId: channelLinks.channel_id,
+                channelLinkId: channelLinks.channel_link_id,
+                createdAt: channelLinks.created_at,
+                revokedAt: channelLinks.revoked_at,
+                userId: channelLinks.user_id,
+              })
+              .from(channelLinks)
+              .where(and(eq(channelLinks.user_id, userId), isNull(channelLinks.revoked_at)))
+              .orderBy(channelLinks.created_at, channelLinks.channel_link_id),
+          catch: (cause) => new ChannelLinksUnavailable({ cause, operation: "listActive" }),
+        }).pipe(Effect.flatMap((rows) => Effect.all(rows.map(decodeChannelLinkRow)))),
       );
 
       const resolveConversation = Effect.fn("ChannelLinks.resolveConversation")(function* (
@@ -641,11 +664,16 @@ export const layer = (options: Options) =>
                   userId: channelLinks.user_id,
                 })
                 .from(channelLinks)
-                .where(eq(channelLinks.channel_link_id, input.channelLinkId))
+                .where(
+                  and(
+                    eq(channelLinks.channel_link_id, input.channelLinkId),
+                    eq(channelLinks.user_id, input.ownerUserId),
+                    isNull(channelLinks.revoked_at),
+                  ),
+                )
                 .for("update")
                 .limit(1);
               if (stored === undefined) return null;
-              if (stored.revokedAt !== null) return stored;
 
               const [revoked] = await transaction
                 .update(channelLinks)
@@ -709,6 +737,7 @@ export const layer = (options: Options) =>
         accept,
         ensure,
         inspect,
+        listActive,
         resolve,
         resolveConversation,
         revoke,

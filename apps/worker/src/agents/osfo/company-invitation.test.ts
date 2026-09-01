@@ -82,6 +82,7 @@ const channelLinks = (options: {
   accept: () => Effect.die(new Error("Unused Channel Links operation")),
   ensure: options.ensure,
   inspect: () => Effect.die(new Error("Unused Channel Links operation")),
+  listActive: () => Effect.die(new Error("Unused Channel Links operation")),
   resolve: () => Effect.die(new Error("Unused Channel Links operation")),
   resolveConversation: () =>
     Effect.succeed({

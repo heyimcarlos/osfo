@@ -47,6 +47,19 @@ export const acceptChannelLinkInvite = (token: string) =>
     return yield* client.channelLinks.accept({ params: { token: parsedToken } });
   });
 
+/** Inspect the authenticated User's active Channel Links without provider addresses. */
+export const inspectChannelLinks = Effect.gen(function* () {
+  const client = yield* apiClient;
+  return yield* client.channelLinks.list();
+});
+
+/** Revoke one exact active Channel Link owned by the authenticated User. */
+export const revokeChannelLink = (channelLinkId: string) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    return yield* client.channelLinks.revoke({ params: { channelLinkId } });
+  });
+
 /** Complete authenticated registration through the shared typed contract. */
 export interface CompleteRegistrationPayload {
   readonly helpAreas: ReadonlyArray<HelpArea>;
