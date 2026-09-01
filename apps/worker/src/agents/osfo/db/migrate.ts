@@ -18,6 +18,7 @@ import personalSkillNotificationMigrationSql from "./migrations/0014_spooky_snow
 import goodRootOutcomeEvaluationMigrationSql from "./migrations/0015_nebulous_domino.sql";
 import webCapabilityMigrationSql from "./migrations/0016_adorable_corsair.sql";
 import reminderMigrationSql from "./migrations/0017_long_deadpool.sql";
+import goodRootOutcomeEvaluationRemovalMigrationSql from "./migrations/0018_exotic_sharon_ventura.sql";
 import {
   AgentMigrationDefinitionMismatch,
   AgentMigrationDigestMismatch,
@@ -124,6 +125,11 @@ export const agentMigrations: ReadonlyArray<AgentMigration> = [
     digest: "sha256:cfda69a9407391cfcdc81bb557e00d61059690471669d0d94db451bc60e2f7b2",
     sql: reminderMigrationSql,
     version: 18,
+  },
+  {
+    digest: "sha256:f513cb16eeccd6706a500348ecfe75cd4439a50ed984f291cbe05dd77583f9c2",
+    sql: goodRootOutcomeEvaluationRemovalMigrationSql,
+    version: 19,
   },
 ];
 

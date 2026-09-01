@@ -261,7 +261,6 @@ import {
   type AgentInitializationEncoded,
   type AgentInitialized,
   type AgentFound,
-  type CommittedTurnReceipt,
   type ConversationRouteFound,
   makeAgentStore,
 } from "./db/store";
@@ -7170,21 +7169,6 @@ export class OsfoAgent extends Think<Env> {
       );
       this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
     }
-  }
-
-  /** Read idempotent committed-turn references owned by this Agent. */
-  async readCommittedTurns(): Promise<
-    | AgentStoreUnavailable
-    | AgentStoreRecordInvalid
-    | CommittedTurnConflict
-    | ReadonlyArray<CommittedTurnReceipt>
-    | ThinkSessionReadUnavailable
-    | ThinkSessionRecordInvalid
-  > {
-    await this.#migrationsReady;
-    return runRpc(
-      this.#reconcileCommittedTurns().pipe(Effect.andThen(this.#store.readCommittedTurns)),
-    );
   }
 
   /** Return the technical runtime identity for local smoke verification. */

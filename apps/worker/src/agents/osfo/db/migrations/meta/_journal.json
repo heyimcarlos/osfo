@@ -127,6 +127,13 @@
       "when": 1787881110418,
       "tag": "0017_long_deadpool",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1788236728544,
+      "tag": "0018_exotic_sharon_ventura",
+      "breakpoints": true
     }
   ]
 }

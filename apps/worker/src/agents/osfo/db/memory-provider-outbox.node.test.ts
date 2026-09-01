@@ -50,6 +50,7 @@ import {
 } from "../memory-provider-reconciliation";
 import { makeProviderConversationSaveGate } from "../provider-conversation-save-gate";
 import { deleteLocalSession, type SessionReplacementGeneration } from "../session-deletion";
+import { makePersonalSkillAuthority } from "../personal-skill-authority";
 
 /**
  * These tests need white-box access because atomic SQLite rollback, unique claims, and stale lease
@@ -82,6 +83,53 @@ it("includes every generated Agent migration in the runtime manifest", () => {
   expect(imports.map((match) => match[2])).toEqual(migrationFiles);
   expect(imports.every((match) => referencedSql.has(match[1] ?? ""))).toBe(true);
 });
+
+it.effect("migrates a fresh Agent database to version 19 without the legacy table", () =>
+  withEmptyDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const first = yield* applyAgentMigrations(asDurableObjectStorage(storage));
+      const second = yield* applyAgentMigrations(asDurableObjectStorage(storage));
+
+      expect(first).toEqual({
+        appliedVersions: Array.from({ length: 19 }, (_, index) => index + 1),
+        currentVersion: 19,
+      });
+      expect(second).toEqual({ appliedVersions: [], currentVersion: 19 });
+      expect(
+        database
+          .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
+          .get("osfo_good_root_outcome_evaluations"),
+      ).toBeUndefined();
+    }),
+  ),
+);
+
+it.effect("drops seeded legacy receipts while upgrading a version-18 Agent database", () =>
+  withEmptyDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const durableStorage = asDurableObjectStorage(storage);
+      const previousMigrations = agentMigrations.filter(({ version }) => version <= 18);
+      yield* applyMigrationChain(durableStorage, previousMigrations);
+      database
+        .prepare(
+          `INSERT INTO osfo_good_root_outcome_evaluations
+            (evaluation_id, owner_user_id, receipt_json, retained_at_epoch_millis)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .run("legacy-evaluation", "user-upgrade", "{}", 1_788_000_000_000);
+
+      const upgraded = yield* applyAgentMigrations(durableStorage);
+      yield* makePersonalSkillAuthority(storage).deleteUserData(UserId.make("user-upgrade"));
+
+      expect(upgraded).toEqual({ appliedVersions: [19], currentVersion: 19 });
+      expect(
+        database
+          .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
+          .get("osfo_good_root_outcome_evaluations"),
+      ).toBeUndefined();
+    }),
+  ),
+);
 
 it.effect("reads a bounded chronological committed-turn replay window", () =>
   withDatabase(({ database, storage }) =>
@@ -157,8 +205,8 @@ it.effect("activates an Agent that slept before the conversation processing migr
       const result = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
       expect(result).toEqual({
-        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
-        currentVersion: 18,
+        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+        currentVersion: 19,
       });
       expect(
         database

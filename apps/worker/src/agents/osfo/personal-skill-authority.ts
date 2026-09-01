@@ -901,10 +901,6 @@ export const makePersonalSkillAuthority = (storage: PersonalSkillAuthorityStorag
       attempt("deleteUserData", () =>
         storage.transactionSync(() => {
           storage.sql.exec(
-            "DELETE FROM osfo_good_root_outcome_evaluations WHERE owner_user_id = ?",
-            userId,
-          );
-          storage.sql.exec(
             `DELETE FROM osfo_personal_skill_learning_model_attempts
              WHERE candidate_id IN (
                SELECT candidate_id FROM osfo_personal_skill_learning_candidates

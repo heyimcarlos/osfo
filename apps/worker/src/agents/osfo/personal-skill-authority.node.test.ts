@@ -1080,19 +1080,6 @@ describe("PersonalSkillAuthority", () => {
         } as const;
         yield* authority.recordLearningCost(costEvidence);
         yield* authority.recordLearningCost(costEvidence);
-        storage.sql.exec(
-          `INSERT INTO osfo_good_root_outcome_evaluations
-            (evaluation_id, owner_user_id, receipt_json, retained_at_epoch_millis)
-           VALUES (?, ?, ?, ?), (?, ?, ?, ?)`,
-          "legacy-evaluation-owned",
-          userId,
-          "{}",
-          1_788_000_000_000,
-          "legacy-evaluation-foreign",
-          "foreign-user",
-          "{}",
-          1_788_000_000_000,
-        );
         expect(
           Exit.isFailure(
             yield* Effect.exit(
@@ -1131,14 +1118,6 @@ describe("PersonalSkillAuthority", () => {
             )
             .one().count,
         ).toBe(0);
-        expect(
-          storage.sql
-            .exec<{ ownerUserId: string }>(
-              `SELECT owner_user_id AS ownerUserId
-               FROM osfo_good_root_outcome_evaluations`,
-            )
-            .toArray(),
-        ).toEqual([{ ownerUserId: "foreign-user" }]);
       }),
     ),
   );
@@ -1292,12 +1271,6 @@ const withDatabase = <A, E>(
         outcome TEXT NOT NULL CHECK (outcome IN ('failure', 'success')),
         recorded_at_epoch_millis INTEGER NOT NULL,
         vendor_usd_micros INTEGER NOT NULL CHECK (vendor_usd_micros >= 0)
-      ) STRICT`);
-      database.exec(`CREATE TABLE osfo_good_root_outcome_evaluations (
-        evaluation_id TEXT PRIMARY KEY,
-        owner_user_id TEXT NOT NULL,
-        receipt_json TEXT NOT NULL,
-        retained_at_epoch_millis INTEGER NOT NULL
       ) STRICT`);
       return { database, storage: nodeStorage(database) };
     }),
