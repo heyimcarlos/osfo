@@ -150,3 +150,52 @@ it.effect("accepts provider-visible revocation when replay resumes before durabl
     expect(revokeCalls).toBe(0);
   });
 });
+
+it.effect("maps malformed connected-account lists into typed unavailability", () => {
+  const adapter = makeFromClient({
+    delete: async () => ({ success: true }),
+    list: async () => ({ items: null, next_cursor: null }),
+    revoke: async (id) => ({ id, status: "REVOKED" }),
+  });
+
+  return Effect.gen(function* () {
+    const result = yield* adapter.pending(UserId.make("user-1")).pipe(Effect.result);
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(result.failure).toMatchObject({
+        _tag: "AccountDeletionUnavailable",
+        operation: "discoverIntegrationAuthorities",
+      });
+    }
+  });
+});
+
+it.effect("maps malformed delete confirmation into typed unavailability", () => {
+  const userId = UserId.make("user-1");
+  const target = {
+    connectionId: AccountDeletion.IntegrationAuthorityTargetId.make("connection-1"),
+    userId,
+  };
+  let listCalls = 0;
+  const adapter = makeFromClient({
+    delete: async () => ({ success: "yes" }),
+    list: async () => {
+      listCalls += 1;
+      return listCalls === 1
+        ? { items: [{ id: target.connectionId, status: "REVOKED" }], next_cursor: null }
+        : { items: [], next_cursor: null };
+    },
+    revoke: async (id) => ({ id, status: "REVOKED" }),
+  });
+
+  return Effect.gen(function* () {
+    const result = yield* adapter.remove(target).pipe(Effect.result);
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(result.failure).toMatchObject({
+        _tag: "AccountDeletionUnavailable",
+        operation: "removeIntegrationAuthority",
+      });
+    }
+  });
+});

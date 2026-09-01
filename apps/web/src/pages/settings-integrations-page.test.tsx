@@ -121,6 +121,30 @@ describe("SettingsIntegrationsContent", () => {
     expect(html).toContain("Connect");
     expect(html).not.toContain("connectedAccountId");
   });
+
+  it("renders a provider-retained revoked connection summarized as missing as disconnected", () => {
+    const html = renderToStaticMarkup(
+      <SettingsIntegrationsContent
+        busyToolkit={null}
+        connections={[
+          {
+            description: "Search and read email on demand.",
+            label: "Gmail",
+            status: "missing",
+            toolkit: "gmail",
+          },
+        ]}
+        onConnect={vi.fn<(toolkit: "gmail" | "googlecalendar" | "googledrive") => void>()}
+        onDisconnect={vi.fn<(toolkit: "gmail" | "googlecalendar" | "googledrive") => void>()}
+        onRefresh={vi.fn<() => void>()}
+      />,
+    );
+
+    expect(html).toContain("Not connected");
+    expect(html).toContain("Connect");
+    expect(html).not.toContain("Needs attention");
+    expect(html).not.toContain("Disconnect");
+  });
 });
 
 describe("ScheduledEmailControlContent", () => {

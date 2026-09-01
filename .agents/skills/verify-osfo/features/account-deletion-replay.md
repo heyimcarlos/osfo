@@ -20,7 +20,8 @@ After the first confirmed deletion request loses its browser response, refresh o
 When the same run already observed Immediate Gmail, this observer also records the captured Action
 identity, exact Directory and User absence, and the same-commit Immediate Gmail owned-key deletion
 qualification. It also proves direct absence of the captured Gmail Connection, survival of an
-unrelated User's Connection, and an unchanged immutable send ledger. It writes that receipt back
-to the Immediate Gmail evidence directory.
+unrelated User's unchanged `ACTIVE` Connection, exactly one target revocation and deletion, and an
+unchanged immutable send ledger. It writes that receipt back to the Immediate Gmail evidence
+directory.
 
 PASS requires one successful presentation request, two successful account DELETE requests, exact synchronous Integration revocation followed by Connection deletion, exactly one target provider-container deletion, the same complete target-absence and unrelated-survival assertions as the happy path, the exact retained presentation after refresh, and the signed-out result. A 503 retry or an edited/stale browser record is not this proof.

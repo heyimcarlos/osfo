@@ -23,11 +23,11 @@ This drive proves the local Gmail provider boundary, not live Gmail OAuth. The l
 
 6. Run `observe immediate-gmail-send`. This proves the live one-POST path and runs the same-commit composed replay qualification. Do not finish Immediate Gmail evidence yet.
 7. Continue through [retained account-deletion replay](account-deletion-replay.md), including its observer and evidence finish. Use the same disposable User. The deletion observer writes the captured Action's deletion receipt back to this feature.
-8. Finish Immediate Gmail evidence. The helper requires direct absence of the captured provider Connection, survival of the unrelated Connection, and an unchanged provider-send ledger before it writes `result=PASS`.
+8. Finish Immediate Gmail evidence. The helper requires exactly one provider revocation and deletion for the captured Connection, its direct absence, the unrelated Connection's unchanged ID, owner, and `ACTIVE` status, and an unchanged provider-send ledger before it writes `result=PASS`.
 
 The locally qualified evidence requires one exact authenticated Approval presentation and decision, one applied local provider request/log/resource identity retained under the same terminal Action, one observed Gmail-send fact whose source is that exact Action, and one matching provider send. The live browser proof allows one Approval POST. The named same-commit composed journey separately submits that presentation a second time, requires rejection, and proves unchanged provider and accounting ledgers. The later retained-request deletion replay proves the User and Agent are absent from PostgreSQL and the Directory. A named same-commit store test separately proves that deletion erases every Immediate Gmail-owned key while preserving unrelated Agent storage.
 
-The retained deletion receipt binds the provider Connection to the approved Action through its hashed Connection identity. It reads the loopback provider registry directly after deletion, requires that exact Connection to be absent, preserves an unrelated User's Connection, and compares the complete provider-send ledger before and after deletion.
+The retained deletion receipt binds the provider Connection to the approved Action through its hashed Connection identity. It reads the loopback provider registry and authority-operation ledger directly after deletion. The receipt requires the target's exact revoke-then-delete pair, direct target absence, byte-for-byte equality of the unrelated Connection's ID, owner, and `ACTIVE` status, and an unchanged provider-send ledger.
 
 ## Gotchas
 

@@ -40,8 +40,11 @@ const ConnectedAccountDeleted = Schema.Struct({
   success: Schema.Boolean,
 });
 const ConnectedAccountRevoked = Schema.Struct({
-  id: Schema.String,
-  status: Schema.Literal("REVOKED"),
+  connected_account: Schema.Struct({
+    id: Schema.String,
+    status: Schema.Literal("REVOKED"),
+  }),
+  revoked_tokens: Schema.Array(Schema.String),
 });
 
 type LocalVerificationRequest =
@@ -121,7 +124,7 @@ export const makeAccountDeletion = (
           undefined,
           ConnectedAccountRevoked,
           fetchRequest,
-        ),
+        ).pipe(Effect.map(({ connected_account }) => connected_account)),
       ),
     list: (options) =>
       Effect.runPromise(

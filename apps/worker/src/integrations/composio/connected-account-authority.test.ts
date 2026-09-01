@@ -10,7 +10,10 @@ describe("Composio connected account authority", () => {
       {
         post: async (path) => {
           paths.push(path);
-          return { id: "connection-1", status: "REVOKED" };
+          return {
+            connected_account: { id: "connection-1", status: "REVOKED" },
+            revoked_tokens: ["access_token", "refresh_token"],
+          };
         },
       },
       "connection-1",
@@ -21,12 +24,36 @@ describe("Composio connected account authority", () => {
   it("rejects another identity or a non-revoked status", async () => {
     await expect(
       revoke(
-        { post: async () => ({ id: "another-connection", status: "REVOKED" }) },
+        {
+          post: async () => ({
+            connected_account: { id: "another-connection", status: "REVOKED" },
+            revoked_tokens: ["access_token"],
+          }),
+        },
         "connection-1",
       ),
     ).rejects.toThrow("different connected account");
     await expect(
-      revoke({ post: async () => ({ id: "connection-1", status: "ACTIVE" }) }, "connection-1"),
+      revoke(
+        {
+          post: async () => ({
+            connected_account: { id: "connection-1", status: "ACTIVE" },
+            revoked_tokens: [],
+          }),
+        },
+        "connection-1",
+      ),
     ).rejects.toThrow("status");
+    await expect(
+      revoke(
+        {
+          post: async () => ({
+            id: "connection-1",
+            status: "REVOKED",
+          }),
+        },
+        "connection-1",
+      ),
+    ).rejects.toThrow("connected_account");
   });
 });

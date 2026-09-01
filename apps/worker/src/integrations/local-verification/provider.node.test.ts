@@ -1,6 +1,6 @@
-/* oxlint-disable effecttsgo/global-fetch-in-effect, vitest/no-standalone-expect -- This Effect test drives the owned loopback provider boundary. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-fetch, effecttsgo/global-fetch-in-effect, vitest/no-standalone-expect -- This Effect test drives the owned loopback provider boundary and injects an observing Fetch boundary. */
 import { it } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 import { expect } from "vitest";
 
 import { UserId } from "../../domain";
@@ -232,6 +232,22 @@ it.effect("connects and sends through one deterministic local Gmail provider bou
           slug: "gmail",
         },
       ]);
+      expect(
+        Result.isFailure(yield* created.session.disconnect(accountId).pipe(Effect.result)),
+      ).toBe(true);
+      expect(
+        yield* Effect.promise(() =>
+          fetch(new URL("/_test/integrations/authority-operations", emulator.origin)).then(
+            (response) => response.json(),
+          ),
+        ),
+      ).toEqual([
+        {
+          connectedAccountId: accountId,
+          operation: "revoke",
+          userId,
+        },
+      ]);
     }),
   ),
 );
@@ -283,7 +299,17 @@ it.effect(
             response.json(),
           ),
         );
-        const deletion = LocalVerificationIntegrationProvider.makeAccountDeletion(emulator.origin);
+        let revokeResponse: unknown;
+        const deletion = LocalVerificationIntegrationProvider.makeAccountDeletion(
+          emulator.origin,
+          async (input, init) => {
+            const response = await fetch(input, init);
+            if (input.pathname.endsWith("/revoke") && response.ok) {
+              revokeResponse = await response.clone().json();
+            }
+            return response;
+          },
+        );
         const targets = yield* deletion.pending(deletingUserId);
         expect(targets).toEqual([{ connectionId: deletingAccountId, userId: deletingUserId }]);
         const target = targets[0];
@@ -300,6 +326,10 @@ it.effect(
         expect(yield* deletion.pending(deletingUserId)).toEqual(targets);
 
         yield* deletion.revoke(target);
+        expect(revokeResponse).toEqual({
+          connected_account: { id: deletingAccountId, status: "REVOKED" },
+          revoked_tokens: ["access_token", "refresh_token"],
+        });
         yield* Effect.promise(() =>
           fetch(new URL("/_test/integrations/fail-next-delete", emulator.origin), {
             method: "POST",
@@ -332,6 +362,24 @@ it.effect(
             ),
           ),
         ).toEqual(ledgerBefore);
+        expect(
+          yield* Effect.promise(() =>
+            fetch(new URL("/_test/integrations/authority-operations", emulator.origin)).then(
+              (response) => response.json(),
+            ),
+          ),
+        ).toEqual([
+          {
+            connectedAccountId: deletingAccountId,
+            operation: "revoke",
+            userId: deletingUserId,
+          },
+          {
+            connectedAccountId: deletingAccountId,
+            operation: "delete",
+            userId: deletingUserId,
+          },
+        ]);
         return undefined;
       }),
     ),

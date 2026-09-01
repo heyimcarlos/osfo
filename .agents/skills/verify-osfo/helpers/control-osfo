@@ -1385,6 +1385,7 @@ seed_account_deletion() {
   local channel_link_id target_seed unrelated_seed target_tag unrelated_tag files_bucket
   local target_key unrelated_key containers_json agent_runtime integration_connections
   local target_connection_id unrelated_connection_id unrelated_connection_seed
+  local unrelated_connection_before unrelated_integration_user_id
   run_id="$1"
   doctor_run "$run_id" >/dev/null
   state_dir="$(state_dir_for "$run_id")"
@@ -1439,9 +1440,10 @@ seed_account_deletion() {
       "$provider_origin/_test/integrations/seed-connection" \
       | jq --exit-status --raw-output '.connectedAccountId')"
   fi
+  unrelated_integration_user_id="unrelated-$run_id"
   unrelated_connection_seed="$(curl --fail --silent --show-error \
     --header 'content-type: application/json' \
-    --data "$(jq --null-input --compact-output --arg userId "unrelated-$run_id" \
+    --data "$(jq --null-input --compact-output --arg userId "$unrelated_integration_user_id" \
       '{ userId: $userId }')" \
     "$provider_origin/_test/integrations/seed-connection")"
   unrelated_connection_id="$(jq --exit-status --raw-output \
@@ -1452,6 +1454,21 @@ seed_account_deletion() {
     >"$state_dir/account-deletion-target-integration-connection-id"
   printf '%s\n' "$unrelated_connection_id" \
     >"$state_dir/account-deletion-unrelated-integration-connection-id"
+  integration_connections="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/integrations/connections")"
+  unrelated_connection_before="$(jq --exit-status --arg connectionId "$unrelated_connection_id" \
+    --arg userId "$unrelated_integration_user_id" '
+      [.[] | select(
+        .connectedAccountId == $connectionId and .userId == $userId
+      )] |
+      if length == 1 and .[0].status == "ACTIVE" then .[0]
+      else error("unrelated Integration connection is not an exact ACTIVE sentinel") end
+    ' <<<"$integration_connections")"
+  jq . <<<"$unrelated_connection_before" \
+    >"$state_dir/account-deletion-unrelated-integration-connection-before.json"
+  curl --fail --silent --show-error \
+    "$provider_origin/_test/integrations/authority-operations" \
+    | jq . >"$state_dir/account-deletion-integration-authority-operations-before.json"
   curl --fail --silent --show-error "$provider_origin/_test/integrations/ledger" \
     | jq . >"$state_dir/account-deletion-integration-ledger-before.json"
 
@@ -2619,8 +2636,11 @@ observe_account_deletion() {
   local immediate_state immediate_expected immediate_action_id immediate_presentation_id
   local immediate_deletion_qualification target_integration_connection_id
   local unrelated_integration_connection_id integration_connections integration_ledger_before
-  local integration_ledger_after target_integration_exists unrelated_integration_exists
+  local integration_ledger_after target_integration_exists
   local target_connection_binding immediate_provider_connection_deletion
+  local unrelated_connection_before unrelated_connection_after
+  local integration_authority_operations_before integration_authority_operations_after
+  local revoke_operation_count delete_operation_count
   run_id="$1"
   feature="$2"
   if [[ "$feature" == account-deletion-replay ]]; then
@@ -2799,19 +2819,51 @@ observe_account_deletion() {
   integration_ledger_before="$(<"$state_dir/account-deletion-integration-ledger-before.json")"
   integration_ledger_after="$(curl --fail --silent --show-error \
     "$provider_origin/_test/integrations/ledger")"
+  unrelated_connection_before="$(
+    <"$state_dir/account-deletion-unrelated-integration-connection-before.json"
+  )"
+  unrelated_connection_after="$(jq --arg connectionId "$unrelated_integration_connection_id" '
+    [.[] | select(.connectedAccountId == $connectionId)] |
+    if length == 1 then .[0] else null end
+  ' <<<"$integration_connections")"
+  integration_authority_operations_before="$(
+    <"$state_dir/account-deletion-integration-authority-operations-before.json"
+  )"
+  integration_authority_operations_after="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/integrations/authority-operations")"
+  revoke_operation_count="$(jq --null-input \
+    --argjson before "$integration_authority_operations_before" \
+    --argjson after "$integration_authority_operations_after" \
+    --arg connectionId "$target_integration_connection_id" '
+      [$after[($before | length):][] |
+        select(.connectedAccountId == $connectionId and .operation == "revoke")] |
+      length
+    ')"
+  delete_operation_count="$(jq --null-input \
+    --argjson before "$integration_authority_operations_before" \
+    --argjson after "$integration_authority_operations_after" \
+    --arg connectionId "$target_integration_connection_id" '
+      [$after[($before | length):][] |
+        select(.connectedAccountId == $connectionId and .operation == "delete")] |
+      length
+    ')"
   target_integration_exists="$(jq --arg connectionId "$target_integration_connection_id" \
-    'any(.[]; .connectedAccountId == $connectionId)' <<<"$integration_connections")"
-  unrelated_integration_exists="$(jq --arg connectionId "$unrelated_integration_connection_id" \
     'any(.[]; .connectedAccountId == $connectionId)' <<<"$integration_connections")"
   if [[ "$immediate_expected" == true ]]; then
     immediate_provider_connection_deletion="$(jq --null-input \
       --arg connectionBinding "$target_connection_binding" \
+      --argjson deleteOperationCount "$delete_operation_count" \
       --argjson directProviderAbsence "$([[ "$target_integration_exists" == false ]] && printf true || printf false)" \
-      --argjson unrelatedConnectionPreserved "$unrelated_integration_exists" '{
+      --argjson revokeOperationCount "$revoke_operation_count" \
+      --argjson unrelatedConnectionAfter "$unrelated_connection_after" \
+      --argjson unrelatedConnectionBefore "$unrelated_connection_before" '{
         connectionBinding: $connectionBinding,
+        deleteOperationCount: $deleteOperationCount,
         directProviderAbsence: $directProviderAbsence,
+        revokeOperationCount: $revokeOperationCount,
         status: "deleted",
-        unrelatedConnectionPreserved: $unrelatedConnectionPreserved
+        unrelatedConnectionAfter: $unrelatedConnectionAfter,
+        unrelatedConnectionBefore: $unrelatedConnectionBefore
       }')"
   fi
   account_http="$("$script_dir/inspect-account-http-log" "$worker_log" "$proof_shape")"
@@ -2876,6 +2928,9 @@ observe_account_deletion() {
     --argjson integrationConnections "$integration_connections" \
     --argjson integrationLedgerBefore "$integration_ledger_before" \
     --argjson integrationLedgerAfter "$integration_ledger_after" \
+    --argjson integrationAuthorityOperationsBefore "$integration_authority_operations_before" \
+    --argjson integrationAuthorityOperationsAfter "$integration_authority_operations_after" \
+    --argjson unrelatedIntegrationConnectionBefore "$unrelated_connection_before" \
     --arg targetTag "$target_tag" \
     --arg unrelatedTag "$unrelated_tag" \
     --arg targetIntegrationConnectionId "$target_integration_connection_id" \
@@ -2884,9 +2939,12 @@ observe_account_deletion() {
         containers: $containers,
         integration: {
           connections: $integrationConnections,
+          authorityOperationsAfter: $integrationAuthorityOperationsAfter,
+          authorityOperationsBefore: $integrationAuthorityOperationsBefore,
           ledgerAfter: $integrationLedgerAfter,
           ledgerBefore: $integrationLedgerBefore,
           targetConnectionId: $targetIntegrationConnectionId,
+          unrelatedConnectionBefore: $unrelatedIntegrationConnectionBefore,
           unrelatedConnectionId: $unrelatedIntegrationConnectionId
         },
         ledger: $ledger,
@@ -2930,6 +2988,7 @@ observe_account_deletion() {
       .reminderVerification.activeScheduleBindingCount >= 0' \
     "$feature_dir/agent-runtime-before.json" >/dev/null
   jq --exit-status --arg target "$target_tag" --arg unrelated "$unrelated_tag" \
+    --arg integrationUserId "$user_id" \
     '.integration as $integration |
       (.containers | index($target)) == null and
       (.containers | index($unrelated)) != null and
@@ -2937,10 +2996,25 @@ observe_account_deletion() {
         { method: "DELETE", path: ("/v3/container-tags/" + $target) }
       ] and
       $integration.ledgerAfter == $integration.ledgerBefore and
+      $integration.authorityOperationsAfter ==
+        ($integration.authorityOperationsBefore + [
+          {
+            connectedAccountId: $integration.targetConnectionId,
+            operation: "revoke",
+            userId: $integrationUserId
+          },
+          {
+            connectedAccountId: $integration.targetConnectionId,
+            operation: "delete",
+            userId: $integrationUserId
+          }
+        ]) and
       (any($integration.connections[];
         .connectedAccountId == $integration.targetConnectionId) | not) and
-      any($integration.connections[];
-        .connectedAccountId == $integration.unrelatedConnectionId)' \
+      $integration.unrelatedConnectionBefore.status == "ACTIVE" and
+      [$integration.connections[] |
+        select(.connectedAccountId == $integration.unrelatedConnectionId)] ==
+        [$integration.unrelatedConnectionBefore]' \
     "$feature_dir/provider.json" >/dev/null
   complete_observation "$run_id" "$feature_dir"
   if [[ "$immediate_expected" == true ]]; then

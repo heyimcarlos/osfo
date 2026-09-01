@@ -514,7 +514,10 @@ export const make = (
           session,
         };
       }
-      if (candidates.every(({ connectedAccount }) => connectedAccount === null)) {
+      const retainedAccounts = candidates.flatMap(({ connectedAccount }) =>
+        connectedAccount === null ? [] : [connectedAccount],
+      );
+      if (retainedAccounts.every(({ status }) => status === "REVOKED")) {
         return connectionInspection(input, "IntegrationConnectionMissing", session);
       }
       return connectionInspection(input, "IntegrationConnectionStale", session);
@@ -1085,22 +1088,19 @@ export const make = (
         return yield* unsupportedToolkit(input.toolkit, "DISCONNECT");
       }
       const { session } = yield* resolveProviderSession(input.userId);
-      const accounts = (yield* session.inspectToolkits([input.toolkit])).filter(
-        ({ connectedAccount, slug }) => slug === input.toolkit && connectedAccount !== null,
+      const activeAccounts = (yield* session.inspectToolkits([input.toolkit])).flatMap(
+        ({ connectedAccount, isActive, slug }) =>
+          slug === input.toolkit &&
+          isActive &&
+          connectedAccount !== null &&
+          connectedAccount.status === "ACTIVE"
+            ? [connectedAccount]
+            : [],
       );
-      if (accounts.length === 0) {
-        return yield* new IntegrationConnectionUnavailable({
-          message: "The required Integration Connection is not current and unambiguous",
-          toolkit: input.toolkit,
-          userId: input.userId,
-        });
-      }
-      yield* Effect.forEach(
-        accounts,
-        ({ connectedAccount }) =>
-          connectedAccount === null ? Effect.void : session.disconnect(connectedAccount.id),
-        { concurrency: 1, discard: true },
-      );
+      yield* Effect.forEach(activeAccounts, ({ id }) => session.disconnect(id), {
+        concurrency: 1,
+        discard: true,
+      });
       return { _tag: "IntegrationConnectionRevoked" as const, toolkit: input.toolkit };
     }),
     execute,

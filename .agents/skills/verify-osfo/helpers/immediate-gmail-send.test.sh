@@ -150,9 +150,20 @@ deletion_fixture='{
   "immediateGmailPresentationId":"presentation-1",
   "immediateGmailProviderConnectionDeletion":{
     "connectionBinding":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "deleteOperationCount":1,
     "directProviderAbsence":true,
+    "revokeOperationCount":1,
     "status":"deleted",
-    "unrelatedConnectionPreserved":true
+    "unrelatedConnectionAfter":{
+      "connectedAccountId":"unrelated-connection-1",
+      "status":"ACTIVE",
+      "userId":"unrelated-user-1"
+    },
+    "unrelatedConnectionBefore":{
+      "connectedAccountId":"unrelated-connection-1",
+      "status":"ACTIVE",
+      "userId":"unrelated-user-1"
+    }
   },
   "immediateGmailProofExpected":true,
   "userExists":false
@@ -169,8 +180,12 @@ for mutation in \
   '.immediateGmailDeletionQualification = null' \
   '.immediateGmailDeletionQualification.commit = "different-commit"' \
   '.immediateGmailProviderConnectionDeletion.status = "not-qualified"' \
+  '.immediateGmailProviderConnectionDeletion.revokeOperationCount = 0' \
+  '.immediateGmailProviderConnectionDeletion.deleteOperationCount = 2' \
   '.immediateGmailProviderConnectionDeletion.directProviderAbsence = false' \
-  '.immediateGmailProviderConnectionDeletion.unrelatedConnectionPreserved = false' \
+  '.immediateGmailProviderConnectionDeletion.unrelatedConnectionAfter.status = "REVOKED"' \
+  '.immediateGmailProviderConnectionDeletion.unrelatedConnectionAfter.userId = "changed-user"' \
+  '.immediateGmailProviderConnectionDeletion.unrelatedConnectionBefore.connectedAccountId = "changed-connection"' \
   '.agentRuntime.inspectable = true' \
   '.agentRuntime.registered = true' \
   '.userExists = true'; do
@@ -203,9 +218,20 @@ if ! jq --exit-status '
   .directoryAgent == {inspectable:false,registered:false} and .userExists == false and
   .providerConnectionDeletion == {
     connectionBinding:("a" * 64),
+    deleteOperationCount:1,
     directProviderAbsence:true,
+    revokeOperationCount:1,
     status:"deleted",
-    unrelatedConnectionPreserved:true
+    unrelatedConnectionAfter:{
+      connectedAccountId:"unrelated-connection-1",
+      status:"ACTIVE",
+      userId:"unrelated-user-1"
+    },
+    unrelatedConnectionBefore:{
+      connectedAccountId:"unrelated-connection-1",
+      status:"ACTIVE",
+      userId:"unrelated-user-1"
+    }
   } and
   .ownedKeyDeletionQualification.result == "PASS" and
   (.observedAt | fromdateiso8601) > 0' <<<"$deletion_receipt" >/dev/null; then
@@ -227,8 +253,12 @@ fi
 for mutation in \
   '.providerConnectionDeletion = null' \
   '.providerConnectionDeletion.status = "not-qualified"' \
+  '.providerConnectionDeletion.revokeOperationCount = 0' \
+  '.providerConnectionDeletion.deleteOperationCount = 2' \
   '.providerConnectionDeletion.directProviderAbsence = false' \
-  '.providerConnectionDeletion.unrelatedConnectionPreserved = false' \
+  '.providerConnectionDeletion.unrelatedConnectionAfter.status = "REVOKED"' \
+  '.providerConnectionDeletion.unrelatedConnectionAfter.userId = "changed-user"' \
+  '.providerConnectionDeletion.unrelatedConnectionBefore.connectedAccountId = "changed-connection"' \
   '.providerConnectionDeletion.connectionBinding = ("b" * 64)' \
   '.directoryAgent.inspectable = true' \
   '.ownedKeyDeletionQualification.commit = "different-commit"'; do
@@ -248,6 +278,9 @@ for required in \
   'immediate-gmail-send)' \
   'gmail_send_request()' \
   'observe_immediate_gmail_send()' \
+  'account-deletion-integration-authority-operations-before.json' \
+  'authorityOperationsAfter ==' \
+  'unrelatedConnectionBefore.status == "ACTIVE"' \
   'provider_boundary=local-loopback-gmail-not-live-oauth'; do
   if ! grep -F -q -- "$required" "$control"; then
     printf 'Immediate Gmail verifier is missing invariant: %s\n' "$required" >&2
@@ -272,6 +305,7 @@ for required in \
   'verification-gmailSendEmail' \
   'gmailResource: "primary"' \
   'kind: "tool-selection"' \
+  '/_test/integrations/authority-operations' \
   '/_test/integrations/reset-ledger'; do
   if ! grep -F -q "$required" "$emulator"; then
     printf 'Provider emulator is missing Immediate Gmail evidence: %s\n' "$required" >&2

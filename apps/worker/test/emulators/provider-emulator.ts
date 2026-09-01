@@ -44,6 +44,13 @@ interface IntegrationConnectionState {
   readonly status: "ACTIVE" | "REVOKED";
 }
 
+/** One successful local provider authority mutation. */
+export interface IntegrationAuthorityOperationEntry {
+  readonly connectedAccountId: string;
+  readonly operation: "delete" | "revoke";
+  readonly userId: string;
+}
+
 /** One observed Supermemory request. */
 export interface SupermemoryLedgerEntry {
   readonly dynamicProfileCount?: number;
@@ -227,6 +234,7 @@ const startProvider = (options: {
     const researchLedger: Array<ResearchLedgerEntry> = [];
     let latestAgentSequence = 0;
     const integrationLedger: Array<IntegrationLedgerEntry> = [];
+    const integrationAuthorityOperations: Array<IntegrationAuthorityOperationEntry> = [];
     const integrationSessions = new Map<string, string>();
     const integrationConnections = new Map<string, IntegrationConnectionState>();
     const integrationConnectionControl: IntegrationConnectionControl = {
@@ -269,6 +277,7 @@ const startProvider = (options: {
         researchControl.nextDocumentBuildActionId = null;
         researchControl.nextImmediateGmailActionId = null;
         integrationLedger.length = 0;
+        integrationAuthorityOperations.length = 0;
         integrationSessions.clear();
         integrationConnections.clear();
         integrationConnectionControl.nextOrdinal = 1;
@@ -384,6 +393,10 @@ const startProvider = (options: {
         respondJson(response, 200, integrationLedger);
         return;
       }
+      if (request.method === "GET" && pathname === "/_test/integrations/authority-operations") {
+        respondJson(response, 200, integrationAuthorityOperations);
+        return;
+      }
       if (request.method === "GET" && pathname === "/_test/integrations/control") {
         respondJson(response, 200, {
           swapAfterInspections: integrationConnectionControl.swapAfterInspections,
@@ -476,6 +489,7 @@ const startProvider = (options: {
           integrationConnections,
           integrationConnectionControl,
           integrationLedger,
+          integrationAuthorityOperations,
         );
         return;
       }
@@ -694,6 +708,7 @@ const handleLocalIntegrations = (
   connections: Map<string, IntegrationConnectionState>,
   control: IntegrationConnectionControl,
   ledger: Array<IntegrationLedgerEntry>,
+  authorityOperations: Array<IntegrationAuthorityOperationEntry>,
 ): void => {
   const segments = url.pathname.split("/").filter(Boolean);
   const resource = segments[2];
@@ -746,7 +761,15 @@ const handleLocalIntegrations = (
           }
           const [owner] = owned;
           connections.set(owner, { id: sessionId, status: "REVOKED" });
-          respondJson(response, 200, { id: sessionId, status: "REVOKED" });
+          authorityOperations.push({
+            connectedAccountId: sessionId,
+            operation: "revoke",
+            userId: owner,
+          });
+          respondJson(response, 200, {
+            connected_account: { id: sessionId, status: "REVOKED" },
+            revoked_tokens: ["access_token", "refresh_token"],
+          });
           return;
         }
         if (operation === "delete") {
@@ -761,7 +784,14 @@ const handleLocalIntegrations = (
             return;
           }
           const owner = owned?.[0];
-          if (owner !== undefined) connections.delete(owner);
+          if (owner !== undefined) {
+            connections.delete(owner);
+            authorityOperations.push({
+              connectedAccountId: sessionId,
+              operation: "delete",
+              userId: owner,
+            });
+          }
           respondJson(response, 200, { success: true });
           return;
         }
@@ -831,9 +861,20 @@ const handleLocalIntegrations = (
       if (operation === "disconnect") {
         const userId = input.userId ?? "";
         const connection = connections.get(userId);
-        if (connection !== undefined) {
-          connections.set(userId, { ...connection, status: "REVOKED" });
+        if (connection === undefined || connection.id !== input.connectedAccountId) {
+          respondJson(response, 404, { error: "Connected account not found" });
+          return;
         }
+        if (connection.status !== "ACTIVE") {
+          respondJson(response, 409, { error: "Connected account is not active" });
+          return;
+        }
+        connections.set(userId, { ...connection, status: "REVOKED" });
+        authorityOperations.push({
+          connectedAccountId: connection.id,
+          operation: "revoke",
+          userId,
+        });
         respondJson(response, 200, { disconnected: true });
         return;
       }

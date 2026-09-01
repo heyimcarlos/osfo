@@ -152,7 +152,7 @@ describe("Integrations", () => {
     }),
   );
 
-  it.effect("uses the sole active account and revokes stale toolkit accounts on disconnect", () =>
+  it.effect("revokes only active toolkit authorities while retaining other stale evidence", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
       harness.toolkits.push(
@@ -176,7 +176,95 @@ describe("Integrations", () => {
         _tag: "IntegrationConnectionRevoked",
         toolkit: "gmail",
       });
-      expect(harness.disconnected).toEqual(["stale-account", "active-account"]);
+      expect(harness.disconnected).toEqual(["active-account"]);
+      expect(yield* integrations.connectionEvidence({ toolkit: "gmail", userId })).toEqual({
+        _tag: "IntegrationConnectionStale",
+        toolkit: "gmail",
+        userId,
+      });
+    }),
+  );
+
+  it.effect("revokes every active toolkit authority before reporting it disconnected", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits.push(
+        {
+          connectedAccount: { id: "active-account-1", status: "ACTIVE" },
+          isActive: true,
+          slug: "gmail",
+        },
+        {
+          connectedAccount: { id: "active-account-2", status: "ACTIVE" },
+          isActive: true,
+          slug: "gmail",
+        },
+      );
+
+      const integrations = make(harness);
+      expect(yield* integrations.disconnect({ toolkit: "gmail", userId })).toEqual({
+        _tag: "IntegrationConnectionRevoked",
+        toolkit: "gmail",
+      });
+      expect(harness.disconnected).toEqual(["active-account-1", "active-account-2"]);
+      expect(yield* integrations.connectionEvidence({ toolkit: "gmail", userId })).toEqual({
+        _tag: "IntegrationConnectionMissing",
+        toolkit: "gmail",
+        userId,
+      });
+    }),
+  );
+
+  it.effect("treats a disconnect with no active toolkit authority as idempotently complete", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      harness.toolkits.push(
+        {
+          connectedAccount: { id: "revoked-account", status: "REVOKED" },
+          isActive: false,
+          slug: "gmail",
+        },
+        {
+          connectedAccount: { id: "expired-account", status: "EXPIRED" },
+          isActive: false,
+          slug: "gmail",
+        },
+      );
+
+      expect(yield* make(harness).disconnect({ toolkit: "gmail", userId })).toEqual({
+        _tag: "IntegrationConnectionRevoked",
+        toolkit: "gmail",
+      });
+      expect(harness.disconnected).toEqual([]);
+    }),
+  );
+
+  it.effect("reports REVOKED-only evidence as missing while other stale states remain stale", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const integrations = make(harness);
+      harness.toolkits.push({
+        connectedAccount: { id: "revoked-account", status: "REVOKED" },
+        isActive: false,
+        slug: "gmail",
+      });
+
+      expect(yield* integrations.connectionEvidence({ toolkit: "gmail", userId })).toEqual({
+        _tag: "IntegrationConnectionMissing",
+        toolkit: "gmail",
+        userId,
+      });
+
+      harness.toolkits[0] = {
+        connectedAccount: { id: "expired-account", status: "EXPIRED" },
+        isActive: false,
+        slug: "gmail",
+      };
+      expect(yield* integrations.connectionEvidence({ toolkit: "gmail", userId })).toEqual({
+        _tag: "IntegrationConnectionStale",
+        toolkit: "gmail",
+        userId,
+      });
     }),
   );
 
@@ -1972,10 +2060,33 @@ const makeHarness = (): IntegrationProvider &
       harness.authorized.push({ callbackUrl: callbackUrl.toString(), toolkit });
       return Effect.succeed(new URL("https://connect.composio.dev/link"));
     },
-    disconnect: (connectedAccountId) =>
-      Effect.sync(() => {
+    disconnect: (connectedAccountId) => {
+      const candidate = harness.toolkits.find(
+        ({ connectedAccount }) => connectedAccount?.id === connectedAccountId,
+      );
+      const connectedAccount = candidate?.connectedAccount;
+      if (
+        candidate === undefined ||
+        !candidate.isActive ||
+        connectedAccount === null ||
+        connectedAccount === undefined ||
+        connectedAccount.status !== "ACTIVE"
+      ) {
+        return Effect.fail(
+          new IntegrationProviderUnavailable({
+            cause: { connectedAccountId, status: connectedAccount?.status ?? null },
+            message: "Only an active connected account can be revoked",
+            operation: "disconnect",
+            reason: "unavailable",
+          }),
+        );
+      }
+      return Effect.sync(() => {
         harness.disconnected.push(connectedAccountId);
-      }),
+        candidate.connectedAccount = { ...connectedAccount, status: "REVOKED" };
+        candidate.isActive = false;
+      });
+    },
     execute: (providerTool, input, connectedAccountId, constraints, _correlation) => {
       if (constraints === undefined) {
         harness.executed.push({ connectedAccountId, input, providerTool });
