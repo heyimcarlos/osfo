@@ -52,9 +52,9 @@ export function AgentPanelHeader({ status }: { readonly status: { readonly kind:
             </Link>
             <Link
               className="flex min-h-11 items-center rounded-xl px-3 py-2.5 hover:bg-[#edf4ff] focus-visible:outline-2"
-              to="/settings/marketplace"
+              to="/settings/integrations"
             >
-              Marketplace
+              Integrations
             </Link>
           </div>
         </details>

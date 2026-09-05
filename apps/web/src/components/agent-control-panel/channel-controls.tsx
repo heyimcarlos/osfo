@@ -56,17 +56,13 @@ export function ConnectedChannels({
   );
 }
 
-/** Receive-message switch and synchronized primary-channel selector. */
+/** Browser-local preferred-channel selector. */
 export function MessagingSettings({
   primaryChannel,
-  receiveMessages,
   onPrimaryChannelChange,
-  onReceiveMessagesChange,
 }: {
   readonly primaryChannel: Channel;
-  readonly receiveMessages: boolean;
   readonly onPrimaryChannelChange: (channel: Channel) => void;
-  readonly onReceiveMessagesChange: (receiveMessages: boolean) => void;
 }) {
   const radioRefs = useRef<Array<HTMLInputElement | null>>([]);
   const moveChannelSelection = (event: KeyboardEvent<HTMLInputElement>, index: number) => {
@@ -89,39 +85,10 @@ export function MessagingSettings({
       <h2 className="mb-3 text-base font-bold text-[#101936]" id="messaging-settings-title">
         Messaging
       </h2>
-      <div className="flex min-h-16 items-center gap-3 rounded-2xl border border-[#d4e0ef]/70 bg-white/58 px-4">
-        <span
-          aria-hidden="true"
-          className="grid size-9 place-items-center rounded-full bg-[#edf4ff] text-[#405c88]"
-        >
-          <span className="size-4 rounded-full border-2 border-current" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <h3 className="font-semibold text-[#101936]">Receive Messages</h3>
-          <p className="text-xs text-[#65718a] sm:text-sm">Allow your agent to receive messages</p>
-        </div>
-        <button
-          aria-checked={receiveMessages}
-          aria-label="Receive Messages"
-          className="relative h-11 w-14 shrink-0 rounded-full focus-visible:ring-2 focus-visible:ring-[#2f7df4] focus-visible:ring-offset-2 focus-visible:outline-none"
-          role="switch"
-          type="button"
-          onClick={() => onReceiveMessagesChange(!receiveMessages)}
-        >
-          <span
-            aria-hidden="true"
-            className={`absolute top-2 left-1 h-7 w-12 rounded-full transition motion-reduce:transition-none ${receiveMessages ? "bg-[#2f7df4]" : "bg-[#a8b4c7]"}`}
-          />
-          <span
-            aria-hidden="true"
-            className={`absolute top-3 size-5 rounded-full bg-white shadow transition-transform motion-reduce:transition-none ${receiveMessages ? "left-7" : "left-2"}`}
-          />
-        </button>
-      </div>
       <div className="mt-2.5 rounded-2xl border border-[#d4e0ef]/70 bg-white/58 p-4">
         <h3 className="font-semibold text-[#101936]">Preferred Messaging Channel</h3>
         <p className="mt-0.5 text-xs text-[#65718a] sm:text-sm">
-          Choose the channel that you prefer to use after you connect it
+          Remember your preferred channel in this browser. Manage linked accounts in Channels.
         </p>
         <div
           aria-label="Preferred Messaging Channel"

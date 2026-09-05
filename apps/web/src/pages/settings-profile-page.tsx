@@ -1,17 +1,18 @@
 import { Button } from "@osfo/ui/components/button";
 import { Input } from "@osfo/ui/components/input";
 import { Label } from "@osfo/ui/components/label";
-import { KeyRound, ShieldCheck, UserRound } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { KeyRound, UserRound } from "lucide-react";
 import { useState } from "react";
 
 import { useAuthState } from "../auth-state";
 import { setLoginCredentials } from "../lib/auth-client";
 import { presentUserLabel } from "../lib/user-label";
 
-const fieldClassName =
-  "min-h-12 w-full rounded-xl border border-white/85 bg-white/68 px-3 text-sm text-[#26334f] outline-none";
+const accountLinkClassName =
+  "flex min-h-11 items-center rounded-xl px-3 text-sm font-medium text-[#135fdd] hover:bg-[#edf4ff] focus-visible:ring-2 focus-visible:ring-[#2f7df4] focus-visible:outline-none";
 
-/** Route-owned authenticated profile preview. */
+/** Account identity and supported sign-in controls. */
 export function SettingsProfilePage() {
   const session = useAuthState();
   const user = session.data?.user;
@@ -30,50 +31,33 @@ export function SettingsProfilePage() {
               {userLabel}
             </h2>
             <p className="text-sm text-[#687896]">Your Osfo account</p>
-            <span className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-[#dff7e9] px-3 py-1 text-xs font-semibold text-[#267b51]">
-              <span aria-hidden="true" className="size-2 rounded-full bg-[#28b66f]" />
-              Agent Active
-            </span>
           </div>
         </div>
 
-        <div className="grid gap-3">
-          <ProfileField label="Full name" value={userLabel} />
-          <ProfileField label="Username" value="@osfo-user" />
-          <ProfileField label="Email" value="Not added" />
-          <ProfileField label="Phone" value={phoneNumber} />
-          <label className="grid gap-1 text-xs font-medium text-[#607393]">
-            Bio
-            <textarea
-              className={`${fieldClassName} min-h-20 resize-none py-3`}
-              readOnly
-              value="Your private personal agent, ready when you are."
-            />
-          </label>
-          <button
-            className="min-h-12 w-fit cursor-not-allowed rounded-xl bg-[#2f7df4] px-6 font-semibold text-white opacity-65"
-            disabled
-            type="button"
-          >
-            Save changes, coming soon
-          </button>
-        </div>
+        <dl className="grid gap-3 rounded-2xl border border-white/80 bg-white/68 p-4">
+          <AccountFact label="Phone" value={phoneNumber} />
+        </dl>
       </section>
 
       <aside className="grid content-start gap-5">
         <section className="rounded-[1.35rem] border border-white/85 bg-white/68 p-5 shadow-[0_12px_32px_rgba(70,103,145,0.1)]">
           <h2 className="font-bold">Account</h2>
-          <dl className="mt-4 grid gap-5 text-sm">
-            <AccountFact label="Status" value="Active" />
-            <AccountFact label="Plan" value="Manage in Billing" />
-            <AccountFact label="Primary channel" value="WhatsApp" />
-          </dl>
+          <div className="mt-4 grid gap-2">
+            <Link className={accountLinkClassName} to="/settings/billing">
+              Manage plan and payments
+            </Link>
+            <Link className={accountLinkClassName} to="/settings/channels">
+              Manage messaging channels
+            </Link>
+            <Link className={accountLinkClassName} to="/settings/privacy">
+              Privacy and account deletion
+            </Link>
+          </div>
         </section>
         <section className="rounded-[1.35rem] border border-white/85 bg-white/68 p-4 shadow-[0_12px_32px_rgba(70,103,145,0.1)]">
           <h2 className="px-1 font-bold">Security</h2>
           <div className="mt-3 grid gap-2">
             <PasswordSetup />
-            <SecurityRow icon={ShieldCheck} label="Two-factor authentication" />
           </div>
         </section>
       </aside>
@@ -170,38 +154,11 @@ function PasswordSetup() {
   );
 }
 
-function ProfileField({ label, value }: { readonly label: string; readonly value: string }) {
-  return (
-    <label className="grid gap-1 text-xs font-medium text-[#607393]">
-      {label}
-      <input className={fieldClassName} readOnly value={value} />
-    </label>
-  );
-}
-
 function AccountFact({ label, value }: { readonly label: string; readonly value: string }) {
   return (
     <div className="flex items-center justify-between gap-3">
       <dt className="text-xs text-[#687896]">{label}</dt>
       <dd className="text-right font-medium">{value}</dd>
-    </div>
-  );
-}
-
-function SecurityRow({
-  icon: Icon,
-  label,
-}: {
-  readonly icon: typeof KeyRound;
-  readonly label: string;
-}) {
-  return (
-    <div className="flex min-h-14 items-center gap-3 rounded-xl border border-[#d6e1ef] bg-white/65 px-3">
-      <span className="grid size-9 place-items-center rounded-full bg-[#e7f1ff] text-[#2f7df4]">
-        <Icon aria-hidden="true" className="size-5" />
-      </span>
-      <span className="min-w-0 flex-1 font-semibold">{label}</span>
-      <span className="text-[10px] text-[#687896]">Coming soon</span>
     </div>
   );
 }
