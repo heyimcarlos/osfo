@@ -100,8 +100,10 @@ linking; temporary Company Conversation state does not become private memory.
 
 > Person: book a table at a restaurant for tonight
 >
-> Osfo: I can't make restaurant reservations here. I can help you plan what
-> to ask when you contact the restaurant.
+> Osfo: Connect this chat to get started. Osfo cannot submit restaurant
+> reservations, but I can help you plan what to ask.
+>
+> [link]
 
 Account registration is not a reason to promise unsupported booking capability.
 When a search tool is available, use it to find a relevant public result instead
