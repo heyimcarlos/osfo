@@ -2,7 +2,9 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 
-import { ThinkSubmissionId, UserId } from "../domain";
+import { makeWebTools } from "../agents/osfo/web-tools";
+import { CapabilityCatalogVersion, ThinkSubmissionId, UserId } from "../domain";
+import { Capabilities } from "./capabilities";
 import {
   type CompletedOperation,
   make,
@@ -19,6 +21,87 @@ const userId = UserId.make("user-1");
 const turnId = ThinkSubmissionId.make("turn-1");
 
 describe("Web", () => {
+  it.effect(
+    "reads a supplied public URL through the selected Tool without discovery availability",
+    () =>
+      Effect.gen(function* () {
+        const requestText = "Summarize https://example.com/guide";
+        const capabilities = Capabilities.make();
+        const authorizations: Array<unknown> = [];
+        const fetchedUrls: Array<string> = [];
+        const web = make({
+          authorize: (input) =>
+            Effect.sync(() => {
+              authorizations.push(input);
+            }),
+          discover: () => Effect.die(new Error("Discovery must remain unavailable")),
+          fetchPage: ({ url }) =>
+            Effect.sync(() => {
+              fetchedUrls.push(url);
+              return page(url, "A public guide");
+            }),
+          makeId: sequenceIds("read-lease"),
+          now: Effect.succeed(new Date("2026-08-27T12:00:00Z")),
+          state: memoryState(),
+        });
+        const tools = makeWebTools({
+          readActiveTurn: () => ({ authorityIdentity: { userId }, submissionId: turnId }),
+          readRequestText: () => requestText,
+          web,
+        });
+        const availableToolNames = Object.keys(tools);
+        const index = yield* capabilities.eligibleIndex({
+          availableIntegrationToolkits: [],
+          availableRequirements: ["personal-agent"],
+          availableToolNames,
+          catalogVersion: CapabilityCatalogVersion.make("governed-capabilities-v1"),
+          declaredRequirements: [],
+          origin: "channelLink",
+          personalSkills: [],
+          plan: "free",
+          taskDescription: requestText,
+          taskKinds: Capabilities.taskKindsFor(requestText),
+          userId,
+        });
+        const bundle = capabilities.assembleToolBundle({
+          availableToolNames,
+          index,
+          loadedSkills: [],
+        });
+        expect(bundle.activeToolNames).toEqual(["readWebPage"]);
+        expect(index.selectedCapabilityIds).toEqual(["page-read"]);
+        const execute = tools.readWebPage?.execute;
+        if (execute === undefined) throw new Error("Missing page read Tool");
+        const result = yield* Effect.promise(() =>
+          Promise.resolve(
+            execute(
+              { source: "url", url: new URL("https://example.com/guide") },
+              { context: {}, messages: [], toolCallId: "read-1" },
+            ),
+          ),
+        );
+        expect(result).toMatchObject({
+          _tag: "PageReadCompleted",
+          page: { _tag: "Read", content: "A public guide" },
+        });
+        expect(fetchedUrls).toEqual(["https://example.com/guide"]);
+        expect(authorizations).toMatchObject([
+          { operationId: "read-1", pages: 1, searches: 0, turnId, userId },
+        ]);
+        const unrequested = yield* Effect.promise(() =>
+          Promise.resolve(
+            execute(
+              { source: "url", url: new URL("https://example.com/other") },
+              { context: {}, messages: [], toolCallId: "read-2" },
+            ),
+          ),
+        );
+        expect(unrequested).toMatchObject({ _tag: "WebToolUnavailable" });
+        expect(fetchedUrls).toEqual(["https://example.com/guide"]);
+        expect(authorizations).toHaveLength(1);
+      }),
+  );
+
   it("rejects credential-bearing query keys while preserving ordinary public queries", () => {
     const credentialKeys = [
       "access_token",

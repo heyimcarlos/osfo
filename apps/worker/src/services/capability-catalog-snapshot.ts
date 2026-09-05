@@ -268,7 +268,7 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
       toolRequirements: ["webSearch"],
     }),
     entry("page-read", "Read one bounded public web page.", "web.read", {
-      availabilityRequirements: ["web-provider"],
+      availabilityRequirements: ["personal-agent"],
       resultBounds: {
         maximumBytes: policyCatalog.operationLimits.webNormalizedPageBytes,
         maximumDurationMillis: policyCatalog.operationLimits.interactiveOperationMilliseconds,
@@ -277,7 +277,6 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
         maximumPixelsPerEdge: null,
         maximumSlides: null,
       },
-      skillCandidates: ["web-search"],
       toolRequirements: ["readWebPage"],
     }),
     entry("research-report", "Produce one bounded research report.", "artifact.generate", {
