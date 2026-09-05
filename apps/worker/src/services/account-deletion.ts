@@ -104,7 +104,10 @@ export interface PortInterface {
       agentId: AgentId,
       userId: UserId,
     ) => Effect.Effect<void, AccountDeletionUnavailable>;
-    readonly remove: (agentId: AgentId) => Effect.Effect<void, AccountDeletionUnavailable>;
+    readonly remove: (
+      agentId: AgentId,
+      userId: UserId,
+    ) => Effect.Effect<void, AccountDeletionUnavailable>;
   };
   readonly integrations: {
     /** Discover only connection authorities that still exist for this User. */
@@ -380,7 +383,7 @@ export const make = Effect.gen(function* () {
     );
     if (candidate.agentId !== null) {
       yield* requireAuthority("before Agent deletion");
-      yield* dependencies.agents.remove(candidate.agentId);
+      yield* dependencies.agents.remove(candidate.agentId, candidate.userId);
     }
     yield* requireAuthority("before PostgreSQL deletion");
     yield* dependencies.persistence.removeUser(candidate);

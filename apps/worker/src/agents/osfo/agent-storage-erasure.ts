@@ -1,9 +1,12 @@
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
-import { AccountResetFence } from "./account-reset-fence";
+export class AgentStorageErasureUnavailable extends Schema.TaggedError<AgentStorageErasureUnavailable>()(
+  "AgentStorageErasureUnavailable",
+  { cause: Schema.Defect(), message: Schema.String },
+) {}
 
 /** Facets cannot use deleteAll in the installed runtime; erase their SQLite and KV atomically. */
-export const erase = Effect.fn("AccountResetStorage.erase")((storage: DurableObjectStorage) =>
+export const erase = Effect.fn("AgentStorageErasure.erase")((storage: DurableObjectStorage) =>
   Effect.try({
     try: () =>
       storage.transactionSync(() => {
@@ -19,7 +22,7 @@ export const erase = Effect.fn("AccountResetStorage.erase")((storage: DurableObj
           try {
             storage.sql.exec(`DROP TABLE "${name.replaceAll('"', '""')}"`);
           } catch (cause) {
-            throw new Error(`Account reset could not drop table ${name}`, { cause });
+            throw new Error(`Agent storage erasure could not drop table ${name}`, { cause });
           }
         };
         storage.sql.exec("PRAGMA defer_foreign_keys = ON");
@@ -40,7 +43,9 @@ export const erase = Effect.fn("AccountResetStorage.erase")((storage: DurableObj
                 .map((foreignKey) => foreignKey.table),
             };
           } catch (cause) {
-            throw new Error(`Account reset could not inspect table ${table.name}`, { cause });
+            throw new Error(`Agent storage erasure could not inspect table ${table.name}`, {
+              cause,
+            });
           }
         });
         while (remaining.length > 0) {
@@ -50,22 +55,22 @@ export const erase = Effect.fn("AccountResetStorage.erase")((storage: DurableObj
             ),
           );
           if (leaf === undefined)
-            throw new Error("Account reset cannot erase cyclic table ownership");
+            throw new Error("Agent storage erasure cannot resolve cyclic table ownership");
           drop(leaf.name);
           remaining = remaining.filter((table) => table.name !== leaf.name);
         }
         for (const [key] of storage.kv.list()) storage.kv.delete(key);
         if (tables().length !== 0 || Array.from(storage.kv.list()).length !== 0) {
-          throw new Error("Account reset storage erasure could not be verified");
+          throw new Error("Agent storage erasure could not be verified");
         }
-        return { storageResetVerified: true as const };
+        return { storageErasureVerified: true as const };
       }),
     catch: (cause) =>
-      new AccountResetFence.AccountResetUnavailable({
+      new AgentStorageErasureUnavailable({
         cause,
-        message: "Account reset storage erasure failed",
+        message: "Agent storage erasure failed",
       }),
   }),
 );
 
-export * as AccountResetStorage from "./account-reset-storage";
+export * as AgentStorageErasure from "./agent-storage-erasure";

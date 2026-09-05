@@ -1495,3 +1495,56 @@ const unexpectedMemoryProvider = {
   saveConversation: () => Effect.die(new Error("unexpected conversation save")),
   verifySessionConversation: () => Effect.die(new Error("unexpected Session verification")),
 };
+
+it.effect(
+  "retains the deletion case when Agent storage erasure fails and completes on retry",
+  () => {
+    const calls = new Array<string>();
+    const candidate = {
+      _tag: "SelfService" as const,
+      agentId: AgentId.make("agent-erasure-retry"),
+      approvalActionId: ActionId.make("account-delete-erasure-retry"),
+      approvalPresentation: ApprovalPresentation.make("Delete Account"),
+      deletionCaseId: DeletionCaseId.make("deletion-case-erasure-retry"),
+      userId: UserId.make("user-erasure-retry"),
+    };
+    let attempts = 0;
+    const port = testPort({
+      inspectAuthorization: () => Effect.succeed(activeFacts(candidate.userId)),
+      agents: {
+        quiesce: () => Effect.void,
+        remove: (agentId, userId) =>
+          Effect.suspend(() => {
+            expect(agentId).toBe(candidate.agentId);
+            expect(userId).toBe(candidate.userId);
+            attempts += 1;
+            return attempts === 1
+              ? Effect.fail(
+                  new AccountDeletion.AccountDeletionUnavailable({
+                    cause: "SQL/KV erasure failed",
+                    message: "Agent storage retained",
+                    operation: "deleteAgent",
+                  }),
+                )
+              : Effect.void;
+          }),
+      },
+      integrations: { pending: () => Effect.succeed([]), revoke: () => Effect.void },
+      objects: { remove: (_, authorizeDelete) => authorizeDelete },
+      persistence: {
+        ...passthroughIntegrationProgress,
+        pending: Effect.succeed([candidate]),
+        removeUser: () => Effect.sync(() => calls.push("postgres")),
+      },
+    });
+    return Effect.gen(function* () {
+      const deletion = yield* AccountDeletion.Service;
+      const first = yield* deletion.reconcileUser(candidate.userId).pipe(Effect.result);
+      expect(Result.isFailure(first)).toBe(true);
+      expect(calls).not.toContain("postgres");
+      yield* deletion.reconcileUser(candidate.userId);
+      expect(attempts).toBe(2);
+      expect(calls.filter((call) => call === "postgres")).toEqual(["postgres"]);
+    }).pipe(Effect.provide(accountDeletionLayer(port, calls, () => "deleted")));
+  },
+);

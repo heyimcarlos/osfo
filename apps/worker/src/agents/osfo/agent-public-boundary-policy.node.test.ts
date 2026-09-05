@@ -66,6 +66,7 @@ const publicBoundaryPolicy = {
   pendingReminderWakeUpSources: ["read", "none"],
   presentPersonalSkillDeletion: ["read", "none"],
   quiesceAccountDeletion: ["cancellationReconciliationDeletion", "none"],
+  eraseAccountDeletion: ["cancellationReconciliationDeletion", "none"],
   eraseAccountReset: ["cancellationReconciliationDeletion", "resetOrchestration"],
   quiesceAccountReset: ["cancellationReconciliationDeletion", "resetOrchestration"],
   readActionPresentation: ["read", "none"],

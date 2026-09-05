@@ -413,7 +413,8 @@ import {
 import { WhatsAppWakeUps } from "../../services/whatsapp-wakeups";
 import { deleteAgentOwnedUserData } from "./agent-owned-data-deletion";
 import { AccountResetFence } from "./account-reset-fence";
-import { AccountResetStorage } from "./account-reset-storage";
+import { AgentStorageErasure } from "./agent-storage-erasure";
+import { AccountDeletionAgent } from "../../composition/account-deletion-agent";
 import { AccountResetComposition } from "../../composition/account-reset";
 import { activeReminderLimit } from "./reminder-policy";
 import { ImmediateGmailSend } from "./immediate-gmail-send";
@@ -3581,7 +3582,37 @@ export class OsfoAgent extends Think<Env> {
     }
     // The execution fence stays closed in this incarnation. The parent must abort it
     // before reopening the empty storage; resetting only SDK tables leaves product data.
-    return Effect.runPromise(AccountResetStorage.erase(this.ctx.storage));
+    return Effect.runPromise(
+      AgentStorageErasure.erase(this.ctx.storage).pipe(
+        Effect.mapError(
+          (cause) =>
+            new AccountResetFence.AccountResetUnavailable({
+              cause,
+              message: "Account reset storage erasure failed",
+            }),
+        ),
+        Effect.as({ storageResetVerified: true as const }),
+      ),
+    );
+  }
+
+  /** Erase the deleting owner's actual SQL and KV before the parent aborts this incarnation. */
+  async eraseAccountDeletion(encodedUserId: string): Promise<void> {
+    await this.#migrationsReady;
+    const userId = await Effect.runPromise(Schema.decodeEffect(UserId)(encodedUserId));
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) throw new Error("Account deletion authorization is unavailable");
+    await runtime.runPromise(
+      Effect.scoped(AccountDeletionAgent.authorizeErasure(AgentId.make(this.name), userId)),
+    );
+    await this.quiesceAccountDeletion(userId);
+    await runtime.runPromise(
+      Effect.scoped(AccountDeletionAgent.authorizeErasure(AgentId.make(this.name), userId)),
+    );
+    if (this.listSubAgents().length !== 0) {
+      throw new Error("Account deletion cannot erase an Agent with retained child facets");
+    }
+    await Effect.runPromise(AgentStorageErasure.erase(this.ctx.storage));
   }
 
   /** Fence ordinary Agent/R2 work, then drain provider activity for account deletion. */
