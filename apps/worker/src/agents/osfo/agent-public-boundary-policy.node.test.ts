@@ -66,6 +66,7 @@ const publicBoundaryPolicy = {
   pendingReminderWakeUpSources: ["read", "none"],
   presentPersonalSkillDeletion: ["read", "none"],
   quiesceAccountDeletion: ["cancellationReconciliationDeletion", "none"],
+  eraseAccountReset: ["cancellationReconciliationDeletion", "resetOrchestration"],
   quiesceAccountReset: ["cancellationReconciliationDeletion", "resetOrchestration"],
   readActionPresentation: ["read", "none"],
   readFile: ["read", "none"],
@@ -122,6 +123,7 @@ const directoryBoundaryPolicy = {
   submitScheduledEmailFollowUp: ["ordinaryMutation", "directoryGate"],
   uploadUserTextFile: ["ordinaryMutation", "directoryGate"],
   quiesceAgentAccountDeletion: ["cancellationReconciliationDeletion", "deletionOrchestration"],
+  eraseAgentAccountReset: ["cancellationReconciliationDeletion", "resetOrchestration"],
   quiesceAgentAccountReset: ["cancellationReconciliationDeletion", "resetOrchestration"],
 } as const satisfies Record<string, readonly [BoundaryClass, Protection]>;
 

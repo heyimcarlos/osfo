@@ -507,6 +507,21 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     await Effect.runPromise(MessengerReset.eraseFibers(this.ctx.storage, threads));
   }
 
+  /** Erase suspended account storage and abort its old incarnation before reuse. */
+  async eraseAgentAccountReset(agentId: string, userId: string) {
+    await this.quiesceAgentAccountReset(agentId, userId);
+    // Resolve even an unregistered facet: SDK deletion can forget its registry row
+    // after swallowing a platform failure, leaving the old SQLite database behind.
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    const result = await agent.eraseAccountReset(userId);
+    this.abortSubAgent(OsfoAgent, agentId, "Account reset storage erased");
+    await this._cf_cleanupFacetPrefix([
+      ...this.selfPath,
+      { className: OsfoAgent.name, name: agentId },
+    ]);
+    return result;
+  }
+
   /** Fence new provider appends and wait for already-started provider work. */
   async quiesceAgentAccountDeletion(agentId: string, userId: string): Promise<void> {
     if (!this.hasSubAgent(OsfoAgent, agentId)) return;
