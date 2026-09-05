@@ -25,9 +25,12 @@ import { OsfoAgent } from "./agent";
 import { channelAddressOf, messengerAuthorId } from "./channel-address";
 import { streamTextReply } from "./messenger-stream";
 import { makeOsfoMessengerRouter, type MessengerAddressResolution } from "./messenger-routing";
+import { ThinkMessengerStateAgent } from "./messenger-state";
+import { MessengerReset } from "./messenger-reset";
 import type { AgentInitializationEncoded } from "./db/store";
 import { GroupRefusalCopy } from "./persona";
-import { UserId } from "../../domain";
+import { AgentId, UserId } from "../../domain";
+import { AccountResetComposition } from "../../composition/account-reset";
 import { AuthSessionId } from "../../domain/auth-session";
 import { WebFileUpload } from "./web-file-upload";
 import { DocumentBuildFileResolution } from "./document-build-file-resolution";
@@ -451,6 +454,57 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
   /** Delete one user-owned facet and its SQLite state. */
   async deleteAgent(agentId: string): Promise<void> {
     await this.deleteSubAgent(OsfoAgent, agentId);
+  }
+
+  /** Prepare one suspended owner's facet for reset; missing facets still require authority. */
+  async quiesceAgentAccountReset(encodedAgentId: string, encodedUserId: string): Promise<void> {
+    const agentId = await Effect.runPromise(Schema.decodeEffect(AgentId)(encodedAgentId));
+    const userId = await Effect.runPromise(Schema.decodeEffect(UserId)(encodedUserId));
+    await Effect.runPromise(
+      Effect.scoped(
+        AccountResetComposition.authorize(agentId, userId).pipe(
+          Effect.provide(Db.layer({ db: this.env.DB })),
+        ),
+      ),
+    );
+    const phoneNumberId = this.env.WHATSAPP_PHONE_NUMBER_ID;
+    const threads = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const links = yield* ChannelLinks.Service;
+          const active = yield* links.listActive(userId);
+          return yield* Effect.forEach(active, (link) =>
+            MessengerReset.threadForAddress(link.address, phoneNumberId),
+          );
+        }).pipe(Effect.provide(directoryMessengerLayer(this.env))),
+      ),
+    );
+    if (this.hasSubAgent(OsfoAgent, agentId)) {
+      const agent = await this.subAgent(OsfoAgent, agentId);
+      await agent.quiesceAccountReset(userId);
+    }
+    const fibers = await Effect.runPromise(MessengerReset.fibers(this.ctx.storage.sql, threads));
+    for (const fiber of fibers) {
+      if (fiber.status === "pending" || fiber.status === "running") {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Apply cancellation before inspecting retained execution.
+        await this.cancelFiber(fiber.fiber_id, "Account reset");
+      }
+    }
+    await Effect.runPromise(MessengerReset.requireSettled(this.ctx.storage.sql, threads));
+    for (const thread of threads) {
+      for (const shard of MessengerReset.shardNames(thread)) {
+        if (this.hasSubAgent(ThinkMessengerStateAgent, shard)) {
+          // oxlint-disable-next-line eslint/no-await-in-loop -- Check the media lock shard before clearing its buffers and thread history.
+          const state = await this.subAgent(ThinkMessengerStateAgent, shard);
+          // oxlint-disable-next-line eslint/no-await-in-loop -- Finish each shard's cleanup before root snapshots are deleted.
+          const result = await state.resetAccountThread(thread);
+          if (result === "busy") {
+            throw new Error("Messenger queue is active; retry the suspended account reset");
+          }
+        }
+      }
+    }
+    await Effect.runPromise(MessengerReset.eraseFibers(this.ctx.storage, threads));
   }
 
   /** Fence new provider appends and wait for already-started provider work. */

@@ -412,6 +412,8 @@ import {
 } from "./reminder-tools";
 import { WhatsAppWakeUps } from "../../services/whatsapp-wakeups";
 import { deleteAgentOwnedUserData } from "./agent-owned-data-deletion";
+import { AccountResetFence } from "./account-reset-fence";
+import { AccountResetComposition } from "../../composition/account-reset";
 import { activeReminderLimit } from "./reminder-policy";
 import { ImmediateGmailSend } from "./immediate-gmail-send";
 
@@ -810,6 +812,7 @@ export class OsfoAgent extends Think<Env> {
     this.env.DB,
   );
   readonly #accountDeletionFence = makeAccountDeletionFence();
+  readonly #accountResetFence = AccountResetFence.make(this.ctx.storage.kv);
   readonly #fileStore = makeFileStore(this.#db);
   readonly #files = makeFiles<
     FileCapabilityUnavailable,
@@ -1065,7 +1068,11 @@ export class OsfoAgent extends Think<Env> {
   );
   readonly #providerConversationSaveGate = makeProviderConversationSaveGate();
   readonly #migrationsReady = this.ctx.blockConcurrencyWhile(() =>
-    Effect.runPromise(applyAgentMigrations(this.ctx.storage)),
+    Effect.runPromise(
+      applyAgentMigrations(this.ctx.storage).pipe(
+        Effect.andThen(this.#accountResetFence.restore(this.#accountDeletionFence.close)),
+      ),
+    ),
   );
   readonly #sessionRecallSearch = makeThinkSessionRecallSearch((sessionId, query, limit) =>
     Session.create(this).forSession(sessionId).search(query, { limit }),
@@ -3112,7 +3119,9 @@ export class OsfoAgent extends Think<Env> {
   /** Recover activation-safe durable work without reading unbounded Think Session history. */
   override async onStart(): Promise<void> {
     await this.#migrationsReady;
-    await Effect.runPromise(this.#reminders.reconcileSchedules());
+    if (!(await Effect.runPromise(this.#accountResetFence.isFenced))) {
+      await Effect.runPromise(this.#reminders.reconcileSchedules());
+    }
     await this.#reconcileModelCallUsageOrSchedule();
     const immediateGmailSends = Option.getOrUndefined(this.#immediateGmailSends);
     if (immediateGmailSends !== undefined) {
@@ -3542,10 +3551,32 @@ export class OsfoAgent extends Think<Env> {
     await this.#reconcileMemoryProviderOutboxOrSchedule();
   }
 
+  /** Prepare the suspended owner for an internal reset without revoking authentication. */
+  async quiesceAccountReset(encodedUserId: string): Promise<void> {
+    await this.#migrationsReady;
+    const userId = await Effect.runPromise(Schema.decodeEffect(UserId)(encodedUserId));
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      throw new AccountResetFence.AccountResetUnavailable({
+        cause: invalidOsfoEnvironment,
+        message: "Account reset authorization is unavailable",
+      });
+    }
+    await runtime.runPromise(
+      Effect.scoped(AccountResetComposition.authorize(AgentId.make(this.name), userId)),
+    );
+    await Effect.runPromise(this.#accountResetFence.persist(userId));
+    await this.#quiesceAccountData(userId);
+  }
+
   /** Fence ordinary Agent/R2 work, then drain provider activity for account deletion. */
   async quiesceAccountDeletion(encodedUserId: string): Promise<void> {
     await this.#migrationsReady;
     const userId = await Effect.runPromise(Schema.decodeEffect(UserId)(encodedUserId));
+    await this.#quiesceAccountData(userId);
+  }
+
+  async #quiesceAccountData(userId: UserId): Promise<void> {
     const quiescence = await runRpc(
       this.#accountDeletionFencedSessionExecution.closeAfter(
         Effect.tryPromise({
@@ -3622,6 +3653,18 @@ export class OsfoAgent extends Think<Env> {
   }
 
   #canSaveProviderConversation(userId: UserId) {
+    return this.#accountResetFence.isFenced.pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderSaveDeferred({ cause, message: "Account reset state is unavailable" }),
+      ),
+      Effect.flatMap((fenced) =>
+        fenced ? Effect.succeed(false) : this.#canSaveProviderConversationBeforeDeletion(userId),
+      ),
+    );
+  }
+
+  #canSaveProviderConversationBeforeDeletion(userId: UserId) {
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) {
       return Effect.fail(
@@ -7480,6 +7523,17 @@ export class OsfoAgent extends Think<Env> {
       try {
         const baseOptions: ReconciliationOptions = {
           authorizeDeletion: (deletion) => this.#authorizeProviderDeletion(deletion),
+          canStartConversation: () =>
+            this.#accountResetFence.isFenced.pipe(
+              Effect.map((fenced) => !fenced),
+              Effect.mapError(
+                (cause) =>
+                  new ProviderSaveDeferred({
+                    cause,
+                    message: "Account reset state is unavailable",
+                  }),
+              ),
+            ),
           canSaveConversation: (userId) => this.#canSaveProviderConversation(userId),
           prepareDeletion: (claim) => this.#prepareProviderDeletion(claim),
           runSaveConversation: this.#providerConversationSaveGate.runSave,

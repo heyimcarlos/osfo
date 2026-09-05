@@ -35,6 +35,7 @@ export interface ReconciliationOptions {
   readonly prepareDeletion: (
     claim: ClaimedMemoryProviderWork,
   ) => Effect.Effect<void, ProviderDeletionDeferred>;
+  readonly canStartConversation?: () => Effect.Effect<boolean, ProviderSaveDeferred>;
   readonly canSaveConversation?: (
     userId: MemoryProvider.SaveConversationInput["userId"],
   ) => Effect.Effect<boolean, ProviderSaveDeferred>;
@@ -493,6 +494,30 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
       return yield* Effect.die(new Error("Conversation processing received deletion work"));
     }
 
+    const mayStartProviderWork = (check: Effect.Effect<boolean, ProviderSaveDeferred>) =>
+      Effect.gen(function* () {
+        const permitted = yield* check.pipe(Effect.result);
+        if (Result.isFailure(permitted) || !permitted.success) {
+          yield* retryClaim(
+            store,
+            claim,
+            Result.isFailure(permitted)
+              ? permitted.failure.message
+              : "Account cleanup fences new provider conversation saves",
+            retryDelaySeconds,
+          );
+          return false;
+        }
+        return true;
+      });
+    // User guidance upserts a provider container, so fence it before the first ingest too.
+    // Accepted jobs still need configuration and polling to reach a deletable terminal state.
+    if (
+      claim.providerAcceptance === null &&
+      !(yield* mayStartProviderWork(options.canStartConversation?.() ?? Effect.succeed(true)))
+    )
+      return undefined;
+
     const organizationConfigured = yield* ensureConfiguration(
       store,
       claim,
@@ -517,20 +542,12 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
     let usage = claim.usage;
     if (acceptance === null) {
       const saveAndSettle = Effect.gen(function* () {
-        const permitted = yield* (
-          options.canSaveConversation?.(projection.userId) ?? Effect.succeed(true)
-        ).pipe(Effect.result);
-        if (Result.isFailure(permitted) || !permitted.success) {
-          yield* retryClaim(
-            store,
-            claim,
-            Result.isFailure(permitted)
-              ? permitted.failure.message
-              : "Account deletion fences new provider conversation saves",
-            retryDelaySeconds,
-          );
+        if (
+          !(yield* mayStartProviderWork(
+            options.canSaveConversation?.(projection.userId) ?? Effect.succeed(true),
+          ))
+        )
           return undefined;
-        }
         const claimIsCurrent = yield* store.isClaimCurrent(claim);
         if (!claimIsCurrent) return undefined;
         const submissionStarted = yield* store.beginProviderSubmission(claim);

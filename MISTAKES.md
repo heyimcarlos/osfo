@@ -60,3 +60,8 @@ short, specific, and actionable.
   that acquires the same fence. Track the outer dispatch so nested admission can
   proceed and deletion can still abort and drain both lifetimes. A Promise timeout
   only stops waiting; an already-started Action can execute after the caller fails.
+- Preserve provider reconciliation ordering when adding an account-reset fence.
+  Moving the PostgreSQL deletion check before guidance configuration caused
+  previously local runtime fixtures to open background database connections.
+  Check the durable reset marker before configuration and retain the existing
+  deletion check immediately before submission.

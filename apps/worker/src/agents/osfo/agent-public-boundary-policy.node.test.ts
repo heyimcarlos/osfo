@@ -16,6 +16,7 @@ type Protection =
   | "fencedSessionExecution"
   | "initializationLifecycle"
   | "none"
+  | "resetOrchestration"
   | "trackedThinkLifecycle";
 
 const publicBoundaryPolicy = {
@@ -65,6 +66,7 @@ const publicBoundaryPolicy = {
   pendingReminderWakeUpSources: ["read", "none"],
   presentPersonalSkillDeletion: ["read", "none"],
   quiesceAccountDeletion: ["cancellationReconciliationDeletion", "none"],
+  quiesceAccountReset: ["cancellationReconciliationDeletion", "resetOrchestration"],
   readActionPresentation: ["read", "none"],
   readFile: ["read", "none"],
   resolveDocumentBuildFiles: ["read", "accountDeletionFence"],
@@ -120,6 +122,7 @@ const directoryBoundaryPolicy = {
   submitScheduledEmailFollowUp: ["ordinaryMutation", "directoryGate"],
   uploadUserTextFile: ["ordinaryMutation", "directoryGate"],
   quiesceAgentAccountDeletion: ["cancellationReconciliationDeletion", "deletionOrchestration"],
+  quiesceAgentAccountReset: ["cancellationReconciliationDeletion", "resetOrchestration"],
 } as const satisfies Record<string, readonly [BoundaryClass, Protection]>;
 
 it("classifies every public Osfo Agent method under the account deletion boundary policy", () => {
