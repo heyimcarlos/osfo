@@ -699,10 +699,10 @@ it.effect("retains the exact conversation snapshot after an ambiguous provider o
   );
 });
 
-it.effect("does not start a provider append after account deletion fences the User", () => {
+it.effect("does not upsert guidance or append after account cleanup fences the User", () => {
   const claim = conversationClaim();
   let providerCalled = false;
-  const { completed, retried, store } = testStore(claim);
+  const { completed, retried, store } = testStore(claim, { configurationCurrent: false });
   const provider = providerStub({
     saveConversation: () => {
       providerCalled = true;
@@ -713,6 +713,7 @@ it.effect("does not start a provider append after account deletion fences the Us
   return Effect.scoped(
     reconcileMemoryProviderOutbox(store, {
       ...permittedDeletionOptions,
+      canStartConversation: () => Effect.succeed(false),
       canSaveConversation: () => Effect.succeed(false),
     }),
   ).pipe(
@@ -722,6 +723,44 @@ it.effect("does not start a provider append after account deletion fences the Us
     Effect.andThen(
       Effect.sync(() => {
         expect(providerCalled).toBe(false);
+        expect(retried).toEqual([claim.outboxId]);
+        expect(completed).toEqual([]);
+      }),
+    ),
+  );
+});
+
+it.effect("keeps the account-deletion check after guidance configuration and before append", () => {
+  const claim = conversationClaim();
+  const calls: Array<string> = [];
+  const { completed, retried, store } = testStore(claim, { configurationCurrent: false });
+  const provider = providerStub({
+    configureOrganizationGuidance: Effect.sync(() => {
+      calls.push("organization");
+    }),
+    configureUserGuidance: () =>
+      Effect.sync(() => {
+        calls.push("user");
+      }),
+  });
+
+  return Effect.scoped(
+    reconcileMemoryProviderOutbox(store, {
+      ...permittedDeletionOptions,
+      canStartConversation: () => Effect.succeed(true),
+      canSaveConversation: () =>
+        Effect.sync(() => {
+          calls.push("save-check");
+          return false;
+        }),
+    }),
+  ).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(calls).toEqual(["organization", "user", "save-check"]);
         expect(retried).toEqual([claim.outboxId]);
         expect(completed).toEqual([]);
       }),
@@ -908,7 +947,7 @@ it.effect("waits for an accepted provider conversation to leave processing", () 
   );
 });
 
-it.effect("reconciles accepted provider work without an observability wrapper", () => {
+it.effect("finishes accepted provider work even while new provider work is fenced", () => {
   const base = conversationClaim();
   const claim: ClaimedMemoryProviderWork = {
     ...base,
@@ -942,7 +981,13 @@ it.effect("reconciles accepted provider work without an observability wrapper", 
       }),
   });
 
-  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
+  return Effect.scoped(
+    reconcileMemoryProviderOutbox(store, {
+      ...permittedDeletionOptions,
+      canStartConversation: () => Effect.succeed(false),
+      canSaveConversation: () => Effect.succeed(false),
+    }),
+  ).pipe(
     Effect.provideService(MemoryProvider.Service, provider),
     Effect.provideService(Db.Service, unavailableDatabase),
     Effect.provide(BrowserCrypto.layer),
