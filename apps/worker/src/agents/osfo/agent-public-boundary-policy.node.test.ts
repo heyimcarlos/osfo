@@ -175,3 +175,11 @@ it("denies native Think Approval decisions outside the authenticated Directory b
     /async cancelActionApproval\([\s\S]*?return new ThinkApprovalUnavailable\([\s\S]*?authenticated Directory authority required[\s\S]*?\n  \}/,
   );
 });
+
+it("tracks Approval dispatch while permitting nested fenced Action execution", () => {
+  const source = readFileSync(new URL("./agent.ts", import.meta.url), "utf8");
+  const decision = source.match(/  async decideActionApproval\([\s\S]*?\n  \}/)?.[0];
+
+  expect(decision).toMatch(/this\.#accountDeletionFence\.runTracked\(\s*\(\) =>/);
+  expect(decision).toContain("actionApprovals.runDecision(");
+});
