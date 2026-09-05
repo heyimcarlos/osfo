@@ -65,3 +65,6 @@ short, specific, and actionable.
   previously local runtime fixtures to open background database connections.
   Check the durable reset marker before configuration and retain the existing
   deletion check immediately before submission.
+- A missing facet registry row or canonical initialization identity does not prove
+  account data erasure. Verify SQLite and KV are empty, then reopen the facet and
+  prove fresh history and an open execution fence before restoring account access.

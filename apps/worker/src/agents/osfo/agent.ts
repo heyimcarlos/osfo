@@ -413,6 +413,7 @@ import {
 import { WhatsAppWakeUps } from "../../services/whatsapp-wakeups";
 import { deleteAgentOwnedUserData } from "./agent-owned-data-deletion";
 import { AccountResetFence } from "./account-reset-fence";
+import { AccountResetStorage } from "./account-reset-storage";
 import { AccountResetComposition } from "../../composition/account-reset";
 import { activeReminderLimit } from "./reminder-policy";
 import { ImmediateGmailSend } from "./immediate-gmail-send";
@@ -3567,6 +3568,17 @@ export class OsfoAgent extends Think<Env> {
     );
     await Effect.runPromise(this.#accountResetFence.persist(userId));
     await this.#quiesceAccountData(userId);
+  }
+
+  /** Erase this suspended owner's quiesced SQLite and KV before the parent aborts the facet. */
+  async eraseAccountReset(encodedUserId: string): Promise<{ readonly storageResetVerified: true }> {
+    await this.quiesceAccountReset(encodedUserId);
+    if (this.listSubAgents().length !== 0) {
+      throw new Error("Account reset cannot erase an Agent with retained child facets");
+    }
+    // The execution fence stays closed in this incarnation. The parent must abort it
+    // before reopening the empty storage; resetting only SDK tables leaves product data.
+    return Effect.runPromise(AccountResetStorage.erase(this.ctx.storage));
   }
 
   /** Fence ordinary Agent/R2 work, then drain provider activity for account deletion. */
