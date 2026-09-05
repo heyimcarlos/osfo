@@ -1,43 +1,151 @@
 // @vitest-environment happy-dom
 
-/* oxlint-disable effecttsgo/global-date -- A fixed wire timestamp exercises the browser presentation boundary. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date -- Testing Library owns browser Promises and fixtures use fixed wire timestamps. */
 
-import { ChannelLinkId, type ChannelLinksResponse } from "@osfo/api";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  ChannelLinkId,
+  type ChannelLinkRevocationResponse,
+  type ChannelLinksResponse,
+} from "@osfo/api";
+import { afterEach, describe, expect, it, vi } from "@effect/vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { Deferred, Effect } from "effect";
 
-import { channelLinkRevocationPrompt, SettingsChannelsView } from "./settings-channels-page";
+import {
+  channelLinkRevocationPrompt,
+  type SettingsChannelsDependencies,
+  SettingsChannelsPage,
+  SettingsChannelsView,
+} from "./settings-channels-page";
 
 afterEach(cleanup);
 
-describe("SettingsChannelsView", () => {
-  it("lists an owner-safe exact link and exposes its destructive action", () => {
-    const channelLinkId = ChannelLinkId.make("channel-link-1");
-    const onDisconnect =
-      vi.fn<(link: ChannelLinksResponse["items"][number], description: string) => void>();
-    render(
-      <SettingsChannelsView
-        busyLinkId={null}
-        error={null}
-        summary={{
+it("keeps failed disconnects visible and removes only the confirmed link after a successful retry", async () => {
+  const targetId = ChannelLinkId.make("channel-link-target");
+  const otherId = ChannelLinkId.make("channel-link-other");
+  const completion = Deferred.makeUnsafe<ChannelLinkRevocationResponse>();
+  const revoke = vi
+    .fn<SettingsChannelsDependencies["revokeChannelLink"]>(() => Deferred.await(completion))
+    .mockImplementationOnce(() => Effect.die(new Error("channel disconnect unavailable")));
+  render(
+    <SettingsChannelsPage
+      dependencies={{
+        inspectChannelLinks: Effect.succeed({
           items: [
             {
               channel: "telegram",
-              channelLinkId,
+              channelLinkId: targetId,
               linkedAt: new Date("2026-08-31T12:00:00.000Z"),
             },
+            {
+              channel: "telegram",
+              channelLinkId: otherId,
+              linkedAt: new Date("2026-09-01T12:00:00.000Z"),
+            },
           ],
-        }}
-        onDisconnect={onDisconnect}
-      />,
+        }),
+        revokeChannelLink: revoke,
+      }}
+    />,
+  );
+  const targetName = "Disconnect Telegram link …k-target, connected 2026-08-31";
+  const otherName = "Disconnect Telegram link …nk-other, connected 2026-09-01";
+  await userEvent.click(await screen.findByRole("button", { name: targetName }));
+  expect(revoke).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: "Confirm disconnect" }));
+  await waitFor(() =>
+    expect(screen.getByRole("alert").textContent).toContain("could not be disconnected"),
+  );
+  expect(screen.getByRole("button", { name: targetName })).toBeDefined();
+  expect(screen.getByRole("button", { name: otherName })).toBeDefined();
+  expect(revoke).toHaveBeenCalledExactlyOnceWith(targetId);
+
+  await userEvent.click(screen.getByRole("button", { name: targetName }));
+  await userEvent.click(screen.getByRole("button", { name: "Confirm disconnect" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByRole("button", { name: targetName }).hasAttribute("disabled")).toBe(true);
+  expect(screen.getByRole("button", { name: otherName }).hasAttribute("disabled")).toBe(true);
+  expect(screen.getByText("Disconnecting...")).toBeDefined();
+  await userEvent.click(screen.getByRole("button", { name: otherName }));
+  expect(revoke).toHaveBeenCalledTimes(2);
+  Effect.runSync(
+    Deferred.succeed(completion, { state: "unlinked" } satisfies ChannelLinkRevocationResponse),
+  );
+  await waitFor(() => expect(screen.queryByRole("button", { name: targetName })).toBeNull());
+  expect(screen.getByRole("button", { name: otherName })).toBeDefined();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(revoke).toHaveBeenCalledTimes(2);
+  expect(revoke).toHaveBeenLastCalledWith(targetId);
+});
+
+describe("SettingsChannelsView", () => {
+  it("confirms the exact link, contains focus, and supports cancellation without mutation", async () => {
+    const channelLinkId = ChannelLinkId.make("channel-link-1");
+    const onDisconnect =
+      vi.fn<(link: ChannelLinksResponse["items"][number], description: string) => void>();
+    const page = render(
+      <div>
+        <header className="relative z-20">
+          <button type="button">Open account menu</button>
+        </header>
+        <div className="relative z-10">
+          <SettingsChannelsView
+            busyLinkId={null}
+            error={null}
+            summary={{
+              items: [
+                {
+                  channel: "telegram",
+                  channelLinkId,
+                  linkedAt: new Date("2026-08-31T12:00:00.000Z"),
+                },
+              ],
+            }}
+            onDisconnect={onDisconnect}
+          />
+        </div>
+      </div>,
     );
+    const accountMenu = screen.getByRole("button", { name: "Open account menu" });
 
     const description = "Telegram link …l-link-1, connected 2026-08-31";
     expect(screen.getByText("Connected")).toBeDefined();
     expect(screen.getByText(description)).toBeDefined();
     expect(screen.queryByText(/telegram-user/u)).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: `Disconnect ${description}` }));
+    const trigger = screen.getByRole("button", { name: `Disconnect ${description}` });
+    await userEvent.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "Disconnect channel?" });
+    expect(page.container.contains(dialog)).toBe(false);
+    expect(accountMenu.closest('[aria-hidden="true"]')).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Open account menu" })).toBeNull();
+    expect(within(dialog).getByText(channelLinkRevocationPrompt(description))).toBeDefined();
+    expect(onDisconnect).not.toHaveBeenCalled();
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+    const confirm = within(dialog).getByRole("button", { name: "Confirm disconnect" });
+    expect(document.activeElement).toBe(cancel);
+    await userEvent.tab({ shift: true });
+    expect(document.activeElement).toBe(confirm);
+    await userEvent.tab();
+    expect(document.activeElement).toBe(cancel);
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(accountMenu.closest('[aria-hidden="true"]')).toBeNull();
+    expect(screen.getByRole("button", { name: "Open account menu" })).toBe(accountMenu);
+    expect(document.activeElement).toBe(trigger);
+    expect(onDisconnect).not.toHaveBeenCalled();
+
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(onDisconnect).not.toHaveBeenCalled();
+
+    await userEvent.click(trigger);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm disconnect" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(onDisconnect).toHaveBeenCalledTimes(1);
     expect(onDisconnect).toHaveBeenCalledWith(
       {
         channel: "telegram",
