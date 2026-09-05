@@ -653,6 +653,19 @@ const startProvider = (options: {
               });
               return;
             }
+            if (
+              Option.isSome(decoded) &&
+              decoded.value !== null &&
+              typeof decoded.value === "object" &&
+              ("status" in decoded.value || "typing_indicator" in decoded.value)
+            ) {
+              if (!isExactWhatsAppTypingRequest(decoded.value)) {
+                respondJson(response, 422, { error: "Invalid WhatsApp typing request" });
+                return;
+              }
+              respondJson(response, 200, { success: true });
+              return;
+            }
             respondJson(response, 200, {
               contacts: [{ input: "redacted", wa_id: "redacted" }],
               messages: [{ id: `wamid.emulated.${whatsAppLedger.length}` }],
@@ -681,6 +694,20 @@ const startProvider = (options: {
       });
     });
   });
+
+const isExactWhatsAppTypingRequest = (value: unknown): boolean => {
+  if (!hasExactKeys(value, ["messaging_product", "status", "message_id", "typing_indicator"])) {
+    return false;
+  }
+  return (
+    value.messaging_product === "whatsapp" &&
+    value.status === "read" &&
+    typeof value.message_id === "string" &&
+    value.message_id.trim().length > 0 &&
+    hasExactKeys(value.typing_indicator, ["type"]) &&
+    value.typing_indicator.type === "text"
+  );
+};
 
 const isExactWhatsAppTemplateRequest = (value: unknown): boolean => {
   if (!hasExactKeys(value, ["messaging_product", "recipient_type", "template", "to", "type"])) {
@@ -1052,7 +1079,7 @@ const handleResearch = (
             ? agentEntry
             : { ...agentEntry, recallRequest: recallContext.evidence, sequence },
         );
-        const documentBuildRequest = latestUserMessageContent(input);
+        const documentBuildRequest = currentUserInstruction;
         const documentBuildFileId = /web:[0-9a-f-]{36}/iu.exec(documentBuildRequest)?.[0];
         const documentBuildWorkflowId = /document-build:[\w:-]{8,300}/iu.exec(
           documentBuildRequest,
@@ -1185,6 +1212,49 @@ const handleResearch = (
           respondJson(response, 200, {
             finish_reason: "stop",
             response: `Your run-owned verification drink is ${coreMemoryDrink}.`,
+            usage: { completion_tokens: 1, prompt_tokens: 1 },
+          });
+          return;
+        }
+        const reminderFixture =
+          /^Create this exact run-owned one-time Reminder: run=([a-z0-9][a-z0-9-]{0,79}); body=([^;\n]{1,500}); firstDueAt=([^;\s]+)$/u.exec(
+            currentUserInstruction,
+          );
+        if (
+          reminderFixture !== null &&
+          toolNames.includes("osfoManageReminder") &&
+          lastMessageRole(input) === "user"
+        ) {
+          const [, runId, body, firstDueAt] = reminderFixture;
+          if (runId === undefined || body === undefined || firstDueAt === undefined) {
+            respondJson(response, 400, { error: "Reminder fixture is incomplete" });
+            return;
+          }
+          const operationId = `verification-reminder-${runId}`;
+          const toolArguments = { _tag: "CreateOneTime", body, firstDueAt };
+          ledger.push({
+            kind: "tool-selection",
+            operationId,
+            selectedTool: "osfoManageReminder",
+            subject: runId,
+            arguments: toolArguments,
+          });
+          respondJson(
+            response,
+            200,
+            toolResponse("osfoManageReminder", toolArguments, operationId),
+          );
+          return;
+        }
+        if (
+          lastMessageRole(input) === "tool" &&
+          /"action"\s*:\s*"osfoManageReminder"/u.test(lastMessage) &&
+          /"status"\s*:\s*"paused"/u.test(lastMessage)
+        ) {
+          respondJson(response, 200, {
+            finish_reason: "stop",
+            response:
+              "Review and approve or reject the exact Reminder in Osfo Settings > Reminders at /settings/reminders.",
             usage: { completion_tokens: 1, prompt_tokens: 1 },
           });
           return;

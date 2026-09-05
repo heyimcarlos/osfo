@@ -435,3 +435,134 @@ const connectLocalGmail = (providerSession: ProviderSession) =>
     if (accountId === undefined) return yield* Effect.die(new Error("connection is missing"));
     return accountId;
   });
+
+it.effect(
+  "selects one exact run-owned Reminder and directs its paused result to web approval",
+  () =>
+    Effect.acquireUseRelease(
+      Effect.promise(startProviderEmulator),
+      (emulator) =>
+        Effect.gen(function* () {
+          const binding = ResearchVerificationProvider.makeAiBinding({
+            _tag: "LocalVerification",
+            baseURL: emulator.origin,
+          });
+          const request =
+            "Create this exact run-owned one-time Reminder: run=verify-reminder-321; body=Private fixture body; firstDueAt=2026-09-06T12:00:00.000Z";
+          const tools = [
+            {
+              function: {
+                name: "osfoManageReminder",
+                parameters: { properties: {}, type: "object" },
+              },
+              type: "function" as const,
+            },
+          ];
+          const initial = yield* Effect.promise(() =>
+            binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+              messages: [{ content: request, role: "user" }],
+              tools,
+            }),
+          );
+          expect(initial).toMatchObject({
+            tool_calls: [
+              {
+                id: "verification-reminder-verify-reminder-321",
+                name: "osfoManageReminder",
+                arguments: {
+                  _tag: "CreateOneTime",
+                  body: "Private fixture body",
+                  firstDueAt: "2026-09-06T12:00:00.000Z",
+                },
+              },
+            ],
+          });
+          const pausedMessage = {
+            content: '{"status":"paused","action":"osfoManageReminder"}',
+            name: "osfoManageReminder",
+            role: "tool" as const,
+            tool_call_id: "verification-reminder-verify-reminder-321",
+          };
+          const paused = yield* Effect.promise(() =>
+            binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+              messages: [{ content: request, role: "user" }, pausedMessage],
+              tools,
+            }),
+          );
+          expect(paused).toMatchObject({
+            finish_reason: "stop",
+            response: expect.stringContaining("/settings/reminders"),
+          });
+          const continued = yield* Effect.promise(() =>
+            binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+              messages: [
+                { content: request, role: "user" },
+                pausedMessage,
+                {
+                  content:
+                    "Continue your previous response from exactly where it left off. Do not repeat any of it.",
+                  role: "user",
+                },
+              ],
+              tools,
+            }),
+          );
+          expect(continued).not.toHaveProperty("tool_calls");
+          const unowned = yield* Effect.promise(() =>
+            binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+              messages: [{ content: "Remind me tomorrow", role: "user" }],
+              tools,
+            }),
+          );
+          expect(unowned).not.toHaveProperty("tool_calls");
+        }),
+      (emulator) => Effect.promise(emulator.close),
+    ),
+);
+
+it.effect(
+  "selects the current request when retrieved history contains Document Build identifiers",
+  () =>
+    Effect.acquireUseRelease(
+      Effect.promise(startProviderEmulator),
+      (emulator) =>
+        Effect.gen(function* () {
+          const binding = ResearchVerificationProvider.makeAiBinding({
+            _tag: "LocalVerification",
+            baseURL: emulator.origin,
+          });
+          const history =
+            "## Recent unindexed conversation source evidence\nBuild a PDF using web:00000000-0000-4000-8000-000000000001.\nInspect Document Build document-build:historical-document-0001 status.\n\n";
+          const scenarios = [
+            {
+              request:
+                "Research durable Workflow verification using public sources and create a cited PDF report.",
+              selectedTool: "startResearchReport",
+            },
+            {
+              request:
+                "Schedule this exact Gmail message: recipient=person@example.test; subject=Exact subject; body=Exact body; sendAt=2026-09-06T12:00:00.000Z",
+              selectedTool: "scheduleEmail",
+            },
+            {
+              request:
+                "Create this exact run-owned one-time Reminder: run=verify-reminder-history; body=Private fixture body; firstDueAt=2026-09-06T12:00:00.000Z",
+              selectedTool: "osfoManageReminder",
+            },
+          ];
+          for (const scenario of scenarios) {
+            const result = yield* Effect.promise(() =>
+              binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+                messages: [{ content: `${history}${scenario.request}`, role: "user" }],
+                tools: ["loadSkill", scenario.selectedTool].map((name) => ({
+                  function: { name, parameters: { properties: {}, type: "object" } },
+                  type: "function" as const,
+                })),
+              }),
+            );
+            expect(result).toMatchObject({ tool_calls: [{ name: scenario.selectedTool }] });
+          }
+        }),
+      (emulator) => Effect.promise(emulator.close),
+    ),
+);

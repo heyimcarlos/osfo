@@ -20,6 +20,7 @@ import { authClient } from "../lib/auth-client";
 type SettingsDestination =
   | "/settings/general"
   | "/settings/channels"
+  | "/settings/reminders"
   | "/settings/integrations"
   | "/settings/profile"
   | "/settings/privacy"
@@ -37,6 +38,7 @@ const settingsItems: ReadonlyArray<SettingsNavigationItem> = [
   { icon: Settings, label: "Settings", to: "/settings/general" },
   { icon: MessagesSquare, label: "Channels", to: "/settings/channels" },
   { icon: Plug, label: "Integrations", to: "/settings/integrations" },
+  { icon: Bell, label: "Reminders", to: "/settings/reminders" },
   { icon: UserRound, label: "Profile", to: "/settings/profile" },
   { icon: ShieldCheck, label: "Privacy", to: "/settings/privacy" },
   { icon: CreditCard, label: "Billing", to: "/settings/billing" },
@@ -45,6 +47,10 @@ const settingsItems: ReadonlyArray<SettingsNavigationItem> = [
 ];
 
 const pageDetails = {
+  "/settings/reminders": {
+    subtitle: "Review and approve your exact reminders",
+    title: "Reminders",
+  },
   "/settings/billing": { subtitle: "Manage your plan and payments", title: "Billing" },
   "/settings/channels": {
     subtitle: "Manage how people reach your agent",
@@ -70,6 +76,7 @@ const getPageDetails = (pathname: string) => {
     case "/settings/channels":
     case "/settings/general":
     case "/settings/integrations":
+    case "/settings/reminders":
     case "/settings/marketplace":
     case "/settings/privacy":
     case "/settings/profile":

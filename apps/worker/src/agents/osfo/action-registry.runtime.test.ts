@@ -9,6 +9,8 @@ import {
   decodeScheduledEmailActionInput,
   sanitizePendingApproval,
 } from "./action-registry";
+import { UserId } from "../../domain";
+import { decodeReminderActionInput } from "./reminder-tools";
 import { ActionPresentationId } from "./think-action-approvals";
 
 it.effect("preserves encoded Scheduled Email input through the pending Approval boundary", () =>
@@ -111,5 +113,49 @@ it.effect("normalizes a pre-deploy parked Gmail Action through presentation and 
       ...legacyInput,
       gmailResource: "primary",
     });
+  }),
+);
+
+it.effect("preserves exact Reminder facts through pending sanitization and durable resume", () =>
+  Effect.gen(function* () {
+    const input = {
+      _tag: "CreateOneTime",
+      body: "Exact private Reminder body",
+      firstDueAt: "2026-09-06T12:00:00.000Z",
+    } as const;
+    const pending = {
+      descriptor: {
+        action: "osfoManageReminder",
+        input: { ...input, untrustedExtra: "excluded" },
+        kind: "durable-pause",
+        permissions: ["reminders:manage"],
+        requestId: "reminder-rpc-request",
+        risk: "medium",
+        summary: "Create Reminder",
+        toolCallId: "reminder-rpc-action",
+      },
+      executionId: "reminder-rpc-presentation",
+      source: "action",
+    } satisfies PendingApproval;
+    const sanitized = sanitizePendingApproval(pending);
+    expect(sanitized.descriptor.input).toEqual(input);
+    const projected = yield* presentOsfoAction(
+      {
+        descriptor: { ...sanitized.descriptor, kind: "durable-pause" },
+        executionId: ActionPresentationId.make(sanitized.executionId),
+        source: "action",
+      },
+      undefined,
+      UserId.make("reminder-rpc-owner"),
+    );
+    expect(projected.fields).toContainEqual({ label: "Body", name: "body", value: input.body });
+    expect(projected.fields).toContainEqual({
+      label: "First due",
+      name: "firstDueAt",
+      value: input.firstDueAt,
+    });
+    const resumed = yield* decodeReminderActionInput(sanitized.descriptor.input);
+    expect(resumed.firstDueAt.toISOString()).toBe(input.firstDueAt);
+    expect(yield* decodeReminderActionInput(resumed)).toEqual(resumed);
   }),
 );
