@@ -2954,25 +2954,9 @@ observe_account_deletion() {
     >"$feature_dir/provider.json"
 
   jq --exit-status \
+    --argjson presentationRequests "$([[ "$proof_shape" == expiry-refresh ]] && printf 2 || printf 1)" \
     --argjson deleteRequests "$([[ "$proof_shape" == retained-replay ]] && printf 2 || printf 1)" \
-    '(.userExists or .agentExists or .authSessionExists or .deletionCaseExists or
-      .channelLinkExists or .acceptedInviteExists or .channelAuditExists or
-      .billingExists or .allowanceExists or .whatsAppWakeUpExists or
-      .whatsAppWakeUpSourceExists or .researchReportExists or
-      .researchProviderOperationExists or .researchSynthesisOperationExists or
-      .researchNotificationExists or .documentBuildExists or
-      .documentNotificationExists or .documentAccountingExists or
-      .documentUsageEventExists or .phoneVerificationExists) == false and
-      .agentRuntime.inspectable == false and .agentRuntime.registered == false and
-      .accountHttp.presentationRequests == 1 and
-      .accountHttp.presentationSuccesses == 1 and
-      .accountHttp.deleteRequests == $deleteRequests and
-      .accountHttp.deleteSuccesses == $deleteRequests and
-      .targetR2Exists == false and .unrelatedR2Exists == true and
-      (.researchProofExpected == false or
-        (.researchManifestExists == false and .researchSourceExists == false and
-          .researchSynthesisExists == false and
-          .researchArtifactExists == false))' \
+    --from-file "$script_dir/account-deletion-state.jq" \
     "$feature_dir/state.json" >/dev/null
   "$script_dir/assert-document-build-deletion-state" "$feature_dir/state.json"
   if [[ "$immediate_expected" == true ]]; then

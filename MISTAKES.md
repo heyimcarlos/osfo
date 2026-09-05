@@ -43,3 +43,6 @@ short, specific, and actionable.
 - The verification observer serves its own readiness response at `/health`.
   Test the product health contract with `test/wrangler.runtime.jsonc`, whose
   entry point is the production Worker.
+- When a browser drive changes its expected request counts, update both the HTTP
+  log validator and the final committed-state assertion. An expiry and refresh
+  drive makes two presentations, while retained replay makes one.
