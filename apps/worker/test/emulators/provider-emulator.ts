@@ -653,6 +653,19 @@ const startProvider = (options: {
               });
               return;
             }
+            if (
+              Option.isSome(decoded) &&
+              decoded.value !== null &&
+              typeof decoded.value === "object" &&
+              ("status" in decoded.value || "typing_indicator" in decoded.value)
+            ) {
+              if (!isExactWhatsAppTypingRequest(decoded.value)) {
+                respondJson(response, 422, { error: "Invalid WhatsApp typing request" });
+                return;
+              }
+              respondJson(response, 200, { success: true });
+              return;
+            }
             respondJson(response, 200, {
               contacts: [{ input: "redacted", wa_id: "redacted" }],
               messages: [{ id: `wamid.emulated.${whatsAppLedger.length}` }],
@@ -681,6 +694,20 @@ const startProvider = (options: {
       });
     });
   });
+
+const isExactWhatsAppTypingRequest = (value: unknown): boolean => {
+  if (!hasExactKeys(value, ["messaging_product", "status", "message_id", "typing_indicator"])) {
+    return false;
+  }
+  return (
+    value.messaging_product === "whatsapp" &&
+    value.status === "read" &&
+    typeof value.message_id === "string" &&
+    value.message_id.trim().length > 0 &&
+    hasExactKeys(value.typing_indicator, ["type"]) &&
+    value.typing_indicator.type === "text"
+  );
+};
 
 const isExactWhatsAppTemplateRequest = (value: unknown): boolean => {
   if (!hasExactKeys(value, ["messaging_product", "recipient_type", "template", "to", "type"])) {
