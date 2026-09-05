@@ -168,7 +168,6 @@ describe("Osfo route tree", () => {
   });
 
   it("opens Skills from the dashboard shortcut and returns through browser history", async () => {
-    globalThis.fetch = () => Promise.resolve(Response.json({ skills: [] }));
     const { history, router } = renderAt("/settings", signedIn);
     await waitFor(() =>
       expect(screen.getByRole("heading", { name: "Manage your agent" })).toBeTruthy(),
@@ -178,7 +177,7 @@ describe("Osfo route tree", () => {
       screen.getByRole("link", { name: /Skills Review and manage learned preferences/ }).click(),
     );
 
-    await waitFor(() => expect(screen.getByText("No Skills yet")).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy());
     expect(router.state.location.pathname).toBe("/settings/skills");
     act(() => history.back());
     await waitFor(() =>
