@@ -393,6 +393,17 @@ const startProvider = (options: {
         respondJson(response, 200, integrationLedger);
         return;
       }
+      if (request.method === "GET" && pathname === "/_test/integrations/sessions") {
+        respondJson(
+          response,
+          200,
+          [...integrationSessions].map(([providerSessionId, userId]) => ({
+            providerSessionId,
+            userId,
+          })),
+        );
+        return;
+      }
       if (request.method === "GET" && pathname === "/_test/integrations/authority-operations") {
         respondJson(response, 200, integrationAuthorityOperations);
         return;

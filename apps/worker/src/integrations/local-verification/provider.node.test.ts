@@ -12,6 +12,41 @@ import { directIntegrationProviderConfig, type ProviderSession } from "../../ser
 import { ResearchVerificationProvider } from "../cloudflare/research-verification-provider";
 import { LocalVerificationIntegrationProvider } from "./provider";
 
+it.effect("reports provider Session owners without changing their authority", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(startProviderEmulator),
+    (emulator) =>
+      Effect.gen(function* () {
+        const provider = LocalVerificationIntegrationProvider.make(emulator.origin);
+        const userId = UserId.make("session-owner");
+        const otherUserId = UserId.make("other-session-owner");
+        const browsing = yield* provider.createSession(userId, directIntegrationProviderConfig);
+        const action = yield* provider.createSession(userId, directIntegrationProviderConfig);
+        const other = yield* provider.createSession(otherUserId, directIntegrationProviderConfig);
+        const expected = [
+          { providerSessionId: browsing.providerSessionId, userId },
+          { providerSessionId: action.providerSessionId, userId },
+          { providerSessionId: other.providerSessionId, userId: otherUserId },
+        ];
+        expect(
+          yield* Effect.promise(() =>
+            fetch(new URL("/_test/integrations/sessions", emulator.origin)).then((response) =>
+              response.json(),
+            ),
+          ),
+        ).toEqual(expected);
+        const mismatched = yield* provider.useSession(otherUserId, action.providerSessionId);
+        expect(
+          Result.isFailure(yield* mismatched.inspectToolkits(["gmail"]).pipe(Effect.result)),
+        ).toBe(true);
+        expect(yield* action.session.inspectToolkits(["gmail"])).toEqual([
+          { connectedAccount: null, isActive: false, slug: "gmail" },
+        ]);
+      }),
+    (emulator) => Effect.promise(() => emulator.close()),
+  ),
+);
+
 it.effect("does not replay the stable immediate Gmail Action after Approval continuation", () =>
   Effect.acquireUseRelease(
     Effect.promise(startProviderEmulator),
