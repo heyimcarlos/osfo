@@ -136,8 +136,8 @@ export function PlanDetails({ locale = publicLocale() }: { readonly locale?: Loc
       </div>
       <p>
         {spanish
-          ? "Free incluye conversación administrada, uso limitado de memoria, análisis de archivos compatibles y recordatorios únicos. Adventurer añade límites mayores, generación de documentos, investigación con citas, Gmail, recordatorios recurrentes, Workflows y GM Summon. Los límites no se acumulan. Las acciones de seguridad, cuenta, facturación, cancelación, eliminación y derechos de datos siguen disponibles después de agotar el uso normal."
-          : "Free includes managed conversation, bounded memory use, supported file analysis, and one-time reminders. Adventurer adds higher limits, document generation, cited research, Gmail, recurring reminders, Workflows, and GM Summon. Allowances do not roll over. Safety, account, billing, cancellation, deletion, and data-right actions remain available after ordinary use is exhausted."}
+          ? "Free incluye conversación administrada, uso limitado de memoria, análisis de archivos compatibles y recordatorios únicos. Adventurer añade límites mayores, generación de documentos, investigación con citas, Gmail, recordatorios recurrentes y Workflows. GM Summon no está disponible durante la beta. Los límites no se acumulan. Las acciones de seguridad, cuenta, facturación, cancelación, eliminación y derechos de datos siguen disponibles después de agotar el uso normal."
+          : "Free includes managed conversation, bounded memory use, supported file analysis, and one-time reminders. Adventurer adds higher limits, document generation, cited research, Gmail, recurring reminders, and Workflows. GM Summon is not available during beta. Allowances do not roll over. Safety, account, billing, cancellation, deletion, and data-right actions remain available after ordinary use is exhausted."}
       </p>
     </InformationPage>
   );
