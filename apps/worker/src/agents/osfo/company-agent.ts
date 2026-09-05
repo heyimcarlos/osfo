@@ -149,7 +149,7 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
     const tools: ToolSet = {
       [PRESENT_LINK_TOOL_NAME]: tool({
         description:
-          "Ask the system to attach this person's private registration link to your reply. Call it when they want to try Osfo, ask how to register, or hit something only a registered Osfo can do.",
+          "Attach the private link to sign in or register and connect this chat. Call it in the same reply when the person wants to get started, reconnect, or needs account access for their request. Call without a text preamble, then give a brief next step after the result. Do not ask permission to send the link. Connecting an account does not establish that the requested action is supported.",
         execute: () => {
           this.#activePresenter?.request();
           return { presented: true };

@@ -1850,7 +1850,10 @@ export class OsfoAgent extends Think<Env> {
   }
 
   #authorizeWeb(request: AuthorizationRequest) {
-    if (!ResearchVerificationProvider.isAvailable(this.#researchReportProvider)) {
+    if (
+      request.searches > 0 &&
+      !ResearchVerificationProvider.isAvailable(this.#researchReportProvider)
+    ) {
       return Effect.fail(
         new WebUnavailable({
           message: "Public-web provider pricing is not yet recognized for Plan Usage.",

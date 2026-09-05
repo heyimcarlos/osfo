@@ -184,7 +184,7 @@ it.effect("routes document, integration, and recall paraphrases without collisio
         taskDescription: "Search the web for release notes",
       },
       {
-        expected: ["web-search", "page-read"],
+        expected: ["page-read"],
         taskDescription: "Read this website URL",
       },
       {

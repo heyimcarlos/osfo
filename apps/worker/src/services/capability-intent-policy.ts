@@ -216,7 +216,9 @@ export const capabilityIntentPolicy = {
     taskKinds: ["web"],
   },
   "page-read": {
-    matches: anyIntentPhrase("article", "link", "page", "url", "website"),
+    matches: (task) =>
+      anyIntentPhrase("article", "link", "page", "url", "website")(task) ||
+      /https:\/\/\S+/u.test(task),
     taskKinds: ["web"],
   },
   "research-report": {
