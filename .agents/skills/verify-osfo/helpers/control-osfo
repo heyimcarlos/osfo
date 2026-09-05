@@ -2307,7 +2307,7 @@ observe_scheduled_email() {
 
 observe_immediate_gmail_send() {
   local run_id state_dir feature_dir container_id provider_origin phone recipient subject body
-  local action_id presentation_id approval user_state agent_runtime durable provider_raw model_raw
+  local action_id presentation_id approval user_state agent_runtime durable provider_raw model_raw provider_sessions
   local provider_entry model_entry connection_binding provider_session_hash http replay combined
   local approval_requests approval_successes postgres_port
   run_id="$1"
@@ -2397,30 +2397,25 @@ observe_immediate_gmail_send() {
     --argjson runtime "$(jq '.immediateGmail' <<<"$agent_runtime")" '
       $approval + {
         integrationAction: $runtime.storage.integrationAction,
+        browsingSessionHash: $runtime.storage.integrationSessionHash,
         terminal: $runtime.storage.terminals[0]
       }')"
   provider_raw="$(curl --fail --silent --show-error "$provider_origin/_test/integrations/ledger")"
+  provider_sessions="$(curl --fail --silent --show-error "$provider_origin/_test/integrations/sessions")"
   model_raw="$(curl --fail --silent --show-error "$provider_origin/_test/research/ledger")"
   provider_entry="$(jq --exit-status --arg userId "$(jq --raw-output '.userId' <<<"$user_state")" \
+    --argjson sessions "$provider_sessions" \
     --arg recipient "$recipient" --arg subject "$subject" --arg body "$body" \
     --arg requestId "$(jq --raw-output '.integrationAction.providerRequestId' <<<"$durable")" \
     --arg logId "$(jq --raw-output '.integrationAction.result.evidence.providerLogId' <<<"$durable")" \
-    --arg resourceId "$(jq --raw-output '.integrationAction.result.evidence.providerResourceId' <<<"$durable")" '
-      if length != 1 then error("expected one provider execution") else . end |
-      .[0] | select(
-        .userId == $userId and .providerTool == "GMAIL_SEND_EMAIL" and
-        .input == {body: $body, recipient_email: $recipient, subject: $subject} and
-        .providerRequestId == $requestId and .logId == $logId and .resourceId == $resourceId
-      )' <<<"$provider_raw")"
+    --arg resourceId "$(jq --raw-output '.integrationAction.result.evidence.providerResourceId' <<<"$durable")" \
+    --from-file "$script_dir/immediate-gmail-send-provider.jq" <<<"$provider_raw")"
   connection_binding="$(printf 'osfo-integration-connection-v1:%s' \
     "$(jq --raw-output '.connectedAccountId' <<<"$provider_entry")" | sha256sum | awk '{print $1}')"
   provider_session_hash="$(printf '%s' \
     "$(jq --raw-output '.providerSessionId' <<<"$provider_entry")" | sha256sum | awk '{print $1}')"
-  if [[ "$provider_session_hash" != \
-      "$(jq --raw-output '.immediateGmail.storage.integrationSessionHash' <<<"$agent_runtime")" ]]; then
-    printf 'The retained Integration Session does not match the provider execution\n' >&2
-    exit 1
-  fi
+  # Effects create a fresh provider Session. The retained browsing Session is not
+  # its identity; the Action's request, log, resource, and Connection bind the send.
   model_entry="$(jq --exit-status --arg actionId "$action_id" --arg recipient "$recipient" \
     --arg subject "$subject" --arg body "$body" '
       [.[] | .operationId as $operationId | select(
@@ -2442,6 +2437,7 @@ observe_immediate_gmail_send() {
           providerRequestId: $execution.providerRequestId,
           providerResourceId: $execution.resourceId,
           providerSessionHash: $providerSessionHash,
+          sessionUserId: $execution.userId,
           providerTool: $execution.providerTool
         }],
         model: [$model]

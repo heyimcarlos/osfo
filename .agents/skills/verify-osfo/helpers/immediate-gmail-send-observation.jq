@@ -40,6 +40,7 @@ def exact_browser($recipient; $subject; $body):
 (.durable.userId | type == "string" and length > 0) and
 (.durable.authenticatedSessionCount | type == "number" and . >= 1) and
 (.durable.approvalConnectionBinding | test("^[0-9a-f]{64}$")) and
+(.durable.browsingSessionHash | test("^[0-9a-f]{64}$")) and
 .durable.presentation.actionId == .durable.actionId and
 .durable.presentation.presentationId == .durable.presentationId and
 (.durable.presentation | exact_presentation($recipient; $subject; $body)) and
@@ -65,10 +66,14 @@ def exact_browser($recipient; $subject; $body):
 .http.approvalRequests == 1 and .http.approvalSuccesses == 1 and
 (.provider.integration | length) == 1 and
 .provider.integration[0].providerTool == "GMAIL_SEND_EMAIL" and
+(.provider.integration[0].providerSessionHash | test("^[0-9a-f]{64}$")) and
+.provider.integration[0].sessionUserId == .durable.userId and
 .provider.integration[0].input == {
   body: $body,
+  is_html: false,
   recipient_email: $recipient,
-  subject: $subject
+  subject: $subject,
+  user_id: "me"
 } and
 .provider.integration[0].connectionBinding == .durable.approvalConnectionBinding and
 .provider.integration[0].providerRequestId == .durable.integrationAction.providerRequestId and

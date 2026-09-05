@@ -7,6 +7,7 @@ feature="$repo_root/.agents/skills/verify-osfo/features/immediate-gmail-send.md"
 emulator="$repo_root/apps/worker/test/emulators/provider-emulator.ts"
 observer="$repo_root/apps/worker/test/support/agent-runtime-observer.ts"
 observation_check="$repo_root/.agents/skills/verify-osfo/helpers/immediate-gmail-send-observation.jq"
+provider_check="$repo_root/.agents/skills/verify-osfo/helpers/immediate-gmail-send-provider.jq"
 deletion_check="$repo_root/.agents/skills/verify-osfo/helpers/immediate-gmail-send-deletion.jq"
 finish_check="$repo_root/.agents/skills/verify-osfo/helpers/immediate-gmail-send-finish.jq"
 workspace_manifest="$repo_root/package.json"
@@ -40,6 +41,7 @@ observation_fixture='{
     "actionId": "verification-gmailSendEmail::cf-wai-tool-call::turn-1",
     "authenticatedSessionCount": 1,
     "approvalConnectionBinding": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "browsingSessionHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "integrationAction": {
       "_tag": "Applied",
       "providerRequestId": "request-1",
@@ -84,10 +86,12 @@ observation_fixture='{
   "provider": {
     "integration":[{
       "connectionBinding":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "input":{"body":"Exact body","recipient_email":"recipient@example.test","subject":"Exact subject"},
+      "input":{"body":"Exact body","is_html":false,"recipient_email":"recipient@example.test","subject":"Exact subject","user_id":"me"},
       "logId":"log-1",
       "providerRequestId":"request-1",
       "providerResourceId":"resource-1",
+      "providerSessionHash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "sessionUserId":"user-1",
       "providerTool":"GMAIL_SEND_EMAIL"
     }],
     "model":[{"kind":"tool-selection","operationId":"verification-gmailSendEmail","selectedTool":"gmailSendEmail","subject":"recipient@example.test|Exact subject|Exact body"}]
@@ -107,6 +111,62 @@ observation_args=(
   --arg commit 'commit-1'
 )
 
+provider_fixture="$(jq '[.provider.integration[0] | . + {
+  userId: "user-1", resourceId: .providerResourceId, providerSessionId: "action-session-2"
+} | del(.providerResourceId)]' <<<"$observation_fixture")"
+provider_args=(
+  --arg userId 'user-1'
+  --arg recipient 'recipient@example.test'
+  --arg subject 'Exact subject'
+  --arg body 'Exact body'
+  --arg requestId 'request-1'
+  --arg logId 'log-1'
+  --arg resourceId 'resource-1'
+)
+provider_sessions='[{"providerSessionId":"browsing-session-1","userId":"user-1"},{"providerSessionId":"action-session-2","userId":"user-1"},{"providerSessionId":"other-session-3","userId":"other-user"}]'
+if ! jq --exit-status "${provider_args[@]}" --argjson sessions "$provider_sessions" --from-file "$provider_check" \
+  <<<"$provider_fixture" >/dev/null; then
+  printf 'Canonical Immediate Gmail provider payload must pass the live ledger selector\n' >&2
+  exit 1
+fi
+for mutation in \
+  'del(.[0].input.is_html)' \
+  '.[0].input.is_html = true' \
+  'del(.[0].input.user_id)' \
+  '.[0].input.user_id = "other-mailbox"' \
+  '.[0].input.body = "different-body"' \
+  '.[0].input.subject = "different-subject"' \
+  '.[0].input.recipient_email = "other@example.test"' \
+  '.[0].input.extra_recipients = ["other@example.test"]' \
+  '.[0].userId = "other-user"' \
+  '.[0].providerTool = "OTHER_TOOL"' \
+  '.[0].providerSessionId = null' \
+  '.[0].providerSessionId = ""' \
+  '.[0].providerSessionId = "other-session-3"' \
+  '.[0].providerRequestId = "other-request"' \
+  '.[0].logId = "other-log"' \
+  '.[0].resourceId = "other-resource"' \
+  '. += [.[0]]' \
+  '. = []'; do
+  if jq "$mutation" <<<"$provider_fixture" \
+    | jq --exit-status "${provider_args[@]}" --argjson sessions "$provider_sessions" --from-file "$provider_check" >/dev/null 2>&1; then
+    printf 'Immediate Gmail provider mutation unexpectedly passed: %s\n' "$mutation" >&2
+    exit 1
+  fi
+done
+
+for mutation in \
+  'map(select(.providerSessionId != "action-session-2"))' \
+  '.[1].userId = "other-user"' \
+  '. += [.[1]]'; do
+  if jq --exit-status "${provider_args[@]}" \
+    --argjson sessions "$(jq "$mutation" <<<"$provider_sessions")" \
+    --from-file "$provider_check" <<<"$provider_fixture" >/dev/null 2>&1; then
+    printf 'Immediate Gmail Session registry mutation unexpectedly passed: %s\n' "$mutation" >&2
+    exit 1
+  fi
+done
+
 if ! jq --exit-status "${observation_args[@]}" --from-file "$observation_check" \
   <<<"$observation_fixture" >/dev/null; then
   printf 'Exact Immediate Gmail identity chain fixture must pass\n' >&2
@@ -123,6 +183,12 @@ for mutation in \
   '.provider.integration[0].providerRequestId = "different-request"' \
   '.provider.integration[0].logId = "different-log"' \
   '.provider.integration[0].providerResourceId = "different-resource"' \
+  '.provider.integration[0].sessionUserId = "other-user"' \
+  'del(.provider.integration[0].input.is_html)' \
+  '.provider.integration[0].input.is_html = true' \
+  'del(.provider.integration[0].input.user_id)' \
+  '.provider.integration[0].input.user_id = "other-mailbox"' \
+  '.provider.integration[0].input.extra_recipients = ["other@example.test"]' \
   '.postgres.gmailSendUsage = []' \
   '.postgres.gmailSendUsage[0].sourceId = "different-action"' \
   '.postgres.gmailSendUsage += [.postgres.gmailSendUsage[0]]' \
@@ -278,6 +344,7 @@ for required in \
   'immediate-gmail-send)' \
   'gmail_send_request()' \
   'observe_immediate_gmail_send()' \
+  '--from-file "$script_dir/immediate-gmail-send-provider.jq"' \
   'account-deletion-integration-authority-operations-before.json' \
   'authorityOperationsAfter ==' \
   'unrelatedConnectionBefore.status == "ACTIVE"' \

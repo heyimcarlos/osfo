@@ -46,3 +46,9 @@ short, specific, and actionable.
 - When a browser drive changes its expected request counts, update both the HTTP
   log validator and the final committed-state assertion. An expiry and refresh
   drive makes two presentations, while retained replay makes one.
+- Provider evidence fixtures must use the adapter's complete wire payload. Gmail
+  sends include explicit plain-text and primary-mailbox fields; test the actual
+  live ledger selector as well as the final observation predicate.
+- A provider effect creates a fresh Integration Session. Do not compare that
+  Session with the retained browsing Session when binding send evidence; use the
+  exact Action request, provider log, resource, and approved Connection identities.
