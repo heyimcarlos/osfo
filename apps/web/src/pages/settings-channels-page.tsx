@@ -1,9 +1,10 @@
 import type { ChannelLinksResponse } from "@osfo/api";
 import { Button } from "@osfo/ui/components/button";
+import { Dialog } from "@osfo/ui/components/dialog";
 import { GlassPanel } from "@osfo/ui/components/glass-panel";
 import { Effect } from "effect";
 import { MessageCircle, Send } from "lucide-react";
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { inspectChannelLinks, revokeChannelLink } from "../lib/api-client";
 
@@ -96,34 +97,6 @@ export function SettingsChannelsView({
   const cancelRef = useRef<HTMLButtonElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    if (pending !== null) cancelRef.current?.focus();
-  }, [pending]);
-
-  const closeConfirmation = () => {
-    setPending(null);
-    queueMicrotask(() => triggerRef.current?.focus());
-  };
-
-  const containConfirmationFocus = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeConfirmation();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>("button");
-    const first = buttons.item(0);
-    const last = buttons.item(buttons.length - 1);
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last?.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first?.focus();
-    }
-  };
-
   const presentConfirmation = (
     link: ActiveLink,
     description: string,
@@ -134,70 +107,68 @@ export function SettingsChannelsView({
   };
 
   return (
-    <div>
-      <div inert={pending !== null}>
-        <GlassPanel className="p-6">
-          <h2 className="text-xl font-bold">Link a messaging channel</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[#687896]">
-            Send Osfo a private message from the external account you want to link. Osfo replies
-            there with a private invitation. Links are never posted in group conversations.
+    <Dialog.Root
+      disablePointerDismissal
+      open={pending !== null}
+      onOpenChange={(open) => {
+        if (!open) setPending(null);
+      }}
+    >
+      <GlassPanel className="p-6">
+        <h2 className="text-xl font-bold">Link a messaging channel</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[#687896]">
+          Send Osfo a private message from the external account you want to link. Osfo replies there
+          with a private invitation. Links are never posted in group conversations.
+        </p>
+        {error === null ? null : (
+          <p className="mt-4 rounded-xl bg-[#fff0f2] p-3 text-sm text-[#a82d3f]" role="alert">
+            {error}
           </p>
-          {error === null ? null : (
-            <p className="mt-4 rounded-xl bg-[#fff0f2] p-3 text-sm text-[#a82d3f]" role="alert">
-              {error}
-            </p>
-          )}
-          <div className="mt-6 grid gap-4 md:grid-cols-2">
-            <ChannelCard
-              busyLinkId={busyLinkId}
-              color="bg-[#2f8fe8]"
-              icon={Send}
-              label="Telegram"
-              links={summary?.items.filter(({ channel }) => channel === "telegram") ?? []}
-              loading={summary === null && error === null}
-              onDisconnect={presentConfirmation}
-              unavailable={summary === null && error !== null}
-            />
-            <ChannelCard
-              busyLinkId={busyLinkId}
-              color="bg-[#25d366]"
-              icon={MessageCircle}
-              label="WhatsApp"
-              links={summary?.items.filter(({ channel }) => channel === "whatsapp") ?? []}
-              loading={summary === null && error === null}
-              onDisconnect={presentConfirmation}
-              unavailable={summary === null && error !== null}
-            />
-          </div>
-        </GlassPanel>
-      </div>
-      {pending === null ? null : (
-        <div
-          aria-describedby="channel-disconnect-description"
-          aria-labelledby="channel-disconnect-title"
-          aria-modal="true"
-          className="fixed inset-0 z-50 grid place-items-center bg-[#101936]/45 p-4"
-          role="dialog"
-          onKeyDown={containConfirmationFocus}
-        >
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
-            <h2 className="text-xl font-bold" id="channel-disconnect-title">
-              Disconnect channel?
-            </h2>
-            <p
-              className="mt-3 text-sm leading-6 text-[#526684]"
-              id="channel-disconnect-description"
-            >
-              {channelLinkRevocationPrompt(pending.description)}
-            </p>
+        )}
+        <div className="mt-6 grid gap-4 md:grid-cols-2">
+          <ChannelCard
+            busyLinkId={busyLinkId}
+            color="bg-[#2f8fe8]"
+            icon={Send}
+            label="Telegram"
+            links={summary?.items.filter(({ channel }) => channel === "telegram") ?? []}
+            loading={summary === null && error === null}
+            onDisconnect={presentConfirmation}
+            unavailable={summary === null && error !== null}
+          />
+          <ChannelCard
+            busyLinkId={busyLinkId}
+            color="bg-[#25d366]"
+            icon={MessageCircle}
+            label="WhatsApp"
+            links={summary?.items.filter(({ channel }) => channel === "whatsapp") ?? []}
+            loading={summary === null && error === null}
+            onDisconnect={presentConfirmation}
+            unavailable={summary === null && error !== null}
+          />
+        </div>
+      </GlassPanel>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="fixed inset-0 z-50 bg-[#101936]/45" />
+        <Dialog.Viewport className="fixed inset-0 z-50 grid place-items-center p-4">
+          <Dialog.Popup
+            className="w-full max-w-md rounded-3xl bg-white p-6 text-[#16213f] shadow-2xl"
+            initialFocus={cancelRef}
+            finalFocus={triggerRef}
+          >
+            <Dialog.Title className="text-xl font-bold">Disconnect channel?</Dialog.Title>
+            <Dialog.Description className="mt-3 text-sm leading-6 text-[#526684]">
+              {pending === null ? null : channelLinkRevocationPrompt(pending.description)}
+            </Dialog.Description>
             <div className="mt-6 flex justify-end gap-2">
-              <Button ref={cancelRef} type="button" variant="secondary" onClick={closeConfirmation}>
+              <Dialog.Close ref={cancelRef} render={<Button type="button" variant="secondary" />}>
                 Cancel
-              </Button>
+              </Dialog.Close>
               <Button
                 type="button"
                 variant="destructive"
                 onClick={() => {
+                  if (pending === null) return;
                   setPending(null);
                   onDisconnect(pending.link, pending.description);
                 }}
@@ -205,10 +176,10 @@ export function SettingsChannelsView({
                 Confirm disconnect
               </Button>
             </div>
-          </div>
-        </div>
-      )}
-    </div>
+          </Dialog.Popup>
+        </Dialog.Viewport>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 

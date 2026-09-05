@@ -68,3 +68,7 @@ short, specific, and actionable.
 - A missing facet registry row or canonical initialization identity does not prove
   account data erasure. Verify SQLite and KV are empty, then reopen the facet and
   prove fresh history and an open execution fence before restoring account access.
+- A modal inside Settings content remains below the header's stacking context,
+  even with a larger z-index. Use the shared portal and modal primitives, and
+  verify that header controls outside the page cannot receive interaction while
+  the confirmation is open.
