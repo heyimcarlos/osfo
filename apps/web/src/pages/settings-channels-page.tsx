@@ -3,21 +3,35 @@ import { Button } from "@osfo/ui/components/button";
 import { GlassPanel } from "@osfo/ui/components/glass-panel";
 import { Effect } from "effect";
 import { MessageCircle, Send } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 
 import { inspectChannelLinks, revokeChannelLink } from "../lib/api-client";
 
 type ActiveLink = ChannelLinksResponse["items"][number];
 
+export interface SettingsChannelsDependencies {
+  readonly inspectChannelLinks: typeof inspectChannelLinks;
+  readonly revokeChannelLink: typeof revokeChannelLink;
+}
+
+const defaultDependencies: SettingsChannelsDependencies = {
+  inspectChannelLinks,
+  revokeChannelLink,
+};
+
 /** Authenticated inspection and revocation for the User's messaging channels. */
-export function SettingsChannelsPage() {
+export function SettingsChannelsPage({
+  dependencies = defaultDependencies,
+}: {
+  readonly dependencies?: SettingsChannelsDependencies;
+} = {}) {
   const [summary, setSummary] = useState<ChannelLinksResponse | null>(null);
   const [busyLinkId, setBusyLinkId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    void Effect.runPromise(inspectChannelLinks).then(
+    void Effect.runPromise(dependencies.inspectChannelLinks).then(
       (links) => {
         if (active) setSummary(links);
       },
@@ -28,14 +42,12 @@ export function SettingsChannelsPage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [dependencies]);
 
-  const disconnect = (link: ActiveLink, description: string) => {
-    const confirmed = globalThis.confirm(channelLinkRevocationPrompt(description));
-    if (!confirmed) return;
+  const disconnect = (link: ActiveLink) => {
     setBusyLinkId(link.channelLinkId);
     setError(null);
-    void Effect.runPromise(revokeChannelLink(link.channelLinkId)).then(
+    void Effect.runPromise(dependencies.revokeChannelLink(link.channelLinkId)).then(
       () => {
         setBusyLinkId(null);
         setSummary((current) =>
@@ -65,7 +77,7 @@ export function SettingsChannelsPage() {
   );
 }
 
-/** Pure rendered state for authenticated Channel Link management. */
+/** Rendered channel state and confirmation for one exact disconnect target. */
 export function SettingsChannelsView({
   busyLinkId,
   error,
@@ -77,41 +89,126 @@ export function SettingsChannelsView({
   readonly onDisconnect: (link: ActiveLink, description: string) => void;
   readonly summary: ChannelLinksResponse | null;
 }) {
+  const [pending, setPending] = useState<{
+    readonly link: ActiveLink;
+    readonly description: string;
+  } | null>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (pending !== null) cancelRef.current?.focus();
+  }, [pending]);
+
+  const closeConfirmation = () => {
+    setPending(null);
+    queueMicrotask(() => triggerRef.current?.focus());
+  };
+
+  const containConfirmationFocus = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeConfirmation();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>("button");
+    const first = buttons.item(0);
+    const last = buttons.item(buttons.length - 1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  };
+
+  const presentConfirmation = (
+    link: ActiveLink,
+    description: string,
+    trigger: HTMLButtonElement,
+  ) => {
+    triggerRef.current = trigger;
+    setPending({ link, description });
+  };
+
   return (
-    <GlassPanel className="p-6">
-      <h2 className="text-xl font-bold">Link a messaging channel</h2>
-      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[#687896]">
-        Send Osfo a private message from the external account you want to link. Osfo replies there
-        with a private invitation. Links are never posted in group conversations.
-      </p>
-      {error === null ? null : (
-        <p className="mt-4 rounded-xl bg-[#fff0f2] p-3 text-sm text-[#a82d3f]" role="alert">
-          {error}
-        </p>
-      )}
-      <div className="mt-6 grid gap-4 md:grid-cols-2">
-        <ChannelCard
-          busyLinkId={busyLinkId}
-          color="bg-[#2f8fe8]"
-          icon={Send}
-          label="Telegram"
-          links={summary?.items.filter(({ channel }) => channel === "telegram") ?? []}
-          loading={summary === null && error === null}
-          onDisconnect={onDisconnect}
-          unavailable={summary === null && error !== null}
-        />
-        <ChannelCard
-          busyLinkId={busyLinkId}
-          color="bg-[#25d366]"
-          icon={MessageCircle}
-          label="WhatsApp"
-          links={summary?.items.filter(({ channel }) => channel === "whatsapp") ?? []}
-          loading={summary === null && error === null}
-          onDisconnect={onDisconnect}
-          unavailable={summary === null && error !== null}
-        />
+    <div>
+      <div inert={pending !== null}>
+        <GlassPanel className="p-6">
+          <h2 className="text-xl font-bold">Link a messaging channel</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[#687896]">
+            Send Osfo a private message from the external account you want to link. Osfo replies
+            there with a private invitation. Links are never posted in group conversations.
+          </p>
+          {error === null ? null : (
+            <p className="mt-4 rounded-xl bg-[#fff0f2] p-3 text-sm text-[#a82d3f]" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="mt-6 grid gap-4 md:grid-cols-2">
+            <ChannelCard
+              busyLinkId={busyLinkId}
+              color="bg-[#2f8fe8]"
+              icon={Send}
+              label="Telegram"
+              links={summary?.items.filter(({ channel }) => channel === "telegram") ?? []}
+              loading={summary === null && error === null}
+              onDisconnect={presentConfirmation}
+              unavailable={summary === null && error !== null}
+            />
+            <ChannelCard
+              busyLinkId={busyLinkId}
+              color="bg-[#25d366]"
+              icon={MessageCircle}
+              label="WhatsApp"
+              links={summary?.items.filter(({ channel }) => channel === "whatsapp") ?? []}
+              loading={summary === null && error === null}
+              onDisconnect={presentConfirmation}
+              unavailable={summary === null && error !== null}
+            />
+          </div>
+        </GlassPanel>
       </div>
-    </GlassPanel>
+      {pending === null ? null : (
+        <div
+          aria-describedby="channel-disconnect-description"
+          aria-labelledby="channel-disconnect-title"
+          aria-modal="true"
+          className="fixed inset-0 z-50 grid place-items-center bg-[#101936]/45 p-4"
+          role="dialog"
+          onKeyDown={containConfirmationFocus}
+        >
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+            <h2 className="text-xl font-bold" id="channel-disconnect-title">
+              Disconnect channel?
+            </h2>
+            <p
+              className="mt-3 text-sm leading-6 text-[#526684]"
+              id="channel-disconnect-description"
+            >
+              {channelLinkRevocationPrompt(pending.description)}
+            </p>
+            <div className="mt-6 flex justify-end gap-2">
+              <Button ref={cancelRef} type="button" variant="secondary" onClick={closeConfirmation}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => {
+                  setPending(null);
+                  onDisconnect(pending.link, pending.description);
+                }}
+              >
+                Confirm disconnect
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -131,7 +228,7 @@ function ChannelCard({
   readonly label: string;
   readonly links: ReadonlyArray<ActiveLink>;
   readonly loading: boolean;
-  readonly onDisconnect: (link: ActiveLink, label: string) => void;
+  readonly onDisconnect: (link: ActiveLink, label: string, trigger: HTMLButtonElement) => void;
   readonly unavailable: boolean;
 }) {
   return (
@@ -168,7 +265,7 @@ function ChannelCard({
                   size="sm"
                   type="button"
                   variant="destructive"
-                  onClick={() => onDisconnect(link, description)}
+                  onClick={(event) => onDisconnect(link, description, event.currentTarget)}
                 >
                   {busyLinkId === link.channelLinkId ? "Disconnecting..." : "Disconnect"}
                 </Button>
