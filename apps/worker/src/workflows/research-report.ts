@@ -1,11 +1,9 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { Effect, Predicate, Result, Schema } from "effect";
 
-import { runInvocationEffect } from "../adapters/host";
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { ResearchReportComposition } from "../composition/research-report";
 import { decodeOsfoStage } from "../config";
-import { makeWorkflowRuntime } from "../layers";
 import { ResearchCollector } from "../services/research-collector";
 import type { Denied } from "../services/authorization";
 import { ResearchReport } from "../services/research-report";
@@ -76,8 +74,7 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
             }) as const,
         }),
       );
-      const result = await runInvocationEffect(
-        makeWorkflowRuntime(),
+      const result = await Effect.runPromise(
         ResearchReportComposition.executionEffect(
           ResearchReportComposition.bindingsFromEnv(this.env),
           serviceEffect,
@@ -139,8 +136,7 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
           onSuccess: (result) => result,
         }),
       );
-      const result = await runInvocationEffect(
-        makeWorkflowRuntime(),
+      const result = await Effect.runPromise(
         ResearchReportComposition.executionEffect(
           ResearchReportComposition.bindingsFromEnv(this.env),
           serviceEffect,
@@ -187,8 +183,7 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
           onSuccess: (result) => result,
         }),
       );
-      const result = await runInvocationEffect(
-        makeWorkflowRuntime(),
+      const result = await Effect.runPromise(
         ResearchReportComposition.executionEffect(
           ResearchReportComposition.bindingsFromEnv(this.env),
           serviceEffect,
@@ -216,8 +211,7 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
     const payload = Schema.decodeResult(ResearchReport.WorkflowPayload)(encodedPayload);
     if (Result.isFailure(payload)) return;
     const terminal = await step.do(`claim terminal follow-up ${phase}`, () =>
-      runInvocationEffect(
-        makeWorkflowRuntime(),
+      Effect.runPromise(
         ResearchReportComposition.followUpEffect(
           { DB: this.env.DB },
           ResearchReportFollowUp.Service.pipe(

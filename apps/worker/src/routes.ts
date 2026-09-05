@@ -1,5 +1,5 @@
 import { Api } from "@osfo/api";
-import { Effect, Layer, type ManagedRuntime } from "effect";
+import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
@@ -8,7 +8,6 @@ import { productApiLayer } from "./cors";
 import type { CloudflareConfig } from "./config";
 import { Handlers } from "./handlers";
 import { WebhookHandlers } from "./handlers/webhooks";
-import type { ExecutionUnit } from "./layers";
 import { AuthMiddleware } from "./middleware/auth";
 import { RegistrationCloudflare } from "./integrations/cloudflare/registration";
 import { Registration } from "./services/registration";
@@ -46,13 +45,12 @@ export interface Options {
   readonly authDependencies: WorkerAuth.AuthDependencies;
   readonly config: CloudflareConfig;
   readonly env: Bindings;
-  readonly runtime: ManagedRuntime.ManagedRuntime<ExecutionUnit, never>;
 }
 
 /** Assemble typed product routes, Better Auth, and Cloudflare host probes. */
 export const layer = (options: Options) => {
   const api = HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
-    Layer.provide(Handlers.layer(options.runtime, options.config, options.env)),
+    Layer.provide(Handlers.layer(options.config, options.env)),
     Layer.provide(
       ResearchReportComposition.followUpLayer.pipe(Layer.provide(options.authDependencies)),
     ),

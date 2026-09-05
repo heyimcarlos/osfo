@@ -1,10 +1,8 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { Effect, Predicate, Result, Schema } from "effect";
 
-import { runInvocationEffect } from "../adapters/host";
 import { DocumentBuildComposition } from "../composition/document-build";
 import { decodeOsfoStage } from "../config";
-import { makeWorkflowRuntime } from "../layers";
 import type { Denied } from "../services/authorization";
 import { DocumentBuild } from "../services/document-build";
 import { DocumentBuildDocument } from "../services/document-build-document";
@@ -79,8 +77,7 @@ export class DocumentBuildWorkflow extends WorkflowEntrypoint<Env, DocumentBuild
               onSuccess: (build) => build,
             }),
           );
-          return await runInvocationEffect(
-            makeWorkflowRuntime(),
+          return await Effect.runPromise(
             DocumentBuildComposition.executionEffect(
               bindings,
               DocumentBuildComposition.makePreviewReadyFollowUpCommitter(bindings),
