@@ -4926,124 +4926,128 @@ export class OsfoAgent extends Think<Env> {
       decision: "approve" | "reject",
     ) => this.#completeImmediateGmailDecision(binding, decision);
     return runRpc(
-      this.#accountDeletionFence.run(
-        Schema.decodeEffect(DecideActionApprovalRequest)(input).pipe(
-          Effect.mapError(
-            () =>
-              new ActionApprovalRequestInvalid({
-                message: "The Action Approval decision is invalid",
-                operation: "decideActionApproval",
-              }),
-          ),
-          Effect.flatMap((parsed) =>
-            actionApprovals.runDecision(
-              this.#actionApprovals.read(parsed.actor, parsed.presentationId).pipe(
-                Effect.flatMap((found) =>
-                  Effect.gen(function* () {
-                    const actionId = found.presentation.actionId;
-                    const immediateGmail = isImmediateGmailPresentation(found.presentation);
-                    const approvalBinding = immediateGmail
-                      ? yield* immediateGmailSendStore
-                          .readApprovalBindingForUser(parsed.presentationId, parsed.actor.userId)
+      this.#accountDeletionFence.runTracked(
+        () =>
+          Schema.decodeEffect(DecideActionApprovalRequest)(input).pipe(
+            Effect.mapError(
+              () =>
+                new ActionApprovalRequestInvalid({
+                  message: "The Action Approval decision is invalid",
+                  operation: "decideActionApproval",
+                }),
+            ),
+            Effect.flatMap((parsed) =>
+              actionApprovals.runDecision(
+                this.#actionApprovals.read(parsed.actor, parsed.presentationId).pipe(
+                  Effect.flatMap((found) =>
+                    Effect.gen(function* () {
+                      const actionId = found.presentation.actionId;
+                      const immediateGmail = isImmediateGmailPresentation(found.presentation);
+                      const approvalBinding = immediateGmail
+                        ? yield* immediateGmailSendStore
+                            .readApprovalBindingForUser(parsed.presentationId, parsed.actor.userId)
+                            .pipe(
+                              Effect.mapError(
+                                () =>
+                                  new ActionPresentationUnavailable({
+                                    action: "gmailSendEmail",
+                                    message:
+                                      "The approved Gmail Connection identity is unavailable",
+                                  }),
+                              ),
+                            )
+                        : undefined;
+                      const connectionBinding =
+                        parsed.decision === "approve" && approvalBinding !== undefined
+                          ? (approvalBinding.connectionBinding ?? undefined)
+                          : undefined;
+                      const approvalSettlement =
+                        approvalBinding === undefined
+                          ? undefined
+                          : parsed.decision === "reject"
+                            ? ({ ...approvalBinding, status: "rejected" } as const)
+                            : ({ ...approvalBinding, status: "invalidated" } as const);
+                      if (approvalSettlement !== undefined) {
+                        yield* immediateGmailSendStore
+                          .retainApprovalSettlement(approvalSettlement)
                           .pipe(
                             Effect.mapError(
                               () =>
                                 new ActionPresentationUnavailable({
                                   action: "gmailSendEmail",
-                                  message: "The approved Gmail Connection identity is unavailable",
+                                  message: "The Gmail no-effect outcome could not be prepared",
                                 }),
                             ),
-                          )
-                      : undefined;
-                    const connectionBinding =
-                      parsed.decision === "approve" && approvalBinding !== undefined
-                        ? (approvalBinding.connectionBinding ?? undefined)
-                        : undefined;
-                    const approvalSettlement =
-                      approvalBinding === undefined
-                        ? undefined
-                        : parsed.decision === "reject"
-                          ? ({ ...approvalBinding, status: "rejected" } as const)
-                          : ({ ...approvalBinding, status: "invalidated" } as const);
-                    if (approvalSettlement !== undefined) {
-                      yield* immediateGmailSendStore
-                        .retainApprovalSettlement(approvalSettlement)
+                          );
+                      }
+                      if (
+                        parsed.decision === "approve" &&
+                        (found.presentation.operation === "artifact.delete" ||
+                          found.presentation.operation === "memory.clear" ||
+                          found.presentation.operation === "file.delete" ||
+                          found.presentation.operation === "memory.forgetKnowledge" ||
+                          found.presentation.operation === "session.delete" ||
+                          found.presentation.operation === "reminder.manage" ||
+                          found.presentation.operation === "skill.manage" ||
+                          found.presentation.operation === "integration.effect" ||
+                          found.presentation.operation === "workflow.manage")
+                      ) {
+                        currentApprovedActions.set(actionId, {
+                          actionPresentation: found.presentation,
+                          connectionBinding,
+                          operation: found.presentation.operation,
+                          presentation: approvalPresentationFor(found.presentation),
+                        });
+                      }
+                      const acceptedDecision = ApprovalDecisionAccepted.make({
+                        decision: parsed.decision === "approve" ? "approved" : "rejected",
+                        presentationId: parsed.presentationId,
+                      });
+                      const result = yield* actionApprovals
+                        .dispatch(
+                          parsed.actor,
+                          parsed.presentationId,
+                          parsed.decision === "approve" ? "approved" : "rejected",
+                          parsed.reason,
+                        )
                         .pipe(
-                          Effect.mapError(
-                            () =>
-                              new ActionPresentationUnavailable({
-                                action: "gmailSendEmail",
-                                message: "The Gmail no-effect outcome could not be prepared",
-                              }),
+                          Effect.catch((failure) =>
+                            approvalSettlement === undefined || immediateGmailSends === undefined
+                              ? Effect.fail(failure)
+                              : immediateGmailSends
+                                  .recoverApprovalSettlement(approvalSettlement)
+                                  .pipe(
+                                    Effect.mapError(
+                                      (cause) =>
+                                        new ThinkApprovalUnavailable({
+                                          cause,
+                                          message:
+                                            "The Gmail Approval handoff could not be reconciled",
+                                          operation: "decideActionApproval.recoverHandoff",
+                                        }),
+                                    ),
+                                    Effect.flatMap((recovery) =>
+                                      recovery._tag === "Committed" &&
+                                      Schema.is(ThinkApprovalUnavailable)(failure)
+                                        ? Effect.succeed(acceptedDecision)
+                                        : Effect.fail(failure),
+                                    ),
+                                  ),
+                          ),
+                          Effect.ensuring(
+                            Effect.sync(() => currentApprovedActions.delete(actionId)),
                           ),
                         );
-                    }
-                    if (
-                      parsed.decision === "approve" &&
-                      (found.presentation.operation === "artifact.delete" ||
-                        found.presentation.operation === "memory.clear" ||
-                        found.presentation.operation === "file.delete" ||
-                        found.presentation.operation === "memory.forgetKnowledge" ||
-                        found.presentation.operation === "session.delete" ||
-                        found.presentation.operation === "reminder.manage" ||
-                        found.presentation.operation === "skill.manage" ||
-                        found.presentation.operation === "integration.effect" ||
-                        found.presentation.operation === "workflow.manage")
-                    ) {
-                      currentApprovedActions.set(actionId, {
-                        actionPresentation: found.presentation,
-                        connectionBinding,
-                        operation: found.presentation.operation,
-                        presentation: approvalPresentationFor(found.presentation),
-                      });
-                    }
-                    const acceptedDecision = ApprovalDecisionAccepted.make({
-                      decision: parsed.decision === "approve" ? "approved" : "rejected",
-                      presentationId: parsed.presentationId,
-                    });
-                    const result = yield* actionApprovals
-                      .dispatch(
-                        parsed.actor,
-                        parsed.presentationId,
-                        parsed.decision === "approve" ? "approved" : "rejected",
-                        parsed.reason,
-                      )
-                      .pipe(
-                        Effect.catch((failure) =>
-                          approvalSettlement === undefined || immediateGmailSends === undefined
-                            ? Effect.fail(failure)
-                            : immediateGmailSends
-                                .recoverApprovalSettlement(approvalSettlement)
-                                .pipe(
-                                  Effect.mapError(
-                                    (cause) =>
-                                      new ThinkApprovalUnavailable({
-                                        cause,
-                                        message:
-                                          "The Gmail Approval handoff could not be reconciled",
-                                        operation: "decideActionApproval.recoverHandoff",
-                                      }),
-                                  ),
-                                  Effect.flatMap((recovery) =>
-                                    recovery._tag === "Committed" &&
-                                    Schema.is(ThinkApprovalUnavailable)(failure)
-                                      ? Effect.succeed(acceptedDecision)
-                                      : Effect.fail(failure),
-                                  ),
-                                ),
-                        ),
-                        Effect.ensuring(Effect.sync(() => currentApprovedActions.delete(actionId))),
-                      );
-                    if (approvalBinding !== undefined) {
-                      yield* completeImmediateGmailDecision(approvalBinding, parsed.decision);
-                    }
-                    return result;
-                  }),
+                      if (approvalBinding !== undefined) {
+                        yield* completeImmediateGmailDecision(approvalBinding, parsed.decision);
+                      }
+                      return result;
+                    }),
+                  ),
                 ),
               ),
             ),
           ),
-        ),
         () =>
           new ThinkApprovalUnavailable({
             cause: "account deletion fence",

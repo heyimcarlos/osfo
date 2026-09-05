@@ -56,3 +56,7 @@ short, specific, and actionable.
 - Run package Vitest configurations from the package directory. Passing a package
   config from the repository root leaves its relative test include paths rooted
   in the wrong directory and can report that no test files exist.
+- Do not hold a deletion-fence semaphore while dispatching an approved Action
+  that acquires the same fence. Track the outer dispatch so nested admission can
+  proceed and deletion can still abort and drain both lifetimes. A Promise timeout
+  only stops waiting; an already-started Action can execute after the caller fails.
