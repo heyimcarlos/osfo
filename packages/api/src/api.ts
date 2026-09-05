@@ -81,6 +81,7 @@ export {
 } from "./groups/scheduled-emails";
 export {
   AccountDeletionAction,
+  AccountDeletionActionUnavailable,
   AccountDeletionActionPresentation,
   AccountDeletionActionPresentationV1,
   AccountDeletionActionPresentationV2,
@@ -90,6 +91,7 @@ export {
   AccountDeletionRequest,
   AccountDeletionReplayToken,
   AccountDeletionPresentationVersion,
+  AccountDeletionPresentationUnavailable,
   AccountDeletionResponse,
   AccountDeletionUnavailable,
   AccountGroup,

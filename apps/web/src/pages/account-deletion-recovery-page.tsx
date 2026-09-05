@@ -4,13 +4,31 @@ import { useState } from "react";
 
 import { useAccountDeletionReplayState } from "../account-deletion-replay-state";
 import { requestAccountDeletion } from "../lib/api-client";
-import type { AccountDeletionReplay } from "../lib/account-deletion-replay";
+import {
+  accountDeletionFailureDisposition,
+  type AccountDeletionFailureDisposition,
+  type AccountDeletionReplay,
+} from "../lib/account-deletion-replay";
 
-/** Public, deletion-only recovery for one exact retained request after normal access is fenced. */
-export function AccountDeletionRecoveryPage() {
+export interface AccountDeletionRecoveryDependencies {
+  readonly requestAccountDeletion: typeof requestAccountDeletion;
+}
+
+const defaultDependencies: AccountDeletionRecoveryDependencies = { requestAccountDeletion };
+
+/** Public, deletion-only recovery for one exact request whose acceptance outcome is unknown. */
+export function AccountDeletionRecoveryPage({
+  dependencies = defaultDependencies,
+}: {
+  readonly dependencies?: AccountDeletionRecoveryDependencies;
+} = {}) {
   const { clear, complete, replay } = useAccountDeletionReplayState();
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [terminal, setTerminal] = useState<Exclude<
+    AccountDeletionFailureDisposition,
+    "recover"
+  > | null>(null);
 
   const clearRetainedRequest = () => {
     clear();
@@ -19,12 +37,19 @@ export function AccountDeletionRecoveryPage() {
   const retry = (available: Extract<AccountDeletionReplay, { readonly status: "available" }>) => {
     setBusy(true);
     setFailed(false);
-    void Effect.runPromise(requestAccountDeletion(available.request))
+    void Effect.runPromise(dependencies.requestAccountDeletion(available.request))
       .then(() => {
         complete();
         globalThis.location.assign("/");
       })
-      .catch(() => {
+      .catch((cause: unknown) => {
+        const disposition = accountDeletionFailureDisposition(cause);
+        if (disposition !== "recover") {
+          clear();
+          setBusy(false);
+          setTerminal(disposition);
+          return;
+        }
         setBusy(false);
         setFailed(true);
       });
@@ -35,7 +60,9 @@ export function AccountDeletionRecoveryPage() {
       <section className="w-full rounded-3xl border border-white/80 bg-white/80 p-6 shadow-sm">
         <p className="text-sm font-semibold text-[#c83242]">Account Deletion</p>
         <h1 className="mt-1 text-2xl font-bold">Account Deletion Recovery</h1>
-        {replay.status === "available" ? (
+        {terminal !== null ? (
+          <RecoveryTerminal disposition={terminal} />
+        ) : replay.status === "available" ? (
           <div className="mt-5">
             <p className="font-semibold text-[#7f2630]">
               {replay.request.approval.presentation.title}
@@ -44,7 +71,7 @@ export function AccountDeletionRecoveryPage() {
               {replay.request.approval.presentation.consequence}
             </p>
             <p className="mt-3 text-sm text-[#687896]">
-              Normal account access stays fenced. Retry only this exact saved request to recover a
+              Normal account access may be fenced. Retry only this exact saved request to recover a
               response that may have been lost.
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
@@ -76,6 +103,29 @@ export function AccountDeletionRecoveryPage() {
         )}
       </section>
     </main>
+  );
+}
+
+function RecoveryTerminal({
+  disposition,
+}: {
+  readonly disposition: Exclude<AccountDeletionFailureDisposition, "recover">;
+}) {
+  const needsFreshPresentation = disposition === "freshPresentation";
+  return (
+    <div className="mt-5">
+      <p role="alert">
+        {needsFreshPresentation
+          ? "This saved request was not accepted. Request a fresh confirmation from Privacy."
+          : "This saved request can no longer be resumed."}
+      </p>
+      <a
+        className="mt-4 inline-block font-semibold text-[#2f7df4]"
+        href={needsFreshPresentation ? "/settings/privacy" : "/login"}
+      >
+        {needsFreshPresentation ? "Open Privacy" : "Sign in"}
+      </a>
+    </div>
   );
 }
 

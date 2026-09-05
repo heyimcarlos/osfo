@@ -120,16 +120,15 @@ const expireAccountDeletionAction = async (
   const expired = await findJourneyRow(options, async (client) => {
     const [row] = await client`
       update account_deletion_actions
-      set created_at = consumed_at - interval '2 seconds',
-          expires_at = consumed_at - interval '1 second'
+      set created_at = coalesce(consumed_at, clock_timestamp()) - interval '2 seconds',
+          expires_at = coalesce(consumed_at, clock_timestamp()) - interval '1 second'
       where user_id = ${userId}
         and action_id = ${actionId}
-        and consumed_at is not null
       returning action_id
     `;
     return row;
   });
-  if (expired === null) throw new Error("Consumed account deletion Action was not found");
+  if (expired === null) throw new Error("Account deletion Action was not found");
 };
 
 const versionAccountDeletionAction = async (

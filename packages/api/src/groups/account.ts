@@ -94,6 +94,7 @@ const actionSchema = <
   presentation: Presentation,
 ) =>
   Schema.Struct({
+    expiresAt: Schema.DateFromString,
     presentation,
     presentationVersion: Schema.Literal(version),
     replayToken: AccountDeletionReplayToken,
@@ -144,18 +145,32 @@ export const AccountDeletionResponse = Schema.Struct({
   status: Schema.Literal("deletion-pending"),
 });
 
-/** Safe response while durable account deletion cannot be started. */
-export class AccountDeletionUnavailable extends Schema.TaggedError<AccountDeletionUnavailable>()(
-  "AccountDeletionUnavailable",
+/** Safe response when presenting a fresh deletion Action is temporarily unavailable. */
+export class AccountDeletionPresentationUnavailable extends Schema.TaggedError<AccountDeletionPresentationUnavailable>()(
+  "AccountDeletionPresentationUnavailable",
   { message: Schema.String },
   { httpApiStatus: 503 },
+) {}
+
+/** Safe ambiguous response after a deletion request may have crossed its durable fence. */
+export class AccountDeletionUnavailable extends Schema.TaggedError<AccountDeletionUnavailable>()(
+  "AccountDeletionUnavailable",
+  { message: Schema.String, requestState: Schema.Literal("mayBeAccepted") },
+  { httpApiStatus: 503 },
+) {}
+
+/** Exact Action is unusable and the Worker proved no deletion fence was committed. */
+export class AccountDeletionActionUnavailable extends Schema.TaggedError<AccountDeletionActionUnavailable>()(
+  "AccountDeletionActionUnavailable",
+  { message: Schema.String, requestState: Schema.Literal("notAccepted") },
+  { httpApiStatus: 410 },
 ) {}
 
 /** Authenticated account lifecycle contract. */
 export const AccountGroup = HttpApiGroup.make("account")
   .add(
     HttpApiEndpoint.get("presentAccountDeletion", "/v1/account/deletion-action", {
-      error: AccountDeletionUnavailable,
+      error: AccountDeletionPresentationUnavailable,
       success: AccountDeletionAction,
     })
       .middleware(Auth)
@@ -169,7 +184,7 @@ export const AccountGroup = HttpApiGroup.make("account")
   )
   .add(
     HttpApiEndpoint.delete("deleteAccount", "/v1/account", {
-      error: AccountDeletionUnavailable,
+      error: [AccountDeletionActionUnavailable, AccountDeletionUnavailable],
       payload: AccountDeletionRequest,
       success: AccountDeletionResponse,
     })

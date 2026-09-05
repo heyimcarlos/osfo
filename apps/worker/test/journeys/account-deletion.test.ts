@@ -1,4 +1,4 @@
-/* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
+/* oxlint-disable effecttsgo/global-date-in-effect, vitest/no-standalone-expect -- This boundary fixture needs one fixed wire Date; assertions execute inside the Effect returned directly to it.effect. */
 import { env } from "cloudflare:workers";
 import { expect, it } from "@effect/vitest";
 import {
@@ -15,6 +15,11 @@ import { spawnApp } from "../support/spawn-app";
 
 const AuthSessionResponse = Schema.Struct({
   session: Schema.Struct({ id: Schema.String }),
+});
+
+const AccountDeletionActionUnavailable = Schema.TaggedStruct("AccountDeletionActionUnavailable", {
+  message: Schema.String,
+  requestState: Schema.Literal("notAccepted"),
 });
 
 const runScheduledMaintenance = (): Promise<void> => {
@@ -63,13 +68,14 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
         actionId: `account-delete:${liveSessionId}`,
         confirmation: "delete-my-account",
         consequence: "Permanently delete this account and all of its data.",
+        expiresAt: new Date("2026-09-01T00:05:00.000Z"),
         operation: "account.delete",
         presentationVersion: "account-deletion-v1",
         replayToken: "a".repeat(43),
         title: "Delete Account",
       }),
     );
-    expect(forgedWithoutPresentation.status).toBe(503);
+    expect(forgedWithoutPresentation.status).toBe(410);
     yield* Effect.promise(() => forgedWithoutPresentation.text());
     expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toEqual({
       agent_exists: true,
@@ -94,19 +100,19 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
     const invalidatedPresentation = yield* Effect.promise(() =>
       app.account.delete(firstPresentation),
     );
-    expect(invalidatedPresentation.status).toBe(503);
+    expect(invalidatedPresentation.status).toBe(410);
     yield* Effect.promise(() => invalidatedPresentation.text());
     const staleApproval = yield* Effect.promise(() =>
       app.account.delete({ ...presentation, actionId: `${presentation.actionId}:changed` }),
     );
-    expect(staleApproval.status).toBe(503);
+    expect(staleApproval.status).toBe(410);
     yield* Effect.promise(() => staleApproval.text());
     // The standard real-Wrangler envelope journey owns unsupported-version rejection.
     // Sending that malformed pre-route request through Miniflare prevents Workerd teardown.
     const guessedReplayBearer = yield* Effect.promise(() =>
       app.account.delete({ ...presentation, replayToken: "z".repeat(43) }),
     );
-    expect(guessedReplayBearer.status).toBe(503);
+    expect(guessedReplayBearer.status).toBe(410);
     yield* Effect.promise(() => guessedReplayBearer.text());
     expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toEqual({
       agent_exists: true,
@@ -222,6 +228,63 @@ it.effect("completes a fenced deletion through the production scheduled entry po
         path: `/v3/container-tags/${encodeURIComponent(seededProvider.containerTag)}`,
       },
     ]);
+    return undefined;
+  }),
+);
+
+it.effect("rejects an expired Action before fencing and accepts a fresh presentation", () =>
+  Effect.gen(function* () {
+    const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
+      Effect.promise(client.dispose),
+    );
+    const identity = yield* Effect.promise(() =>
+      app.auth.mintVerifiedUser({ phoneNumber: "+15550001923" }),
+    );
+    const first = yield* Effect.promise(app.account.present);
+    if (first.body === undefined) {
+      return yield* Effect.die(new Error("Expiring deletion Action was not presented"));
+    }
+    const firstAction = first.body;
+
+    yield* Effect.promise(() =>
+      app.database.expireAccountDeletionAction(identity.userId, firstAction.actionId),
+    );
+    const rejected = yield* Effect.promise(() => app.account.delete(firstAction));
+
+    expect(rejected.status).toBe(410);
+    expect(
+      yield* Schema.decodeUnknownEffect(AccountDeletionActionUnavailable)(
+        yield* Effect.promise(() => rejected.json()),
+      ),
+    ).toEqual({
+      _tag: "AccountDeletionActionUnavailable",
+      message: "Request a fresh account deletion confirmation",
+      requestState: "notAccepted",
+    });
+    expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toEqual({
+      agent_exists: true,
+      auth_session_exists: true,
+      deletion_case_exists: false,
+      user_exists: true,
+    });
+
+    const fresh = yield* Effect.promise(app.account.present);
+    if (fresh.body === undefined) {
+      return yield* Effect.die(new Error("Fresh deletion Action was not presented"));
+    }
+    const freshAction = fresh.body;
+    expect(freshAction.actionId).not.toBe(firstAction.actionId);
+    const accepted = yield* Effect.promise(() => app.account.delete(freshAction));
+    expect(accepted.status).toBe(200);
+    expect(yield* Effect.promise(() => accepted.json())).toEqual({ status: "deletion-pending" });
+    expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toEqual({
+      agent_exists: true,
+      auth_session_exists: false,
+      deletion_case_exists: true,
+      user_exists: true,
+    });
+    yield* Effect.promise(runScheduledMaintenance);
+    expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toBeNull();
     return undefined;
   }),
 );

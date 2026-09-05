@@ -38,9 +38,15 @@ counts="$(jq --null-input \
 
 case "$proof_shape" in
   one-click)
+    expected_presentation_requests=1
+    expected_delete_requests=1
+    ;;
+  expiry-refresh)
+    expected_presentation_requests=2
     expected_delete_requests=1
     ;;
   retained-replay)
+    expected_presentation_requests=1
     expected_delete_requests=2
     ;;
   *)
@@ -49,8 +55,10 @@ case "$proof_shape" in
     ;;
 esac
 
-if ! jq --exit-status --argjson deletes "$expected_delete_requests" '
-  .presentationRequests == 1 and .presentationSuccesses == 1 and
+if ! jq --exit-status \
+  --argjson deletes "$expected_delete_requests" \
+  --argjson presentations "$expected_presentation_requests" '
+  .presentationRequests == $presentations and .presentationSuccesses == $presentations and
   .deleteRequests == $deletes and .deleteSuccesses == $deletes
 ' <<<"$counts" >/dev/null; then
   printf 'Account deletion HTTP evidence does not match %s proof: %s\n' "$proof_shape" \
