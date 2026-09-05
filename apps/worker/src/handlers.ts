@@ -10,6 +10,7 @@ import { DocumentBuildHandlers } from "./handlers/document-builds";
 import { FilesHandlers } from "./handlers/files";
 import { SkillsHandlers } from "./handlers/skills";
 import { IntegrationHandlers } from "./handlers/integrations";
+import { ReminderHandlers } from "./handlers/reminders";
 import { ScheduledEmailHandlers } from "./handlers/scheduled-emails";
 import { publicWebBaseUrl, type CloudflareConfig } from "./config";
 import { AccountDeletionComposition } from "./composition/account-deletion";
@@ -21,6 +22,7 @@ export const layer = (
   bindings: AccountDeletionComposition.Bindings &
     SkillsHandlers.Bindings &
     IntegrationHandlers.Bindings &
+    ReminderHandlers.Bindings &
     ScheduledEmailHandlers.Bindings &
     FilesHandlers.Bindings,
 ) =>
@@ -40,6 +42,7 @@ export const layer = (
     ),
     RegistrationHandlers.layer,
     ResearchReportHandlers.layer,
+    ReminderHandlers.layer(bindings),
     ScheduledEmailHandlers.layer(bindings),
     SkillsHandlers.layer(bindings),
   );

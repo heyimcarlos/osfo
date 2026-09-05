@@ -1,17 +1,20 @@
 import { expect, it } from "@effect/vitest";
 import type { PendingApproval } from "@cloudflare/think";
-import { Deferred, Effect, Fiber } from "effect";
+import { Deferred, Effect, Fiber, Result } from "effect";
 
 import { UserId } from "../domain";
 import { ActionId } from "../domain/action-execution";
 import { AuthSessionId } from "../domain/auth-session";
 import {
   ActionPresentation,
+  ActionPresentationNotFound,
   ActionPresentationId,
   makeThinkActionApprovalAdapter,
   type PendingThinkAction,
 } from "../agents/osfo/think-action-approvals";
 import {
+  reminderApprovalSelection,
+  presentOsfoAction,
   scheduledEmailApprovalSelection,
   scheduledEmailStartActionName,
 } from "../agents/osfo/action-presentation";
@@ -207,6 +210,77 @@ it.effect("projects only Scheduled Email Actions for the bounded scheduled selec
 
   return Effect.gen(function* () {
     const listed = yield* approvals.list(actor, scheduledEmailApprovalSelection);
+
+    expect(listed.presentations.map(({ presentationId }) => presentationId)).toEqual([
+      "presentation-scheduled",
+    ]);
+    expect(gmailPresentations).toBe(0);
+  });
+});
+
+it.effect("projects only Reminder Actions for the bounded scheduled selection", () => {
+  const pending = [
+    {
+      action: "gmailSendEmail",
+      executionId: "presentation-gmail",
+      toolCallId: "action-gmail",
+    },
+    {
+      action: "osfoManageReminder",
+      executionId: "presentation-scheduled",
+      toolCallId: "action-scheduled",
+    },
+  ].map(({ action, executionId, toolCallId }): PendingThinkAction => ({
+    descriptor: {
+      action,
+      input: {},
+      kind: "durable-pause",
+      permissions: ["gmail:send"],
+      requestId: `request-${toolCallId}`,
+      risk: "high",
+      summary: action,
+      toolCallId,
+    },
+    executionId: ActionPresentationId.make(executionId),
+    source: "action",
+  }));
+  let gmailPresentations = 0;
+  const approvals = makeActionApprovals({
+    authorizer: { ownsAgent: () => Effect.succeed(true) },
+    lifecycle: {
+      findPending: () => Effect.die(new Error("not used by list")),
+      listPending: Effect.succeed(pending),
+      resolve: () => Effect.void,
+    },
+    now: Effect.succeed(new Date("2026-08-24T00:00:00.000Z")),
+    present: (item) => {
+      if (item.descriptor.action === "gmailSendEmail") {
+        gmailPresentations += 1;
+      }
+      return Effect.succeed(
+        ActionPresentation.make({
+          actionDefinitionVersion: "osfo-reminder-manage-v1",
+          actionId: ActionId.make(item.descriptor.toolCallId),
+          consequences: ["Schedule one email."],
+          description: item.descriptor.summary,
+          fields: [],
+          operation: "reminder.manage",
+          presentationId: item.executionId,
+          title: "Schedule email",
+        }),
+      );
+    },
+    presentations: { retain: (candidate) => Effect.succeed(candidate) },
+  });
+  const actor = {
+    _tag: "AuthSession" as const,
+    authSessionId: AuthSessionId.make("session-1"),
+    expiresAt: new Date("2026-08-25T00:00:00.000Z"),
+    userId: UserId.make("user-1"),
+  };
+
+  return Effect.gen(function* () {
+    const listed = yield* approvals.list(actor, reminderApprovalSelection);
 
     expect(listed.presentations.map(({ presentationId }) => presentationId)).toEqual([
       "presentation-scheduled",
@@ -468,5 +542,92 @@ it.effect("distinguishes a lost Think decision from a successful Approval dispat
 
     expect(lostResult).toMatchObject({ failure: { _tag: "ApprovalAlreadyResolved" } });
     expect(acceptedResult).toMatchObject({ success: undefined });
+  }),
+);
+
+it.effect("guards Reminder ownership, expiry, immutable facts, rejection, and replay", () =>
+  Effect.gen(function* () {
+    const owner = UserId.make("reminder-owner");
+    const id = ActionPresentationId.make("reminder-authority-presentation");
+    let active = true;
+    let pending = true;
+    let creates = 0;
+    let body = "Original private body";
+    const retained = new Map<ActionPresentationId, ActionPresentation>();
+    const item = (): PendingThinkAction => ({
+      descriptor: {
+        action: "osfoManageReminder",
+        input: { _tag: "CreateOneTime", body, firstDueAt: "2026-09-06T12:00:00.000Z" },
+        kind: "durable-pause",
+        permissions: ["reminders:manage"],
+        requestId: "reminder-authority-request",
+        summary: "Create Reminder",
+        toolCallId: "reminder-authority-action",
+      },
+      executionId: id,
+      source: "action",
+    });
+    const missing = () =>
+      new ActionPresentationNotFound({ message: "Not pending", presentationId: id });
+    const approvals = makeActionApprovals({
+      authorizer: { ownsAgent: (userId) => Effect.sync(() => active && userId === owner) },
+      lifecycle: {
+        listPending: Effect.sync(() => (pending ? [item()] : [])),
+        findPending: () =>
+          Effect.suspend(() => (pending ? Effect.succeed(item()) : Effect.fail(missing()))),
+        resolve: (_id, decision) =>
+          Effect.sync(() => {
+            pending = false;
+            if (decision === "approved") creates++;
+          }),
+      },
+      now: Effect.succeed(new Date("2026-09-05T12:00:00.000Z")),
+      present: (candidate, userId) => presentOsfoAction(candidate, undefined, userId),
+      presentations: {
+        retain: (candidate) =>
+          Effect.sync(() => {
+            const previous = retained.get(candidate.presentationId);
+            if (previous !== undefined) return previous;
+            retained.set(candidate.presentationId, candidate);
+            return candidate;
+          }),
+      },
+    });
+    const actor = {
+      _tag: "AuthSession" as const,
+      authSessionId: AuthSessionId.make("reminder-session"),
+      expiresAt: new Date("2026-09-06T00:00:00.000Z"),
+      userId: owner,
+    };
+    const first = yield* approvals.list(actor, reminderApprovalSelection);
+    body = "Changed private body";
+    expect((yield* approvals.list(actor, reminderApprovalSelection)).presentations).toEqual(
+      first.presentations,
+    );
+    expect(
+      Result.isFailure(
+        yield* approvals
+          .dispatch({ ...actor, userId: UserId.make("another-user") }, id, "approved")
+          .pipe(Effect.result),
+      ),
+    ).toBe(true);
+    expect(
+      Result.isFailure(
+        yield* approvals
+          .dispatch({ ...actor, expiresAt: new Date("2026-09-04T00:00:00.000Z") }, id, "approved")
+          .pipe(Effect.result),
+      ),
+    ).toBe(true);
+    active = false;
+    expect(
+      Result.isFailure(yield* approvals.dispatch(actor, id, "approved").pipe(Effect.result)),
+    ).toBe(true);
+    active = true;
+    yield* approvals.dispatch(actor, id, "rejected");
+    expect(
+      Result.isFailure(yield* approvals.dispatch(actor, id, "approved").pipe(Effect.result)),
+    ).toBe(true);
+    expect((yield* approvals.list(actor, reminderApprovalSelection)).presentations).toEqual([]);
+    expect(creates).toBe(0);
   }),
 );

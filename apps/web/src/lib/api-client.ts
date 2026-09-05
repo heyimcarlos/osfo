@@ -10,6 +10,7 @@ import {
   type IntegrationToolkit,
   type RegistrationLocale,
   type ScheduledEmailApprovalDecision,
+  type ReminderApprovalDecision,
   type SkillChangeRequest,
   type SkillDeletionPresentation,
   skillDeletionConfirmation,
@@ -240,4 +241,16 @@ export const deleteSkill = (presentation: SkillDeletionPresentation) =>
         confirmation: skillDeletionConfirmation,
       },
     });
+  });
+
+/** Inspect exact pending Reminder approvals for the authenticated User. */
+export const inspectReminderApprovals = Effect.gen(function* () {
+  const client = yield* apiClient;
+  return yield* client.reminders.approvals();
+});
+
+export const decideReminderApproval = (payload: ReminderApprovalDecision) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    return yield* client.reminders.decideApproval({ payload });
   });

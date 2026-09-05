@@ -45,9 +45,11 @@ export {
   SessionDeleteInput,
   sessionDeleteActionName,
 } from "./deletion-actions";
+import { ReminderManageInput, reminderManageActionName } from "./reminder-tool-contracts";
 import { effectToolSchema } from "./effect-tool-schema";
 
 type SanitizedPendingApprovalInput =
+  | Partial<typeof ReminderManageInput.Encoded>
   | Partial<ClearCoreMemoryInput>
   | Partial<ForgetKnowledgeInput>
   | Partial<RetainedDocumentInput>
@@ -71,6 +73,7 @@ export {
   ResearchReportStartInput,
   RetainedDocumentInput,
   scheduledEmailApprovalSelection,
+  reminderApprovalSelection,
   scheduledEmailStartActionName,
   ScheduledEmailIdentityInput,
   ScheduledEmailStartInput,
@@ -204,6 +207,14 @@ export const sanitizePendingApproval = (approval: PendingApproval): PendingAppro
       approval,
       Schema.decodeUnknownOption(ResearchReportStartInput)(approval.descriptor.input).pipe(
         Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
+      ),
+    );
+  }
+  if (approval.descriptor.action === reminderManageActionName) {
+    return withInput(
+      approval,
+      Schema.decodeUnknownOption(ReminderManageInput)(approval.descriptor.input).pipe(
+        Option.match({ onNone: () => ({}), onSome: Schema.encodeSync(ReminderManageInput) }),
       ),
     );
   }

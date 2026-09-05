@@ -83,7 +83,7 @@ import { IntegrationComposition } from "../../composition/integrations";
 import { ImmediateGmailSendComposition } from "../../composition/immediate-gmail-send";
 import { Db } from "../../db";
 import { BillingDb } from "../../db/billing";
-import { decodeOsfoStage, loadConfig } from "../../config";
+import { decodeOsfoStage, loadConfig, publicWebBaseUrl } from "../../config";
 import { ResearchVerificationProvider } from "../../integrations/cloudflare/research-verification-provider";
 import { ChannelLinkAuthorizationPostgres } from "../../integrations/postgres/channel-link-authorization";
 import { SessionRecallAuthorizationPostgres } from "../../integrations/postgres/session-recall-authorization";
@@ -290,6 +290,7 @@ import {
   researchReportRequiresApproval,
   ResearchReportStartInput,
   scheduledEmailApprovalSelection,
+  reminderApprovalSelection,
   scheduledEmailStartActionName,
   ScheduledEmailIdentityInput,
   ScheduledEmailStartInput,
@@ -433,6 +434,7 @@ const ActionPresentationListSelection = Schema.Union([
   Schema.Undefined,
   Schema.Literal("immediate-gmail"),
   Schema.Literal("scheduled-email"),
+  Schema.Literal("reminder"),
 ]);
 
 class MemoryProviderWorkUnavailable extends Data.TaggedError("MemoryProviderWorkUnavailable")<{
@@ -1239,7 +1241,7 @@ export class OsfoAgent extends Think<Env> {
 
   /** Speak with the shared Osfo persona from the registered personal partition. */
   override getSystemPrompt() {
-    return personalAgentSystemPrompt();
+    return `${personalAgentSystemPrompt()}\n\nWhen osfoManageReminder is paused for approval, direct the User to ${new URL("/settings/reminders", publicWebBaseUrl(loadConfig(this.env).auth)).href} to review and approve or reject the exact Reminder. Do not ask them to approve in chat. Ask for clarification before calling osfoManageReminder if the date, time, or timezone is ambiguous; its firstDueAt must be an exact UTC ISO timestamp.`;
   }
 
   /** Apply Osfo policy before a Think messenger turn starts on this user-owned facet. */
@@ -4824,7 +4826,9 @@ export class OsfoAgent extends Think<Env> {
               ? ImmediateGmailApprovals.selection
               : selected === "scheduled-email"
                 ? scheduledEmailApprovalSelection
-                : undefined,
+                : selected === "reminder"
+                  ? reminderApprovalSelection
+                  : undefined,
           ),
         ),
       ),
