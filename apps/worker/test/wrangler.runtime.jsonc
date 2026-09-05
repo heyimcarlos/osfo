@@ -40,7 +40,10 @@
     },
   ],
   "durable_objects": {
-    "bindings": [{ "name": "OSFO_AGENT_TEST", "class_name": "OsfoAgent" }],
+    "bindings": [
+      { "name": "OSFO_AGENT_TEST", "class_name": "OsfoAgent" },
+      { "name": "OSFO_DIRECTORY", "class_name": "OsfoDirectory" },
+    ],
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OsfoAgent"] }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OsfoAgent", "OsfoDirectory"] }],
 }

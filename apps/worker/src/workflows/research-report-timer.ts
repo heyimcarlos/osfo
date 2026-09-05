@@ -1,11 +1,9 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { Effect, Result, Schema } from "effect";
 
-import { runInvocationEffect } from "../adapters/host";
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { ResearchReportComposition } from "../composition/research-report";
 import { decodeOsfoStage } from "../config";
-import { makeWorkflowRuntime } from "../layers";
 import { ResearchReport } from "../services/research-report";
 import { ResearchReportDocument } from "../services/research-report-document";
 import { ResearchReportFollowUp } from "../services/research-report-follow-up";
@@ -137,8 +135,7 @@ export class ResearchReportTimerWorkflow extends WorkflowEntrypoint<
   }
 
   #discardPublication(report: ResearchReport.Record) {
-    return runInvocationEffect(
-      makeWorkflowRuntime(),
+    return Effect.runPromise(
       ResearchReportComposition.executionEffect(
         ResearchReportComposition.bindingsFromEnv(this.env),
         Effect.gen(function* () {
@@ -155,8 +152,7 @@ export class ResearchReportTimerWorkflow extends WorkflowEntrypoint<
       followUps: ResearchReportFollowUp.Interface,
     ) => Effect.Effect<A, ResearchReportFollowUp.Conflict | ResearchReportFollowUp.Unavailable>,
   ) {
-    return runInvocationEffect(
-      makeWorkflowRuntime(),
+    return Effect.runPromise(
       ResearchReportComposition.followUpEffect(
         { DB: this.env.DB },
         ResearchReportFollowUp.Service.pipe(Effect.flatMap(operation), Effect.orDie),

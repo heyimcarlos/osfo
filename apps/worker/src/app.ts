@@ -1,12 +1,11 @@
 import { BrowserCrypto } from "@effect/platform-browser";
-import { Effect, Layer, Schema, type ManagedRuntime } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 
 import type { AuthDependencies } from "./auth";
 import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "./config";
 import { Db } from "./db";
 import { TwilioVerify } from "./integrations/twilio/verify";
-import { makeWorkerRuntime, type ExecutionUnit } from "./layers";
 import { Routes } from "./routes";
 import { ChannelLinks } from "./services/channel-links";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/identity";
@@ -41,32 +40,11 @@ const AgentRpcTag = Schema.Struct({ _tag: Schema.String });
 /** Build one request-scoped Cloudflare application from the current bindings. */
 export const makeCloudflareApp = async (env: CloudflareEnv) => {
   const config = loadConfig(env);
-  const runtime = makeWorkerRuntime(config.stage);
-  const webHandler = makeWebHandler(adaptBindings(env, config), config, runtime);
-
-  return {
-    dispose: () => webHandler.dispose().then(() => runtime.dispose()),
-    handler: webHandler.handler,
-  };
+  return make(adaptBindings(env, config), config);
 };
 
 /** Build one request-scoped Effect HTTP application. */
 export const make = (env: Bindings, config: CloudflareConfig, options?: MakeOptions) => {
-  const runtime = makeWorkerRuntime(config.stage);
-  const webHandler = makeWebHandler(env, config, runtime, options);
-
-  return {
-    dispose: () => webHandler.dispose().then(() => runtime.dispose()),
-    handler: webHandler.handler,
-  };
-};
-
-const makeWebHandler = (
-  env: Bindings,
-  config: CloudflareConfig,
-  runtime: ManagedRuntime.ManagedRuntime<ExecutionUnit, never>,
-  options?: MakeOptions,
-) => {
   const authDependencies =
     options?.authDependencies ??
     Layer.merge(Db.layer({ db: env.DB }), TwilioVerify.layer(config.twilioVerify));
@@ -74,7 +52,6 @@ const makeWebHandler = (
     authDependencies,
     config,
     env,
-    runtime,
   }).pipe(Layer.provide(BrowserCrypto.layer), Layer.provide(HttpServer.layerServices));
   return HttpRouter.toWebHandler(appLayer, {
     disableLogger: true,
