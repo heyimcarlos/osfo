@@ -39,12 +39,8 @@ export function OsfoAgentControlPanel() {
           />
           <MessagingSettings
             primaryChannel={preferences.primaryChannel}
-            receiveMessages={preferences.receiveMessages}
             onPrimaryChannelChange={(primaryChannel) =>
               updatePreferences({ ...preferences, primaryChannel })
-            }
-            onReceiveMessagesChange={(receiveMessages) =>
-              updatePreferences({ ...preferences, receiveMessages })
             }
           />
         </div>

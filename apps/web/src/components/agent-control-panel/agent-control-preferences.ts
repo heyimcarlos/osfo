@@ -7,13 +7,11 @@ const storageKey = "osfo-agent-control-preferences";
 /** Durable browser preferences for controls that do not require a backend mutation. */
 export type AgentControlPreferences = {
   readonly primaryChannel: Channel;
-  readonly receiveMessages: boolean;
 };
 
 /** Default control preferences for a new browser. */
 export const defaultAgentControlPreferences: AgentControlPreferences = {
   primaryChannel: "whatsapp",
-  receiveMessages: true,
 };
 
 /** Load and parse durable Agent control preferences from browser storage. */
@@ -36,11 +34,7 @@ export const saveAgentControlPreferences = (
 ) =>
   Effect.runSync(
     Effect.try({
-      try: () =>
-        storage.setItem(
-          storageKey,
-          `v1|${preferences.primaryChannel}|${preferences.receiveMessages ? "on" : "off"}`,
-        ),
+      try: () => storage.setItem(storageKey, `v2|${preferences.primaryChannel}`),
       catch: () => new AgentControlStorageUnavailable(),
     }).pipe(Effect.catchTag("AgentControlStorageUnavailable", () => Effect.void)),
   );
@@ -48,13 +42,16 @@ export const saveAgentControlPreferences = (
 const readStoredPreferences = (stored: string | null): AgentControlPreferences => {
   if (stored === null) return defaultAgentControlPreferences;
   const parts = stored.split("|");
-  if (parts.length !== 3) return defaultAgentControlPreferences;
   const [version, storedChannel, receiveMessages] = parts;
-  if (version !== "v1" || (receiveMessages !== "on" && receiveMessages !== "off"))
-    return defaultAgentControlPreferences;
+  const current = version === "v2" && parts.length === 2;
+  const legacy =
+    version === "v1" &&
+    parts.length === 3 &&
+    (receiveMessages === "on" || receiveMessages === "off");
+  if (!current && !legacy) return defaultAgentControlPreferences;
   const primaryChannel = storedChannel ?? null;
   if (!isChannel(primaryChannel)) return defaultAgentControlPreferences;
-  return { primaryChannel, receiveMessages: receiveMessages === "on" };
+  return { primaryChannel };
 };
 
 class AgentControlStorageUnavailable extends Data.TaggedError("AgentControlStorageUnavailable") {}

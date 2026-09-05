@@ -97,12 +97,13 @@ describe("Osfo route tree", () => {
   });
 
   it.each([
+    ["/settings/marketplace", "/settings/integrations"],
     ["/billing", "/settings/billing"],
     [
       "/billing/return?source=checkout&session_id=checkout-session",
       "/settings/billing?source=checkout&session_id=checkout-session",
     ],
-  ])("redirects the retired billing URL %s into settings", async (legacyPath, expectedPath) => {
+  ])("redirects the retired URL %s into supported settings", async (legacyPath, expectedPath) => {
     const router = createAppRouter({
       history: createMemoryHistory({ initialEntries: [legacyPath] }),
     });
@@ -164,6 +165,51 @@ describe("Osfo route tree", () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: "Profile" })).toBeTruthy());
     expect(screen.getByRole("heading", { name: "Add sign-in credentials" })).toBeTruthy();
     expect(router.state.location.pathname).toBe("/settings/profile");
+  });
+
+  it("opens Skills from the dashboard shortcut and returns through browser history", async () => {
+    const { history, router } = renderAt("/settings", signedIn);
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Manage your agent" })).toBeTruthy(),
+    );
+
+    act(() =>
+      screen.getByRole("link", { name: /Skills Review and manage learned preferences/ }).click(),
+    );
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy());
+    expect(router.state.location.pathname).toBe("/settings/skills");
+    act(() => history.back());
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Manage your agent" })).toBeTruthy(),
+    );
+    expect(
+      screen
+        .getByRole("link", { name: /Integrations Connect apps and review pending actions/ })
+        .getAttribute("href"),
+    ).toBe("/settings/integrations");
+    expect(screen.queryByRole("button", { name: /Memory|Response Style/ })).toBeNull();
+  });
+
+  it("opens account controls from General without displaying invented preferences", async () => {
+    const { router } = renderAt("/settings/general", signedIn);
+    await waitFor(() =>
+      expect(screen.getByRole("navigation", { name: "Available settings" })).toBeTruthy(),
+    );
+    expect(screen.queryByText("America/Toronto")).toBeNull();
+
+    act(() => screen.getByRole("link", { name: /Profile and sign-in/ }).click());
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Add sign-in credentials" })).toBeTruthy(),
+    );
+    expect(router.state.location.pathname).toBe("/settings/profile");
+    expect(screen.getByText("+14165550101")).toBeTruthy();
+    expect(screen.queryByText("@osfo-user")).toBeNull();
+    expect(screen.queryByText("Primary channel")).toBeNull();
+    expect(
+      screen.getByRole("link", { name: "Manage plan and payments" }).getAttribute("href"),
+    ).toBe("/settings/billing");
   });
 
   it("protects and restores the Skills direct link", async () => {

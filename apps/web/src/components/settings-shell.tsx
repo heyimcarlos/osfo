@@ -10,7 +10,6 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
-  Store,
   UserRound,
   type LucideIcon,
 } from "lucide-react";
@@ -25,7 +24,6 @@ type SettingsDestination =
   | "/settings/profile"
   | "/settings/privacy"
   | "/settings/billing"
-  | "/settings/marketplace"
   | "/settings/skills";
 
 type SettingsNavigationItem = {
@@ -42,7 +40,6 @@ const settingsItems: ReadonlyArray<SettingsNavigationItem> = [
   { icon: UserRound, label: "Profile", to: "/settings/profile" },
   { icon: ShieldCheck, label: "Privacy", to: "/settings/privacy" },
   { icon: CreditCard, label: "Billing", to: "/settings/billing" },
-  { icon: Store, label: "Marketplace", to: "/settings/marketplace" },
   { icon: Sparkles, label: "Skills", to: "/settings/skills" },
 ];
 
@@ -56,14 +53,10 @@ const pageDetails = {
     subtitle: "Manage how people reach your agent",
     title: "Messaging channel",
   },
-  "/settings/general": { subtitle: "Customize your agent experience", title: "Settings" },
+  "/settings/general": { subtitle: "Manage your agent and account", title: "Settings" },
   "/settings/integrations": {
     subtitle: "Connect the services Osfo may use with your approval",
     title: "Integrations",
-  },
-  "/settings/marketplace": {
-    subtitle: "Discover recipes and connectors for your agent",
-    title: "Marketplace",
   },
   "/settings/privacy": { subtitle: "Control your data and privacy settings", title: "Privacy" },
   "/settings/profile": { subtitle: "Manage your account information", title: "Profile" },
@@ -77,7 +70,6 @@ const getPageDetails = (pathname: string) => {
     case "/settings/general":
     case "/settings/integrations":
     case "/settings/reminders":
-    case "/settings/marketplace":
     case "/settings/privacy":
     case "/settings/profile":
     case "/settings/skills":
@@ -123,18 +115,6 @@ export function SettingsShell() {
             <p className="mt-1 text-sm text-[#687896]">{details.subtitle}</p>
           </div>
           <div className="flex items-center gap-2 justify-self-end md:col-start-3">
-            <button
-              aria-label="Notifications, unavailable"
-              className="relative grid size-11 cursor-not-allowed place-items-center rounded-full border border-white/80 bg-white/60 text-[#172442] opacity-80 shadow-[0_8px_20px_rgba(45,68,110,0.12)]"
-              disabled
-              type="button"
-            >
-              <Bell aria-hidden="true" className="size-5" />
-              <span
-                aria-hidden="true"
-                className="absolute top-1.5 right-1.5 size-2 rounded-full bg-[#2f7df4] ring-2 ring-white"
-              />
-            </button>
             <details className="group relative z-30">
               <summary
                 aria-label="Open account menu"

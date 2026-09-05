@@ -164,10 +164,9 @@ const settingsBillingRoute = createRoute({
 const settingsMarketplaceRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "settings/marketplace",
-  component: lazyRouteComponent(
-    () => import("./pages/settings-marketplace-page"),
-    "SettingsMarketplacePage",
-  ),
+  beforeLoad: () => {
+    throw redirect({ replace: true, search: {}, to: "/settings/integrations" });
+  },
 });
 const settingsSkillsRoute = createRoute({
   getParentRoute: () => settingsRoute,

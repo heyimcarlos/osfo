@@ -1,27 +1,27 @@
 import { Link } from "@tanstack/react-router";
 import {
-  Brain,
+  Plug,
   ChevronRight,
   MessagesSquare,
   ShieldCheck,
   Sparkles,
   type LucideIcon,
 } from "lucide-react";
-import { type KeyboardEvent, type MouseEvent, useEffect, useRef, useState } from "react";
 
 type Shortcut = {
   readonly accent: string;
   readonly description: string;
   readonly icon: LucideIcon;
   readonly title: string;
-} & (
-  | { readonly kind: "Link"; readonly to: "/settings/channels" | "/settings/privacy" }
-  | { readonly kind: "Explainer" }
-);
+  readonly to:
+    | "/settings/channels"
+    | "/settings/privacy"
+    | "/settings/skills"
+    | "/settings/integrations";
+};
 
 const shortcuts: ReadonlyArray<Shortcut> = [
   {
-    kind: "Link",
     accent: "bg-[#e2f0ff] text-[#2f7df4]",
     description: "Connect Telegram or WhatsApp",
     icon: MessagesSquare,
@@ -29,14 +29,13 @@ const shortcuts: ReadonlyArray<Shortcut> = [
     to: "/settings/channels",
   },
   {
-    kind: "Explainer",
     accent: "bg-[#e2f0ff] text-[#2f7df4]",
-    description: "Control what your agent remembers",
-    icon: Brain,
-    title: "Memory",
+    description: "Connect apps and review pending actions",
+    icon: Plug,
+    title: "Integrations",
+    to: "/settings/integrations",
   },
   {
-    kind: "Link",
     accent: "bg-[#dcf7e9] text-[#28a66a]",
     description: "Data controls and privacy settings",
     icon: ShieldCheck,
@@ -44,91 +43,24 @@ const shortcuts: ReadonlyArray<Shortcut> = [
     to: "/settings/privacy",
   },
   {
-    kind: "Explainer",
     accent: "bg-[#f0e5ff] text-[#8a5be8]",
-    description: "Customize tone and response behavior",
+    description: "Review and manage learned preferences",
     icon: Sparkles,
-    title: "Response Style",
+    title: "Skills",
+    to: "/settings/skills",
   },
 ];
 
-/** Compact settings shortcuts that do not invent unsupported mutations. */
+/** Direct access to the Agent's available settings. */
 export function SettingsShortcuts() {
-  const [explainer, setExplainer] = useState<Shortcut | null>(null);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (explainer === null) triggerRef.current?.focus();
-    else closeButtonRef.current?.focus();
-  }, [explainer]);
-  const openExplainer = (shortcut: Shortcut, event: MouseEvent<HTMLButtonElement>) => {
-    triggerRef.current = event.currentTarget;
-    setExplainer(shortcut);
-  };
-  const closeExplainer = () => setExplainer(null);
-  const containDialogFocus = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeExplainer();
-      return;
-    }
-    if (event.key === "Tab") {
-      event.preventDefault();
-      closeButtonRef.current?.focus();
-    }
-  };
   return (
-    <>
-      <section
-        aria-label="Agent settings"
-        className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4"
-        inert={explainer !== null}
-      >
-        {shortcuts.map((shortcut) => {
-          const content = <ShortcutContent shortcut={shortcut} />;
-          return shortcut.kind === "Link" ? (
-            <Link className={shortcutClassName} key={shortcut.title} to={shortcut.to}>
-              {content}
-            </Link>
-          ) : (
-            <button
-              className={shortcutClassName}
-              key={shortcut.title}
-              type="button"
-              onClick={(event) => openExplainer(shortcut, event)}
-            >
-              {content}
-            </button>
-          );
-        })}
-      </section>
-      {explainer === null ? null : (
-        <div
-          aria-labelledby="unavailable-setting-title"
-          aria-modal="true"
-          className="absolute inset-0 z-50 grid place-items-center bg-[#52647d]/20 p-5 backdrop-blur-sm"
-          role="dialog"
-          onKeyDown={containDialogFocus}
-        >
-          <div className="w-full max-w-sm rounded-3xl border border-white/80 bg-white/92 p-6 text-center shadow-[0_24px_70px_rgba(45,68,110,0.24)]">
-            <h2 className="text-2xl font-bold text-[#101936]" id="unavailable-setting-title">
-              {explainer.title}
-            </h2>
-            <p className="mt-3 text-[#65718a]">
-              This control is not available yet. Osfo will show it here when it is supported.
-            </p>
-            <button
-              className="mt-5 min-h-11 rounded-xl bg-[#2f7df4] px-5 font-semibold text-white focus-visible:ring-2 focus-visible:ring-[#2f7df4] focus-visible:ring-offset-2 focus-visible:outline-none"
-              ref={closeButtonRef}
-              type="button"
-              onClick={closeExplainer}
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      )}
-    </>
+    <section aria-label="Agent settings" className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+      {shortcuts.map((shortcut) => (
+        <Link className={shortcutClassName} key={shortcut.title} to={shortcut.to}>
+          <ShortcutContent shortcut={shortcut} />
+        </Link>
+      ))}
+    </section>
   );
 }
 

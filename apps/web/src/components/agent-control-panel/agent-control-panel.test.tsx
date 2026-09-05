@@ -50,16 +50,6 @@ describe("OsfoAgentControlPanel", () => {
     expect(screen.getByRole("button", { name: /WhatsApp, Available/u })).toBeTruthy();
   });
 
-  it("exposes an operable receive-messages switch", async () => {
-    const user = userEvent.setup();
-    renderWithTestRouter(<OsfoAgentControlPanel />);
-    const receiveSwitch = screen.getByRole("switch", { name: "Receive Messages" });
-
-    expect(receiveSwitch.getAttribute("aria-checked")).toBe("true");
-    await user.click(receiveSwitch);
-    expect(receiveSwitch.getAttribute("aria-checked")).toBe("false");
-  });
-
   it("supports arrow-key selection in the primary-channel radio group", async () => {
     const user = userEvent.setup();
     renderWithTestRouter(<OsfoAgentControlPanel />);
@@ -71,18 +61,6 @@ describe("OsfoAgentControlPanel", () => {
     expect(screen.getByRole("button", { name: /Telegram, Preferred/u })).toBeTruthy();
   });
 
-  it("explains settings that are not supported instead of presenting inert controls", async () => {
-    const user = userEvent.setup();
-    renderWithTestRouter(<OsfoAgentControlPanel />);
-
-    await user.click(screen.getByRole("button", { name: /Memory/u }));
-    expect(screen.getByRole("dialog", { name: "Memory" })).toBeTruthy();
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close" }));
-    await user.keyboard("{Escape}");
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: /Memory/u }));
-  });
-
   it("restores saved browser preferences after remount", async () => {
     const user = userEvent.setup();
     const first = renderWithTestRouter(<OsfoAgentControlPanel />);
@@ -91,6 +69,14 @@ describe("OsfoAgentControlPanel", () => {
 
     renderWithTestRouter(<OsfoAgentControlPanel />);
     expect(screen.getByRole("radio", { name: "Telegram" }).matches(":checked")).toBe(true);
+  });
+
+  it("preserves the preferred channel from legacy browser settings without a delivery switch", () => {
+    localStorage.setItem("osfo-agent-control-preferences", "v1|telegram|off");
+    renderWithTestRouter(<OsfoAgentControlPanel />);
+
+    expect(screen.getByRole("radio", { name: "Telegram" }).matches(":checked")).toBe(true);
+    expect(screen.queryByRole("switch", { name: "Receive Messages" })).toBeNull();
   });
 
   it("degrades to safe in-memory defaults when browser storage is corrupt or unavailable", () => {
