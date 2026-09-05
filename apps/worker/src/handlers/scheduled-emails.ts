@@ -94,7 +94,7 @@ export const listApprovals = (
   currentUser: CurrentUserValue,
 ) =>
   rpc(
-    stub.listActionPresentations(agentId, actorFor(currentUser), "scheduled-email"),
+    () => stub.listActionPresentations(agentId, actorFor(currentUser), "scheduled-email"),
     ActionPresentationsFound,
   ).pipe(
     Effect.map(({ presentations }) => ({
@@ -137,7 +137,9 @@ const decideApproval = (
       ({ items }) => items.some(({ presentationId }) => presentationId === payload.presentationId),
       unavailable,
     ),
-    Effect.andThen(rpc(stub.decideActionApproval(agentId, request), ApprovalDecisionAccepted)),
+    Effect.andThen(
+      rpc(() => stub.decideActionApproval(agentId, request), ApprovalDecisionAccepted),
+    ),
     Effect.map(({ decision, presentationId }) => ({
       decision: decision === "canceled" ? ("rejected" as const) : decision,
       presentationId,
@@ -152,8 +154,8 @@ const actorFor = (currentUser: CurrentUserValue) => ({
   userId: currentUser.userId,
 });
 
-const rpc = <S extends Schema.Top>(promise: Promise<unknown>, schema: S) =>
-  Effect.tryPromise({ try: () => promise, catch: unavailable }).pipe(
+const rpc = <S extends Schema.Top>(invoke: () => Promise<unknown>, schema: S) =>
+  Effect.tryPromise({ try: invoke, catch: unavailable }).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(schema)),
     Effect.mapError(() => unavailable()),
   );
