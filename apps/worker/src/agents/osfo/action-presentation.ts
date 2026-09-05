@@ -60,6 +60,11 @@ export const scheduledEmailApprovalSelection: ActionApprovalSelection = {
   select: (pending) => pending.descriptor.action === scheduledEmailStartActionName,
 };
 
+export const reminderApprovalSelection: ActionApprovalSelection = {
+  maximum: 50,
+  select: (pending) => pending.descriptor.action === reminderManageActionName,
+};
+
 /** Model-visible input for one bounded Research Report admission. */
 export const ResearchReportStartInput = ResearchReport.Request;
 

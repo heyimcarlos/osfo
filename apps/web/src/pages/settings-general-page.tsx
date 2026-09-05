@@ -3,6 +3,11 @@ import { ChevronRight } from "lucide-react";
 
 const settings = [
   {
+    title: "Reminders",
+    description: "Review and approve the exact reminders Osfo has prepared.",
+    to: "/settings/reminders",
+  },
+  {
     title: "Messaging channels",
     description: "Connect Telegram or WhatsApp and manage linked accounts.",
     to: "/settings/channels",

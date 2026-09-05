@@ -18,3 +18,17 @@ it("enforces the exact 2,000 UTF-8 byte Reminder body boundary", () => {
   ).toBe(true);
   expect(Result.isFailure(Schema.decodeResult(ReminderManageInput)(createInput("")))).toBe(true);
 });
+
+it.each([
+  "tomorrow",
+  "2026-09-05",
+  "2026-09-05T12:00:00",
+  "2026-02-30T12:00:00.000Z",
+  "2026-09-05T25:00:00.000Z",
+])("rejects invalid or ambiguous Reminder time %s before Approval", (firstDueAt) => {
+  expect(
+    Result.isFailure(
+      Schema.decodeResult(ReminderManageInput)({ ...createInput("Remember this"), firstDueAt }),
+    ),
+  ).toBe(true);
+});

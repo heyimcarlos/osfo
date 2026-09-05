@@ -1,4 +1,5 @@
 import { action } from "@cloudflare/think";
+import { Effect, Schema } from "effect";
 import { tool, type ToolSet } from "ai";
 
 import { ActionId } from "../../domain/action-execution";
@@ -66,9 +67,17 @@ const reminderAction = (
     approvalSummary: "Create or materially change the exact Reminder shown",
     description:
       "Create, materially change, or reactivate one bounded one-time or fixed-elapsed recurring Reminder.",
-    execute: (input, context) => execute(input, ActionId.make(context.toolCallId)),
+    execute: (input, context) =>
+      Effect.runPromise(decodeReminderActionInput(input)).then((decoded) =>
+        execute(decoded, ActionId.make(context.toolCallId)),
+      ),
     idempotencyKey: ({ ctx }) => `reminder-manage:${ctx.toolCallId}`,
     inputSchema: effectToolSchema(ReminderManageInput),
     kind: "durable-pause",
     permissions: ["reminders:manage"],
   });
+
+/** Think resumes durable Actions with JSON input, while initial validation supplies a Date. */
+export const decodeReminderActionInput = Schema.decodeUnknownEffect(
+  Schema.Union([Schema.toType(ReminderManageInput), ReminderManageInput]),
+);

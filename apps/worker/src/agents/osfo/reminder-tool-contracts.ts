@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { DateTime, Option, Schema } from "effect";
 
 import { ReminderId } from "./reminders";
 
@@ -17,9 +17,20 @@ const ReminderBody = Schema.String.check(
 const ReminderRevision = Schema.Int.check(Schema.isGreaterThan(0));
 const ReminderInterval = Schema.Int.check(Schema.isGreaterThanOrEqualTo(86_400_000));
 
+const ReminderDueAt = Schema.String.check(
+  Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u),
+  Schema.makeFilter((value) => {
+    const parsed = DateTime.make(value);
+    return (
+      Option.isSome(parsed) &&
+      DateTime.formatIso(parsed.value) === value.replace(/(?<=:\d{2})Z$/u, ".000Z")
+    );
+  }),
+).pipe(Schema.decodeTo(Schema.DateFromString));
+
 const OneTimeFacts = {
   body: ReminderBody,
-  firstDueAt: Schema.DateFromString,
+  firstDueAt: ReminderDueAt,
 } as const;
 
 const RecurringFacts = {

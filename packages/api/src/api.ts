@@ -10,6 +10,7 @@ import { FilesGroup } from "./groups/files";
 import { AccountGroup } from "./groups/account";
 import { SkillsGroup } from "./groups/skills";
 import { IntegrationsGroup } from "./groups/integrations";
+import { RemindersGroup } from "./groups/reminders";
 import { ScheduledEmailsGroup } from "./groups/scheduled-emails";
 
 /** Shared HTTP contract implemented by the Worker and consumed by clients. */
@@ -23,6 +24,7 @@ export const Api = HttpApi.make("osfo")
   .add(IntegrationsGroup)
   .add(RegistrationGroup)
   .add(ResearchReportsGroup)
+  .add(RemindersGroup)
   .add(ScheduledEmailsGroup)
   .add(SkillsGroup)
   .annotateMerge(
@@ -162,3 +164,12 @@ export {
   skillDeletionConfirmation,
   skillDeletionPresentationVersion,
 } from "./groups/skills";
+
+export {
+  RemindersGroup,
+  RemindersUnavailable,
+  ReminderApproval,
+  ReminderApprovals,
+  ReminderApprovalDecision,
+  ReminderApprovalDecisionAccepted,
+} from "./groups/reminders";

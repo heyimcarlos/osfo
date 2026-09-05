@@ -129,6 +129,14 @@ const settingsIntegrationsRoute = createRoute({
     "SettingsIntegrationsPage",
   ),
 });
+const settingsRemindersRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "settings/reminders",
+  component: lazyRouteComponent(
+    () => import("./pages/settings-reminders-page"),
+    "SettingsRemindersPage",
+  ),
+});
 const settingsPrivacyRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "settings/privacy",
@@ -197,6 +205,7 @@ const routeTree = rootRoute.addChildren([
       settingsGeneralRoute,
       settingsChannelsRoute,
       settingsIntegrationsRoute,
+      settingsRemindersRoute,
       settingsPrivacyRoute,
       settingsProfileRoute,
       settingsBillingRoute,

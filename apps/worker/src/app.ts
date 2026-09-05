@@ -126,7 +126,7 @@ const adaptBindings = (env: CloudflareEnv, config: CloudflareConfig): Bindings =
         listActionPresentations: (
           agentId,
           actor,
-          selection?: "immediate-gmail" | "scheduled-email",
+          selection?: "immediate-gmail" | "scheduled-email" | "reminder",
         ) => directory.listActionPresentations(agentId, actor, selection),
         decideActionApproval: (agentId, input) => directory.decideActionApproval(agentId, input),
         changePersonalSkill: (agentId, input) => directory.changePersonalSkill(agentId, input),

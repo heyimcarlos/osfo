@@ -52,6 +52,10 @@ short, specific, and actionable.
 - A provider effect creates a fresh Integration Session. Do not compare that
   Session with the retained browsing Session when binding send evidence; use the
   exact Action request, provider log, resource, and approved Connection identities.
+
+- Run package Vitest configurations from the package directory. Passing a package
+  config from the repository root leaves its relative test include paths rooted
+  in the wrong directory and can report that no test files exist.
 - Do not hold a deletion-fence semaphore while dispatching an approved Action
   that acquires the same fence. Track the outer dispatch so nested admission can
   proceed and deletion can still abort and drain both lifetimes. A Promise timeout
