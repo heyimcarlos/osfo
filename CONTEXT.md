@@ -508,12 +508,12 @@ same route.
 _Avoid_: New Session, Forget Knowledge, context compaction
 
 **AgentEvent**:
-An event emitted while an AgentRun executes. An AgentEvent becomes a
+An event emitted while a Think Submission executes. An AgentEvent becomes a
 Session event only when it represents a durable conversational fact.
 _Avoid_: Session history, provider event
 
 **AssistantOutput**:
-One identified, client-visible assistant response attempt within an AgentRun.
+One identified, client-visible assistant response attempt within a Think Submission.
 It terminates as completed or interrupted; a retry is a new AssistantOutput.
 _Avoid_: Provider response, final result, output chunk
 
@@ -537,196 +537,56 @@ work. Osfo v1 does not create AgentRuns or use them as recovery authority; Think
 Submission owns that lifecycle.
 _Avoid_: Think Submission, current Osfo execution record
 
-**AgentRunSucceeded**:
-The terminal event stating that one AgentRun completed successfully.
-
-**AgentRunFailed**:
-The terminal event stating that one AgentRun failed with a normalized,
-client-safe cause.
-
-**Proactive AgentRun**:
-An AgentRun admitted from an authorized durable trigger rather than a new user
-message. It creates new conversational work and does not resume or continue the
-AgentRun that originally scheduled the trigger.
-_Avoid_: Detached Workflow, continuation AgentRun, direct ThreadEvent append
-
-**Child AgentRun**:
-An AgentRun admitted by another AgentRun through a fenced, idempotent admission.
-It has its own durable identity and stable parent and root lineage. It is created
-atomically with its typed input and join membership and is independently
-dispatchable within the root run's delegation limits. It receives an immutable,
-versioned input contract and exposes one typed terminal outcome; its parent does
-not consume the child's internal interaction history or execution state. Its
-ModelCalls, ToolCalls, and assistant text are not canonical parent Session
-conversation; only explicit child lifecycle facts may be promoted.
-_Avoid_: In-process task, continuation AgentRun, WorkflowInstance
-
-**ChildJoin**:
-The Osfo-owned durable condition correlating one parent AgentRun with a stable
-set of Child AgentRuns and their typed terminal outcomes. `AllTerminal` satisfies
-when every child is terminal. `FirstSuccessful` satisfies on the first committed
-success, or with aggregate failure when no child succeeds. A ChildJoin wakes its
-parent exactly once. It may have an Osfo-owned durable deadline that settles the
-join with a typed timeout outcome without discarding already committed child
-outcomes; late outcomes cannot reopen a settled join. Accepting a child's
-terminal outcome atomically advances the join and, when newly satisfied, wakes
-the parent.
-_Avoid_: WorkflowInstance, generic condition expression, child AgentRun
-
 **ModelCall**:
-One identified logical model operation within an AgentRun. Its typed intent is
-durable before dispatch, it may have multiple ModelCallAttempts, and it has
-exactly one final normalized semantic outcome. Raw provider payloads are not
-recovery authority.
-_Avoid_: ModelCallAttempt, AgentRun, AssistantOutput, provider request
+One logical model operation within a Think Submission. Think owns turn
+execution; Osfo owns model policy and usage accounting.
+_Avoid_: ModelCallAttempt, Think Submission, AssistantOutput
 
 **ModelCallAttempt**:
-One recorded, accountable logical provider request for a ModelCall. It may
-reconnect or resume the same provider operation, but issuing another logical
-request requires another attempt; each attempt records its binding, outcome,
-and Reported, Estimated, or Unknown usage. Reported input, output, and optional
-reasoning units preserve the provider's separate measures; Osfo does not infer
-that reasoning units are a subset of output units.
+One accountable provider request identified by its Think Submission and model
+step. Its usage evidence distinguishes observed usage, no provider contact, and
+an ambiguous outcome that requires conservative accounting.
 _Avoid_: ModelCall, TCP connection, hidden SDK retry
 
-**ModelCallExecutor**:
-The Osfo-owned execution interface that accepts one committed ModelCallAttempt
-and emits normalized observations without owning ModelCall retry or lifecycle
-policy. Concrete Model Adapters implement this interface.
-_Avoid_: Agent Runtime, model provider, uncommitted ModelCall
-
 **Model Adapter**:
-A concrete integration that translates one Osfo-owned ModelCallAttempt into a
-provider protocol and normalizes provider observations and outcomes back into
-Osfo-owned values through ModelCallExecutor. It owns protocol translation and
-provider conformance, but never AgentRun lifecycle, retry policy, canonical
-Session state, credentials in durable records, or provider selection policy.
-OpenRouter is one Model Adapter that Osfo can select, not an Osfo runtime
-dependency or the identity of Osfo.
-_Avoid_: Agent Runtime, model router, provider SDK wrapper
+The integration that translates a managed model request into a provider protocol
+and normalizes its response and usage evidence. It does not own Session history,
+Think Submission lifecycle, or Osfo's model selection policy.
+_Avoid_: Agent Harness, model policy, conversation owner
 
 **ToolCall**:
-One identified logical tool operation within an AgentRun. Its durable intent is
-committed once, bounded execution retries retain the same identity, and exactly
-one terminal semantic outcome is committed. A ToolCall remains within its
-AgentRun only while its lifecycle is bounded by that run; independently durable
-work starts a WorkflowInstance. When its result is required for continuation,
-the ToolCall remains logically open while the same AgentRun waits and completes
-only when the typed workflow outcome is accepted. Execution-attempt details do
-not create duplicate conversational events.
-_Avoid_: Tool execution attempt, tool result, WorkflowInstance
-
-**Agent Runtime**:
-The authority-free decision module that examines a derived view of recorded
-AgentRun state and proposes one typed next step. It never invokes models,
-executes tools, or directly commits AgentRun lifecycle or canonical Session
-state.
-_Avoid_: Agent provider, model provider, AgentRun manager, worker
-
-**ExecutionProfileRef**:
-An immutable versioned reference pinned by an AgentRun to Osfo's runtime
-behavior, model policy, prompt rules, tool schemas, and initial execution limits.
-Osfo owns each concrete profile, its manifest schema, and its interpretation.
-_Avoid_: RuntimeCheckpointRef, mutable configuration, credential reference
-
-**AgentRunAttempt**:
-One fenced worker execution of an AgentRun, identified by the AgentRun and its
-claim epoch. A new attempt changes execution authority without changing the
-AgentRun identity. Direct takeover after lease expiry creates a new attempt
-without consuming operation retry budget.
-_Avoid_: AgentRun, operation retry, resumed process, sandbox session
-
-**Pending AgentRun**:
-An AgentRun lifecycle state that is immediately eligible for a new claim when
-compatible execution capacity is available. Newly accepted and newly awakened
-AgentRuns enter this state.
-_Avoid_: Waiting AgentRun, Retry-ready AgentRun, running worker
-
-**Running AgentRun**:
-An AgentRun lifecycle state with a current fenced AgentRunAttempt and finite
-lease. Lease expiry permits direct takeover through a new claim epoch.
-_Avoid_: Worker process, sandbox session, operation retry
-
-**AgentRunCancellationRequested**:
-A ThreadEvent recording that durable cancellation won for a non-terminal
-AgentRun. If active work exists, the AgentRun remains Running while normal
-completion, ordinary output, and new child work are closed and bounded cleanup
-proceeds.
-
-**AgentRunCanceled**:
-The terminal ThreadEvent stating that one AgentRun was canceled, together with
-its completed or deadline-exceeded cleanup disposition and whether external work
-may continue.
-
-**Waiting AgentRun**:
-An AgentRun lifecycle state in which the run is non-runnable until one
-referenced durable wake condition is satisfied, after which it becomes a
-Pending AgentRun. Waiting does not create a separate work identity.
-_Avoid_: AgentRunWait, paused worker, sandbox pause, WorkflowInstance
+One tool invocation within a Think Submission. Its tool definition owns its
+input, result, and consequence class. A Workflow owns work that must continue
+independently of the Submission.
+_Avoid_: Tool execution attempt, tool result, Workflow
 
 **Declared Wait**:
-A client-visible durable suspension of one Waiting AgentRun, identified by one
-WaitId and correlated with one typed wake subject. It resolves once as
-satisfied, timed out, or canceled without becoming a separate work identity.
-_Avoid_: Waiting AgentRun, retry delay, Approval Request, WorkflowInstance
+A client-visible wait owned by a Think Submission or Workflow. It does not
+create a separate execution identity or make Osfo the owner of Think recovery.
+_Avoid_: Retry delay, Approval Request, separate work identity
 
 **User-visible Progress**:
-An explicitly promoted bounded update to one open ToolCall, WorkflowInstance,
-or Child AgentRun. It is a conversational fact, not operational telemetry or a
-separate work identity.
+An explicitly promoted bounded update to one open ToolCall or Workflow. It is a
+conversational fact, not operational telemetry or a separate work identity.
 _Avoid_: Runtime log, retry status, metric, progress entity
 
-**Retry-ready AgentRun**:
-An AgentRun lifecycle state following a classified retryable failure. It is
-claimable only after its eligible time and backoff requirements are satisfied,
-and it carries the applicable operation retry-budget effect. Claiming it does
-not require an intermediate Pending AgentRun transition.
-_Avoid_: Lease takeover, Waiting AgentRun, new AgentRun
-
-**RuntimeCheckpointRef**:
-An optional durable reference to agent-runtime-defined continuation state. It
-may accelerate compatible continuation but is never the sole authority for
-Osfo recovery.
-_Avoid_: AgentRunCheckpoint, ThreadEvent, SandboxRef
-
-**RunCode**:
-A bounded, Python-first ToolCall that creates one disposable E2B Sandbox,
-stages immutable source and logically named Client Content inputs, executes one
-supervised process tree, exports explicitly selected verified results, and
-destroys the Sandbox. It never hosts the Agent Runtime or durable coordination.
-_Avoid_: Bash terminal, AgentRun workspace, persistent workspace, subagent runtime
-
 **Sandbox**:
-An isolated E2B execution environment owned by exactly one RunCode ToolCall.
-It never owns AgentRun lifecycle, recovery authority, durable waits, ChildJoin
-coordination, or authoritative artifacts.
-_Avoid_: Session workspace, User workspace, worker environment, Agent Runtime
-
-**Sandbox Profile**:
-An immutable, versioned declaration of the sandbox capabilities, resource and
-network policy, exact E2B template build, and SDK compatibility required by an
-Execution Profile. Compatibility is validated exactly rather than negotiated
-while an AgentRun executes.
-_Avoid_: Runtime capability probe, mutable sandbox configuration, provider session
-
-**SandboxRef**:
-An optional durable reference to sandbox-provider-defined execution environment
-state. It is a possible future restoration accelerator, never AgentRun recovery
-authority or the sole reference to an authoritative artifact. Disposable v1
-RunCode ToolCalls do not create or restore SandboxRefs.
-_Avoid_: RuntimeCheckpointRef, AgentRunCheckpoint, paused AgentRun
+A temporary isolated environment for bounded file and artifact computation.
+It owns no conversation or recovery state; authoritative output is retained as
+Client Content before disposal.
+_Avoid_: Session workspace, User workspace, Agent Harness
 
 **ArtifactRef**:
 An immutable durable domain value containing a Client Content reference plus a
 versioned artifact role and interpretation. It has no separate identity; its
 client projection is the contained ClientContentRefV1. Authoritative sandbox
 content is race-safely snapshotted, exported, and verified before commitment.
-_Avoid_: Sandbox path, SandboxRef, RuntimeCheckpointRef
+_Avoid_: Sandbox path, provider handle, recovery checkpoint
 
 **Operation Gate**:
 The effective authorization outcome for one exact committed Action:
 `deny`, `require approval`, or `permit`, ordered from strictest to weakest. The
-Osfo-owned Authorization Policy sets the governing policy; the Agent Runtime may
+Osfo-owned Authorization Policy sets the governing policy; the Agent Harness may
 require a stricter outcome from instruction evidence but can never weaken policy.
 An instruction such as "do not confirm" is not authority.
 
@@ -751,7 +611,7 @@ The semantic classification of one exact, durably committed effectful ToolCall.
 Its versioned tool definition owns that classification. It reuses the ToolCall
 identity, has a stable idempotency key, may require Approval, and terminates as
 applied, not applied, or unresolved. A read-only ToolCall is not an Action, and
-the Agent Runtime cannot weaken either classification.
+the Agent Harness cannot weaken either classification.
 _Avoid_: ExternalEffectObligation, separate effect identity, mutable intent
 
 **Action Success Boundary**:

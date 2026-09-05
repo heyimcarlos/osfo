@@ -37,3 +37,9 @@ short, specific, and actionable.
 - Before claiming a provider boundary is not composed, trace the active
   configuration path through the app and composition roots, and distinguish a
   production wiring defect from missing local-verification parity.
+- Tests of an isolated module do not prove production integration. Trace its
+  callers from the Worker, Agent, or Workflow entry point before treating its
+  policy or safety checks as implemented product behavior.
+- The verification observer serves its own readiness response at `/health`.
+  Test the product health contract with `test/wrangler.runtime.jsonc`, whose
+  entry point is the production Worker.

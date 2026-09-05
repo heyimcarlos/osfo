@@ -1,10 +1,8 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { Effect, Result, Schema } from "effect";
 
-import { runInvocationEffect } from "../adapters/host";
 import { DocumentBuildComposition } from "../composition/document-build";
 import { decodeOsfoStage } from "../config";
-import { makeWorkflowRuntime } from "../layers";
 import { DocumentBuild } from "../services/document-build";
 import { DocumentBuildDocument } from "../services/document-build-document";
 import { DocumentBuildFollowUp } from "../services/document-build-follow-up";
@@ -185,8 +183,7 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
 
   #settleCanceled(payload: DocumentBuild.WorkflowPayload) {
     const bindings = DocumentBuildComposition.bindingsFromEnv(this.env);
-    return runInvocationEffect(
-      makeWorkflowRuntime(),
+    return Effect.runPromise(
       DocumentBuildComposition.executionEffect(
         bindings,
         DocumentBuildComposition.makePreviewReadyFollowUpCommitter(bindings),
@@ -202,8 +199,7 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
 
   #recoverPublication(payload: DocumentBuild.WorkflowPayload) {
     const bindings = DocumentBuildComposition.bindingsFromEnv(this.env);
-    return runInvocationEffect(
-      makeWorkflowRuntime(),
+    return Effect.runPromise(
       DocumentBuildComposition.executionEffect(
         bindings,
         DocumentBuildComposition.makePreviewReadyFollowUpCommitter(bindings),
@@ -249,8 +245,7 @@ export class DocumentBuildTimerWorkflow extends WorkflowEntrypoint<
       followUps: DocumentBuildFollowUp.Interface,
     ) => Effect.Effect<A, DocumentBuildFollowUp.Conflict | DocumentBuildFollowUp.Unavailable>,
   ) {
-    return runInvocationEffect(
-      makeWorkflowRuntime(),
+    return Effect.runPromise(
       DocumentBuildComposition.followUpEffect(
         { DB: this.env.DB },
         DocumentBuildFollowUp.Service.pipe(

@@ -1,4 +1,4 @@
-import { Layer, type ManagedRuntime } from "effect";
+import { Layer } from "effect";
 
 import { BillingHandlers } from "./handlers/billing";
 import { AccountHandlers } from "./handlers/account";
@@ -11,14 +11,12 @@ import { FilesHandlers } from "./handlers/files";
 import { SkillsHandlers } from "./handlers/skills";
 import { IntegrationHandlers } from "./handlers/integrations";
 import { ScheduledEmailHandlers } from "./handlers/scheduled-emails";
-import type { ExecutionUnit } from "./layers";
 import { publicWebBaseUrl, type CloudflareConfig } from "./config";
 import { AccountDeletionComposition } from "./composition/account-deletion";
 import { SupermemoryMemoryProvider } from "./integrations/supermemory/memory-provider";
 
 /** Implement every typed Osfo API group. */
 export const layer = (
-  runtime: ManagedRuntime.ManagedRuntime<ExecutionUnit, never>,
   config: CloudflareConfig,
   bindings: AccountDeletionComposition.Bindings &
     SkillsHandlers.Bindings &
@@ -35,7 +33,7 @@ export const layer = (
     ChannelLinksHandlers.layer,
     DocumentBuildHandlers.layer,
     FilesHandlers.layer(bindings),
-    HealthHandlers.layer(runtime),
+    HealthHandlers.layer(config.stage),
     IntegrationHandlers.layer(
       bindings,
       new URL("/settings/integrations", publicWebBaseUrl(config.auth)),
