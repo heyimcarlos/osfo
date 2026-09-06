@@ -110,6 +110,9 @@ describe("hosted browser ownership and durable dispatch", () => {
           "https://10.0.0.1/",
           "https://[::1]/",
           "https://thing.local/",
+          "https://localhost./",
+          "https://thing.local./",
+          "https://service.internal.:8443/",
           "https://user:password@portal.example/",
           "http://portal.example/",
         ]) {

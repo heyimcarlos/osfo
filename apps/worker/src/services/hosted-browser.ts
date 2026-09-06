@@ -413,10 +413,14 @@ export const make = (options: Options) => {
 
 export * as HostedBrowser from "./hosted-browser";
 
-const isPublicHostname = (hostname: string): boolean =>
-  hostname.includes(".") &&
-  !hostname.startsWith("[") &&
-  !/^\d+\.\d+\.\d+\.\d+$/.test(hostname) &&
-  !["localhost", "local", "internal"].some(
-    (suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`),
+const isPublicHostname = (hostname: string): boolean => {
+  const host = hostname.replace(/\.+$/, "");
+  return (
+    host.includes(".") &&
+    !host.startsWith("[") &&
+    !/^\d+\.\d+\.\d+\.\d+$/.test(host) &&
+    !["localhost", "local", "internal"].some(
+      (suffix) => host === suffix || host.endsWith(`.${suffix}`),
+    )
   );
+};

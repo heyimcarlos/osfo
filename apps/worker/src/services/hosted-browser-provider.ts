@@ -352,12 +352,14 @@ const restrictNetwork = Effect.fn("HostedBrowserProvider.restrictNetwork")(funct
           "file://*",
           "ftp://*",
           "*://[*",
-          ...["localhost", "local", "internal"].flatMap((host) => [
-            `*://${host}/*`,
-            `*://${host}:*/*`,
-            `*://*.${host}/*`,
-            `*://*.${host}:*/*`,
-          ]),
+          ...["localhost", "local", "internal"]
+            .flatMap((host) => [host, `${host}.`])
+            .flatMap((host) => [
+              `*://${host}/*`,
+              `*://${host}:*/*`,
+              `*://*.${host}/*`,
+              `*://*.${host}:*/*`,
+            ]),
           ...[
             "0.*",
             "10.*",

@@ -1,7 +1,7 @@
 /* oxlint-disable vitest/no-standalone-expect -- Effect Vitest it.effect callbacks are test bodies. */
 import { beforeEach, describe, expect, it } from "@effect/vitest";
 import type { BrowserBinding, CdpSession } from "agents/browser";
-import { Effect, Fiber } from "effect";
+import { Effect, Fiber, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { vi } from "vitest";
 import { HostedBrowserProvider } from "./hosted-browser-provider";
@@ -110,6 +110,35 @@ describe("hosted browser provider", () => {
       yield* Effect.flip(provider().open("session", url));
       expect(sdk.send.mock.calls.some(([method]) => method === "Page.navigate")).toBe(false);
       expect(sdk.disconnect).toHaveBeenCalledOnce();
+    }),
+  );
+
+  it.effect("blocks absolute local DNS names while retaining public resource requests", () =>
+    Effect.gen(function* () {
+      yield* provider().open("session", url);
+      const blocked = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ urls: Schema.Array(Schema.String) }),
+      )(sdk.send.mock.calls.find(([method]) => method === "Network.setBlockedURLs")?.[1]);
+      const patterns = blocked.urls.map(
+        (pattern) =>
+          new RegExp(
+            `^${pattern
+              .split("*")
+              .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+              .join(".*")}$`,
+          ),
+      );
+      for (const destination of [
+        "https://localhost./",
+        "https://localhost.:8443/",
+        "https://thing.local./",
+        "https://service.internal.:8443/",
+      ]) {
+        expect(patterns.some((pattern) => pattern.test(destination))).toBe(true);
+      }
+      for (const destination of ["https://cdn.example/assets.js", "https://local.example/"]) {
+        expect(patterns.some((pattern) => pattern.test(destination))).toBe(false);
+      }
     }),
   );
 
