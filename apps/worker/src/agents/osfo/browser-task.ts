@@ -55,6 +55,9 @@ export type Task = typeof Task.Type;
 const encodeTask = Schema.encodeSync(Task);
 
 export interface Options {
+  readonly activeTaskIds: (
+    userId: UserId,
+  ) => Effect.Effect<ReadonlyArray<string>, Browser.BrowserUnavailable>;
   readonly cleanup: (userId: UserId) => Effect.Effect<void, Browser.BrowserUnavailable>;
   readonly storage: DurableObjectStorage;
   readonly binding: (userId: UserId) => Browser.Binding | null;
@@ -217,8 +220,9 @@ export const make = (options: Options) => {
         _tag: "Outcome",
         operationId: inspection.operationId,
       });
+      const activeTaskIds = new Set(yield* options.activeTaskIds(inspection.userId));
       const rows = yield* Effect.tryPromise({
-        try: () => options.storage.list({ prefix: "browser-task:", limit: 100 }),
+        try: () => options.storage.list({ prefix: "browser-task:" }),
         catch: unavailable,
       });
       const tasks = yield* Effect.forEach(Array.from(rows.values()), (value) =>
@@ -228,13 +232,16 @@ export const make = (options: Options) => {
       const owned = tasks
         .filter((task) => task.userId === inspection.userId)
         .map((task) => expireObservation(task, now));
-      return [...owned.filter((task) => !task.closed), ...owned.filter((task) => task.closed)]
+      return [
+        ...owned.filter((task) => activeTaskIds.has(task.taskId)),
+        ...owned.filter((task) => !activeTaskIds.has(task.taskId)),
+      ]
         .slice(0, 4)
         .map((task) => ({
           taskId: task.taskId,
           requestText: task.requestText,
           startUrl: task.startUrl,
-          closed: task.closed,
+          closed: !activeTaskIds.has(task.taskId),
           observation:
             task.observation === null
               ? null

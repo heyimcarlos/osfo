@@ -40,6 +40,7 @@ it.effect(
             let admitted = true;
             let now = 1;
             const options: BrowserTask.Options = {
+              activeTaskIds: () => Effect.succeed([first.operationId]),
               storage: state.storage,
               binding: () => binding,
               now: Effect.sync(() => now),
@@ -61,7 +62,7 @@ it.effect(
                     observation: {
                       taskId: request.taskId,
                       observationId: request.operationId,
-                      observedAt: 1,
+                      observedAt: now,
                       url: "https://portal.example/book",
                       text: "  1 AXButton Confirm appointment",
                     },
@@ -147,6 +148,48 @@ it.effect(
               .read(first.operationId, UserId.make("other-owner"))
               .pipe(Effect.flip);
             expect(other._tag).toBe("BrowserUnavailable");
+
+            // The hosted expiry alarm closes physical sessions independently of retained intent.
+            // More than 100 older rows must not hide the one current browser after a new Session.
+            yield* Effect.promise(() =>
+              state.storage.put(
+                Object.fromEntries(
+                  Array.from({ length: 105 }, (_, index) => {
+                    const taskId = `history-${String(index).padStart(3, "0")}`;
+                    return [
+                      `browser-task:${taskId}`,
+                      {
+                        ...opened,
+                        taskId,
+                        closed: false,
+                        observation: null,
+                        lastRequest: { ...opened.lastRequest, taskId, operationId: taskId },
+                      },
+                    ];
+                  }),
+                ),
+              ),
+            );
+            now = 600_001;
+            const current = yield* tasks.open(
+              { ...next, operationId: "zz-live-task" },
+              "https://portal.example/book",
+              requestText,
+            );
+            const currentSession = BrowserTask.make({
+              ...options,
+              activeTaskIds: () => Effect.succeed([current.taskId]),
+            });
+            const currentList = yield* currentSession.list(next);
+            expect(currentList[0]).toMatchObject({
+              taskId: current.taskId,
+              requestText,
+              startUrl: current.startUrl,
+              closed: false,
+              observation: { observationId: current.taskId },
+            });
+            expect(currentList.filter((task) => !task.closed)).toHaveLength(1);
+            expect(currentList.slice(1).every((task) => task.closed)).toBe(true);
             admitted = false;
             expect(
               (yield* resumed.run(next, first.operationId, { _tag: "Observe" }).pipe(Effect.flip))
