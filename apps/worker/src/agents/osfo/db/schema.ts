@@ -117,6 +117,18 @@ const planPolicyVersion = customType<{ data: PlanPolicyVersion; driverData: stri
 });
 const plan = customType<{ data: Plan; driverData: string }>({ dataType: () => "text" });
 
+/** Immutable ingress identity retained after native Think acceptance. */
+export const messengerAcceptanceReceipts = sqliteTable(
+  "osfo_messenger_acceptance_receipts",
+  {
+    submission_id: thinkSubmissionId().primaryKey(),
+    receipt_json: text().notNull(),
+    input_digest: text().notNull(),
+    session_id: sessionId().notNull(),
+  },
+  (table) => [index("osfo_messenger_receipts_by_session").on(table.session_id)],
+);
+
 /** Ordered provider work retained until its external effect is confirmed. */
 export const memoryProviderOutbox = sqliteTable(
   "osfo_memory_provider_outbox",

@@ -78,6 +78,7 @@
   },
   "patchedDependencies": {
     "@cloudflare/think@0.15.1": "patches/@cloudflare%2Fthink@0.15.1.patch",
-    "@executor-js/plugin-mcp@1.6.8": "patches/@executor-js%2Fplugin-mcp@1.6.8.patch"
+    "@executor-js/plugin-mcp@1.6.8": "patches/@executor-js%2Fplugin-mcp@1.6.8.patch",
+    "agents@0.20.1": "patches/agents@0.20.1.patch"
   }
 }

@@ -214,3 +214,420 @@ index f863d18..2d6edd8 100644
  ): MessengerReplySnapshot;
  declare function parseMessengerReplySnapshot(
    snapshot: unknown
+diff --git a/dist/think.js b/dist/think.js
+--- a/dist/think.js
++++ b/dist/think.js
+@@ -964,6 +964,7 @@
+ 		this._actionLedgerTableEnsured = false;
+ 		this._actionPendingTableEnsured = false;
+ 		this._drainingSubmissions = false;
++		this._submissionWaiters = new Map();
+ 		this._drainingWorkflowNotifications = false;
+ 		this._submissionAbortControllers = /* @__PURE__ */ new Map();
+ 		this._programmaticStreamErrors = /* @__PURE__ */ new Map();
+@@ -5203,6 +5204,23 @@
+ 			} catch (error) {
+ 				console.error("[Think] onSubmissionStatus failed", error);
+ 			}
++		});
++		const waiters = this._submissionWaiters.get(inspection.submissionId);
++		if (waiters && this._isTerminalSubmissionStatus(inspection.status)) {
++			this._submissionWaiters.delete(inspection.submissionId);
++			for (const resolve of waiters) resolve(inspection);
++		}
++	}
++	waitForSubmission(submissionId) {
++		this._ensureSubmissionTable();
++		const row = this._readSubmission(submissionId);
++		if (!row) return Promise.reject(new Error("Submission does not exist"));
++		const inspection = this._inspectionFromSubmissionRow(row);
++		if (this._isTerminalSubmissionStatus(inspection.status)) return Promise.resolve(inspection);
++		return new Promise((resolve) => {
++			const waiters = this._submissionWaiters.get(submissionId) ?? new Set();
++			waiters.add(resolve);
++			this._submissionWaiters.set(submissionId, waiters);
+ 		});
+ 	}
+ 	onSubmissionStatus(_submission) {}
+diff --git a/dist/index-s3Pl812H.d.ts b/dist/index-s3Pl812H.d.ts
+--- a/dist/index-s3Pl812H.d.ts
++++ b/dist/index-s3Pl812H.d.ts
+@@ -2929,6 +2929,7 @@
+   private _hasPendingWorkflowNotifications;
+   private _drainWorkflowNotifications;
+   private _scheduleWorkflowNotificationAlarm;
++  waitForSubmission(submissionId: string): Promise<ThinkSubmissionInspection>;
+   inspectSubmission(
+     submissionId: string
+   ): Promise<ThinkSubmissionInspection | null>;
+diff --git a/dist/think.js b/dist/think.js
+--- a/dist/think.js
++++ b/dist/think.js
+@@ -5211,16 +5211,30 @@
+ 			for (const resolve of waiters) resolve(inspection);
+ 		}
+ 	}
+-	waitForSubmission(submissionId) {
++	waitForSubmission(submissionId, options) {
+ 		this._ensureSubmissionTable();
+ 		const row = this._readSubmission(submissionId);
+ 		if (!row) return Promise.reject(new Error("Submission does not exist"));
+ 		const inspection = this._inspectionFromSubmissionRow(row);
+ 		if (this._isTerminalSubmissionStatus(inspection.status)) return Promise.resolve(inspection);
+-		return new Promise((resolve) => {
++		const signal = options?.signal;
++		if (signal?.aborted) return Promise.reject(signal.reason);
++		return new Promise((resolve, reject) => {
+ 			const waiters = this._submissionWaiters.get(submissionId) ?? new Set();
+-			waiters.add(resolve);
++			const finish = (value) => {
++				signal?.removeEventListener("abort", abort);
++				waiters.delete(finish);
++				if (waiters.size === 0) this._submissionWaiters.delete(submissionId);
++				resolve(value);
++			};
++			const abort = () => {
++				waiters.delete(finish);
++				if (waiters.size === 0) this._submissionWaiters.delete(submissionId);
++				reject(signal.reason);
++			};
++			waiters.add(finish);
+ 			this._submissionWaiters.set(submissionId, waiters);
++			signal?.addEventListener("abort", abort, { once: true });
+ 		});
+ 	}
+ 	onSubmissionStatus(_submission) {}
+diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
+--- a/dist/chat-sdk-iuBa-CGM.js
++++ b/dist/chat-sdk-iuBa-CGM.js
+@@ -245,7 +245,7 @@
+ 		turnEnded: stage === "completed"
+ 	};
+ }
+-function messengerReplySnapshot(stage, event, thread, tag, userMessage) {
++function messengerReplySnapshot(stage, event, thread, tag, userMessage, acceptance) {
+ 	const snapshotUserMessage = userMessage === void 0 ? void 0 : {
+ 		...userMessage,
+ 		metadata: { messenger: messengerContextFromEvent(event) }
+@@ -256,7 +256,8 @@
+ 		tag: tag ?? defaultDeliveryTag(stage),
+ 		thread,
+ 		type: MESSENGER_REPLY_FIBER_NAME,
+-		userMessage: snapshotUserMessage
++		userMessage: snapshotUserMessage,
++		acceptance
+ 	};
+ }
+ function parseMessengerReplySnapshot(snapshot) {
+@@ -269,7 +270,8 @@
+ 		tag: candidate.tag ?? defaultDeliveryTag(candidate.stage),
+ 		thread: candidate.thread,
+ 		type: MESSENGER_REPLY_FIBER_NAME,
+-		userMessage: candidate.userMessage
++		userMessage: candidate.userMessage,
++		acceptance: candidate.acceptance
+ 	};
+ }
+ function messengerReplyRecoveryMode(snapshot) {
+@@ -293,7 +295,7 @@
+ 	});
+ 	const callback = new TextStreamCallback({
+ 		onVisibleStart: async () => {
+-			await checkpoint(messengerReplySnapshot("streaming", snapshotEvent, options.snapshotThread, void 0, options.userMessage));
++			await checkpoint(messengerReplySnapshot("streaming", snapshotEvent, options.snapshotThread, void 0, options.userMessage, options.acceptance));
+ 		},
+ 		visibleSoftLimit: options.policy?.visibleSoftLimit
+ 	});
+@@ -318,7 +320,7 @@
+ 			callback.close();
+ 			await post.catch(() => void 0);
+ 			await options.surface.post(interruptedResponseText).catch(() => void 0);
+-			await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage));
++			await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage, options.acceptance));
+ 			return;
+ 		}
+ 		completedModelTurn = true;
+@@ -326,22 +328,22 @@
+ 		await post;
+ 		if (!callback.hasText()) await options.surface.post(emptyResponseText);
+ 		for (const chunk of options.policy?.splitText?.(callback.remainingText()) ?? []) await options.surface.post(chunk);
+-		await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage));
++		await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage, options.acceptance));
+ 	} catch (error) {
+ 		callback.fail(error);
+ 		await post.catch(() => void 0);
+ 		const failureMode = messengerReplyFailureMode(callback.hasText(), completedModelTurn, options.policy?.isExpectedDeliveryCompletion?.(error, callback));
+ 		if (failureMode === null) {
+-			await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage));
++			await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage, options.acceptance));
+ 			return;
+ 		}
+ 		if (failureMode === "apologize") {
+ 			await options.surface.post(interruptedResponseText).catch(() => void 0);
+-			await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage));
++			await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage, options.acceptance));
+ 			return;
+ 		}
+ 		await options.surface.post({ markdown: errorResponseText }).catch(() => void 0);
+-		await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage));
++		await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage, options.acceptance));
+ 	}
+ }
+ function toError(error) {
+@@ -403,7 +405,14 @@
+ 		}
+ 		const chat = this.chat ?? this.createChat();
+ 		this.chat = chat;
+-		return chat.webhooks[definition.adapterName](request);
++		const pending = [];
++		const response = await chat.webhooks[definition.adapterName](request, { waitUntil: (task) => pending.push(task) });
++		try {
++			await Promise.all(pending);
++			return response;
++		} catch {
++			return new Response("Message acceptance unavailable", { status: 503 });
++		}
+ 	}
+ 	async handleFiberRecovery(ctx) {
+ 		if (ctx.name !== "think:messenger-reply") return false;
+@@ -419,7 +428,7 @@
+ 					snapshot: nextSnapshot,
+ 					status: nextSnapshot.stage === "completed" ? "completed" : "interrupted"
+ 				});
+-			});
++			}, snapshot.acceptance);
+ 			return true;
+ 		}
+ 		if (mode === "apologize") {
+@@ -445,6 +454,21 @@
+ 			}),
+ 			userName: this.definitions[0]?.userName ?? "think"
+ 		});
++		const processMessage = chat.processMessage.bind(chat);
++		chat.processMessage = (adapter, threadId, messageOrFactory, options) => {
++			const definition = this.definitionsByAdapterName.get(adapter.name);
++			if (!definition?.durableAcceptance) return processMessage(adapter, threadId, messageOrFactory, options);
++			const task = (async () => {
++				const message = typeof messageOrFactory === "function" ? await messageOrFactory() : messageOrFactory;
++				if (message.author.isMe) return;
++				const thread = await chat.thread(threadId);
++				const event = await this.toEvent(definition, { eventKind: "direct-message", message, thread });
++				await this.enqueueReply(definition, event, thread);
++			})();
++			options?.waitUntil?.(task);
++			task.catch(() => {});
++			return task;
++		};
+ 		chat.onDirectMessage(async (thread, message, _channel, context) => {
+ 			const definition = this.definitionForThread(thread);
+ 			if (!definition) return;
+@@ -491,9 +515,14 @@
+ 		const snapshotEvent = serializableMessengerEvent(event);
+ 		const snapshotThread = thread.toJSON();
+ 		const userMessage = toMessengerBurstUserMessage(definition, event, context);
++		const acceptingTarget = definition.durableAcceptance ? await this.resolveTarget(definition, event) : void 0;
++		const acceptance = typeof acceptingTarget?.acceptMessengerInput === "function"
++			? await acceptingTarget.acceptMessengerInput(userMessage, messengerContextFromEvent(event)) : void 0;
++		const stashed = Promise.withResolvers();
+ 		const result = await this.host.startFiber(MESSENGER_REPLY_FIBER_NAME, async (fiber) => {
+-			fiber.stash(messengerReplySnapshot("accepted", snapshotEvent, snapshotThread, void 0, userMessage));
+-			await this.answer(definition, event, thread, fiber, snapshotEvent, userMessage);
++			fiber.stash(messengerReplySnapshot("accepted", snapshotEvent, snapshotThread, void 0, userMessage, acceptance));
++			stashed.resolve();
++			await this.answer(definition, event, thread, fiber, snapshotEvent, userMessage, void 0, acceptance);
+ 		}, {
+ 			idempotencyKey: idempotencyKeyForEvent(event),
+ 			metadata: {
+@@ -502,10 +531,18 @@
+ 				provider: event.provider,
+ 				threadId: event.thread.id
+ 			},
+-			waitForCompletion: true
++			waitForCompletion: acceptance === void 0
+ 		});
+-		if (result.accepted || result.status !== "interrupted") return;
+-		const snapshot = parseMessengerReplySnapshot(result.snapshot);
++		if (result.accepted) {
++			if (acceptance !== void 0) await stashed.promise;
++			return;
++		}
++		if (result.status !== "interrupted") {
++			if (acceptance !== void 0 && result.snapshot === null) throw new Error("Messenger delivery checkpoint is pending");
++			return;
++		}
++		const snapshot = parseMessengerReplySnapshot(result.snapshot) ?? (acceptance === void 0 ? null
++			: messengerReplySnapshot("accepted", snapshotEvent, snapshotThread, void 0, userMessage, acceptance));
+ 		if (!snapshot) return;
+ 		const mode = messengerReplyRecoveryMode(snapshot);
+ 		if (mode === "answer") {
+@@ -514,7 +551,7 @@
+ 					snapshot: nextSnapshot,
+ 					status: nextSnapshot.stage === "completed" ? "completed" : "interrupted"
+ 				});
+-			});
++			}, snapshot.acceptance);
+ 			return;
+ 		}
+ 		if (mode === "apologize") {
+@@ -522,8 +559,19 @@
+ 			await this.host.resolveFiber(result.fiberId, { status: "completed" });
+ 		}
+ 	}
+-	async answer(definition, event, thread, fiber, snapshotEvent = serializableMessengerEvent(event), userMessage = toMessengerUserMessage(event, definition.channelSpeakerLabel), checkpoint) {
++	async answer(definition, event, thread, fiber, snapshotEvent = serializableMessengerEvent(event), userMessage = toMessengerUserMessage(event, definition.channelSpeakerLabel), checkpoint, acceptance) {
+ 		const target = await this.resolveTarget(definition, event);
++		if (acceptance !== void 0) {
++			const reply = acceptance.kind === "policy" ? acceptance.text
++				: await target.followMessengerInput(acceptance, messengerContextFromEvent(snapshotEvent));
++			const save = checkpoint ?? ((snapshot) => fiber.stash(snapshot));
++			if (reply !== null) {
++				await save(messengerReplySnapshot("streaming", snapshotEvent, thread.toJSON(), void 0, userMessage, acceptance));
++				await thread.post(reply);
++			}
++			await save(messengerReplySnapshot("completed", snapshotEvent, thread.toJSON(), void 0, userMessage, acceptance));
++			return;
++		}
+ 		await deliverMessengerReply({
+ 			event,
+ 			checkpoint,
+@@ -533,7 +581,8 @@
+ 			snapshotThread: thread.toJSON(),
+ 			surface: thread,
+ 			target,
+-			userMessage
++			userMessage,
++			acceptance
+ 		});
+ 	}
+ 	/**
+diff --git a/dist/index-s3Pl812H.d.ts b/dist/index-s3Pl812H.d.ts
+--- a/dist/index-s3Pl812H.d.ts
++++ b/dist/index-s3Pl812H.d.ts
+@@ -2929,7 +2929,7 @@
+   private _hasPendingWorkflowNotifications;
+   private _drainWorkflowNotifications;
+   private _scheduleWorkflowNotificationAlarm;
+-  waitForSubmission(submissionId: string): Promise<ThinkSubmissionInspection>;
++  waitForSubmission(submissionId: string, options?: { signal?: AbortSignal }): Promise<ThinkSubmissionInspection>;
+   inspectSubmission(
+     submissionId: string
+   ): Promise<ThinkSubmissionInspection | null>;
+@@ -4050,6 +4050,7 @@
+ /** Derive a sensible default tag from a reply stage. */
+ declare function defaultDeliveryTag(stage: MessengerReplyStage): DeliveryTag;
+ interface MessengerReplySnapshot {
++  acceptance?: unknown;
+   event: MessengerEvent;
+   stage: MessengerReplyStage;
+   tag?: DeliveryTag;
+@@ -4062,7 +4063,8 @@
+   event: MessengerEvent,
+   thread?: unknown,
+   tag?: DeliveryTag,
+-  userMessage?: UIMessage
++  userMessage?: UIMessage,
++  acceptance?: unknown
+ ): MessengerReplySnapshot;
+ declare function parseMessengerReplySnapshot(
+   snapshot: unknown
+@@ -4154,6 +4156,7 @@
+   event: MessengerEvent
+ ) => MessengerConversationTarget | Promise<MessengerConversationTarget>;
+ interface MessengerDefinition {
++  durableAcceptance?: boolean;
+   adapter: Adapter;
+   adapterName: string;
+   capabilities?: MessengerCapabilities;
+@@ -4205,6 +4208,8 @@
+   thread: Thread;
+ }
+ interface MessengerThinkTarget {
++  acceptMessengerInput?(userMessage: string | UIMessage, context: MessengerContext): Promise<unknown>;
++  followMessengerInput?(acceptance: unknown, context: MessengerContext): Promise<string | null>;
+   cancelChat(
+     requestId: string,
+     reason?: string
+diff --git a/dist/index-s3Pl812H.d.ts b/dist/index-s3Pl812H.d.ts
+--- a/dist/index-s3Pl812H.d.ts
++++ b/dist/index-s3Pl812H.d.ts
+@@ -4208,8 +4208,6 @@
+   thread: Thread;
+ }
+ interface MessengerThinkTarget {
+-  acceptMessengerInput?(userMessage: string | UIMessage, context: MessengerContext): Promise<unknown>;
+-  followMessengerInput?(acceptance: unknown, context: MessengerContext): Promise<string | null>;
+   cancelChat(
+     requestId: string,
+     reason?: string
+diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
+--- a/dist/chat-sdk-iuBa-CGM.js
++++ b/dist/chat-sdk-iuBa-CGM.js
+@@ -518,6 +518,7 @@
+ 		const acceptingTarget = definition.durableAcceptance ? await this.resolveTarget(definition, event) : void 0;
+ 		const acceptance = typeof acceptingTarget?.acceptMessengerInput === "function"
+ 			? await acceptingTarget.acceptMessengerInput(userMessage, messengerContextFromEvent(event)) : void 0;
++		if (acceptance?.kind === "unavailable") throw new Error("Messenger admission unavailable");
+ 		const stashed = Promise.withResolvers();
+ 		const result = await this.host.startFiber(MESSENGER_REPLY_FIBER_NAME, async (fiber) => {
+ 			fiber.stash(messengerReplySnapshot("accepted", snapshotEvent, snapshotThread, void 0, userMessage, acceptance));
+diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
+--- a/dist/chat-sdk-iuBa-CGM.js
++++ b/dist/chat-sdk-iuBa-CGM.js
+@@ -422,6 +422,10 @@
+ 		if (!definition) throw new Error(`No messenger definition found for recovered messenger ${snapshot.event.messengerId}`);
+ 		const thread = this.reviveChatObject(snapshot.thread);
+ 		const mode = messengerReplyRecoveryMode(snapshot);
++		if (mode === "answer" && snapshot.acceptance !== void 0) {
++			await this.resumeAcceptedReply(ctx.id, definition, snapshot, thread);
++			return true;
++		}
+ 		if (mode === "answer") {
+ 			await this.answer(definition, snapshot.event, thread, void 0, snapshot.event, snapshot.userMessage, async (nextSnapshot) => {
+ 				await this.host.resolveFiber(ctx.id, {
+@@ -546,6 +550,10 @@
+ 			: messengerReplySnapshot("accepted", snapshotEvent, snapshotThread, void 0, userMessage, acceptance));
+ 		if (!snapshot) return;
+ 		const mode = messengerReplyRecoveryMode(snapshot);
++		if (mode === "answer" && snapshot.acceptance !== void 0) {
++			await this.resumeAcceptedReply(result.fiberId, definition, snapshot, thread);
++			return;
++		}
+ 		if (mode === "answer") {
+ 			await this.answer(definition, snapshot.event, thread, void 0, snapshot.event, snapshot.userMessage, async (nextSnapshot) => {
+ 				await this.host.resolveFiber(result.fiberId, {
+@@ -559,6 +567,15 @@
+ 			await thread.post(definition.delivery?.interruptedResponseText ?? "Sorry, my reply was interrupted. Please send your message again if you'd like me to retry.").catch(() => void 0);
+ 			await this.host.resolveFiber(result.fiberId, { status: "completed" });
+ 		}
++	}
++	async resumeAcceptedReply(fiberId, definition, snapshot, thread) {
++		const stashed = Promise.withResolvers();
++		const resumed = await this.host.startFiber(MESSENGER_REPLY_FIBER_NAME, async (fiber) => {
++			fiber.stash(snapshot);
++			stashed.resolve();
++			await this.answer(definition, snapshot.event, thread, fiber, snapshot.event, snapshot.userMessage, void 0, snapshot.acceptance);
++		}, { fiberId, resumeInterrupted: true });
++		if (resumed.accepted) await stashed.promise;
+ 	}
+ 	async answer(definition, event, thread, fiber, snapshotEvent = serializableMessengerEvent(event), userMessage = toMessengerUserMessage(event, definition.channelSpeakerLabel), checkpoint, acceptance) {
+ 		const target = await this.resolveTarget(definition, event);
+diff --git a/dist/think.js b/dist/think.js
+--- a/dist/think.js
++++ b/dist/think.js
+@@ -1905,7 +1905,7 @@
+ 		};
+ 	}
+ 	async _initializeChannels() {
+-		if (this.parentPath.length > 0) return;
++		if (this.parentPath.length > 0 || this._messengerRuntime) return;
+ 		const { channels, messengers: messengerDefs } = resolveChannels(await this.configureChannels(), this.getMessengers());
+ 		this._channels = channels;
+ 		if (Object.keys(messengerDefs).length === 0) return;
+@@ -7843,6 +7843,7 @@
+ 		return "scheduled";
+ 	}
+ 	async _handleInternalFiberRecovery(ctx) {
++		if (ctx.name === "think:messenger-reply" && !this._messengerRuntime) await this._initializeChannels();
+ 		return this._chatRecoveryEngine().handleChatFiberRecovery(ctx, {
+ 			chatFiberPrefix: () => this.constructor.CHAT_FIBER_NAME + ":",
+ 			unwrapRecoverySnapshot: (fiber) => {
