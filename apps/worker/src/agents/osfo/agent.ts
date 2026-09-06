@@ -168,7 +168,11 @@ import {
   makeFileStore,
   type RetainedFileLimitExceeded,
 } from "./db/file-store";
-import { type FileStateTransitionConflict, makeFiles } from "../../services/files";
+import {
+  FileNormalizationProvenance,
+  type FileStateTransitionConflict,
+  makeFiles,
+} from "../../services/files";
 import { WebFileUpload } from "./web-file-upload";
 import {
   BoundCoreMemoryInput,
@@ -6994,7 +6998,19 @@ export class OsfoAgent extends Think<Env> {
               "invalidDocument",
               "An owned ready PDF is required",
             );
-          const fields = yield* PdfForm.inspect(contentId, read.bytes);
+          const provenance = yield* Schema.decodeEffect(
+            Schema.fromJsonString(FileNormalizationProvenance),
+          )(read.file.provenanceJson);
+          if (
+            provenance.sourceSha256 !== read.file.sha256 ||
+            provenance.mediaType !== read.file.mediaType
+          )
+            return yield* DocumentArtifact.invalid(
+              contentId,
+              "invalidDocument",
+              "PDF provenance digest differs",
+            );
+          const fields = provenance.pdfForm ?? (yield* PdfForm.inspect(contentId, read.bytes));
           return {
             ...fields,
             templateFileId: fileId,
@@ -7016,9 +7032,7 @@ export class OsfoAgent extends Think<Env> {
     const actionId = ActionId.make(toolCallId);
     const currentAuthorization = () =>
       this.#currentDocumentAuthorization(
-        input.source.templateFileId !== undefined
-          ? 0n
-          : DocumentGenerationComposition.conservativeDocumentSandboxUsdMicros,
+        DocumentGenerationComposition.conservativeDocumentSandboxUsdMicros,
       );
     const files = this.#files;
     const readTemplate = (templateInput: Parameters<typeof files.read>[0]) =>

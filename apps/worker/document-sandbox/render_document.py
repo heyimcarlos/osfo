@@ -178,6 +178,14 @@ def main() -> None:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args()
+    value = json.loads(arguments.input.read_text())
+    if isinstance(value, dict) and "templateBase64" in value:
+        if arguments.format != "pdf":
+            raise ValueError("An existing PDF can only be filled as PDF")
+        from pdf_form import fill
+        rendered_pages = fill(base64.b64decode(value["templateBase64"], validate=True), value, arguments.output)
+        print(json.dumps({"renderedPageCount": rendered_pages}))
+        return
     pages, visuals = read_source(arguments.input)
     if arguments.format == "pdf":
         rendered_pages = render_pdf(pages, visuals, arguments.output)

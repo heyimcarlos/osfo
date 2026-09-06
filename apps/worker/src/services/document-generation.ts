@@ -263,7 +263,9 @@ export interface DisposableCompute {
     readonly format: DocumentArtifact.DocumentFormat;
     readonly intentDigest: DocumentIntentDigest;
     readonly authorizeWrite: Effect.Effect<void, Denied | DocumentAuthorizationUnavailable>;
-    readonly source: DocumentSource;
+    readonly source:
+      | DocumentSource
+      | (PdfFormSource & { readonly templateBytes: Uint8Array; readonly pages?: never });
     readonly supportingVisuals: ReadonlyArray<{
       readonly bytes: Uint8Array;
       readonly contentId: ContentId;
@@ -301,7 +303,8 @@ export interface MakeOptions {
       authorization: AuthorizationContext,
       actionId: ActionId,
     ) => Effect.Effect<
-      { readonly bytes: Uint8Array; readonly renderedPageCount: number },
+      | { readonly bytes: Uint8Array; readonly renderedPageCount: number }
+      | { readonly templateBytes: Uint8Array },
       DocumentArtifact.InvalidGeneratedArtifact
     >;
   };
@@ -443,11 +446,11 @@ export const make = (options: MakeOptions): Interface => ({
         yield* recordEvidence(options.allowances, existing);
         yield* authorizeWrite;
         yield* options.artifacts.account(contentId);
-        if (!isForm) yield* options.compute.dispose(contentId);
+        if (existing.cost._tag === "Incurred") yield* options.compute.dispose(contentId);
         return existing.artifact;
       }
 
-      const recovery = isForm ? null : yield* options.compute.inspect(contentId, intentDigest);
+      const recovery = yield* options.compute.inspect(contentId, intentDigest);
       let admittedAllowancePeriodId: AllowancePeriodId;
       if (recovery === null) {
         const admission = options.authorization.admit(request.authorization, operation);
@@ -479,7 +482,7 @@ export const make = (options: MakeOptions): Interface => ({
         request.source.pages !== undefined
           ? yield* readSupportingVisuals(options, request.source, userId)
           : [];
-      let cleanupRequired = true;
+      let cleanupRequired = !isForm;
       return yield* Effect.gen(function* () {
         const computed: ComputeResult = yield* Effect.gen(function* () {
           if (request.source.templateFileId !== undefined) {
@@ -496,6 +499,19 @@ export const make = (options: MakeOptions): Interface => ({
               request.authorization,
               request.actionId,
             );
+            if ("templateBytes" in filled) {
+              cleanupRequired = true;
+              return yield* options.compute.generate({
+                allowancePeriodId: admittedAllowancePeriodId,
+                authorizeWrite,
+                contentId,
+                format: request.format,
+                intentDigest,
+                source: { ...request.source, templateBytes: filled.templateBytes },
+                supportingVisuals: [],
+                userId,
+              });
+            }
             return { ...filled, _tag: "Completed", cost: { _tag: "ProvenNoUse" } } as const;
           }
           return yield* options.compute.generate({
@@ -599,9 +615,7 @@ export const make = (options: MakeOptions): Interface => ({
         yield* options.artifacts.account(contentId);
         return artifact;
       }).pipe(
-        Effect.onExit(() =>
-          cleanupRequired && !isForm ? options.compute.dispose(contentId) : Effect.void,
-        ),
+        Effect.onExit(() => (cleanupRequired ? options.compute.dispose(contentId) : Effect.void)),
       );
     }),
 });

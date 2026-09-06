@@ -44,12 +44,16 @@ RUN printf '%s\n' \
 
 COPY requirements.txt /tmp/osfo-requirements.txt
 RUN python3 -m pip install --no-cache-dir --require-hashes -r /tmp/osfo-requirements.txt
+COPY pdf_form.py /opt/osfo/pdf_form.py
+ENV PYTHONPATH=/opt/osfo
 COPY render_document.py /opt/osfo/render_document.py
 COPY render_artifact.py /opt/osfo/render_artifact.py
 
 FROM artifact-runtime AS artifact-tested
+COPY test_pdf_form.py /tmp/test_pdf_form.py
 COPY test_render_document.py /tmp/test_render_document.py
 COPY test_render_artifact.py /tmp/test_render_artifact.py
-RUN python3 /tmp/test_render_document.py -v \
+RUN python3 /tmp/test_pdf_form.py -v \
+    && python3 /tmp/test_render_document.py -v \
     && python3 /tmp/test_render_artifact.py -v \
-    && rm /tmp/test_render_document.py /tmp/test_render_artifact.py
+    && rm /tmp/test_pdf_form.py /tmp/test_render_document.py /tmp/test_render_artifact.py

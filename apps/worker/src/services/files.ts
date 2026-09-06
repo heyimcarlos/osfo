@@ -1,3 +1,4 @@
+import { PdfFormInspection } from "../domain/pdf-form";
 import { DateTime, Effect, Predicate, Schema } from "effect";
 
 import type { AllowancePeriodId, UserId } from "../domain";
@@ -39,6 +40,7 @@ export interface FileVendorCost {
 export const FileNormalizationProvenance = Schema.Struct({
   mediaType: FileMediaType,
   pages: Schema.optional(FilePagesEvidence),
+  pdfForm: Schema.optional(PdfFormInspection),
   parser: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(160)),
   sourceSha256: FileDigest,
 });

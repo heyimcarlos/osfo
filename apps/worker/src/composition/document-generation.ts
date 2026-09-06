@@ -1,7 +1,8 @@
+import { FileNormalizationProvenance } from "../services/files";
 import type { Interface as Files } from "../services/files";
 import { fill } from "../integrations/pdf/pdf-form";
 import { DocumentArtifact } from "../domain/document-artifact";
-import { DateTime, Effect, Predicate } from "effect";
+import { DateTime, Effect, Predicate, Schema } from "effect";
 
 import type { Database } from "../db";
 import { BillingDb } from "../db/billing";
@@ -75,6 +76,28 @@ export const make = (
               "invalidDocument",
               "The owned ready PDF template does not match the requested digest",
             );
+          const provenance = yield* Schema.decodeEffect(
+            Schema.fromJsonString(FileNormalizationProvenance),
+          )(template.file.provenanceJson).pipe(
+            Effect.mapError(
+              () =>
+                new DocumentArtifact.InvalidGeneratedArtifact({
+                  contentId,
+                  reason: "invalidDocument",
+                  message: "PDF provenance is invalid",
+                }),
+            ),
+          );
+          if (
+            provenance.sourceSha256 !== source.templateDigest ||
+            provenance.mediaType !== "application/pdf"
+          )
+            return yield* DocumentArtifact.invalid(
+              contentId,
+              "invalidDocument",
+              "PDF provenance digest differs",
+            );
+          if (provenance.pdfForm !== undefined) return { templateBytes: template.bytes };
           return yield* fill(contentId, template.bytes, source);
         }),
     },

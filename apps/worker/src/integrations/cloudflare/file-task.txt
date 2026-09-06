@@ -14,6 +14,8 @@ import zipfile
 from PIL import Image, ImageOps
 from docx import Document
 from pypdf import PdfReader
+from pypdf.constants import UserAccessPermissions
+from pdf_form import inspect_reader
 
 
 class ContentLimit(Exception):
@@ -54,7 +56,8 @@ def ocr_image(image, limits):
 def pdf_pages(source_path, limits):
     reader = PdfReader(source_path, strict=True)
     if reader.is_encrypted:
-        raise MaliciousContent("encrypted PDFs are not accepted")
+        if not reader.decrypt("") or not reader.user_access_permissions & UserAccessPermissions.FILL_FORM_FIELDS:
+            raise MaliciousContent("PDF requires a password or does not permit form filling")
     if len(reader.pages) > limits["maximumPdfPages"]:
         raise ContentLimit("PDF page count exceeds its limit")
     pages = []
@@ -86,7 +89,17 @@ def pdf_pages(source_path, limits):
         if text_bytes > limits["maximumNormalizedTextBytes"]:
             raise ContentLimit("normalized text exceeds its byte limit")
         pages.append({"page": number, "method": method, "text": text})
-    return pages
+    form = reader.trailer["/Root"].get("/AcroForm")
+    inspection = None
+    if form is not None and "/XFA" not in form.get_object() and len(reader.pages) <= 20 and os.path.getsize(source_path) <= 5 * 1024 * 1024:
+        try:
+            inspection = inspect_reader(reader)
+            if len(json.dumps(inspection).encode("utf-8")) > 500_000:
+                inspection = None
+        except ValueError:
+            # Unsupported form structure does not prevent ordinary document reading.
+            inspection = None
+    return pages, inspection
 
 
 def normalize(config):
@@ -94,6 +107,7 @@ def normalize(config):
     limits = config["limits"]
     source_path = "/workspace/source.bin"
     pages = None
+    pdf_form = None
 
     if media_type in ("text/plain", "text/csv"):
         with open(source_path, "r", encoding="utf-8", errors="strict", newline="") as source:
@@ -104,7 +118,7 @@ def normalize(config):
                 raise ContentLimit("CSV row count exceeds its limit")
         parser = "python-stdlib-v1"
     elif media_type == "application/pdf":
-        pages = pdf_pages(source_path, limits)
+        pages, pdf_form = pdf_pages(source_path, limits)
         text = "\n\n".join(f"[Page {page['page']} — {page['method']}]\n{page['text']}" for page in pages)
         parser = "pypdf-6.1.1/poppler-22.02.0/tesseract-4.1.1-eng-fra"
     elif media_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
@@ -138,6 +152,7 @@ def normalize(config):
     return {
         "normalizedText": bounded_text(text, limits["maximumNormalizedTextBytes"]),
         "parser": parser,
+        **({"pdfForm": pdf_form} if pdf_form is not None else {}),
         **({"pages": pages} if pages is not None else {}),
     }
 

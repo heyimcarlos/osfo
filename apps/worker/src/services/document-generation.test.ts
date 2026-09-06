@@ -63,6 +63,22 @@ it.effect("retains and replays one form artifact through existing accounting and
   }),
 );
 
+it.effect("retains Sandbox form cost and replays without another render", () =>
+  Effect.gen(function* () {
+    const fixture = makeFixture(false, true);
+    const artifact = yield* fixture.service.generate(request());
+    expect(fixture.retained[0]?.cost).toMatchObject({
+      _tag: "Incurred",
+      providerOperationId: "sandbox:form-test",
+      usdMicros: 50_000n,
+    });
+    expect(yield* fixture.service.generate(request())).toEqual(artifact);
+    expect(fixture.computes()).toBe(1);
+    expect(fixture.fills()).toBe(1);
+    expect(fixture.cleanups()).toBe(2);
+  }),
+);
+
 it.effect("denies a form before reading its private template when authority ends", () =>
   Effect.gen(function* () {
     const fixture = makeFixture(true);
@@ -74,7 +90,9 @@ it.effect("denies a form before reading its private template when authority ends
   }),
 );
 
-const makeFixture = (revoked = false) => {
+const makeFixture = (revoked = false, sandbox = false) => {
+  let computes = 0;
+  let cleanups = 0;
   const retained: Array<DocumentGeneration.StoredArtifact> = [];
   const accountingSources: Array<string> = [];
   let fills = 0;
@@ -120,9 +138,30 @@ const makeFixture = (revoked = false) => {
           : { _tag: "Permitted" },
     },
     compute: {
-      dispose: () => Effect.die(new Error("Form must not use Sandbox")),
-      inspect: () => Effect.die(new Error("Form must not use Sandbox")),
-      generate: () => Effect.die(new Error("Form must not use Sandbox")),
+      dispose: () =>
+        Effect.sync(() => {
+          cleanups += 1;
+        }),
+      inspect: () => Effect.succeed(null),
+      generate: (input) =>
+        Effect.gen(function* () {
+          if (!sandbox) return yield* Effect.die(new Error("Local form must not start Sandbox"));
+          yield* input.authorizeWrite;
+          computes += 1;
+          expect(input.source).toMatchObject({ ...source, templateBytes: new Uint8Array([4, 5]) });
+          return {
+            _tag: "Completed" as const,
+            bytes: new Uint8Array([1, 2, 3]),
+            renderedPageCount: 1,
+            cost: {
+              _tag: "Incurred" as const,
+              allowancePeriodId,
+              basis: "conservative" as const,
+              providerOperationId: "sandbox:form-test",
+              usdMicros: 50_000n,
+            },
+          };
+        }).pipe(Effect.orDie),
     },
     currentAuthorization: () => Effect.succeed(request().authorization),
     maximumComputeInputBytes: 5_000_000,
@@ -131,11 +170,20 @@ const makeFixture = (revoked = false) => {
       fill: () =>
         Effect.sync(() => {
           fills += 1;
-          return { bytes: new Uint8Array([1, 2, 3]), renderedPageCount: 1 };
+          return sandbox
+            ? { templateBytes: new Uint8Array([4, 5]) }
+            : { bytes: new Uint8Array([1, 2, 3]), renderedPageCount: 1 };
         }),
     },
   });
-  return { service, retained, accountingSources, fills: () => fills };
+  return {
+    service,
+    retained,
+    accountingSources,
+    fills: () => fills,
+    computes: () => computes,
+    cleanups: () => cleanups,
+  };
 };
 const userId = UserId.make("user-artifact");
 const allowancePeriodId = AllowancePeriodId.make("allowance-artifact");

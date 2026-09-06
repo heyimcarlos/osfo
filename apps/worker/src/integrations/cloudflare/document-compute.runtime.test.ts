@@ -4,12 +4,15 @@ import { Effect, Predicate } from "effect";
 import { TestClock } from "effect/testing";
 
 import { AllowancePeriodId, UserId } from "../../domain";
+import { FileId } from "../../domain/file";
+import { FileDigest } from "../../domain/file-content";
 import { ContentId } from "../../domain/client-content";
 import { recoverableResearchReportStepConfig } from "../../workflows/research-report-step";
 import {
   DocumentIntentDigest,
   DocumentSource,
   type CostEvidence,
+  type DisposableCompute,
 } from "../../services/document-generation";
 import {
   documentExecutionLeaseMs,
@@ -111,6 +114,31 @@ it.effect("rechecks protected-effect authority before every attempt-evidence R2 
       ),
     );
 });
+
+it.effect("renders owned form bytes with the existing attempt and cost identity", () =>
+  Effect.gen(function* () {
+    const fixture = recoveryFixture(null, {
+      source: {
+        templateFileId: FileId.make("template-test"),
+        templateDigest: FileDigest.make(`sha256:${"a".repeat(64)}`),
+        templateBytes: new Uint8Array([4, 5, 6]),
+        pageCount: 1,
+        fields: [{ kind: "text", name: "ApplicantName", value: "Example Applicant" }],
+      },
+    });
+    const first = yield* fixture.generate();
+    const second = yield* fixture.generate();
+    expect(first).toMatchObject({
+      _tag: "Completed",
+      cost: { _tag: "Incurred", usdMicros: 50_000n },
+    });
+    expect(second.cost).toEqual(first.cost);
+    expect(fixture.execCalls()).toBe(1);
+    expect(fixture.writes).toHaveLength(1);
+    expect(fixture.writes[0]).toContain('"templateBase64":"BAUG"');
+    expect(fixture.writes[0]).toContain('"name":"ApplicantName"');
+  }),
+);
 
 it.effect("reports proven no use when authority ends before the atomic start transition", () => {
   const events: Array<string> = [];
@@ -358,6 +386,7 @@ const attemptEvidence = (
 const recoveryFixture = (
   initialEvidence: ActiveAttemptEvidence | null,
   options: {
+    readonly source?: Parameters<DisposableCompute["generate"]>[0]["source"];
     readonly completeFailures?: number;
     readonly completeLoses?: boolean;
     readonly denySecondAuthorization?: boolean;
@@ -366,6 +395,7 @@ const recoveryFixture = (
     readonly startLoses?: boolean;
   } = {},
 ) => {
+  const writes: Array<string> = [];
   let evidence = initialEvidence;
   let revision = "revision-1";
   let completeFailures = options.completeFailures ?? 0;
@@ -436,10 +466,13 @@ const recoveryFixture = (
       };
     },
     readText: async () => "",
-    writeFile: async () => undefined,
+    writeFile: async (_path, content) => {
+      writes.push(content);
+    },
   };
   const compute = makeWithSandbox(() => sandbox, attempts, 50_000n);
   return {
+    writes,
     evidence: () => evidence,
     expireLease: () => {
       if (evidence !== null) evidence = { ...evidence, executionLeaseExpiresAt: -1 };
@@ -461,7 +494,8 @@ const recoveryFixture = (
         contentId: testContentId,
         format: "pdf",
         intentDigest: testIntentDigest,
-        source: DocumentSource.make({ pages: [{ lines: ["hello"], title: "Title" }] }),
+        source:
+          options.source ?? DocumentSource.make({ pages: [{ lines: ["hello"], title: "Title" }] }),
         supportingVisuals: [],
         userId: testUserId,
       }),
