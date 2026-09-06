@@ -21,6 +21,7 @@ import { ResearchReportFollowUpPostgres } from "../integrations/postgres/researc
 import { ResearchReportPublicationPostgres } from "../integrations/postgres/research-report-publication";
 import { ResearchSynthesisPostgres } from "../integrations/postgres/research-synthesis";
 import { ResearchCollector } from "../services/research-collector";
+import type { IncidentControls } from "../services/incident-controls";
 import { Allowances } from "../services/allowances";
 import { ResearchReportDocument } from "../services/research-report-document";
 import { ResearchReport } from "../services/research-report";
@@ -60,13 +61,19 @@ export interface Bindings {
 /** Cloudflare instance adapter that reconciles a lost create acknowledgement by stable ID. */
 export const makeWorkflowPort = (
   binding: WorkflowBinding,
+  checkNewCreation: Effect.Effect<void, IncidentControls.Paused | IncidentControls.Unavailable>,
   timerBinding: WorkflowBinding = binding,
 ): ResearchReport.PortInterface["workflow"] => ({
   create: (instanceId, payload) =>
     Effect.all(
       [
-        createWorkflowInstance(binding, instanceId, payload),
-        createWorkflowInstance(timerBinding, timerInstanceId(instanceId), payload),
+        createWorkflowInstance(binding, instanceId, payload, checkNewCreation),
+        createWorkflowInstance(
+          timerBinding,
+          timerInstanceId(instanceId),
+          payload,
+          checkNewCreation,
+        ),
       ],
       { concurrency: 2, discard: true },
     ),
@@ -84,16 +91,28 @@ const createWorkflowInstance = (
   binding: WorkflowBinding,
   instanceId: string,
   payload: ResearchReport.WorkflowPayload,
+  checkNewCreation: Effect.Effect<void, IncidentControls.Paused | IncidentControls.Unavailable>,
 ) =>
-  Effect.tryPromise({
-    try: () => binding.create({ id: instanceId, params: payload }).then(() => undefined),
-    catch: (cause) =>
-      new ResearchReport.Unavailable({
-        cause,
-        message: "Cloudflare did not acknowledge the Research Report Workflow instance",
-        operation: "workflow.create",
+  checkNewCreation.pipe(
+    Effect.mapError(
+      (cause) =>
+        new ResearchReport.Unavailable({
+          cause,
+          message: "Research Report Workflow creation is unavailable",
+          operation: "workflow.create",
+        }),
+    ),
+    Effect.andThen(
+      Effect.tryPromise({
+        try: () => binding.create({ id: instanceId, params: payload }).then(() => undefined),
+        catch: (cause) =>
+          new ResearchReport.Unavailable({
+            cause,
+            message: "Cloudflare did not acknowledge the Research Report Workflow instance",
+            operation: "workflow.create",
+          }),
       }),
-  }).pipe(
+    ),
     Effect.catchTag("ResearchReportUnavailable", (failure) =>
       Effect.tryPromise({
         try: async () => {
@@ -158,7 +177,11 @@ export const serviceLayer = (
           persistence: ResearchReportPostgres.make(database),
           providerAvailable: Effect.succeed(providerAvailable),
           recordWorkflowStart: makeWorkflowStartRecorder(database),
-          workflow: makeWorkflowPort(binding, timerBinding),
+          workflow: makeWorkflowPort(
+            binding,
+            IncidentControlsPostgres.makeFromDatabase(database).check("newCostlyWork"),
+            timerBinding,
+          ),
         }),
       ),
     ),

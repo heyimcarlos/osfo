@@ -1,4 +1,5 @@
-import { DateTime, Effect, Layer, Predicate, Schema } from "effect";
+import { IncidentControlsPostgres } from "../integrations/postgres/incident-controls";
+import { DateTime, Effect, Layer, Result, Predicate, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
@@ -7,6 +8,7 @@ import { BillingDb } from "../db/billing";
 import { retainedCatalog } from "../domain/plan-policy";
 import { ScheduledEmailFollowUpPostgres } from "../integrations/postgres/scheduled-email-follow-up";
 import { ScheduledEmailPostgres } from "../integrations/postgres/scheduled-email";
+import type { IncidentControls } from "../services/incident-controls";
 import { Allowances } from "../services/allowances";
 import { ScheduledEmail } from "../services/scheduled-email";
 import { ScheduledEmailAccounting } from "../services/scheduled-email-accounting";
@@ -45,35 +47,53 @@ export const bindingsFromEnv = (env: Env): Bindings => ({
 
 export const makeWorkflowPort = (
   binding: WorkflowBinding,
+  checkNewCreation: Effect.Effect<void, IncidentControls.Paused | IncidentControls.Unavailable>,
 ): ScheduledEmail.PortInterface["workflow"] => ({
   create: (instanceId, payload) =>
-    Schema.encodeEffect(ScheduledEmail.EncodedWorkflowPayload)(payload).pipe(
-      Effect.flatMap((params) =>
-        Effect.tryPromise({
-          try: () => binding.create({ id: instanceId, params }).then(() => undefined),
-          catch: (cause) => unavailable("workflow.create", cause),
-        }),
-      ),
-      Effect.mapError((cause) => unavailable("workflow.create", cause)),
-      Effect.catchTag("ScheduledEmailUnavailable", (failure) =>
-        Effect.tryPromise({
-          try: async () => {
-            const instance = await binding.get(instanceId);
-            return { instance, status: await instance.status() };
-          },
-          catch: (cause) => unavailable("workflow.reconcileCreate", cause),
-        }).pipe(
-          Effect.flatMap(({ instance, status }) => {
-            if (status.status === "unknown") return Effect.fail(failure);
-            if (!["complete", "errored", "terminated"].includes(status.status)) return Effect.void;
-            return Effect.tryPromise({
-              try: () => instance.restart(),
-              catch: (cause) => unavailable("workflow.restart", cause),
-            });
-          }),
+    Effect.gen(function* () {
+      const admission = yield* checkNewCreation.pipe(Effect.result);
+      return yield* (
+        Result.isFailure(admission)
+          ? Effect.fail(unavailable("workflow.create", admission.failure))
+          : Schema.encodeEffect(ScheduledEmail.EncodedWorkflowPayload)(payload).pipe(
+              Effect.flatMap((params) =>
+                Effect.tryPromise({
+                  try: () => binding.create({ id: instanceId, params }).then(() => undefined),
+                  catch: (cause) => unavailable("workflow.create", cause),
+                }),
+              ),
+              Effect.mapError((cause) => unavailable("workflow.create", cause)),
+            )
+      ).pipe(
+        Effect.catchTag("ScheduledEmailUnavailable", (failure) =>
+          Effect.tryPromise({
+            try: async () => {
+              const instance = await binding.get(instanceId);
+              return { instance, status: await instance.status() };
+            },
+            catch: (cause) => unavailable("workflow.reconcileCreate", cause),
+          }).pipe(
+            Effect.flatMap(({ instance, status }) => {
+              if (status.status === "unknown") return Effect.fail(failure);
+              if (!["complete", "errored", "terminated"].includes(status.status))
+                return Effect.void;
+              // Existing status acknowledges a host during a pause without restarting it.
+              if (Result.isFailure(admission)) return Effect.void;
+              return checkNewCreation.pipe(
+                Effect.matchEffect({
+                  onFailure: () => Effect.void,
+                  onSuccess: () =>
+                    Effect.tryPromise({
+                      try: () => instance.restart(),
+                      catch: (cause) => unavailable("workflow.restart", cause),
+                    }),
+                }),
+              );
+            }),
+          ),
         ),
-      ),
-    ),
+      );
+    }),
   terminate: (instanceId) =>
     Effect.tryPromise({
       try: async () => {
@@ -206,7 +226,10 @@ export const serviceLayerFromDatabase = (
                   Effect.fail(new ScheduledEmail.SendAmbiguous({ message: cause.message })),
               }),
             ),
-    workflow: makeWorkflowPort(bindings.SCHEDULED_EMAIL_WORKFLOW),
+    workflow: makeWorkflowPort(
+      bindings.SCHEDULED_EMAIL_WORKFLOW,
+      IncidentControlsPostgres.makeFromDatabase(database).check("newCostlyWork"),
+    ),
   });
   return ScheduledEmail.layerWithoutDependencies.pipe(
     Layer.provide(Layer.succeed(ScheduledEmail.Port, port)),

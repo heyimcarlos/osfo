@@ -1,5 +1,5 @@
 import { IncidentControlsPostgres } from "../integrations/postgres/incident-controls";
-import { DateTime, Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Result, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
@@ -12,6 +12,7 @@ import { DocumentArtifactValidation } from "../integrations/cloudflare/document-
 import { DocumentArtifacts } from "../integrations/cloudflare/document-artifacts";
 import { DocumentBuildPostgres } from "../integrations/postgres/document-build";
 import { DocumentBuildFollowUpPostgres } from "../integrations/postgres/document-build-follow-up";
+import type { IncidentControls } from "../services/incident-controls";
 import { Allowances } from "../services/allowances";
 import { DocumentBuild } from "../services/document-build";
 import { DocumentBuildAccounting } from "../services/document-build-accounting";
@@ -65,10 +66,11 @@ export const bindingsFromEnv = (env: Env): Bindings => ({
 export const makeWorkflowPort = (
   main: WorkflowBinding,
   timer: WorkflowBinding,
+  checkNewCreation: Effect.Effect<void, IncidentControls.Paused | IncidentControls.Unavailable>,
 ): DocumentBuild.PortInterface["workflow"] => ({
   create: (mainId, timerId, payload) =>
-    createWorkflowInstance(timer, timerId, payload).pipe(
-      Effect.andThen(createWorkflowInstance(main, mainId, payload)),
+    createWorkflowInstance(timer, timerId, payload, checkNewCreation).pipe(
+      Effect.andThen(createWorkflowInstance(main, mainId, payload, checkNewCreation)),
     ),
   terminate: (mainId, timerId) =>
     Effect.all(
@@ -110,6 +112,7 @@ export const serviceLayerFromDatabase = (
     workflow: makeWorkflowPort(
       bindings.DOCUMENT_BUILD_WORKFLOW,
       bindings.DOCUMENT_BUILD_TIMER_WORKFLOW,
+      IncidentControlsPostgres.makeFromDatabase(database).check("newCostlyWork"),
     ),
   });
   return DocumentBuild.layerWithoutDependencies.pipe(
@@ -479,36 +482,52 @@ const createWorkflowInstance = (
   binding: WorkflowBinding,
   instanceId: DocumentBuild.CloudflareInstanceId,
   payload: DocumentBuild.WorkflowPayload,
+  checkNewCreation: Effect.Effect<void, IncidentControls.Paused | IncidentControls.Unavailable>,
 ) =>
-  Effect.tryPromise({
-    try: () => binding.create({ id: instanceId, params: payload }).then(() => undefined),
-    catch: (cause) => documentBuildUnavailable("workflow.create", cause),
-  }).pipe(
-    Effect.catchTag("DocumentBuildUnavailable", (failure) =>
-      Effect.tryPromise({
-        try: async () => {
-          const instance = await binding.get(instanceId);
-          return { instance, status: await instance.status() };
-        },
-        catch: (cause) => documentBuildUnavailable("workflow.reconcileCreate", cause),
-      }).pipe(
-        Effect.flatMap(({ instance, status }) => {
-          if (status.status === "unknown") return Effect.fail(failure);
-          if (
-            status.status !== "errored" &&
-            status.status !== "terminated" &&
-            status.status !== "complete"
-          ) {
-            return Effect.void;
-          }
-          return Effect.tryPromise({
-            try: () => instance.restart(),
-            catch: (cause) => documentBuildUnavailable("workflow.restart", cause),
-          });
-        }),
+  Effect.gen(function* () {
+    const admission = yield* checkNewCreation.pipe(Effect.result);
+    return yield* (
+      Result.isFailure(admission)
+        ? Effect.fail(documentBuildUnavailable("workflow.create", admission.failure))
+        : Effect.tryPromise({
+            try: () => binding.create({ id: instanceId, params: payload }).then(() => undefined),
+            catch: (cause) => documentBuildUnavailable("workflow.create", cause),
+          })
+    ).pipe(
+      Effect.catchTag("DocumentBuildUnavailable", (failure) =>
+        Effect.tryPromise({
+          try: async () => {
+            const instance = await binding.get(instanceId);
+            return { instance, status: await instance.status() };
+          },
+          catch: (cause) => documentBuildUnavailable("workflow.reconcileCreate", cause),
+        }).pipe(
+          Effect.flatMap(({ instance, status }) => {
+            if (status.status === "unknown") return Effect.fail(failure);
+            if (
+              status.status !== "errored" &&
+              status.status !== "terminated" &&
+              status.status !== "complete"
+            ) {
+              return Effect.void;
+            }
+            // Existing status acknowledges a host during a pause without restarting it.
+            if (Result.isFailure(admission)) return Effect.void;
+            return checkNewCreation.pipe(
+              Effect.matchEffect({
+                onFailure: () => Effect.void,
+                onSuccess: () =>
+                  Effect.tryPromise({
+                    try: () => instance.restart(),
+                    catch: (cause) => documentBuildUnavailable("workflow.restart", cause),
+                  }),
+              }),
+            );
+          }),
+        ),
       ),
-    ),
-  );
+    );
+  });
 
 const terminateWorkflowInstance = (binding: WorkflowBinding, instanceId: string) =>
   Effect.tryPromise({

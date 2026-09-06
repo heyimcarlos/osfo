@@ -1,3 +1,4 @@
+import { IncidentControlsPostgres } from "../integrations/postgres/incident-controls";
 import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
 import { and, eq, inArray } from "drizzle-orm";
 import { DateTime, Effect, Layer } from "effect";
@@ -89,16 +90,21 @@ export const quiesceWorkflows = (bindings: Bindings, database: Database, userId:
       }),
     );
   }
+  const checkNewCreation =
+    IncidentControlsPostgres.makeFromDatabase(database).check("newCostlyWork");
   const workflow = ResearchReportComposition.makeWorkflowPort(
     bindings.RESEARCH_REPORT_WORKFLOW,
+    checkNewCreation,
     bindings.RESEARCH_REPORT_TIMER_WORKFLOW,
   );
   const documentWorkflow = DocumentBuildComposition.makeWorkflowPort(
     bindings.DOCUMENT_BUILD_WORKFLOW,
     bindings.DOCUMENT_BUILD_TIMER_WORKFLOW,
+    checkNewCreation,
   );
   const scheduledEmailWorkflow = ScheduledEmailComposition.makeWorkflowPort(
     bindings.SCHEDULED_EMAIL_WORKFLOW,
+    checkNewCreation,
   );
   return Effect.gen(function* () {
     const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));

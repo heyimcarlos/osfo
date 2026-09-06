@@ -1,7 +1,8 @@
 /* oxlint-disable vitest/no-standalone-expect, unicorn/consistent-function-scoping -- Assertions execute inside Effects; local binding factories keep each race fixture visible beside its expectations. */
 import { expect, it } from "@effect/vitest";
-import { Effect, Result } from "effect";
+import { Effect, Result, Schema } from "effect";
 
+import { IncidentControls } from "../services/incident-controls";
 import { AgentId, AllowancePeriodId, UserId } from "../domain";
 import { ContentId } from "../domain/client-content";
 import { FileDigest } from "../domain/file-content";
@@ -37,11 +38,11 @@ it.effect("reconciles ambiguous acceptance for both stable Workflow instances", 
   });
 
   return Effect.gen(function* () {
-    yield* DocumentBuildComposition.makeWorkflowPort(binding("main"), binding("timer")).create(
-      mainId,
-      timerId,
-      payload,
-    );
+    yield* DocumentBuildComposition.makeWorkflowPort(
+      binding("main"),
+      binding("timer"),
+      Effect.void,
+    ).create(mainId, timerId, payload);
     expect(calls).toEqual([
       `timer:create:${timerId}`,
       `timer:get:${timerId}`,
@@ -78,7 +79,7 @@ it.effect("retains timer ownership when main creation fails", () => {
   };
 
   return Effect.gen(function* () {
-    const result = yield* DocumentBuildComposition.makeWorkflowPort(main, timer)
+    const result = yield* DocumentBuildComposition.makeWorkflowPort(main, timer, Effect.void)
       .create(mainId, timerId, payload)
       .pipe(Effect.result);
     expect(Result.isFailure(result)).toBe(true);
@@ -102,7 +103,7 @@ it.effect("does not attempt main creation when timer creation is unresolved", ()
   });
 
   return Effect.gen(function* () {
-    yield* DocumentBuildComposition.makeWorkflowPort(missing("main"), missing("timer"))
+    yield* DocumentBuildComposition.makeWorkflowPort(missing("main"), missing("timer"), Effect.void)
       .create(mainId, timerId, payload)
       .pipe(Effect.result);
     expect(calls).toEqual(["timer"]);
@@ -131,6 +132,7 @@ it.effect("restarts errored and terminated active Workflow owners", () => {
     yield* DocumentBuildComposition.makeWorkflowPort(
       binding("main", "errored"),
       binding("timer", "terminated"),
+      Effect.void,
     ).create(mainId, timerId, payload);
     expect(restarted).toEqual(["timer", "main"]);
   });
@@ -159,7 +161,7 @@ it.effect("accepts every healthy existing Workflow status without restart", () =
   return Effect.gen(function* () {
     for (const status of statuses) {
       index = statuses.indexOf(status);
-      yield* DocumentBuildComposition.makeWorkflowPort(binding, binding).create(
+      yield* DocumentBuildComposition.makeWorkflowPort(binding, binding, Effect.void).create(
         mainId,
         timerId,
         payload,
@@ -184,6 +186,7 @@ it.effect("retains create uncertainty when either stable identity is unknown", (
     const result = yield* DocumentBuildComposition.makeWorkflowPort(
       binding("queued"),
       binding("unknown"),
+      Effect.void,
     )
       .create(mainId, timerId, payload)
       .pipe(Effect.result);
@@ -216,6 +219,7 @@ it.effect("terminates only executable main and timer instances", () => {
     yield* DocumentBuildComposition.makeWorkflowPort(
       binding("running"),
       binding("complete"),
+      Effect.void,
     ).terminate(mainId, timerId);
     expect(terminated).toEqual([mainId]);
   });
@@ -496,5 +500,164 @@ it.effect("does not delete or dispose compute for a foreign pending artifact", (
 
     expect(result).toMatchObject({ failure: { operation: "artifact.discard.identity" } });
     expect(events).toEqual([]);
+  });
+});
+
+for (const failure of [
+  new IncidentControls.Paused({ control: "newCostlyWork" }),
+  new IncidentControls.Unavailable({ cause: new Error("control read failed") }),
+]) {
+  for (const status of [
+    "queued",
+    "running",
+    "complete",
+    "errored",
+    "terminated",
+    "unknown",
+    "missing",
+    "unreadable",
+  ] as const) {
+    it.effect(
+      `reconciles ${status} without new work when ${Schema.is(IncidentControls.Paused)(failure) ? "paused" : "unavailable"}`,
+      () => {
+        const calls = new Array<string>();
+        const guard = Effect.fail(failure);
+        const binding: DocumentBuildComposition.WorkflowBinding = {
+          create: () => {
+            calls.push("create");
+            return Promise.reject(new Error("unexpected create"));
+          },
+          get: () => {
+            calls.push("get");
+            if (status === "missing") return Promise.reject(new Error("missing instance"));
+            return Promise.resolve({
+              restart: () => {
+                calls.push("restart");
+                return Promise.resolve();
+              },
+              status: () =>
+                status === "unreadable"
+                  ? Promise.reject(new Error("status unavailable"))
+                  : Promise.resolve({ status }),
+              terminate: () => {
+                calls.push("terminate");
+                return Promise.resolve();
+              },
+            });
+          },
+        };
+        return Effect.gen(function* () {
+          const result = yield* DocumentBuildComposition.makeWorkflowPort(binding, binding, guard)
+            .create(mainId, timerId, payload)
+            .pipe(Effect.result);
+          if (status === "unknown" || status === "missing" || status === "unreadable") {
+            expect(Result.isFailure(result)).toBe(true);
+            if (Result.isFailure(result))
+              expect(result.failure).toMatchObject({ _tag: "DocumentBuildUnavailable" });
+          } else {
+            expect(Result.isSuccess(result)).toBe(true);
+            expect(calls.filter((call) => call === "get")).toHaveLength(2);
+          }
+          expect(calls.filter((call) => call !== "get")).toEqual([]);
+        });
+      },
+    );
+  }
+}
+
+it.effect("allows termination without evaluating the creation guard", () => {
+  const calls = new Array<string>();
+  const guard = Effect.suspend(() => {
+    calls.push("guard");
+    return Effect.fail(new IncidentControls.Paused({ control: "newCostlyWork" }));
+  });
+  const binding: DocumentBuildComposition.WorkflowBinding = {
+    create: () => Promise.reject(new Error("unexpected create")),
+    get: () =>
+      Promise.resolve({
+        restart: () => {
+          calls.push("restart");
+          return Promise.resolve();
+        },
+        status: () => Promise.resolve({ status: "running" as const }),
+        terminate: () => {
+          calls.push("terminate");
+          return Promise.resolve();
+        },
+      }),
+  };
+  return Effect.gen(function* () {
+    yield* DocumentBuildComposition.makeWorkflowPort(binding, binding, guard).terminate(
+      mainId,
+      timerId,
+    );
+    expect(calls).toEqual(["terminate", "terminate"]);
+  });
+});
+
+it.effect(
+  "reads the creation control again before restarting an existing terminal instance",
+  () => {
+    const calls = new Array<string>();
+    const guard = Effect.suspend(() => {
+      calls.push("guard");
+      return calls.length === 1
+        ? Effect.void
+        : Effect.fail(new IncidentControls.Paused({ control: "newCostlyWork" }));
+    });
+    const binding: DocumentBuildComposition.WorkflowBinding = {
+      create: () => {
+        calls.push("create");
+        return Promise.reject(new Error("acknowledgement lost"));
+      },
+      get: () =>
+        Promise.resolve({
+          restart: () => {
+            calls.push("restart");
+            return Promise.resolve();
+          },
+          status: () => Promise.resolve({ status: "terminated" as const }),
+          terminate: () => Promise.resolve(),
+        }),
+    };
+    return Effect.gen(function* () {
+      yield* DocumentBuildComposition.makeWorkflowPort(binding, binding, guard).create(
+        mainId,
+        timerId,
+        payload,
+      );
+      expect(calls).toEqual(["guard", "create", "guard", "guard"]);
+    });
+  },
+);
+
+it.effect("checks the main creation after the timer is accepted", () => {
+  const calls = new Array<string>();
+  const guard = Effect.suspend(() => {
+    calls.push("guard");
+    return calls.length === 1
+      ? Effect.void
+      : Effect.fail(new IncidentControls.Paused({ control: "newCostlyWork" }));
+  });
+  const binding: DocumentBuildComposition.WorkflowBinding = {
+    create: ({ id }) => {
+      calls.push(`create:${id}`);
+      return Promise.resolve({
+        restart: () => Promise.resolve(),
+        status: () => Promise.resolve({ status: "queued" as const }),
+        terminate: () => Promise.resolve(),
+      });
+    },
+    get: (id) => {
+      calls.push(`get:${id}`);
+      return Promise.reject(new Error("not created"));
+    },
+  };
+  return Effect.gen(function* () {
+    const result = yield* DocumentBuildComposition.makeWorkflowPort(binding, binding, guard)
+      .create(mainId, timerId, payload)
+      .pipe(Effect.result);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(calls).toEqual(["guard", `create:${timerId}`, "guard", `get:${mainId}`]);
   });
 });
