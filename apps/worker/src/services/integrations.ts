@@ -432,7 +432,11 @@ export interface Interface {
 
 /** Construct the only Osfo path allowed to invoke direct Composio operations. */
 export const make = (
-  ports: IntegrationProvider & IntegrationPersistence & Partial<IntegrationArtifactAccess>,
+  ports: IntegrationProvider &
+    IntegrationPersistence &
+    Partial<IntegrationArtifactAccess> & {
+      readonly dispatchAllowed: Effect.Effect<boolean>;
+    },
 ): Interface => {
   const sessionLock = Semaphore.makeUnsafe(1);
   const actionLock = Semaphore.makeUnsafe(1);
@@ -571,6 +575,13 @@ export const make = (
     let providerInput = providerInputFor(manifest, decoded.success);
     if (manifest.operationKind === "read") {
       yield* input.authorize;
+      if (!(yield* ports.dispatchAllowed))
+        return yield* new IntegrationProviderUnavailable({
+          cause: "incident-control",
+          message: "New integration requests are temporarily unavailable",
+          operation: "execute",
+          reason: "unavailable",
+        });
       const connection = yield* requireConnection(manifest.toolkit, input.userId);
       const execution = yield* connection.session.execute(
         manifest.providerTool,
@@ -625,6 +636,12 @@ export const make = (
             message: "The integration Action has an unresolved provider outcome",
           });
         }
+        if (!(yield* ports.dispatchAllowed))
+          return yield* new IntegrationActionNotApplied({
+            actionId,
+            message: "New integration effects are temporarily unavailable",
+            providerLogId: null,
+          });
         const actionSession = yield* ports.createSession(
           input.userId,
           directIntegrationProviderConfig,

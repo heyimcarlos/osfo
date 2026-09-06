@@ -106,6 +106,7 @@ export const makeWithPorts = (
   images: ImageProvider,
   conservativeVendorUsdMicros: bigint,
   deadlines: Deadlines = defaultDeadlines,
+  dispatchAllowed: Effect.Effect<boolean> = Effect.succeed(true),
 ): DisposableCompute => ({
   dispose: (contentId) =>
     Effect.tryPromise({
@@ -120,6 +121,8 @@ export const makeWithPorts = (
   generate: (input) =>
     Effect.gen(function* () {
       const clock = yield* Clock.Clock;
+      const context = yield* Effect.context();
+      const runPromise = Effect.runPromiseWith(context);
       const [high, low] = yield* Effect.all([Random.next, Random.next]);
       return yield* Effect.promise(() =>
         render(
@@ -131,6 +134,7 @@ export const makeWithPorts = (
           `artifact:${input.contentId}:${high.toString(16)}${low.toString(16)}`,
           () => clock.currentTimeMillisUnsafe(),
           deadlines,
+          () => runPromise(dispatchAllowed),
         ),
       );
     }),
@@ -186,6 +190,7 @@ const render = async (
   providerOperationId: string,
   currentTimeMillis: () => number,
   deadlines: Deadlines,
+  dispatchAllowed: () => Promise<boolean>,
 ): Promise<ComputeResult> => {
   const cost = incurred(input.allowancePeriodId, providerOperationId, conservativeVendorUsdMicros);
   const proposed: AttemptEvidence = {
@@ -249,6 +254,11 @@ const render = async (
       return interrupted({ _tag: "ProvenNoUse" }, "Immutable artifact inputs exceed 25 MB");
     }
 
+    if (!(await dispatchAllowed()))
+      return interrupted(
+        { _tag: "ProvenNoUse" },
+        "New artifact compute is temporarily unavailable",
+      );
     const started = await withDeadline(
       attempts.start(input.contentId, {
         ...proposed,

@@ -1,3 +1,5 @@
+import { DocumentAuthorizationUnavailable } from "../services/document-generation";
+import { IncidentControlsPostgres } from "../integrations/postgres/incident-controls";
 import { DateTime, Effect, Layer } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -195,6 +197,18 @@ export const executionEffect = <Value>(
     return yield* Effect.gen(function* () {
       const reports = yield* ResearchReport.Service;
       const collectorPort = ResearchCollector.Port.of({
+        checkNewDispatch: IncidentControlsPostgres.makeFromDatabase(database)
+          .check("newCostlyWork")
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ResearchCollector.Unavailable({
+                  cause,
+                  message: "New provider work is temporarily unavailable",
+                  reason: "authorizationDenied",
+                }),
+            ),
+          ),
         authorize: (report) =>
           reports.authorizeExecution(
             ResearchReport.WorkflowPayload.make({
@@ -216,6 +230,18 @@ export const executionEffect = <Value>(
         Layer.provide(Layer.succeed(ResearchCollector.Port, collectorPort)),
       );
       const synthesisPort = ResearchSynthesis.Port.of({
+        checkNewDispatch: IncidentControlsPostgres.makeFromDatabase(database)
+          .check("newCostlyWork")
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ResearchSynthesis.Unavailable({
+                  cause,
+                  message: "New provider work is temporarily unavailable",
+                  reason: "authorizationDenied",
+                }),
+            ),
+          ),
         authorize: collectorPort.authorize,
         evidence: ResearchSynthesisEvidence.make(env.FILES),
         persistence: ResearchSynthesisPostgres.make(database),
@@ -240,6 +266,17 @@ export const executionEffect = <Value>(
           env.DOCUMENT_SANDBOX,
           env.ARTIFACTS,
           researchReportDocumentSandboxUsdMicros,
+          IncidentControlsPostgres.makeFromDatabase(database)
+            .check("newCostlyWork")
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new DocumentAuthorizationUnavailable({
+                    cause,
+                    message: "New document rendering is temporarily unavailable",
+                  }),
+              ),
+            ),
         ),
         maximumComputeUsdMicros: researchReportDocumentSandboxUsdMicros,
         recordRenderCost: makeRenderCostRecorder(database),

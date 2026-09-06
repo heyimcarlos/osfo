@@ -449,6 +449,7 @@ const makeFixture = (
   let ambiguousDiscoveryFailures = options.ambiguousDiscoveryFailures ?? 0;
   let transientPageFailures = options.transientPageFailures ?? 0;
   const port = ResearchCollector.Port.of({
+    checkNewDispatch: Effect.void,
     authorize:
       options.authorize ??
       ((current) =>

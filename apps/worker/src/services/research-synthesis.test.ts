@@ -184,10 +184,24 @@ it.effect("retries Company Cost from completed PostgreSQL truth without another 
 });
 
 it.effect("reconciles late immutable synthesis evidence after an unknown outcome", () => {
-  const fixture = makeFixture("unknown");
+  let paused = false;
+  const fixture = makeFixture("unknown", {
+    checkNewDispatch: Effect.suspend(() =>
+      paused
+        ? Effect.fail(
+            new ResearchSynthesis.Unavailable({
+              cause: "incident-control",
+              message: "Paused",
+              reason: "authorizationDenied",
+            }),
+          )
+        : Effect.void,
+    ),
+  });
   return Effect.gen(function* () {
     const synthesis = yield* ResearchSynthesis.Service;
     yield* synthesis.synthesize(report, sources).pipe(Effect.result);
+    paused = true;
     fixture.installLateEvidence();
     const recovered = yield* synthesis.synthesize(report, sources);
     expect(recovered.result.title).toBe(valid.title);
@@ -262,9 +276,30 @@ it.effect("removes late synthesis evidence after the committed PostgreSQL deleti
   }).pipe(Effect.scoped),
 );
 
+it.effect("blocks a new synthesis without recording an attempt or provider cost", () => {
+  const fixture = makeFixture("completed", {
+    checkNewDispatch: Effect.fail(
+      new ResearchSynthesis.Unavailable({
+        cause: "incident-control",
+        message: "Paused",
+        reason: "authorizationDenied",
+      }),
+    ),
+  });
+  return Effect.gen(function* () {
+    const synthesis = yield* ResearchSynthesis.Service;
+    const result = yield* synthesis.synthesize(report, sources).pipe(Effect.result);
+    expect(result).toMatchObject({ failure: { reason: "authorizationDenied" } });
+    expect(fixture.providerCalls).toBe(0);
+    expect(fixture.operation?.attemptCount).toBe(0);
+    expect(fixture.costRecords).toHaveLength(0);
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
 const makeFixture = (
   outcome: "completed" | "invalid" | "unknown",
   options: {
+    readonly checkNewDispatch?: ResearchSynthesis.PortInterface["checkNewDispatch"];
     readonly afterEvidencePut?: () => Effect.Effect<void>;
     readonly authorize?: ResearchSynthesis.PortInterface["authorize"];
     readonly costFailures?: number;
@@ -290,6 +325,7 @@ const makeFixture = (
     usdMicros: 20_000n,
   });
   const port = ResearchSynthesis.Port.of({
+    checkNewDispatch: options.checkNewDispatch ?? Effect.void,
     authorize: options.authorize ?? ((current) => Effect.succeed(current)),
     evidence: {
       delete: (_, resultKey) => Effect.sync(() => deletedKeys.push(resultKey)),

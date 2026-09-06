@@ -9,6 +9,7 @@ import { FileDigest } from "../../domain/file-content";
 import { ContentId } from "../../domain/client-content";
 import { recoverableResearchReportStepConfig } from "../../workflows/research-report-step";
 import {
+  DocumentAuthorizationUnavailable,
   DocumentIntentDigest,
   DocumentSource,
   type CostEvidence,
@@ -361,6 +362,36 @@ it.effect("does not overwrite cached completion evidence after losing its CAS", 
   });
 });
 
+it.effect(
+  "blocks a new renderer before start with proven zero use, but recovers completed output",
+  () => {
+    const checkNewDispatch = Effect.fail(
+      new DocumentAuthorizationUnavailable({
+        cause: "incident-control",
+        message: "Paused",
+      }),
+    );
+    const fresh = recoveryFixture(null, { checkNewDispatch });
+    const completed = recoveryFixture(
+      {
+        ...attemptEvidence({ status: "completed", executionLeaseExpiresAt: 0 }),
+        renderedPageCount: 1,
+      },
+      { checkNewDispatch, outputExists: true },
+    );
+    return Effect.gen(function* () {
+      expect(yield* fresh.generate()).toMatchObject({
+        _tag: "AuthorizationFailure",
+        cost: { _tag: "ProvenNoUse" },
+      });
+      expect(fresh.execCalls()).toBe(0);
+      expect(fresh.startCalls()).toBe(0);
+      expect(yield* completed.generate()).toMatchObject({ _tag: "Completed" });
+      expect(completed.execCalls()).toBe(0);
+    });
+  },
+);
+
 const testAllowancePeriodId = AllowancePeriodId.make("allowance-1");
 const testContentId = ContentId.make("document:workflow:test-recovery");
 const testIntentDigest = DocumentIntentDigest.make("a".repeat(64));
@@ -387,6 +418,7 @@ const recoveryFixture = (
   initialEvidence: ActiveAttemptEvidence | null,
   options: {
     readonly source?: Parameters<DisposableCompute["generate"]>[0]["source"];
+    readonly checkNewDispatch?: Effect.Effect<void, DocumentAuthorizationUnavailable>;
     readonly completeFailures?: number;
     readonly completeLoses?: boolean;
     readonly denySecondAuthorization?: boolean;
@@ -470,7 +502,13 @@ const recoveryFixture = (
       writes.push(content);
     },
   };
-  const compute = makeWithSandbox(() => sandbox, attempts, 50_000n);
+  const compute = makeWithSandbox(
+    () => sandbox,
+    attempts,
+    50_000n,
+    undefined,
+    options.checkNewDispatch,
+  );
   return {
     writes,
     evidence: () => evidence,

@@ -405,7 +405,12 @@ describe("Integrations", () => {
       } as const;
 
       const first = yield* integrations.execute(request);
+      harness.dispatchAllowed = Effect.succeed(false);
       const replay = yield* integrations.execute(request);
+      const blocked = yield* integrations
+        .execute({ ...request, actionId: ActionId.make("new-during-incident") })
+        .pipe(Effect.result);
+      expect(blocked).toMatchObject({ failure: { _tag: "IntegrationActionNotApplied" } });
 
       expect(first).toEqual(replay);
       expect(authorityChecks).toBe(1);
@@ -2046,6 +2051,7 @@ const makeActionAccounting = () => {
 
 const makeHarness = (): IntegrationProvider &
   IntegrationPersistence & {
+    dispatchAllowed: Effect.Effect<boolean>;
     actions: Map<ActionId, PersistedIntegrationAction>;
     authorized: Array<{ callbackUrl: string; toolkit: string }>;
     created: Array<{ config: typeof directIntegrationProviderConfig; userId: UserId }>;
@@ -2165,6 +2171,7 @@ const makeHarness = (): IntegrationProvider &
     },
   });
   return Object.assign(harness, {
+    dispatchAllowed: Effect.succeed(true),
     createSession: (createdUserId: UserId, config: typeof directIntegrationProviderConfig) => {
       harness.created.push({ config, userId: createdUserId });
       return Effect.succeed({

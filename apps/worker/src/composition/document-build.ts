@@ -1,3 +1,4 @@
+import { IncidentControlsPostgres } from "../integrations/postgres/incident-controls";
 import { DateTime, Effect, Layer, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -16,6 +17,7 @@ import { DocumentBuild } from "../services/document-build";
 import { DocumentBuildAccounting } from "../services/document-build-accounting";
 import { DocumentBuildDocument } from "../services/document-build-document";
 import { DocumentBuildFollowUp } from "../services/document-build-follow-up";
+import { DocumentAuthorizationUnavailable } from "../services/document-generation";
 import type { StoredArtifactMetadata } from "../services/document-generation";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle, osfo/no-unknown-returns, typescript/consistent-return -- This module is the Document Build application composition root. Cloudflare RPC returns are untrusted and decoded immediately after the Promise boundary. */
@@ -152,6 +154,17 @@ export const executionEffect = <Value, Failure>(
                     env.DOCUMENT_SANDBOX,
                     env.ARTIFACTS,
                     maximumDocumentBuildComputeUsdMicros,
+                    IncidentControlsPostgres.makeFromDatabase(database)
+                      .check("newCostlyWork")
+                      .pipe(
+                        Effect.mapError(
+                          (cause) =>
+                            new DocumentAuthorizationUnavailable({
+                              cause,
+                              message: "New document rendering is temporarily unavailable",
+                            }),
+                        ),
+                      ),
                   ),
                   finishSuccess: (build, contentId) =>
                     builds.finishSuccess(payloadFor(build), contentId),
@@ -413,7 +426,7 @@ const makePendingArtifactDiscarder = (
           Effect.mapError((cause) => documentBuildUnavailable("artifact.discard.attempt", cause)),
         ),
       dispose: () =>
-        DocumentCompute.make(sandbox, bucket, maximumDocumentBuildComputeUsdMicros)
+        DocumentCompute.make(sandbox, bucket, maximumDocumentBuildComputeUsdMicros, Effect.void)
           .dispose(contentId)
           .pipe(
             Effect.mapError((cause) => documentBuildUnavailable("artifact.discard.sandbox", cause)),

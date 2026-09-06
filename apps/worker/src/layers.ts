@@ -28,6 +28,6 @@ export const makeOsfoAgentRuntime = (database: Db.Options, supermemory: Supermem
       Db.layer(database),
       BrowserCrypto.layer,
       Capabilities.layer,
-      SupermemoryMemoryProvider.layerFromConfig(supermemory),
+      SupermemoryMemoryProvider.layerFromConfig(supermemory, database.db),
     ),
   );

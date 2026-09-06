@@ -1,4 +1,5 @@
 import { PdfForm } from "../../integrations/pdf/pdf-form";
+import { IncidentControlsPostgres } from "../../integrations/postgres/incident-controls";
 import {
   action,
   defaultContextOverflowClassifier,
@@ -691,7 +692,12 @@ export type SessionHistoryRead = SessionHistoryFound | SessionHistoryNotFound;
 export class OsfoAgent extends Think<Env> {
   /** Construct the optional provider boundary at this Agent-owned storage partition. */
   protected makeIntegrations(): Option.Option<Integrations.Interface> {
-    return IntegrationComposition.make(loadConfig(this.env), this.ctx.storage, this.env.ARTIFACTS);
+    return IntegrationComposition.make(
+      loadConfig(this.env),
+      this.ctx.storage,
+      this.env.DB,
+      this.env.ARTIFACTS,
+    );
   }
 
   /** Keep shell execution unavailable until a concrete Osfo tool contract enables it. */
@@ -836,7 +842,7 @@ export class OsfoAgent extends Think<Env> {
     },
     authorization: Authorization.make(retainedCatalog),
     catalog: retainedCatalog,
-    compute: makeCloudflareFileCompute(this.env.DOCUMENT_SANDBOX),
+    compute: makeCloudflareFileCompute(this.env.DOCUMENT_SANDBOX, this.env.DB),
     currentAuthorizationContext: (context) => this.#currentFileAuthorizationContext(context),
     now: DateTime.now.pipe(
       Effect.map((time) => Db.DbTimestamp.make(DateTime.toDateUtc(time).toISOString())),
@@ -1285,6 +1291,10 @@ export class OsfoAgent extends Think<Env> {
     context: MessengerContext,
   ): Promise<void> {
     await this.#migrationsReady;
+    const ingress = await Effect.runPromise(
+      IncidentControlsPostgres.check(this.env.DB, "newIngress").pipe(Effect.result),
+    );
+    if (Result.isFailure(ingress)) return;
     const authorId = messengerAuthorId(context);
     const message = context.message;
     const provider = context.provider;
@@ -1871,7 +1881,8 @@ export class OsfoAgent extends Think<Env> {
   }
 
   /** Publish newly loaded Skill bodies and schemas on the next model step. */
-  override beforeStep(context: PrepareStepContext): CapabilityStepConfig | void {
+  override async beforeStep(context: PrepareStepContext): Promise<CapabilityStepConfig | void> {
+    await Effect.runPromise(IncidentControlsPostgres.check(this.env.DB, "newCostlyWork"));
     this.#activeModelStepNumber = ModelStepNumber.make(context.stepNumber + 1);
     const activeTurn = this.#activeCapabilityTurn;
     if (activeTurn === undefined) return;
@@ -2237,7 +2248,7 @@ export class OsfoAgent extends Think<Env> {
         });
       }).pipe(
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Think's beforeTurn hook is the application entry point for this request Layer.
-        Effect.provide(SupermemoryMemoryProvider.layerFromConfig(config.supermemory)),
+        Effect.provide(SupermemoryMemoryProvider.layerFromConfig(config.supermemory, this.env.DB)),
       ),
     );
   }
@@ -3521,6 +3532,7 @@ export class OsfoAgent extends Think<Env> {
     const authority = this.#personalSkillAuthority;
     const readGatewayVendorCost = (logId: string) => this.#readGatewayVendorCost(logId);
     const resolveModel = () => this.resolveModel(launchModelAccessPolicy.plans.free.route);
+    const checkNewDispatch = IncidentControlsPostgres.check(this.env.DB, "newCostlyWork");
     return Effect.gen(function* () {
       const prompt = encodeSkillLearningPrompt({
         corrections: input.candidate.corrections,
@@ -3528,6 +3540,15 @@ export class OsfoAgent extends Think<Env> {
         priorSkill: input.priorVersion,
         taskDescription: input.candidate.taskDescription,
       });
+      yield* checkNewDispatch.pipe(
+        Effect.mapError(
+          (cause) =>
+            new SkillLearningModelUnavailable({
+              cause,
+              message: "New Skill Learning model work is temporarily unavailable",
+            }),
+        ),
+      );
       const generated = yield* Effect.exit(
         Effect.tryPromise({
           try: () =>
@@ -4666,6 +4687,15 @@ export class OsfoAgent extends Think<Env> {
     | ThinkSubmissionUnavailable
   > {
     await this.#migrationsReady;
+    const ingress = await Effect.runPromise(
+      IncidentControlsPostgres.check(this.env.DB, "newIngress").pipe(Effect.result),
+    );
+    if (Result.isFailure(ingress))
+      return new ThinkSubmissionUnavailable({
+        cause: ingress.failure,
+        message: "New messages are temporarily unavailable",
+        operation: "submitManagedConversation",
+      });
     const decoded = Schema.decodeResult(SubmitManagedConversationInput)(input);
     if (Result.isFailure(decoded)) return invalidRequest("submitManagedConversation");
     const lifecycle = this.#agentSessionLifecycle;

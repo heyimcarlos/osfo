@@ -94,6 +94,7 @@ export class Unavailable extends Schema.TaggedError<Unavailable>()("ResearchSynt
 }) {}
 
 export interface PortInterface {
+  readonly checkNewDispatch: Effect.Effect<void, Unavailable>;
   readonly authorize: (
     report: ResearchReport.Record,
   ) => Effect.Effect<
@@ -283,6 +284,7 @@ export const make = Effect.gen(function* () {
     }
 
     yield* authorize(ports, report);
+    yield* ports.checkNewDispatch;
     const started = yield* ports.persistence.recordAttempt(
       operation.operationId,
       claimed.operation.attemptCount,

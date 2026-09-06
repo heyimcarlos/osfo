@@ -1,3 +1,4 @@
+import { IncidentControlsPostgres } from "../integrations/postgres/incident-controls";
 import { users } from "@osfo/db/schema/auth";
 import { channelLinks } from "@osfo/db/schema/channel-links";
 import { whatsappWakeups, whatsappWakeupSources } from "@osfo/db/schema/whatsapp-wakeups";
@@ -361,6 +362,10 @@ export const make = Effect.gen(function* () {
     };
     if (options.sendPending === false) return counts;
     for (let index = 0; index < limit; index += 1) {
+      const dispatchAllowed = yield* IncidentControlsPostgres.makeFromDatabase(database)
+        .check("newCostlyWork")
+        .pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }));
+      if (!dispatchAllowed) break;
       const claim = yield* claimPending(leaseDuration);
       if (claim === null) break;
       const authorizedSources = yield* retainAuthorizedSources(claim.userId, claim.wakeUpId);

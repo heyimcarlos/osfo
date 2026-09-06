@@ -1,3 +1,4 @@
+import { IncidentControlsPostgres } from "../integrations/postgres/incident-controls";
 import { getSandbox } from "@cloudflare/sandbox";
 import { DateTime, Effect, Predicate } from "effect";
 
@@ -52,6 +53,10 @@ export const make = (
       ArtifactCompute.makeAttemptStore(bindings.ARTIFACTS),
       ArtifactCompute.workersAiImageProvider(bindings.AI),
       conservativeArtifactVendorUsdMicros,
+      undefined,
+      IncidentControlsPostgres.makeFromDatabase(database)
+        .check("newCostlyWork")
+        .pipe(Effect.match({ onFailure: () => false, onSuccess: () => true })),
     ),
     currentAuthorization,
     executionLimits: (request) => {
