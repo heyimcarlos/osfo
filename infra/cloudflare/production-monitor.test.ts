@@ -38,7 +38,7 @@ it.effect("checks real response contracts and releases both request scopes", () 
     ]);
     expect(signals).toHaveLength(2);
     expect(signals.every((signal) => signal.aborted)).toBe(true);
-    expect(coverageGap).toContain("Runtime error metrics: MISSING");
+    expect(coverageGap).toContain("NO_DATA is not zero errors");
   }),
 );
 

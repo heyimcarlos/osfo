@@ -1,4 +1,4 @@
-name: Production HTTPS availability (runtime metrics unavailable)
+name: Production availability and runtime errors
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   availability:
-    name: HTTPS availability only
+    name: Availability and runtime errors
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -33,20 +33,26 @@ jobs:
 
       - name: Verify probe failure fixtures
         if: github.event_name == 'workflow_dispatch'
-        run: bunx vitest run infra/cloudflare/production-monitor.test.ts
+        run: bunx vitest run infra/cloudflare/production-monitor.test.ts infra/cloudflare/production-runtime-metrics.test.ts
 
-      - name: Probe public HTTPS surfaces
+      - name: Probe production availability and runtime errors
+        env:
+          CLOUDFLARE_ANALYTICS_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ANALYTICS_ACCOUNT_ID }}
+          CLOUDFLARE_ANALYTICS_API_TOKEN: ${{ secrets.CLOUDFLARE_ANALYTICS_API_TOKEN }}
         run: bun infra/cloudflare/production-monitor.ts
 
       - name: State coverage limits
         if: always()
         run: |
           cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
-          Only API runtime identity and web HTML availability are checked.
+          API runtime identity, web HTML and delayed sampled Worker runtime-error metrics are checked.
 
-          **Runtime error metrics: MISSING.** No authorized CI analytics credential is configured.
+          Runtime metrics use a 15-minute window ending 5 minutes before observation; any observed error fails.
+          Missing credentials, unavailable analytics or no invocation data are not a pass.
+          Web runtime errors are NOT_APPLICABLE: the verified production Web deployment is assets-only.
+          Requalify this exemption whenever its deployment gains Worker code.
           Database, provider health, user journeys, and deployment-version qualification are not covered.
-          A green job means HTTPS availability passed, not complete production health.
+          A green job is not complete production health or a five-minute detection guarantee.
 
           Alert delivery verification remains a separate qualification step.
           GitHub schedules may be delayed or dropped, and public-repository schedules disable after
