@@ -146,14 +146,10 @@ export const make = (options: Options) => {
           if (binding === null || !Browser.isAvailable(binding, inspection.userId))
             return yield* unavailable();
           // Opening authority comes from the actual User request, never a page or model-provided scope.
-          const suppliedUrls = requestText.match(/https?:\/\/[^\s<>"']+/g) ?? [];
           if (
             !URL.canParse(url) ||
             !binding.allowedOrigins.includes(new URL(url).origin) ||
-            !suppliedUrls.some(
-              (candidate) =>
-                URL.canParse(candidate) && new URL(candidate).href === new URL(url).href,
-            )
+            !matchesSuppliedBrowserUrl(requestText, url)
           )
             return yield* unavailable();
           const command = { _tag: "Open", url: new URL(url).href } as const;
@@ -289,3 +285,13 @@ const unavailable = () =>
   });
 
 export * as BrowserTask from "./browser-task";
+
+/** Preserve exact URLs; a single prose terminator may follow the requested URL. */
+export const matchesSuppliedBrowserUrl = (requestText: string, requestedUrl: string): boolean => {
+  if (!URL.canParse(requestedUrl)) return false;
+  const expected = new URL(requestedUrl).href;
+  const supplied = requestText.match(/https?:\/\/[^\s<>"']+/g) ?? [];
+  const matches = (value: string) => URL.canParse(value) && new URL(value).href === expected;
+  if (supplied.some(matches)) return true;
+  return supplied.some((value) => /[.,;!]$/u.test(value) && matches(value.slice(0, -1)));
+};

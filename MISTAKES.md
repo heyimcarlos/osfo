@@ -151,3 +151,11 @@ short, specific, and actionable.
 - Qualify native Action pauses through the authenticated review page and the
   originating chat. A retained pause needs a real decision route, a delivered
   review link, and an observed native continuation before the user flow is ready.
+
+- Include each native browser Action in pending-input sanitization. Projection
+  tests must pass through the actual sanitizer and native pending adapter; testing
+  an unsanitized descriptor missed the input being replaced with an empty object.
+- Deliver approval links through the accepted messenger reply that owns external
+  delivery. A separate native notice is not included when that reply reads only
+  the exact committed assistant message. Use committed pause parts and recheck
+  the current pending ledger after the existing channel authority check.

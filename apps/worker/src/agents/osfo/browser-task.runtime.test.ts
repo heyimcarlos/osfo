@@ -37,7 +37,7 @@ it.effect(
               turnId: ThinkSubmissionId.make("first-session-turn"),
               operationId: "owned-task",
             };
-            const requestText = "Open https://portal.example/book and prefer Tuesday morning.";
+            const requestText = "Open https://portal.example/book. Prefer Tuesday morning.";
             const requests: Array<BrowserRequest> = [];
             let cleanupSucceeded = false;
             let admitted = true;

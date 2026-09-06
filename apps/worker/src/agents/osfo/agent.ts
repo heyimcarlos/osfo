@@ -1,4 +1,4 @@
-import { notifyBrowserApproval } from "./browser-approval-notice";
+import { appendBrowserApprovalLink } from "./browser-approval-reply";
 import { documentDownloadUrl } from "@osfo/api/document-download";
 import { PdfForm } from "../../integrations/pdf/pdf-form";
 import { IncidentControlsPostgres } from "../../integrations/postgres/incident-controls";
@@ -1358,7 +1358,7 @@ export class OsfoAgent extends Think<Env> {
 
   /** Speak with the shared Osfo persona from the registered personal partition. */
   override getSystemPrompt() {
-    return `${personalAgentSystemPrompt()}\n\nWhen executeBrowserEffect returns paused, the interaction has not run. A review link is delivered through the current conversation. Direct the User to ${new URL("/settings/browser", publicWebBaseUrl(loadConfig(this.env).auth)).href} to review and approve or reject it. Do not request approval in chat or claim a browser effect succeeded while approval is pending.\n\nWhen osfoManageReminder is paused for approval, direct the User to ${new URL("/settings/reminders", publicWebBaseUrl(loadConfig(this.env).auth)).href} to review and approve or reject the exact Reminder. Do not ask them to approve in chat. Ask for clarification before calling osfoManageReminder if the date, time, or timezone is ambiguous; its firstDueAt must be an exact UTC ISO timestamp.`;
+    return `${personalAgentSystemPrompt()}\n\nWhen executeBrowserEffect returns paused, the interaction has not run. A review link is included in the current conversation reply. Direct the User to ${new URL("/settings/browser", publicWebBaseUrl(loadConfig(this.env).auth)).href} to review and approve or reject it. Do not request approval in chat or claim a browser effect succeeded while approval is pending.\n\nWhen osfoManageReminder is paused for approval, direct the User to ${new URL("/settings/reminders", publicWebBaseUrl(loadConfig(this.env).auth)).href} to review and approve or reject the exact Reminder. Do not ask them to approve in chat. Ask for clarification before calling osfoManageReminder if the date, time, or timezone is ambiguous; its firstDueAt must be an exact UTC ISO timestamp.`;
   }
 
   /** Accept a provider message into native Think before its webhook can succeed. */
@@ -1614,13 +1614,18 @@ export class OsfoAgent extends Think<Env> {
               );
               if (response === null)
                 return yield* messengerReplyUnavailable("missing retained message");
-              return (
+              const text =
                 response.parts
                   .flatMap((part) =>
                     part.type === "text" && Predicate.isString(part.text) ? [part.text] : [],
                   )
-                  .join("") || "I could not produce a text response. Please try again."
-              );
+                  .join("") || "I could not produce a text response. Please try again.";
+              return yield* appendBrowserApprovalLink({
+                parts: response.parts,
+                text,
+                webBaseUrl: publicWebBaseUrl(loadConfig(this.env).auth),
+                pending: (executionId) => this.pendingApprovals(executionId),
+              });
             }).pipe(
               Effect.catch((cause) => (signal.aborted ? Effect.succeed(null) : Effect.fail(cause))),
             ),
@@ -2547,14 +2552,6 @@ export class OsfoAgent extends Think<Env> {
     }
     await this.#recordCurrentModelUsage(stepNumber, context);
     this.#completedModelSteps.add(stepNumber);
-    await Effect.runPromise(
-      notifyBrowserApproval({
-        results: context.toolResults,
-        webBaseUrl: publicWebBaseUrl(loadConfig(this.env).auth),
-        pending: (executionId) => this.pendingApprovals(executionId),
-        deliver: (text) => this.deliverNotice(text, { informModel: true }),
-      }),
-    );
   }
 
   /** Preserve conservative cost evidence when a provider turn ends ambiguously. */
