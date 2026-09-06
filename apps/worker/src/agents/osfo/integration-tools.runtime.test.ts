@@ -147,11 +147,15 @@ it("publishes and executes only the selected connected pack through OsfoAgent", 
 
     expect(config.activeTools).toEqual([
       "cancelScheduledEmail",
+      "exportDocument",
       "gmailFetchThread",
       "gmailSearchEmails",
       "gmailSendEmail",
       "inspectScheduledEmail",
+      "readFile",
+      "readWebPage",
       "scheduleEmail",
+      "validateFileFields",
     ]);
     expect(config.activeTools).not.toContain("calendarListEvents");
     const gmailRead = config.tools?.gmailFetchThread;
