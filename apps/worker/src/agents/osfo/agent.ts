@@ -1340,6 +1340,17 @@ export class OsfoAgent extends Think<Env> {
           text: "This connection is no longer authorized. Please reconnect it from Osfo.",
         };
       const currentAuthorization = yield* this.#inspectCurrentChannelLinkAuthorization(link);
+      if (
+        Predicate.isTagged(
+          authorization.recheck(currentAuthorization, {
+            actionId: submissionId,
+            kind: "conversation.run",
+            modelSteps: 0n,
+          }),
+          "Denied",
+        )
+      )
+        return { kind: "policy" as const, text: "This connection is no longer authorized." };
       const retained = yield* this.#messengerAdmissions.read(submissionId, inputDigest);
       const receipt = yield* Effect.gen({ self: this }, function* () {
         if (retained !== null) {
@@ -1368,6 +1379,7 @@ export class OsfoAgent extends Think<Env> {
         return yield* this.#messengerAdmissions.record(
           {
             acceptedAt: Db.DbTimestamp.make(DateTime.formatIso(now)),
+            agentId: agent.agentId,
             inputDigest,
             allowancePeriodId: admission.metadata.allowancePeriodId,
             channelLinkId: link.channelLinkId,
@@ -1392,6 +1404,17 @@ export class OsfoAgent extends Think<Env> {
         };
       if (!(yield* this.#store.ownsSession(receipt.sessionId)))
         return { kind: "policy" as const, text: "The session for this message has been deleted." };
+      const existing = yield* callThinkSubmission("inspectSubmission", () =>
+        this.inspectSubmission(submissionId),
+      );
+      if (existing !== null) {
+        if (existing.metadata?.messengerInputDigest !== inputDigest)
+          return yield* new MessengerAdmissionUnavailable({
+            cause: "native input mismatch",
+            message: "Native submission could not be recovered",
+          });
+        return receipt;
+      }
       if (!(yield* Effect.promise(() => this.#consumeWhatsAppWakeUp(link))))
         return yield* new MessengerAdmissionUnavailable({
           cause: "wake-up consumption unavailable",
@@ -1413,17 +1436,6 @@ export class OsfoAgent extends Think<Env> {
           cause: "accounting unavailable",
           message: "Messenger input could not be durably accepted",
         });
-      const existing = yield* callThinkSubmission("inspectSubmission", () =>
-        this.inspectSubmission(submissionId),
-      );
-      if (existing !== null) {
-        if (existing.metadata?.messengerInputDigest !== inputDigest)
-          return yield* new MessengerAdmissionUnavailable({
-            cause: "native input mismatch",
-            message: "Native submission could not be recovered",
-          });
-        return receipt;
-      }
       const normalized = Predicate.isString(userMessage)
         ? {
             id: submissionId,
@@ -1465,13 +1477,14 @@ export class OsfoAgent extends Think<Env> {
   override async followMessengerInput(
     encoded: unknown,
     context: MessengerContext,
-  ): Promise<string | null> {
+  ): Promise<string | null | { readonly kind: "unavailable" }> {
     await this.#migrationsReady;
     const receipt = await Effect.runPromise(
       Schema.decodeUnknownEffect(MessengerAcceptanceReceipt)(encoded),
     );
     const authorId = messengerAuthorId(context);
     if (
+      receipt.agentId !== this.name ||
       context.provider !== receipt.provider ||
       context.thread.id !== receipt.threadId ||
       context.message?.providerMessageId !== receipt.providerMessageId ||
@@ -1479,65 +1492,85 @@ export class OsfoAgent extends Think<Env> {
     )
       return null;
     const result = await Effect.runPromiseExit(
-      this.#accountDeletionFence.runTracked(
-        (signal) =>
-          Effect.gen({ self: this }, function* () {
-            const retained = yield* this.#messengerAdmissions.read(
-              receipt.submissionId,
-              receipt.inputDigest,
-            );
-            if (retained === null || !sameMessengerReceipt(retained, receipt))
-              return yield* messengerReplyUnavailable("receipt mismatch");
-            if (!(yield* this.#store.ownsSession(receipt.sessionId))) return null;
-            const terminal = yield* Effect.tryPromise({
-              try: () => this.waitForSubmission(receipt.submissionId, { signal }),
-              catch: messengerReplyUnavailable,
-            });
-            if (signal.aborted) return null;
-            const resolution = yield* Effect.promise(() =>
-              this.#resolveMessengerLink(context.messengerId, authorId),
-            );
-            if (resolution._tag === "Unavailable" || resolution.link === null) return null;
-            const link = resolution.link;
-            if (link.channelLinkId !== receipt.channelLinkId || link.userId !== receipt.userId)
-              return null;
-            yield* this.#inspectCurrentChannelLinkAuthorization(link);
-            if (signal.aborted) return null;
-            if (terminal.status !== "completed")
-              return "I could not complete that accepted request. Please try again.";
-            const committed = yield* Effect.try({
-              try: () =>
-                this.#db
-                  .select()
-                  .from(committedTurns)
-                  .where(
-                    eq(committedTurns.think_request_id, ThinkRequestId.make(receipt.submissionId)),
-                  )
-                  .get(),
-              catch: messengerReplyUnavailable,
-            });
-            if (committed === undefined || committed.session_id !== receipt.sessionId)
-              return yield* messengerReplyUnavailable("missing committed response");
-            const response = yield* readThinkMessage(
-              Session.create(this),
-              receipt.sessionId,
-              committed.assistant_message_id,
-            );
-            if (response === null)
-              return yield* messengerReplyUnavailable("missing retained message");
-            return (
-              response.parts
-                .flatMap((part) =>
-                  part.type === "text" && Predicate.isString(part.text) ? [part.text] : [],
+      this.#accountDeletionFence
+        .runTracked(
+          (signal) =>
+            Effect.gen({ self: this }, function* () {
+              const retained = yield* this.#messengerAdmissions.read(
+                receipt.submissionId,
+                receipt.inputDigest,
+              );
+              if (retained === null || !sameMessengerReceipt(retained, receipt))
+                return yield* messengerReplyUnavailable("receipt mismatch");
+              if (!(yield* this.#store.ownsSession(receipt.sessionId))) return null;
+              const terminal = yield* Effect.tryPromise({
+                try: () => this.waitForSubmission(receipt.submissionId, { signal }),
+                catch: messengerReplyUnavailable,
+              });
+              if (signal.aborted) return null;
+              const resolution = yield* Effect.promise(() =>
+                this.#resolveMessengerLink(context.messengerId, authorId),
+              );
+              if (resolution._tag === "Unavailable")
+                return yield* messengerReplyUnavailable("current link lookup unavailable");
+              if (resolution.link === null) return null;
+              const link = resolution.link;
+              if (link.channelLinkId !== receipt.channelLinkId || link.userId !== receipt.userId)
+                return null;
+              const current = yield* this.#inspectCurrentChannelLinkAuthorization(link);
+              if (
+                signal.aborted ||
+                Predicate.isTagged(
+                  authorization.recheck(current, {
+                    actionId: receipt.submissionId,
+                    kind: "conversation.run",
+                    modelSteps: 0n,
+                  }),
+                  "Denied",
                 )
-                .join("") || "I could not produce a text response. Please try again."
-            );
-          }),
-        () => messengerReplyUnavailable("account deletion fence"),
-      ),
+              )
+                return null;
+              if (terminal.status !== "completed")
+                return "I could not complete that accepted request. Please try again.";
+              const committed = yield* Effect.try({
+                try: () =>
+                  this.#db
+                    .select()
+                    .from(committedTurns)
+                    .where(
+                      eq(
+                        committedTurns.think_request_id,
+                        ThinkRequestId.make(receipt.submissionId),
+                      ),
+                    )
+                    .get(),
+                catch: messengerReplyUnavailable,
+              });
+              if (committed === undefined || committed.session_id !== receipt.sessionId)
+                return yield* messengerReplyUnavailable("missing committed response");
+              const response = yield* readThinkMessage(
+                Session.create(this),
+                receipt.sessionId,
+                committed.assistant_message_id,
+              );
+              if (response === null)
+                return yield* messengerReplyUnavailable("missing retained message");
+              return (
+                response.parts
+                  .flatMap((part) =>
+                    part.type === "text" && Predicate.isString(part.text) ? [part.text] : [],
+                  )
+                  .join("") || "I could not produce a text response. Please try again."
+              );
+            }).pipe(
+              Effect.catch((cause) => (signal.aborted ? Effect.succeed(null) : Effect.fail(cause))),
+            ),
+          () => ({ _tag: "MessengerDeliverySuppressed" as const }),
+        )
+        .pipe(Effect.catchTag("MessengerDeliverySuppressed", () => Effect.succeed(null))),
     );
     if (Exit.isSuccess(result)) return result.value;
-    return null;
+    return { kind: "unavailable" as const };
   }
 
   /** Apply Osfo policy before a Think messenger turn starts on this user-owned facet. */

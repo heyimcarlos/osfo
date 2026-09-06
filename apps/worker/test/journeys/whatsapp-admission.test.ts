@@ -1,15 +1,22 @@
-/* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, effecttsgo/node-builtin-import, effecttsgo/global-fetch-in-effect, eslint/no-underscore-dangle -- This journey owns the signed provider request and native RPC/PostgreSQL composition. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, effecttsgo/node-builtin-import, effecttsgo/global-fetch-in-effect, effecttsgo/global-date-in-effect, eslint/no-underscore-dangle -- This journey owns the signed provider request and native RPC/PostgreSQL composition. */
 import { createHmac } from "node:crypto";
 import { BrowserCrypto } from "@effect/platform-browser";
+import {
+  messengerContextFromEvent,
+  parseMessengerReplySnapshot,
+} from "@cloudflare/think/messengers";
+import { whatsappWakeups } from "@osfo/db/schema/whatsapp-wakeups";
+import { userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { allowanceUsage } from "@osfo/db/schema/allowances";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "@effect/vitest";
 import { inject } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Effect, Layer, Redacted, Schema } from "effect";
 
 import { OsfoAgent, messengerSubmissionId } from "../../src/agents/osfo/agent";
+import { MessengerAcceptanceReceipt } from "../../src/agents/osfo/messenger-admission";
 import { OSFO_DIRECTORY_NAME } from "../../src/agents/osfo/identity";
 import { loadConfig } from "../../src/config";
 import { Db } from "../../src/db";
@@ -25,9 +32,17 @@ it.effect(
         const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
           Effect.promise(client.dispose),
         );
+        const otherApp = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
+          Effect.promise(client.dispose),
+        );
         const owner = yield* Effect.promise(() =>
           app.auth.mintVerifiedUser({
             profile: { helpAreas: [], locale: "en", preferredName: "Messenger Owner" },
+          }),
+        );
+        const otherOwner = yield* Effect.promise(() =>
+          otherApp.auth.mintVerifiedUser({
+            profile: { helpAreas: [], locale: "en", preferredName: "Other Owner" },
           }),
         );
         const service = yield* ChannelLinks.Service;
@@ -73,6 +88,11 @@ it.effect(
             },
           });
         const context = inject("osfoJourney");
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(() =>
+            fetch(`${context.providerOrigin}/_test/whatsapp/reset`, { method: "POST" }),
+          ).pipe(Effect.asVoid),
+        );
         const readLedger = Effect.tryPromise(() =>
           fetch(`${context.providerOrigin}/_test/whatsapp/ledger`).then((response) =>
             response.json(),
@@ -162,6 +182,114 @@ it.effect(
             .where(eq(allowanceUsage.source_id, "whatsapp:wamid.durable-acceptance")),
         );
         expect(afterReplay).toEqual(recorded);
+        const snapshot = parseMessengerReplySnapshot(delivered.snapshot);
+        if (snapshot === null)
+          return yield* Effect.die(new Error("Missing native reply checkpoint"));
+        const receipt = yield* Schema.decodeUnknownEffect(MessengerAcceptanceReceipt)(
+          snapshot.acceptance,
+        );
+        const messengerContext = messengerContextFromEvent(snapshot.event);
+        const follow = async () => directory.followMessengerInput(receipt, messengerContext);
+        const originalReply = yield* Schema.decodeUnknownEffect(Schema.String)(
+          yield* Effect.promise(follow),
+        );
+        yield* Effect.promise(() =>
+          database.execute(
+            sql`ALTER TABLE channel_links RENAME TO channel_links_temporarily_unavailable`,
+          ),
+        );
+        yield* Effect.gen(function* () {
+          expect(yield* Effect.promise(follow)).toEqual({ kind: "unavailable" });
+        }).pipe(
+          Effect.ensuring(
+            Effect.promise(() =>
+              database.execute(
+                sql`ALTER TABLE channel_links_temporarily_unavailable RENAME TO channel_links`,
+              ),
+            ),
+          ),
+        );
+        expect(yield* Effect.promise(follow)).toBe(originalReply);
+        yield* Effect.promise(() =>
+          database.insert(userSuspensionEvents).values({
+            event_id: "messenger-owner-suspended",
+            user_id: owner.userId,
+            action: "suspended",
+            admin_actor_id: "messenger-test-authority",
+            reason: "Verify current authority",
+            occurred_at: new Date("2026-08-27T12:00:00.000Z"),
+          }),
+        );
+        expect(yield* Effect.promise(follow)).toBeNull();
+        yield* Effect.promise(() =>
+          database.insert(userSuspensionEvents).values({
+            event_id: "messenger-owner-restored",
+            user_id: owner.userId,
+            action: "restored",
+            admin_actor_id: "messenger-test-authority",
+            reason: "Restore test authority",
+            occurred_at: new Date("2026-08-27T12:01:00.000Z"),
+          }),
+        );
+        expect(yield* Effect.promise(follow)).toBe(originalReply);
+        yield* Effect.promise(() =>
+          database.insert(whatsappWakeups).values({
+            wakeup_id: "later-wakeup",
+            user_id: owner.userId,
+            channel_link_id: receipt.channelLinkId,
+            fingerprint: "a".repeat(64),
+            endpoint_fingerprint: "b".repeat(64),
+            source_kind: "reminder",
+            source_identity: "later-reminder",
+            source_committed_at: new Date("2026-08-27T12:02:00.000Z"),
+            locale: "en",
+            template_policy_version: "whatsapp-wakeup-v1",
+            trace_id: "later-wakeup-trace",
+          }),
+        );
+        const readWakeup = () =>
+          database
+            .select()
+            .from(whatsappWakeups)
+            .where(eq(whatsappWakeups.wakeup_id, "later-wakeup"));
+        const laterWakeup = yield* Effect.promise(readWakeup);
+        expect((yield* Effect.promise(() => send())).status).toBe(200);
+        expect(yield* Effect.promise(readWakeup)).toEqual(laterWakeup);
+        const changed = yield* Effect.promise(() =>
+          send(body.replace("Hello, please acknowledge this message.", "Changed provider input")),
+        );
+        expect(changed.status).toBe(503);
+        expect(yield* Effect.promise(readWakeup)).toEqual(laterWakeup);
+        expect(
+          (yield* Effect.promise(() =>
+            app.fetch(`/v1/channel-links/${receipt.channelLinkId}`, { method: "DELETE" }),
+          )).status,
+        ).toBe(200);
+        const replacementInvite = yield* service.ensure(address);
+        if (replacementInvite._tag !== "Invited")
+          return yield* Effect.die(new Error("Expected replacement invitation"));
+        const replacementToken = yield* Schema.decodeEffect(ChannelLinks.ChannelLinkInviteToken)(
+          replacementInvite.verificationUrl.pathname.split("/").at(-1) ?? "",
+        );
+        yield* service.accept(Redacted.make(replacementToken), UserId.make(otherOwner.userId));
+        expect((yield* Effect.promise(() => send())).status).toBe(200);
+        const otherSubmission = yield* Effect.promise(() =>
+          runInDurableObject(directory, async (host) => {
+            const agent = await host.subAgent(OsfoAgent, otherOwner.agentId);
+            return agent.inspectSubmission(submissionId);
+          }),
+        );
+        expect(otherSubmission).toBeNull();
+        expect(yield* Effect.promise(follow)).toBeNull();
+        expect(
+          yield* Effect.promise(() =>
+            database
+              .select()
+              .from(allowanceUsage)
+              .where(eq(allowanceUsage.source_id, "whatsapp:wamid.durable-acceptance")),
+          ),
+        ).toEqual(recorded);
+        expect(yield* readLedger).toEqual(ledger);
         return undefined;
       }).pipe(
         Effect.provide(

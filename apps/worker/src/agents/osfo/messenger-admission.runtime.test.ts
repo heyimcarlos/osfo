@@ -6,7 +6,7 @@ import { env } from "cloudflare:workers";
 import { Effect, Schema } from "effect";
 
 import { DbTimestamp } from "../../db";
-import { ChannelLinkId, ThinkSubmissionId, UserId } from "../../domain";
+import { AgentId, ChannelLinkId, ThinkSubmissionId, UserId } from "../../domain";
 import { ManagedTurnMetadata } from "../../domain/managed-conversation";
 import { makeAgentDb } from "./db/client";
 import { applyAgentMigrations } from "./db/migrate";
@@ -23,6 +23,7 @@ it.effect(
         const original = makeMessengerAdmissionStore(db);
         const metadata = turnMetadata();
         const receipt = {
+          agentId: AgentId.make("receipt-agent"),
           acceptedAt: DbTimestamp.make("2026-08-27T12:00:00.000Z"),
           allowancePeriodId: metadata.allowancePeriodId,
           channelLinkId: ChannelLinkId.make("runtime-channel-link"),

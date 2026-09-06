@@ -27,6 +27,7 @@ import { streamTextReply } from "./messenger-stream";
 import { makeOsfoMessengerRouter, type MessengerAddressResolution } from "./messenger-routing";
 import { ThinkMessengerStateAgent } from "./messenger-state";
 import { MessengerReset } from "./messenger-reset";
+import { MessengerAcceptanceReceipt } from "./messenger-admission";
 import type { AgentInitializationEncoded } from "./db/store";
 import { GroupRefusalCopy } from "./persona";
 import { AgentId, UserId } from "../../domain";
@@ -77,6 +78,23 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
         verifyToken: this.env.WHATSAPP_VERIFY_TOKEN,
       }),
     };
+  }
+
+  /** Follow the original accepted owner without creating a replacement facet after erasure. */
+  override followMessengerInput(encoded: unknown, context: MessengerContext) {
+    return Effect.runPromise(
+      Schema.decodeUnknownEffect(MessengerAcceptanceReceipt)(encoded).pipe(
+        Effect.flatMap((receipt) =>
+          this.hasSubAgent(OsfoAgent, receipt.agentId)
+            ? Effect.tryPromise(async () => {
+                const agent = await this.subAgent(OsfoAgent, receipt.agentId);
+                return agent.followMessengerInput(receipt, context);
+              })
+            : Effect.succeed(null),
+        ),
+        Effect.orElseSucceed(() => ({ kind: "unavailable" as const })),
+      ),
+    );
   }
 
   /** Deterministically answer the messenger turns that never reach a facet. */

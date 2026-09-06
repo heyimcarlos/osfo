@@ -56,6 +56,7 @@ it.effect("persists recoverable WhatsApp input before acknowledging the real sig
         });
         const selected = vi.spyOn(think, "getModel").mockReturnValue(model);
         let admissionAvailable = false;
+        let deliveryAvailable = false;
         const host = {
           acceptMessengerInput: async (message: string | UIMessage) => {
             if (!admissionAvailable) return { kind: "unavailable" };
@@ -82,6 +83,7 @@ it.effect("persists recoverable WhatsApp input before acknowledging the real sig
           },
           followMessengerInput: async () => {
             await think.waitForSubmission("durable-whatsapp");
+            if (!deliveryAvailable) return { kind: "unavailable" as const };
             await Effect.runPromise(Deferred.succeed(completed, undefined));
             return "Your retained reminder.";
           },
@@ -93,6 +95,7 @@ it.effect("persists recoverable WhatsApp input before acknowledging the real sig
           constructor: { name: "OsfoDirectory" },
           name: directory.name,
           parentPath: directory.parentPath,
+          inspectFiberByKey: directory.inspectFiberByKey.bind(directory),
           resolveFiber: directory.resolveFiber.bind(directory),
           startFiber: async (name, execute, options) => {
             try {
@@ -105,7 +108,7 @@ it.effect("persists recoverable WhatsApp input before acknowledging the real sig
           subAgent: directory.subAgent.bind(directory),
         } satisfies MessengerThinkHost & {
           acceptMessengerInput: (message: string | UIMessage) => Promise<MessengerAdmission>;
-          followMessengerInput: () => Promise<string>;
+          followMessengerInput: () => Promise<string | { readonly kind: "unavailable" }>;
         };
         const channel = makeWhatsAppChannel({
           accessToken: "test-access-token",
@@ -177,6 +180,33 @@ it.effect("persists recoverable WhatsApp input before acknowledging the real sig
         // Drain the real adapter's detached task before the test leaves its native object.
         // oxlint-disable-next-line eslint/no-underscore-dangle -- Drive the installed native submission scheduler in this boundary test.
         await think._drainThinkSubmissions();
+        await vi.waitFor(async () => {
+          expect((await directory.listFibers())[0]).toMatchObject({
+            status: "pending",
+            snapshot: { stage: "accepted" },
+          });
+          expect(
+            state.storage.sql
+              .exec("SELECT 1 FROM cf_agents_runs WHERE name = 'think:messenger-reply'")
+              .toArray(),
+          ).toHaveLength(0);
+        });
+        expect(provider).not.toHaveBeenCalled();
+        deliveryAvailable = true;
+        const recovered = vi.fn<ThinkMessengerRuntime["handleFiberRecovery"]>((fiber) =>
+          runtime.handleFiberRecovery(fiber),
+        );
+        // Route the installed protected recovery hook to this test's messenger composition.
+        const recoveryHook = "_handleInternalFiberRecovery";
+        const originalHook = Object.getOwnPropertyDescriptor(directory, recoveryHook);
+        Object.defineProperty(directory, recoveryHook, { configurable: true, value: recovered });
+        try {
+          await directory.alarm();
+          expect(recovered).toHaveBeenCalledTimes(1);
+        } finally {
+          if (originalHook) Object.defineProperty(directory, recoveryHook, originalHook);
+          else Reflect.deleteProperty(directory, recoveryHook);
+        }
         await Effect.runPromise(Deferred.await(completed));
         selected.mockRestore();
         const fiber = (await directory.listFibers()).find(

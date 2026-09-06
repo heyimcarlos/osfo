@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect";
 
 import { DbTimestamp } from "../../db";
 import {
+  AgentId,
   AllowancePeriodId,
   ChannelLinkId,
   ConversationRouteId,
@@ -17,6 +18,7 @@ import { messengerAcceptanceReceipts } from "./db/schema";
 /** The immutable mapping returned only after the native submission is recoverable. */
 export const MessengerAcceptanceReceipt = Schema.Struct({
   acceptedAt: DbTimestamp,
+  agentId: AgentId,
   inputDigest: Schema.String,
   allowancePeriodId: AllowancePeriodId,
   channelLinkId: ChannelLinkId,

@@ -84,7 +84,7 @@ diff --git a/dist/index-s3Pl812H.d.ts b/dist/index-s3Pl812H.d.ts
     */
    configureChannels(): ThinkChannels | Promise<ThinkChannels>;
    getMessengerContext(): MessengerContext | undefined;
-+  followMessengerInput(acceptance: unknown, context: MessengerContext): Promise<string | null>;
++  followMessengerInput(acceptance: unknown, context: MessengerContext): Promise<string | null | { kind: "unavailable" }>;
 +  acceptMessengerInput(userMessage: string | UIMessage, context: MessengerContext): Promise<unknown>;
    chatWithMessengerContext(
      userMessage: string | UIMessage,
@@ -128,6 +128,15 @@ diff --git a/dist/index-s3Pl812H.d.ts b/dist/index-s3Pl812H.d.ts
    adapter: Adapter;
    adapterName: string;
    capabilities?: MessengerCapabilities;
+@@ -4217,6 +4225,8 @@
+   ): Promise<void>;
+ }
+ interface MessengerThinkHost extends MessengerThinkTarget {
++  inspectFiberByKey?(key: string): Promise<{ fiberId: string; name: string; status: string; snapshot?: unknown; createdAt: number } | null>;
++  followMessengerInput?(acceptance: unknown, context: MessengerContext): Promise<string | null | { kind: "unavailable" }>;
+   constructor: {
+     name: string;
+   };
 diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
 --- a/dist/chat-sdk-iuBa-CGM.js
 +++ b/dist/chat-sdk-iuBa-CGM.js
@@ -241,7 +250,15 @@ diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
  	};
  }
  var ThinkMessengerRuntime = class {
-@@ -381,7 +405,14 @@
+@@ -355,6 +379,7 @@
+ 		this.host = host;
+ 		this.definitionsByAdapterName = /* @__PURE__ */ new Map();
+ 		this.definitionsById = /* @__PURE__ */ new Map();
++		this.admittingReplies = new Map();
+ 		this.definitions = normalizeMessengers(definitions);
+ 		for (const definition of this.definitions) {
+ 			this.definitionsByAdapterName.set(definition.adapterName, definition);
+@@ -381,7 +406,14 @@
  		}
  		const chat = this.chat ?? this.createChat();
  		this.chat = chat;
@@ -257,7 +274,7 @@ diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
  	}
  	async handleFiberRecovery(ctx) {
  		if (ctx.name !== "think:messenger-reply") return false;
-@@ -391,13 +422,21 @@
+@@ -391,13 +423,21 @@
  		if (!definition) throw new Error(`No messenger definition found for recovered messenger ${snapshot.event.messengerId}`);
  		const thread = this.reviveChatObject(snapshot.thread);
  		const mode = messengerReplyRecoveryMode(snapshot);
@@ -281,7 +298,7 @@ diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
  			return true;
  		}
  		if (mode === "apologize") {
-@@ -423,16 +462,31 @@
+@@ -423,16 +463,31 @@
  			}),
  			userName: this.definitions[0]?.userName ?? "think"
  		});
@@ -316,7 +333,7 @@ diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
  			const definition = this.definitionForThread(thread);
  			if (!definition) return;
  			if (definition.subscribeOnMention) await thread.subscribe();
-@@ -440,16 +494,16 @@
+@@ -440,16 +495,16 @@
  				eventKind: "mention",
  				message,
  				thread
@@ -336,15 +353,40 @@ diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
  		});
  		chat.onAction(async (event) => {
  			if (!event.thread) return;
-@@ -465,12 +519,19 @@
+@@ -465,33 +520,83 @@
  		});
  		return chat.registerSingleton();
  	}
 -	async enqueueReply(definition, event, thread) {
 +	async enqueueReply(definition, event, thread, context) {
++		const key = idempotencyKeyForEvent(event);
++		const previous = this.admittingReplies.get(key);
++		if (previous) await previous;
++		const task = this.enqueueReplyOnce(definition, event, thread, context);
++		this.admittingReplies.set(key, task);
++		try { await task; } finally {
++			if (this.admittingReplies.get(key) === task) this.admittingReplies.delete(key);
++		}
++	}
++	async enqueueReplyOnce(definition, event, thread, context) {
  		const snapshotEvent = serializableMessengerEvent(event);
  		const snapshotThread = thread.toJSON();
 +		const userMessage = toMessengerBurstUserMessage(definition, event, context);
++		if (definition.durableAcceptance) {
++			const existing = await this.host.inspectFiberByKey(idempotencyKeyForEvent(event));
++			if (existing) {
++				const snapshot = parseMessengerReplySnapshot(existing.snapshot);
++				if (!snapshot) throw new Error("Messenger delivery checkpoint is pending");
++				const original = snapshot.userMessage ?? toMessengerUserMessage(snapshot.event, definition.channelSpeakerLabel);
++				const current = messengerReplySnapshot("accepted", snapshotEvent, snapshotThread, void 0, userMessage).userMessage;
++				if (JSON.stringify(original) !== JSON.stringify(current)) throw new Error("Provider message identity was reused for different input");
++				if (existing.status === "interrupted") await this.handleFiberRecovery({
++					id: existing.fiberId, name: existing.name, snapshot, createdAt: existing.createdAt,
++					recoveryReason: "interrupted"
++				});
++				return;
++			}
++		}
 +		const acceptingTarget = definition.durableAcceptance ? await this.resolveTarget(definition, event) : void 0;
 +		const acceptance = typeof acceptingTarget?.acceptMessengerInput === "function"
 +			? await acceptingTarget.acceptMessengerInput(userMessage, messengerContextFromEvent(event)) : void 0;
@@ -358,8 +400,11 @@ diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
 +			await this.answer(definition, event, thread, fiber, snapshotEvent, userMessage, void 0, acceptance);
  		}, {
  			idempotencyKey: idempotencyKeyForEvent(event),
++			initialSnapshot: acceptance === void 0 ? void 0 : messengerReplySnapshot("accepted", snapshotEvent, snapshotThread, void 0, userMessage, acceptance),
++			retryOnError: acceptance !== void 0,
  			metadata: {
-@@ -479,19 +540,35 @@
+ 				messengerId: event.messengerId,
+ 				messageId: event.message?.id,
  				provider: event.provider,
  				threadId: event.thread.id
  			},
@@ -373,7 +418,7 @@ diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
 +			return;
 +		}
 +		if (result.status !== "interrupted") {
-+			if (acceptance !== void 0 && result.snapshot === null) throw new Error("Messenger delivery checkpoint is pending");
++			if (acceptance !== void 0 && parseMessengerReplySnapshot(result.snapshot) === null) throw new Error("Messenger delivery checkpoint is pending");
 +			return;
 +		}
 +		const snapshot = parseMessengerReplySnapshot(result.snapshot) ?? (acceptance === void 0 ? null
@@ -400,7 +445,7 @@ diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
  			return;
  		}
  		if (mode === "apologize") {
-@@ -499,9 +576,30 @@
+@@ -499,9 +604,31 @@
  			await this.host.resolveFiber(result.fiberId, { status: "completed" });
  		}
  	}
@@ -411,14 +456,14 @@ diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
 +			fiber.stash(snapshot);
 +			stashed.resolve();
 +			await this.answer(definition, snapshot.event, thread, fiber, snapshot.event, snapshot.userMessage, void 0, snapshot.acceptance);
-+		}, { fiberId, resumeInterrupted: true });
++		}, { fiberId, resumeInterrupted: true, retryOnError: true });
 +		if (resumed.accepted) await stashed.promise;
 +	}
 +	async answer(definition, event, thread, fiber, snapshotEvent = serializableMessengerEvent(event), userMessage = toMessengerUserMessage(event, definition.channelSpeakerLabel), checkpoint, acceptance) {
- 		const target = await this.resolveTarget(definition, event);
 +		if (acceptance !== void 0) {
 +			const reply = acceptance.kind === "policy" ? acceptance.text
-+				: await target.followMessengerInput(acceptance, messengerContextFromEvent(snapshotEvent));
++				: await this.host.followMessengerInput(acceptance, messengerContextFromEvent(snapshotEvent));
++			if (reply?.kind === "unavailable") throw new Error("Accepted messenger reply is temporarily unavailable");
 +			const save = checkpoint ?? ((snapshot) => fiber.stash(snapshot));
 +			if (reply !== null) {
 +				await save(messengerReplySnapshot("streaming", snapshotEvent, thread.toJSON(), void 0, userMessage, acceptance));
@@ -427,12 +472,13 @@ diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
 +			await save(messengerReplySnapshot("completed", snapshotEvent, thread.toJSON(), void 0, userMessage, acceptance));
 +			return;
 +		}
+ 		const target = await this.resolveTarget(definition, event);
  		await deliverMessengerReply({
 +			bindDeliverySurface: target === this.host,
  			event,
  			checkpoint,
  			fiber,
-@@ -510,7 +608,8 @@
+@@ -510,7 +637,8 @@
  			snapshotThread: thread.toJSON(),
  			surface: thread,
  			target,
