@@ -37,6 +37,7 @@ import {
   Exit,
   Option,
   Predicate,
+  Redacted,
   Result,
   Schedule,
   Schema,
@@ -254,6 +255,9 @@ import type {
   CurrentSessionReplacementConflict,
 } from "../../services/session-replacement";
 import { messengerAuthorId } from "./channel-address";
+import { MessengerFileTurn } from "./messenger-file-turn";
+import { MessengerFileIngress } from "./messenger-file-ingress";
+import { MessengerAttachments } from "../../integrations/messenger-attachments";
 import {
   type AgentInitializationConflict,
   AgentRequestInvalid,
@@ -1663,7 +1667,7 @@ export class OsfoAgent extends Think<Env> {
         {
           authorization: currentAuthorization,
           idempotencyKey: `${provider}:${context.thread.id}:${message.providerMessageId}`,
-          message: message.text,
+          message: MessengerFileIngress.admissionText(context),
           routeId: agent.routeId,
           submissionId,
         },
@@ -1726,7 +1730,12 @@ export class OsfoAgent extends Think<Env> {
             );
             return;
           }
-          await super.chatWithMessengerContext(userMessage, callback, context, {
+          const nativeMessage = MessengerFileTurn.messageForSubmission(
+            userMessage,
+            context,
+            submissionId,
+          );
+          await super.chatWithMessengerContext(nativeMessage, callback, context, {
             metadata: admission.metadata,
             signal,
           });
@@ -1948,10 +1957,14 @@ export class OsfoAgent extends Think<Env> {
   }
 
   /** Apply only the route and limits pinned to the current durable Think Submission. */
-  override async beforeTurn(context: TurnContext): Promise<TurnConfig> {
+  override async beforeTurn(initialContext: TurnContext): Promise<TurnConfig> {
     const metadata = await Effect.runPromise(
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
     );
+    const context = {
+      ...initialContext,
+      messages: await this.#prepareMessengerFiles(initialContext, metadata),
+    };
     if (
       !context.continuation &&
       (metadata.authorityIdentity._tag === "AuthSession" ||
@@ -8031,6 +8044,74 @@ export class OsfoAgent extends Think<Env> {
           operation: "recordAllowance",
         }),
     });
+  }
+
+  #prepareMessengerFiles(context: TurnContext, metadata: ManagedTurnMetadata) {
+    if (
+      metadata.authorityIdentity._tag !== "ChannelLink" ||
+      MessengerFileTurn.currentUserMessage(this.messages)?.id !== metadata.submissionId
+    ) {
+      return Promise.resolve(context.messages);
+    }
+    const config = loadConfig(this.env);
+    const authority = metadata.authorityIdentity;
+    const currentAuthorization = this.#fileToolAuthorizationContext().pipe(
+      Effect.flatMap((retained) => this.#currentFileAuthorizationContext(retained)),
+    );
+    const authorize = currentAuthorization.pipe(
+      Effect.map(
+        (current) =>
+          authority._tag === "ChannelLink" &&
+          current.authority?._tag === "ChannelLink" &&
+          current.authority.channelLinkId === authority.channelLinkId &&
+          current.authority.userId === authority.userId &&
+          current.user._tag === "ActiveUser" &&
+          current.user.userId === authority.userId &&
+          current.deletionAccess._tag === "DeletionAccessAvailable",
+      ),
+    );
+    return Effect.runPromise(
+      this.#accountDeletionFence.run(
+        MessengerFileTurn.prepare(
+          { metadata, messages: this.messages, modelMessages: context.messages },
+          {
+            authorize,
+            download: MessengerAttachments.make({
+              telegram: {
+                token: Redacted.value(config.telegram.botToken),
+                apiBaseURL: config.telegram.apiBaseURL,
+              },
+              whatsapp: {
+                accessToken: Redacted.value(config.whatsApp.accessToken),
+                apiUrl: config.whatsApp.apiBaseURL,
+              },
+            }).download,
+            read: (input) =>
+              currentAuthorization.pipe(
+                Effect.flatMap((current) => this.#files.read({ ...input, context: current })),
+              ),
+            upload: (input) =>
+              currentAuthorization.pipe(
+                Effect.flatMap((current) => this.#files.upload({ ...input, context: current })),
+              ),
+            persist: (message) =>
+              Effect.tryPromise({
+                try: () => this.addMessages([message], { mode: "upsert" }),
+                catch: (cause) =>
+                  new MessengerFileTurn.Unavailable({
+                    cause,
+                    message: "The owned File references could not be retained",
+                  }),
+              }),
+          },
+        ),
+        () =>
+          new MessengerFileTurn.Unavailable({
+            cause: "account deletion fence",
+            message: "Attachment preparation is fenced by account deletion",
+          }),
+      ),
+    );
   }
 
   #currentFileAuthorizationContext(

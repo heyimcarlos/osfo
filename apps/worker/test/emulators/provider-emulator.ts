@@ -278,6 +278,20 @@ const startProvider = (options: {
       const pathname = url.pathname;
       if (
         options.verificationRunId !== undefined &&
+        request.method === "GET" &&
+        pathname === "/v25.0/verification-image"
+      ) {
+        if (request.headers.authorization !== "Bearer test-only-whatsapp-access-token") {
+          respondJson(response, 401, { error: "Invalid verification media authorization" });
+          return;
+        }
+        respondJson(response, 200, {
+          url: "https://verification.fbcdn.net/osfo/synthetic-document.png",
+        });
+        return;
+      }
+      if (
+        options.verificationRunId !== undefined &&
         request.method === "POST" &&
         pathname === "/_test/chat-pdf-form/media"
       ) {
