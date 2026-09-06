@@ -228,6 +228,10 @@ def fill(data, source, output):
     writer.clone_document_from_reader(reader)
     writer.update_page_form_field_values(None, values, auto_regenerate=False)
     written_fields = canonical_fields(writer)
+    # pypdf 6.1.1 writes parent button /V as text while setting widget /AS as a name.
+    for name, value in values.items():
+        if isinstance(value, NameObject):
+            written_fields[name][NameObject("/V")] = value
     for page in writer.pages:
         for ref in page.get("/Annots", []):
             widget = ref.get_object()
@@ -251,7 +255,8 @@ def fill(data, source, output):
             raise ValueError("Unrequested widget changed unexpectedly")
     for name, field in written.items():
         expected = values.get(name, inherited(original[name], "/V"))
-        if inherited(field, "/V") != expected:
+        actual = inherited(field, "/V")
+        if actual != expected or isinstance(expected, NameObject) and not isinstance(actual, NameObject):
             raise ValueError("Canonical field value changed unexpectedly")
     for page in reopened.pages:
         for ref in page.get("/Annots", []):
@@ -267,7 +272,7 @@ def fill(data, source, output):
             if fields[name]["kind"] != "text":
                 normal = widget["/AP"]["/N"].get_object()
                 expected = values[name] if values[name] in normal else NameObject("/Off")
-                if widget.get("/AS") != expected:
+                if not isinstance(widget.get("/AS"), NameObject) or widget.get("/AS") != expected:
                     raise ValueError("Widget appearance state differs from the selected value")
     target = Path(output)
     pending = target.with_suffix(target.suffix + ".pending")

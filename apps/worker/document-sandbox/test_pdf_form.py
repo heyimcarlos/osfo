@@ -9,7 +9,7 @@ sys.path.insert(0, "/opt/osfo")
 from pdf_form import fill, inspect
 from pypdf import PdfReader, PdfWriter
 from pypdf.constants import UserAccessPermissions
-from pypdf.generic import NameObject, TextStringObject, DictionaryObject
+from pypdf.generic import NameObject, TextStringObject, DictionaryObject, ArrayObject
 from reportlab.pdfgen import canvas
 
 
@@ -34,6 +34,13 @@ def fixture(password="", permitted=True):
         if widget.get("/T") == "ContactConsent":
             normal = widget["/AP"]["/N"].get_object()
             normal[NameObject("/Accepted")] = normal.pop(NameObject("/Yes"))
+            parent = DictionaryObject({NameObject(key): widget.pop(NameObject(key))
+                for key in ["/T", "/FT", "/Ff", "/V", "/DV"] if key in widget})
+            parent[NameObject("/Kids")] = ArrayObject([ref])
+            parent_ref = writer._add_object(parent)
+            widget[NameObject("/Parent")] = parent_ref
+            fields = writer._root_object["/AcroForm"]["/Fields"]
+            fields[fields.index(ref)] = parent_ref
     writer.encrypt(password, owner_password="synthetic-owner",
                    permissions_flag=UserAccessPermissions.PRINT |
                    (UserAccessPermissions.FILL_FORM_FIELDS if permitted else 0), algorithm="AES-256")
@@ -63,11 +70,38 @@ class PdfFormTests(unittest.TestCase):
                 {"name": "ServiceChoice", "kind": "radio", "value": "Renewal"}]}, output)
             result = PdfReader(output).get_fields()
             self.assertEqual(result["a1"]["/V"], "Example Applicant")
+            self.assertIsInstance(result["ContactConsent"]["/V"], NameObject)
+            self.assertIsInstance(result["ServiceChoice"]["/V"], NameObject)
             self.assertEqual(result["ContactConsent"]["/V"], "/Accepted")
             self.assertEqual(result["ServiceChoice"]["/V"], "/Renewal")
             self.assertEqual(result["a2"]["/V"], "Nov 17, 2022")
             self.assertEqual(result["a3"]["/V"], "")
             self.assertEqual(result["a4"]["/V"], "Reserved")
+            cleared = Path(directory) / "cleared.pdf"
+            fill(output.read_bytes(), {"pageCount": 1, "fields": [
+                {"name": "ContactConsent", "kind": "checkbox", "value": "Off"},
+                {"name": "ServiceChoice", "kind": "radio", "value": "Off"}]}, cleared)
+            for name in ["ContactConsent", "ServiceChoice"]:
+                value = PdfReader(cleared).get_fields()[name]["/V"]
+                self.assertIsInstance(value, NameObject)
+                self.assertEqual(value, "/Off")
+
+    def test_rejects_text_serialization_of_button_names(self):
+        data = fixture()
+        original_write = PdfWriter.write
+        def write_invalid(writer, stream):
+            for field in writer._root_object["/AcroForm"]["/Fields"]:
+                field = field.get_object()
+                if field.get("/T") == "ServiceChoice":
+                    field[NameObject("/V")] = TextStringObject("/Renewal")
+            return original_write(writer, stream)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "invalid.pdf"
+            with patch.object(PdfWriter, "write", write_invalid):
+                with self.assertRaises(ValueError):
+                    fill(data, {"pageCount": 1, "fields": [
+                        {"name": "ServiceChoice", "kind": "radio", "value": "Renewal"}]}, output)
+            self.assertFalse(output.exists())
 
     def test_failed_preservation_check_never_publishes_recoverable_output(self):
         with tempfile.TemporaryDirectory() as directory:
