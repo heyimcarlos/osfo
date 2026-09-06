@@ -11,7 +11,7 @@ import { allowanceUsage } from "@osfo/db/schema/allowances";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "@effect/vitest";
-import { inject } from "vitest";
+import { inject, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { Effect, Layer, Redacted, Schema } from "effect";
 
@@ -260,6 +260,46 @@ it.effect(
         );
         expect(changed.status).toBe(503);
         expect(yield* Effect.promise(readWakeup)).toEqual(laterWakeup);
+        yield* Effect.promise(() =>
+          database.delete(whatsappWakeups).where(eq(whatsappWakeups.wakeup_id, "later-wakeup")),
+        );
+        const interruptedBody = body.replace(
+          "wamid.durable-acceptance",
+          "wamid.before-directory-ack",
+        );
+        const interruptedSubmissionId = yield* Effect.promise(() =>
+          messengerSubmissionId("whatsapp", receipt.threadId, "wamid.before-directory-ack"),
+        );
+        yield* Effect.promise(() =>
+          runInDurableObject(directory, (host) => {
+            const accept = host.acceptMessengerInput.bind(host);
+            vi.spyOn(host, "acceptMessengerInput").mockImplementation(async (...input) => {
+              const result = await accept(...input);
+              return Schema.is(MessengerAcceptanceReceipt)(result)
+                ? { kind: "unavailable" as const }
+                : result;
+            });
+            vi.spyOn(host, "alarm").mockResolvedValue(undefined);
+          }),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => vi.restoreAllMocks()));
+        expect((yield* Effect.promise(() => send(interruptedBody))).status).toBe(503);
+        const partial = yield* Effect.promise(() =>
+          runInDurableObject(directory, async (host) => {
+            const agent = await host.subAgent(OsfoAgent, owner.agentId);
+            const submission = await agent.inspectSubmission(interruptedSubmissionId);
+            const replies = await host.listFibers();
+            const reply = replies.find((candidate) => {
+              const checkpoint = parseMessengerReplySnapshot(candidate.snapshot);
+              return checkpoint?.event.message?.providerMessageId === "wamid.before-directory-ack";
+            });
+            return { reply, submission };
+          }),
+        );
+        expect(partial.submission).toMatchObject({ submissionId: interruptedSubmissionId });
+        expect(partial.reply).toMatchObject({
+          snapshot: { stage: "admitting", acceptance: { kind: "route", agentId: owner.agentId } },
+        });
         expect(
           (yield* Effect.promise(() =>
             app.fetch(`/v1/channel-links/${receipt.channelLinkId}`, { method: "DELETE" }),
@@ -272,6 +312,33 @@ it.effect(
           replacementInvite.verificationUrl.pathname.split("/").at(-1) ?? "",
         );
         yield* service.accept(Redacted.make(replacementToken), UserId.make(otherOwner.userId));
+        expect((yield* Effect.promise(() => send(interruptedBody))).status).toBe(503);
+        yield* Effect.promise(() =>
+          runInDurableObject(directory, async (host) => {
+            vi.restoreAllMocks();
+            await host.alarm();
+          }),
+        );
+        yield* Effect.promise(() =>
+          vi.waitFor(async () => {
+            expect((await send(interruptedBody)).status).toBe(200);
+          }),
+        );
+        const replacementSubmission = yield* Effect.promise(() =>
+          runInDurableObject(directory, async (host) => {
+            const agent = await host.subAgent(OsfoAgent, otherOwner.agentId);
+            return agent.inspectSubmission(interruptedSubmissionId);
+          }),
+        );
+        expect(replacementSubmission).toBeNull();
+        const partialAccounting = yield* Effect.promise(() =>
+          database
+            .select()
+            .from(allowanceUsage)
+            .where(eq(allowanceUsage.source_id, "whatsapp:wamid.before-directory-ack")),
+        );
+        expect(partialAccounting).toHaveLength(1);
+        expect(partialAccounting[0]?.quantity).toBe(1n);
         expect((yield* Effect.promise(() => send())).status).toBe(200);
         const otherSubmission = yield* Effect.promise(() =>
           runInDurableObject(directory, async (host) => {

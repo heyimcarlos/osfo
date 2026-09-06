@@ -15,6 +15,12 @@ import { ManagedTurnMetadata } from "../../domain/managed-conversation";
 import type { AgentDb } from "./db/client";
 import { messengerAcceptanceReceipts } from "./db/schema";
 
+/** Persist the original owner before an admission RPC can commit a native submission. */
+export const MessengerAdmissionRoute = Schema.Struct({
+  agentId: AgentId,
+  kind: Schema.Literal("route"),
+});
+
 /** The immutable mapping returned only after the native submission is recoverable. */
 export const MessengerAcceptanceReceipt = Schema.Struct({
   acceptedAt: DbTimestamp,

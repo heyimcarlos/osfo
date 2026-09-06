@@ -1334,11 +1334,7 @@ export class OsfoAgent extends Think<Env> {
           message: "Messenger input could not be authorized",
         });
       const link = resolution.link;
-      if (link === null)
-        return {
-          kind: "policy" as const,
-          text: "This connection is no longer authorized. Please reconnect it from Osfo.",
-        };
+      if (link === null) return { kind: "suppressed" as const };
       const currentAuthorization = yield* this.#inspectCurrentChannelLinkAuthorization(link);
       if (
         Predicate.isTagged(
@@ -1350,17 +1346,15 @@ export class OsfoAgent extends Think<Env> {
           "Denied",
         )
       )
-        return { kind: "policy" as const, text: "This connection is no longer authorized." };
+        return { kind: "suppressed" as const };
       const retained = yield* this.#messengerAdmissions.read(submissionId, inputDigest);
+      if (
+        retained !== null &&
+        (retained.userId !== link.userId || retained.channelLinkId !== link.channelLinkId)
+      )
+        return { kind: "suppressed" as const };
       const receipt = yield* Effect.gen({ self: this }, function* () {
-        if (retained !== null) {
-          if (retained.userId !== link.userId || retained.channelLinkId !== link.channelLinkId)
-            return yield* new MessengerAdmissionUnavailable({
-              cause: "receipt authority changed",
-              message: "Messenger input could not be authorized",
-            });
-          return retained;
-        }
+        if (retained !== null) return retained;
         const agent = yield* this.#store.inspect();
         const admission = yield* admitManagedConversation(
           {

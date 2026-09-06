@@ -27,7 +27,7 @@ import { streamTextReply } from "./messenger-stream";
 import { makeOsfoMessengerRouter, type MessengerAddressResolution } from "./messenger-routing";
 import { ThinkMessengerStateAgent } from "./messenger-state";
 import { MessengerReset } from "./messenger-reset";
-import { MessengerAcceptanceReceipt } from "./messenger-admission";
+import { MessengerAcceptanceReceipt, MessengerAdmissionRoute } from "./messenger-admission";
 import type { AgentInitializationEncoded } from "./db/store";
 import { GroupRefusalCopy } from "./persona";
 import { AgentId, UserId } from "../../domain";
@@ -78,6 +78,64 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
         verifyToken: this.env.WHATSAPP_VERIFY_TOKEN,
       }),
     };
+  }
+
+  /** Prepare an immutable owner for the native checkpoint before any admission side effect. */
+  override prepareMessengerInput(context: MessengerContext) {
+    const authorId = messengerAuthorId(context);
+    if (
+      context.provider !== "whatsapp" ||
+      authorId === undefined ||
+      !context.thread.isDirectMessage ||
+      context.message?.text.trim() === "/new"
+    )
+      return Promise.resolve(undefined);
+    return Effect.runPromise(
+      Effect.scoped(
+        this.#resolveMessengerAddress(channelAddressOf(context.messengerId, authorId)).pipe(
+          Effect.map((resolution) =>
+            resolution._tag === "Linked"
+              ? { kind: "route" as const, agentId: resolution.agentId }
+              : resolution._tag === "Unavailable"
+                ? { kind: "unavailable" as const }
+                : undefined,
+          ),
+          Effect.provide(directoryMessengerLayer(this.env)),
+          Effect.orElseSucceed(() => ({ kind: "unavailable" as const })),
+        ),
+      ),
+    );
+  }
+
+  /** Reopen only the checkpointed owner; current authority may suppress it, never reroute it. */
+  override acceptMessengerInput(
+    userMessage: string | UIMessage,
+    context: MessengerContext,
+    encoded?: unknown,
+  ) {
+    return Effect.runPromise(
+      Effect.scoped(
+        Effect.gen({ self: this }, function* () {
+          const route = yield* Schema.decodeUnknownEffect(MessengerAdmissionRoute)(encoded);
+          const authorId = messengerAuthorId(context);
+          if (authorId === undefined || !this.hasSubAgent(OsfoAgent, route.agentId))
+            return { kind: "suppressed" as const };
+          const current = yield* this.#resolveMessengerAddress(
+            channelAddressOf(context.messengerId, authorId),
+          );
+          if (current._tag === "Unavailable") return { kind: "unavailable" as const };
+          if (current._tag !== "Linked" || current.agentId !== route.agentId)
+            return { kind: "suppressed" as const };
+          return yield* Effect.tryPromise(async () => {
+            const agent = await this.subAgent(OsfoAgent, route.agentId);
+            return agent.acceptMessengerInput(userMessage, context);
+          });
+        }).pipe(
+          Effect.provide(directoryMessengerLayer(this.env)),
+          Effect.orElseSucceed(() => ({ kind: "unavailable" as const })),
+        ),
+      ),
+    );
   }
 
   /** Follow the original accepted owner without creating a replacement facet after erasure. */

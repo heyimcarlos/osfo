@@ -58,6 +58,12 @@ it.effect("persists recoverable WhatsApp input before acknowledging the real sig
         let admissionAvailable = false;
         let deliveryAvailable = false;
         const host = {
+          prepareMessengerInput: () =>
+            Promise.resolve(
+              admissionAvailable
+                ? { kind: "route", agentId: "original-owner" }
+                : { kind: "unavailable" },
+            ),
           acceptMessengerInput: async (message: string | UIMessage) => {
             if (!admissionAvailable) return { kind: "unavailable" };
             const input = Predicate.isString(message)
