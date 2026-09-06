@@ -53,16 +53,12 @@
       "indexes": {
         "osfo_agent_initialization_agent_id_unique": {
           "name": "osfo_agent_initialization_agent_id_unique",
-          "columns": [
-            "agent_id"
-          ],
+          "columns": ["agent_id"],
           "isUnique": true
         },
         "osfo_agent_initialization_initialization_id_unique": {
           "name": "osfo_agent_initialization_initialization_id_unique",
-          "columns": [
-            "initialization_id"
-          ],
+          "columns": ["initialization_id"],
           "isUnique": true
         }
       },
@@ -71,12 +67,8 @@
           "name": "osfo_agent_initialization_initial_route_id_osfo_conversation_routes_route_id_fk",
           "tableFrom": "osfo_agent_initialization",
           "tableTo": "osfo_conversation_routes",
-          "columnsFrom": [
-            "initial_route_id"
-          ],
-          "columnsTo": [
-            "route_id"
-          ],
+          "columnsFrom": ["initial_route_id"],
+          "columnsTo": ["route_id"],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -84,12 +76,8 @@
           "name": "osfo_agent_initialization_initial_session_id_osfo_session_ownership_session_id_fk",
           "tableFrom": "osfo_agent_initialization",
           "tableTo": "osfo_session_ownership",
-          "columnsFrom": [
-            "initial_session_id"
-          ],
-          "columnsTo": [
-            "session_id"
-          ],
+          "columnsFrom": ["initial_session_id"],
+          "columnsTo": ["session_id"],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -153,24 +141,17 @@
       "indexes": {
         "osfo_committed_turns_assistant_message_id_unique": {
           "name": "osfo_committed_turns_assistant_message_id_unique",
-          "columns": [
-            "assistant_message_id"
-          ],
+          "columns": ["assistant_message_id"],
           "isUnique": true
         },
         "osfo_committed_turns_by_session": {
           "name": "osfo_committed_turns_by_session",
-          "columns": [
-            "session_id",
-            "observation_sequence"
-          ],
+          "columns": ["session_id", "observation_sequence"],
           "isUnique": false
         },
         "osfo_committed_turn_think_request_unique": {
           "name": "osfo_committed_turn_think_request_unique",
-          "columns": [
-            "think_request_id"
-          ],
+          "columns": ["think_request_id"],
           "isUnique": true,
           "where": "\"osfo_committed_turns\".\"think_request_id\" IS NOT NULL"
         }
@@ -180,12 +161,8 @@
           "name": "osfo_committed_turns_session_id_osfo_session_ownership_session_id_fk",
           "tableFrom": "osfo_committed_turns",
           "tableTo": "osfo_session_ownership",
-          "columnsFrom": [
-            "session_id"
-          ],
-          "columnsTo": [
-            "session_id"
-          ],
+          "columnsFrom": ["session_id"],
+          "columnsTo": ["session_id"],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -220,9 +197,7 @@
       "indexes": {
         "osfo_one_primary_route": {
           "name": "osfo_one_primary_route",
-          "columns": [
-            "is_primary"
-          ],
+          "columns": ["is_primary"],
           "isUnique": true,
           "where": "\"osfo_conversation_routes\".\"is_primary\" = 1"
         }
@@ -314,10 +289,7 @@
       "indexes": {
         "osfo_file_analyses_by_file": {
           "name": "osfo_file_analyses_by_file",
-          "columns": [
-            "file_id",
-            "created_at"
-          ],
+          "columns": ["file_id", "created_at"],
           "isUnique": false
         }
       },
@@ -326,12 +298,8 @@
           "name": "osfo_file_analyses_file_id_osfo_files_file_id_fk",
           "tableFrom": "osfo_file_analyses",
           "tableTo": "osfo_files",
-          "columnsFrom": [
-            "file_id"
-          ],
-          "columnsTo": [
-            "file_id"
-          ],
+          "columnsFrom": ["file_id"],
+          "columnsTo": ["file_id"],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -404,12 +372,8 @@
           "name": "osfo_file_deletions_file_id_osfo_files_file_id_fk",
           "tableFrom": "osfo_file_deletions",
           "tableTo": "osfo_files",
-          "columnsFrom": [
-            "file_id"
-          ],
-          "columnsTo": [
-            "file_id"
-          ],
+          "columnsFrom": ["file_id"],
+          "columnsTo": ["file_id"],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -537,24 +501,17 @@
       "indexes": {
         "osfo_files_object_key_unique": {
           "name": "osfo_files_object_key_unique",
-          "columns": [
-            "object_key"
-          ],
+          "columns": ["object_key"],
           "isUnique": true
         },
         "osfo_files_upload_id_unique": {
           "name": "osfo_files_upload_id_unique",
-          "columns": [
-            "upload_id"
-          ],
+          "columns": ["upload_id"],
           "isUnique": true
         },
         "osfo_files_by_owner_state": {
           "name": "osfo_files_by_owner_state",
-          "columns": [
-            "user_id",
-            "state"
-          ],
+          "columns": ["user_id", "state"],
           "isUnique": false
         }
       },
@@ -787,26 +744,17 @@
       "indexes": {
         "osfo_memory_provider_outbox_sequence_unique": {
           "name": "osfo_memory_provider_outbox_sequence_unique",
-          "columns": [
-            "sequence"
-          ],
+          "columns": ["sequence"],
           "isUnique": true
         },
         "osfo_memory_provider_outbox_reconciliation": {
           "name": "osfo_memory_provider_outbox_reconciliation",
-          "columns": [
-            "status",
-            "available_at",
-            "sequence"
-          ],
+          "columns": ["status", "available_at", "sequence"],
           "isUnique": false
         },
         "osfo_memory_provider_outbox_order": {
           "name": "osfo_memory_provider_outbox_order",
-          "columns": [
-            "ordering_key",
-            "sequence"
-          ],
+          "columns": ["ordering_key", "sequence"],
           "isUnique": false
         }
       },
@@ -867,9 +815,7 @@
       "indexes": {
         "osfo_messenger_receipts_by_session": {
           "name": "osfo_messenger_receipts_by_session",
-          "columns": [
-            "session_id"
-          ],
+          "columns": ["session_id"],
           "isUnique": false
         }
       },
@@ -920,9 +866,7 @@
       "indexes": {
         "osfo_model_call_usage_pending": {
           "name": "osfo_model_call_usage_pending",
-          "columns": [
-            "recorded_at"
-          ],
+          "columns": ["recorded_at"],
           "isUnique": false,
           "where": "\"osfo_model_call_usage_evidence\".\"dispatched_at\" IS NULL"
         }
@@ -1038,11 +982,7 @@
       "indexes": {
         "osfo_personal_skill_learning_by_owner_status": {
           "name": "osfo_personal_skill_learning_by_owner_status",
-          "columns": [
-            "owner_user_id",
-            "status",
-            "created_at_epoch_millis"
-          ],
+          "columns": ["owner_user_id", "status", "created_at_epoch_millis"],
           "isUnique": false
         }
       },
@@ -1127,9 +1067,7 @@
       "indexes": {
         "osfo_personal_skill_learning_model_attempts_by_candidate": {
           "name": "osfo_personal_skill_learning_model_attempts_by_candidate",
-          "columns": [
-            "candidate_id"
-          ],
+          "columns": ["candidate_id"],
           "isUnique": false
         }
       },
@@ -1178,17 +1116,12 @@
       "indexes": {
         "osfo_personal_skill_versions_skill_version_unique": {
           "name": "osfo_personal_skill_versions_skill_version_unique",
-          "columns": [
-            "skill_version"
-          ],
+          "columns": ["skill_version"],
           "isUnique": true
         },
         "osfo_personal_skill_version_revision": {
           "name": "osfo_personal_skill_version_revision",
-          "columns": [
-            "skill_id",
-            "revision"
-          ],
+          "columns": ["skill_id", "revision"],
           "isUnique": true
         }
       },
@@ -1197,12 +1130,8 @@
           "name": "osfo_personal_skill_versions_skill_id_osfo_personal_skills_skill_id_fk",
           "tableFrom": "osfo_personal_skill_versions",
           "tableTo": "osfo_personal_skills",
-          "columnsFrom": [
-            "skill_id"
-          ],
-          "columnsTo": [
-            "skill_id"
-          ],
+          "columnsFrom": ["skill_id"],
+          "columnsTo": ["skill_id"],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -1265,17 +1194,12 @@
       "indexes": {
         "osfo_personal_skills_current_skill_version_unique": {
           "name": "osfo_personal_skills_current_skill_version_unique",
-          "columns": [
-            "current_skill_version"
-          ],
+          "columns": ["current_skill_version"],
           "isUnique": true
         },
         "osfo_personal_skills_by_owner_status": {
           "name": "osfo_personal_skills_by_owner_status",
-          "columns": [
-            "owner_user_id",
-            "status"
-          ],
+          "columns": ["owner_user_id", "status"],
           "isUnique": false
         }
       },
@@ -1328,10 +1252,7 @@
       "indexes": {
         "osfo_reminder_actions_by_reminder": {
           "name": "osfo_reminder_actions_by_reminder",
-          "columns": [
-            "reminder_id",
-            "revision"
-          ],
+          "columns": ["reminder_id", "revision"],
           "isUnique": false
         }
       },
@@ -1340,12 +1261,8 @@
           "name": "osfo_reminder_actions_reminder_id_osfo_reminders_reminder_id_fk",
           "tableFrom": "osfo_reminder_actions",
           "tableTo": "osfo_reminders",
-          "columnsFrom": [
-            "reminder_id"
-          ],
-          "columnsTo": [
-            "reminder_id"
-          ],
+          "columnsFrom": ["reminder_id"],
+          "columnsTo": ["reminder_id"],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -1527,28 +1444,17 @@
       "indexes": {
         "osfo_reminder_occurrences_source_identity_unique": {
           "name": "osfo_reminder_occurrences_source_identity_unique",
-          "columns": [
-            "source_identity"
-          ],
+          "columns": ["source_identity"],
           "isUnique": true
         },
         "osfo_reminder_occurrence_identity": {
           "name": "osfo_reminder_occurrence_identity",
-          "columns": [
-            "reminder_id",
-            "revision",
-            "nominal_due_at"
-          ],
+          "columns": ["reminder_id", "revision", "nominal_due_at"],
           "isUnique": true
         },
         "osfo_reminder_occurrences_pending_source": {
           "name": "osfo_reminder_occurrences_pending_source",
-          "columns": [
-            "owner_user_id",
-            "exposed_at",
-            "committed_at",
-            "source_identity"
-          ],
+          "columns": ["owner_user_id", "exposed_at", "committed_at", "source_identity"],
           "isUnique": false
         }
       },
@@ -1557,12 +1463,8 @@
           "name": "osfo_reminder_occurrences_reminder_id_osfo_reminders_reminder_id_fk",
           "tableFrom": "osfo_reminder_occurrences",
           "tableTo": "osfo_reminders",
-          "columnsFrom": [
-            "reminder_id"
-          ],
-          "columnsTo": [
-            "reminder_id"
-          ],
+          "columnsFrom": ["reminder_id"],
+          "columnsTo": ["reminder_id"],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -1722,19 +1624,12 @@
       "indexes": {
         "osfo_reminders_creation_action_id_unique": {
           "name": "osfo_reminders_creation_action_id_unique",
-          "columns": [
-            "creation_action_id"
-          ],
+          "columns": ["creation_action_id"],
           "isUnique": true
         },
         "osfo_reminders_by_owner_state": {
           "name": "osfo_reminders_by_owner_state",
-          "columns": [
-            "owner_user_id",
-            "state",
-            "created_at",
-            "reminder_id"
-          ],
+          "columns": ["owner_user_id", "state", "created_at", "reminder_id"],
           "isUnique": false
         }
       },
@@ -1810,25 +1705,18 @@
       "indexes": {
         "osfo_session_ownership_ownership_sequence_unique": {
           "name": "osfo_session_ownership_ownership_sequence_unique",
-          "columns": [
-            "ownership_sequence"
-          ],
+          "columns": ["ownership_sequence"],
           "isUnique": true
         },
         "osfo_one_current_session_per_route": {
           "name": "osfo_one_current_session_per_route",
-          "columns": [
-            "route_id"
-          ],
+          "columns": ["route_id"],
           "isUnique": true,
           "where": "\"osfo_session_ownership\".\"replaced_at\" IS NULL"
         },
         "osfo_sessions_by_route": {
           "name": "osfo_sessions_by_route",
-          "columns": [
-            "route_id",
-            "ownership_sequence"
-          ],
+          "columns": ["route_id", "ownership_sequence"],
           "isUnique": false
         }
       },
@@ -1837,12 +1725,8 @@
           "name": "osfo_session_ownership_route_id_osfo_conversation_routes_route_id_fk",
           "tableFrom": "osfo_session_ownership",
           "tableTo": "osfo_conversation_routes",
-          "columnsFrom": [
-            "route_id"
-          ],
-          "columnsTo": [
-            "route_id"
-          ],
+          "columnsFrom": ["route_id"],
+          "columnsTo": ["route_id"],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -1901,9 +1785,7 @@
       "indexes": {
         "osfo_session_recall_cursors_by_expiry": {
           "name": "osfo_session_recall_cursors_by_expiry",
-          "columns": [
-            "expires_at"
-          ],
+          "columns": ["expires_at"],
           "isUnique": false
         }
       },
@@ -1912,12 +1794,8 @@
           "name": "osfo_session_recall_cursors_route_id_osfo_conversation_routes_route_id_fk",
           "tableFrom": "osfo_session_recall_cursors",
           "tableTo": "osfo_conversation_routes",
-          "columnsFrom": [
-            "route_id"
-          ],
-          "columnsTo": [
-            "route_id"
-          ],
+          "columnsFrom": ["route_id"],
+          "columnsTo": ["route_id"],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -1925,12 +1803,8 @@
           "name": "osfo_session_recall_cursors_snapshot_current_session_id_osfo_session_ownership_session_id_fk",
           "tableFrom": "osfo_session_recall_cursors",
           "tableTo": "osfo_session_ownership",
-          "columnsFrom": [
-            "snapshot_current_session_id"
-          ],
-          "columnsTo": [
-            "session_id"
-          ],
+          "columnsFrom": ["snapshot_current_session_id"],
+          "columnsTo": ["session_id"],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -2016,11 +1890,7 @@
       "indexes": {
         "osfo_web_operations_by_turn": {
           "name": "osfo_web_operations_by_turn",
-          "columns": [
-            "owner_user_id",
-            "turn_id",
-            "status"
-          ],
+          "columns": ["owner_user_id", "turn_id", "status"],
           "isUnique": false
         }
       },
@@ -2095,11 +1965,7 @@
       "indexes": {
         "osfo_web_results_by_owner_set": {
           "name": "osfo_web_results_by_owner_set",
-          "columns": [
-            "owner_user_id",
-            "retained_at_epoch_millis",
-            "result_set_id"
-          ],
+          "columns": ["owner_user_id", "retained_at_epoch_millis", "result_set_id"],
           "isUnique": false
         }
       },
