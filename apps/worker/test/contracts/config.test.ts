@@ -3,6 +3,30 @@ import { expect, it } from "@effect/vitest";
 
 import { loadConfig, type CloudflareEnv } from "../../src/config";
 
+it("enables browser inventory only for an explicit complete local owner binding", () => {
+  const configured = {
+    ...env,
+    INTEGRATION_PROVIDER_BASE_URL: "",
+    RESEARCH_REPORT_PROVIDER_BASE_URL: "",
+    BROWSER_HOST_ENDPOINT: "http://127.0.0.1:39270/inventory",
+    BROWSER_HOST_OWNER_USER_ID: "test-owner",
+    BROWSER_HOST_SESSION_ID: "test-extension-instance",
+    BROWSER_HOST_TOKEN: "synthetic-test-token-with-32-characters",
+    OSFO_STAGE: "test",
+  };
+  expect(loadConfig({ ...env, OSFO_STAGE: "test" }).browserHost).toBeNull();
+  expect(loadConfig(configured).browserHost).toMatchObject({
+    ownerUserId: "test-owner",
+    hostSessionId: "test-extension-instance",
+  });
+  expect(loadConfig({ ...configured, BROWSER_HOST_TOKEN: "" }).browserHost).toBeNull();
+  expect(
+    loadConfig({ ...configured, BROWSER_HOST_ENDPOINT: "https://host.example/inventory" })
+      .browserHost,
+  ).toBeNull();
+  expect(loadConfig({ ...configured, OSFO_STAGE: "preview" }).browserHost).toBeNull();
+});
+
 it("rejects a malformed nonempty Company Conversation daily limit", () => {
   expect(() =>
     loadConfig({ ...env, COMPANY_CONVERSATION_DAILY_TURN_LIMIT: "not-a-number" }),

@@ -10,7 +10,7 @@ import { ResearchReportTimerWorkflow } from "./ResearchReportTimerWorkflow";
 import { ScheduledEmailWorkflow } from "./ScheduledEmailWorkflow";
 import { Files } from "./Files";
 import { Artifacts } from "./Artifacts";
-import { composioApiKeyConfig } from "./WorkerConfig";
+import { browserHostBindings, composioApiKeyConfig } from "./WorkerConfig";
 
 /** Cloudflare Worker and execution-unit bindings for one Osfo runtime stage. */
 const worker = Worker(
@@ -29,6 +29,7 @@ const worker = Worker(
         flags: ["nodejs_compat", "global_fetch_strictly_public"],
       },
       env: {
+        ...browserHostBindings(stage),
         AI: Workers.AI(),
         ARTIFACTS: Artifacts,
         BETTER_AUTH_API_KEY: Config.redacted("BETTER_AUTH_API_KEY"),

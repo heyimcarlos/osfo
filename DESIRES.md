@@ -71,3 +71,11 @@ This would let durable consumers close the narrow crash window between Think's
 message commit and their own local outbox transaction without treating aborted
 output as completed. The capability should preserve Think history ownership and
 avoid requiring a cross-database transaction.
+
+## Private transport to provisioned browser hosts
+
+Remote Workers need an authenticated private connection to the exact User-owned
+Codex browser host. The initial inventory adapter supports same-machine local
+development only; no remote transport, shared profile pool, or host provisioning
+service exists. Keep preview and production disabled until this connection and
+its ownership lifecycle are implemented and verified.

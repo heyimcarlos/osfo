@@ -259,6 +259,12 @@ const exceedsGovernedOperationLimit = (
         operation.redirects > 3n ||
         operation.retries > 1n
       );
+    case "browser.inspect":
+      return (
+        operation.responseBytes > 16_384n ||
+        operation.deadlineMilliseconds > 15_000n ||
+        operation.retries !== 0n
+      );
     case "web.read":
       return (
         operation.pages > BigInt(limits.webRetrievedPages) ||

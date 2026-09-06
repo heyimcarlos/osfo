@@ -1,5 +1,7 @@
 import { Option, Redacted, Schema } from "effect";
 
+import type { Browser } from "./services/browser-host";
+
 import { launchModelAccessPolicy, ManagedModelRoute } from "./domain/model-access-policy";
 
 /** Runtime environments that select Osfo behavior and configuration. */
@@ -24,6 +26,10 @@ type RawConfigBinding =
   | "COMPANY_CONVERSATION_DAILY_TURN_LIMIT"
   | "COMPANY_CONVERSATION_MODEL"
   | "COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT"
+  | "BROWSER_HOST_ENDPOINT"
+  | "BROWSER_HOST_OWNER_USER_ID"
+  | "BROWSER_HOST_SESSION_ID"
+  | "BROWSER_HOST_TOKEN"
   | "COMPOSIO_API_KEY"
   | "INTEGRATION_PROVIDER_BASE_URL"
   | "OSFO_STAGE"
@@ -66,6 +72,10 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly COMPANY_CONVERSATION_DAILY_TURN_LIMIT?: string;
   readonly COMPANY_CONVERSATION_MODEL?: string;
   readonly COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT?: string;
+  readonly BROWSER_HOST_ENDPOINT?: string;
+  readonly BROWSER_HOST_OWNER_USER_ID?: string;
+  readonly BROWSER_HOST_SESSION_ID?: string;
+  readonly BROWSER_HOST_TOKEN?: string;
   readonly COMPOSIO_API_KEY?: string;
   readonly INTEGRATION_PROVIDER_BASE_URL?: string;
   readonly OSFO_STAGE?: string;
@@ -197,6 +207,7 @@ export type IntegrationProviderConfig =
 
 /** Parsed configuration used by one request application. */
 export interface CloudflareConfig {
+  readonly browserHost: Browser.Binding | null;
   readonly auth: AuthConfig;
   readonly companyConversation: CompanyConversationConfig;
   readonly composio: ComposioConfig | null;
@@ -231,6 +242,7 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
   if (secret.length < 32) invalid("BETTER_AUTH_SECRET must contain at least 32 characters");
 
   return {
+    browserHost: parseBrowserHost(stage, env),
     auth: {
       baseURL: baseURL.href,
       credentialAuthentication: "enabled",
@@ -442,4 +454,27 @@ const invalid = (message: string): never => {
   throw new WorkerConfigurationError({
     message: `Worker configuration is invalid: ${message}`,
   });
+};
+
+/** Local opt-in only; a remote Worker has no provisioned desktop host by default. */
+const parseBrowserHost = (stage: OsfoStage, env: CloudflareEnv): Browser.Binding | null => {
+  if (stage !== "development" && stage !== "test") return null;
+  const endpoint = env.BROWSER_HOST_ENDPOINT;
+  const ownerUserId = env.BROWSER_HOST_OWNER_USER_ID;
+  const hostSessionId = env.BROWSER_HOST_SESSION_ID;
+  const token = env.BROWSER_HOST_TOKEN;
+  if (
+    endpoint !== "http://127.0.0.1:39270/inventory" ||
+    ownerUserId === undefined ||
+    ownerUserId.length === 0 ||
+    ownerUserId.length > 200 ||
+    hostSessionId === undefined ||
+    hostSessionId.length === 0 ||
+    hostSessionId.length > 200 ||
+    token === undefined ||
+    token.length < 32 ||
+    token.length > 512
+  )
+    return null;
+  return { endpoint, ownerUserId, hostSessionId, token: Redacted.make(token) };
 };

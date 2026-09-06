@@ -950,6 +950,14 @@ const operationFor = (operation: AuthorizationOperationName): AuthorizationOpera
         retries: 1n,
         searches: 1n,
       };
+    case "browser.inspect":
+      return {
+        actionId: operation,
+        kind: operation,
+        deadlineMilliseconds: 15_000n,
+        responseBytes: 16_384n,
+        retries: 0n,
+      };
     case "web.read":
       return {
         actionId: operation,

@@ -94,3 +94,7 @@ short, specific, and actionable.
 - A completed source upload outlives the React component that presented it.
   Retain its opaque File ID across page lifecycles and recheck ownership before
   restoring the display. Reset the panel when the authenticated User changes.
+
+- Executor SDK and plugin dependencies must resolve the same pinned Effect and
+  Node-adapter peers. Pinning only the SDK and Effect allowed different SDK peer
+  instances and incompatible plugin types; inspect the installed resolution.

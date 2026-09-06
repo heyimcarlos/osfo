@@ -267,6 +267,15 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
       skillCandidates: ["web-search"],
       toolRequirements: ["webSearch"],
     }),
+    entry(
+      "browser-inventory",
+      "Inspect available private browsers and tab counts without reading tabs.",
+      "browser.inspect",
+      {
+        availabilityRequirements: ["browser-host", "personal-agent"],
+        toolRequirements: ["inspectBrowserInventory"],
+      },
+    ),
     entry("page-read", "Read one bounded public web page.", "web.read", {
       availabilityRequirements: ["personal-agent"],
       resultBounds: {
