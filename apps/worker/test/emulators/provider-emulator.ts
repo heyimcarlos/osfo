@@ -3,6 +3,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
 import { Option, Schema } from "effect";
+import { respond } from "../support/chat-pdf-form-model";
 
 /** One observed Twilio Verify request. */
 export interface TwilioLedgerEntry {
@@ -119,7 +120,7 @@ interface TelegramPayload {
 
 type JsonValue = boolean | number | string | null | JsonObject | ReadonlyArray<JsonValue>;
 
-interface JsonObject {
+export interface JsonObject {
   readonly [key: string]: JsonValue;
 }
 
@@ -187,7 +188,7 @@ const ResearchRequest = Schema.Struct({
   ),
   url: Schema.optional(Schema.String),
 });
-type ResearchRequest = typeof ResearchRequest.Type;
+export type ResearchRequest = typeof ResearchRequest.Type;
 const ResearchRequestFromJson = Schema.fromJsonString(ResearchRequest);
 
 const ChatPdfFormMedia = Schema.fromJsonString(
@@ -585,7 +586,15 @@ const startProvider = (options: {
       if (request.method === "POST" && pathname.startsWith("/_local/research/")) {
         const sequence = pathname.endsWith("/agent") ? ++promptBoundarySequence : null;
         if (sequence !== null) latestAgentSequence = sequence;
-        handleResearch(request, response, pathname, researchLedger, researchControl, sequence);
+        handleResearch(
+          request,
+          response,
+          pathname,
+          researchLedger,
+          researchControl,
+          sequence,
+          chatPdfFormMedia.size > 0,
+        );
         return;
       }
       if (request.method === "GET" && pathname === "/_test/whatsapp/ledger") {
@@ -1140,6 +1149,7 @@ const handleResearch = (
   ledger: Array<ResearchLedgerEntry>,
   control: ResearchControl,
   sequence: number | null,
+  chatPdfFormEnabled: boolean,
 ): void => {
   readTextBody(request)
     .then(Schema.decodeUnknownPromise(ResearchRequestFromJson))
@@ -1159,6 +1169,29 @@ const handleResearch = (
             ? agentEntry
             : { ...agentEntry, recallRequest: recallContext.evidence, sequence },
         );
+        const chatPdfForm = chatPdfFormEnabled ? respond(input) : null;
+        if (chatPdfForm !== null) {
+          const last = input.messages?.at(-1);
+          if (last?.role === "tool")
+            ledger.push({
+              kind: "agent",
+              operationId: last.tool_call_id ?? null,
+              subject: `chat-pdf-form:${last.name ?? "unknown"}:actual-result`,
+              arguments: { actualToolResult: lastMessageContent(input) },
+            });
+          if (chatPdfForm.finish_reason === "tool_calls") {
+            for (const call of chatPdfForm.tool_calls)
+              ledger.push({
+                kind: "tool-selection",
+                operationId: call.id,
+                selectedTool: call.name,
+                subject: "chat-pdf-form",
+                arguments: call.arguments,
+              });
+          }
+          respondJson(response, 200, chatPdfForm);
+          return;
+        }
         const documentBuildRequest = currentUserInstruction;
         const documentBuildFileId = /web:[0-9a-f-]{36}/iu.exec(documentBuildRequest)?.[0];
         const documentBuildWorkflowId = /document-build:[\w:-]{8,300}/iu.exec(
@@ -1989,6 +2022,7 @@ const renderTelegramInbox = (
 <h2>Latest delivery ${delivery.index}</h2>
 <p>Telegram method: <code>${escapeHtml(delivery.method)}</code></p>
 <pre>${escapeHtml(delivery.text)}</pre>
+${documentDownloadLinks(delivery.text)}
 </article>`;
   const message = includeHistory
     ? deliveries
@@ -1997,6 +2031,7 @@ const renderTelegramInbox = (
 <h2>Delivery ${item.index}</h2>
 <p>Telegram method: <code>${escapeHtml(item.method)}</code></p>
 <pre>${escapeHtml(item.text)}</pre>
+${documentDownloadLinks(item.text)}
 </article>`,
         )
         .join("\n") || "<p>No delivered Telegram messages.</p>"
@@ -2012,6 +2047,21 @@ const renderTelegramInbox = (
 ${message}
 </main></body></html>`);
 };
+
+/** Render the document URL actually accepted by the local Telegram boundary. */
+const documentDownloadLinks = (text: string) =>
+  [...text.matchAll(/https?:\/\/[^\s<>"']+/gu)]
+    .flatMap(([candidate]) => {
+      if (!URL.canParse(candidate)) return [];
+      const url = new URL(candidate);
+      if (
+        url.pathname !== "/documents/download" ||
+        url.searchParams.getAll("contentId").length !== 1
+      )
+        return [];
+      return [`<p><a href="${escapeHtml(candidate)}">Download document</a></p>`];
+    })
+    .join("\n");
 
 const renderWhatsAppInbox = (
   response: ServerResponse,

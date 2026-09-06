@@ -70,6 +70,44 @@ it.effect("serves registered source bytes through the real Telegram media adapte
           },
         });
         expect(downloaded.bytes).toEqual(fixture.template);
+        const modelBody = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
+          messages: [
+            {
+              role: "user",
+              content:
+                "Read the attached synthetic document.\nOsfo attachment ingestion results:\nAttachment 1: owned File actual-file is ready. Read it with readFile.",
+            },
+          ],
+          tools: [{ function: { name: "readFile" } }],
+        });
+        const modelResponse = yield* Effect.promise(() =>
+          fetch(`${provider.origin}/_local/research/agent`, {
+            method: "POST",
+            body: modelBody,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+        expect(modelResponse.status).toBe(200);
+        expect(yield* Effect.promise(() => modelResponse.json())).toMatchObject({
+          tool_calls: [{ name: "readFile", arguments: { fileId: "actual-file" } }],
+        });
+        const downloadUrl =
+          "http://127.0.0.1:4173/documents/download?contentId=document%3AtoolCall%3Aretained";
+        const deliveryBody = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
+          chat_id: 42,
+          text: `Download document: ${downloadUrl}`,
+        });
+        yield* Effect.promise(() =>
+          fetch(`${provider.origin}/bottelegram-test-bot-token/sendMessage`, {
+            method: "POST",
+            body: deliveryBody,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+        const inbox = yield* Effect.promise(() =>
+          fetch(`${provider.origin}/inbox?history=1`).then((response) => response.text()),
+        );
+        expect(inbox).toContain(`<a href="${downloadUrl}">Download document</a>`);
       }),
     (provider) => Effect.promise(provider.close),
   ),

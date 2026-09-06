@@ -24,6 +24,7 @@ usage() {
     '  control-osfo telegram-reply <run-id> <message>' \
     '  control-osfo chat-pdf-form-prepare <run-id>' \
     '  control-osfo chat-pdf-form-send <run-id> <image|template>' \
+    '  control-osfo chat-pdf-form-capture <run-id>' \
     '  control-osfo chat-pdf-form-inspect <run-id> <browser-download> <generated-result.json>' \
     '  control-osfo document-build-free-denial <run-id> <file-id>' \
     '  control-osfo gmail-send-request <run-id>' \
@@ -978,6 +979,31 @@ chat_pdf_form_send() {
   [[ "$status" == 200 ]] || { printf 'Attachment admission returned HTTP %s\n' "$status" >&2; return 1; }
   printf 'admitted_only kind=%s inbox=%s/inbox?history=1\nWait for the actual Agent response before starting an observer.\n' \
     "$kind" "$provider_origin"
+}
+
+chat_pdf_form_capture() {
+  local run_id feature_dir provider_origin generated download_url
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  feature_dir="$(feature_artifact_dir_for "$run_id" chat-pdf-form)"
+  test -s "$feature_dir/preparation.txt"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  curl --fail --silent --show-error "$provider_origin/_test/research/ledger" \
+    >"$feature_dir/model-ledger.json"
+  curl --fail --silent --show-error "$provider_origin/_test/telegram/ledger" \
+    >"$feature_dir/provider.json"
+  generated="$(jq --exit-status '
+    [.[] | select(.subject == "chat-pdf-form:generateDocument:actual-result") |
+      .arguments.actualToolResult | fromjson] | unique |
+    if length == 1 then .[0] else error("Expected one exact generated artifact result") end
+  ' "$feature_dir/model-ledger.json")"
+  download_url="$(jq --exit-status --raw-output '.downloadUrl | select(type == "string" and length > 0)' <<<"$generated")"
+  jq --exit-status --arg url "$download_url" '
+    any(.[]; (.method == "sendMessage" or .method == "editMessageText") and
+      (.body | fromjson? | (.text // .rich_message.markdown // "") | contains($url)))
+  ' "$feature_dir/provider.json" >/dev/null
+  printf '%s\n' "$generated" >"$feature_dir/generated-result.json"
+  printf 'actual_result=%s/generated-result.json delivered_url=%s result=draft\n' "$feature_dir" "$download_url"
 }
 
 chat_pdf_form_inspect() {
@@ -3368,6 +3394,10 @@ case "$command_name" in
   chat-pdf-form-send)
     require_run_id "${2:-}"
     chat_pdf_form_send "$2" "${3:-}"
+    ;;
+  chat-pdf-form-capture)
+    require_run_id "${2:-}"
+    chat_pdf_form_capture "$2"
     ;;
   chat-pdf-form-inspect)
     require_run_id "${2:-}"

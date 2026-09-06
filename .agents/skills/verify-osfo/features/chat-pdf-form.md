@@ -19,8 +19,11 @@ complete any of those steps.
 2. Run `control-osfo chat-pdf-form-prepare <run-id>`. It creates a synthetic facts
    PDF, rasterizes its first page to a PNG, and creates an interactive template.
    It registers those PNG/PDF bytes only with the existing loopback provider.
-   It does not upload a File or seed an Agent record. Inspect the fixture render
-   and save it with the run evidence before delivering it.
+   It does not upload a File or seed an Agent record. Registration enables the
+   bounded local model fixture for these two exact requests. It selects tools
+   from actual ready File references and uses returned quotes, field outcomes,
+   template exports and download URLs. Missing evidence stops the fixture.
+   Inspect the fixture render and save it with the run evidence before delivery.
 
 The fixture manifest retains source digests and expected edits. The source says
 `Applicant name: Example Applicant` and `Document date: 03/04/2026`. Date order
@@ -52,12 +55,13 @@ is unspecified; expiry date is absent. The User's later instruction selects
    link to the authenticated `/documents/export?contentId=...` response. Verify
    sign-in resumes this exact document path when needed. Manually constructing
    an export URL qualifies transport only; it does not prove the chat presented
-   a usable link. A Document Build card
-   belongs to a different feature and cannot substitute for this ordinary result.
+   a usable link. A Document Build card belongs to a different feature and cannot substitute for this ordinary result.
 5. Save `chat-pdf-form/result.png` showing the completed result and download link.
-   Save the complete actual `generateDocument` result as `generated-result.json`,
-   including `content` and `downloadUrl`. Retain the original Content ID, byte
-   length and raw 64-digit SHA-256 digest; do not reconstruct the reference.
+   Run `control-osfo chat-pdf-form-capture <run-id>`. It saves the actual model
+   and Telegram ledgers, requires one exact `generateDocument` result and its
+   URL in a delivered message, then writes `generated-result.json`. Retain its
+   original `content` and `downloadUrl`, including Content ID, byte length and
+   raw 64-digit SHA-256 digest; do not reconstruct the reference.
    Run `control-osfo chat-pdf-form-inspect <run-id> <download-path> <generated-result-path>`.
    This checks the returned URL's run origin and Content ID, compares the
    downloaded bytes against the retained digest/length, reads
