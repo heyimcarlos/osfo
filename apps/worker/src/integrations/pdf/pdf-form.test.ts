@@ -80,6 +80,25 @@ it.effect("inspects exact exports and marks opaque fields for review", () =>
   }),
 );
 
+it.effect("rejects hybrid XFA forms before pdf-lib can remove their data", () =>
+  Effect.gen(function* () {
+    const bytes = yield* Effect.promise(makeFixture);
+    const pdf = yield* Effect.promise(() => PDFDocument.load(bytes));
+    pdf.getForm().acroForm.dict.set(PDFName.of("XFA"), PDFString.of("<xfa>retained</xfa>"));
+    const hybrid = yield* Effect.promise(() => pdf.save({ updateFieldAppearances: false }));
+    expect(yield* inspect(contentId, hybrid).pipe(Effect.result)).toMatchObject({
+      failure: { _tag: "InvalidGeneratedArtifact" },
+    });
+    expect(yield* fill(contentId, hybrid, source).pipe(Effect.result)).toMatchObject({
+      failure: { _tag: "InvalidGeneratedArtifact" },
+    });
+    const retained = yield* Effect.promise(() => PDFDocument.load(hybrid));
+    expect(retained.catalog.lookup(PDFName.of("AcroForm"), PDFDict).has(PDFName.of("XFA"))).toBe(
+      true,
+    );
+  }),
+);
+
 it.effect("rejects a signed template before changing any field", () =>
   Effect.gen(function* () {
     const bytes = yield* Effect.promise(makeFixture);

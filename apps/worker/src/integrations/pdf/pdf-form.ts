@@ -26,8 +26,9 @@ export const fill = (contentId: ContentId, bytes: Uint8Array, source: PdfFormSou
         throw new Error("Template exceeds PDF byte limit");
       const pdf = await PDFDocument.load(bytes, { updateMetadata: false });
       if (pdf.getPageCount() !== source.pageCount) throw new Error("Template page count changed");
+      if (pdf.catalog.lookupMaybe(PDFName.of("AcroForm"), PDFDict)?.has(PDFName.of("XFA")))
+        throw new Error("XFA forms are unsupported");
       const form = pdf.getForm();
-      if (form.hasXFA()) throw new Error("XFA forms are unsupported");
       const fields = form.getFields();
       const names = fields.map((field) => field.getName());
       if (new Set(names).size !== names.length) throw new Error("Ambiguous duplicate field names");
@@ -148,8 +149,9 @@ export const inspect = (contentId: ContentId, bytes: Uint8Array) =>
       const pdf = await PDFDocument.load(bytes, { updateMetadata: false });
       if (pdf.getPageCount() > DocumentArtifact.maximumDocumentPages)
         throw new Error("Template exceeds page limit");
+      if (pdf.catalog.lookupMaybe(PDFName.of("AcroForm"), PDFDict)?.has(PDFName.of("XFA")))
+        throw new Error("XFA forms are unsupported");
       const form = pdf.getForm();
-      if (form.hasXFA()) throw new Error("XFA forms are unsupported");
       const fields = form.getFields();
       if (fields.length > 300) throw new Error("Template exceeds field inspection limit");
       return {

@@ -191,10 +191,11 @@ export const capabilityIntentPolicy = {
     taskKinds: ["file"],
   },
   "document-generation": {
-    matches: everyIntentGroup(
-      ["create", "draft", "generate", "make", "write"],
-      ["document", "docx", "pdf", "report"],
-    ),
+    matches: (task) =>
+      everyIntentGroup(
+        ["create", "draft", "generate", "make", "write"],
+        ["document", "docx", "pdf", "report"],
+      )(task) || everyIntentGroup(["fill", "complete", "inspect"], ["pdf"])(task),
     taskKinds: ["document"],
   },
   "document-build": {

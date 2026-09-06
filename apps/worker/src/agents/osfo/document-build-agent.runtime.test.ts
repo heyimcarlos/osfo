@@ -103,6 +103,64 @@ it("publishes loadSkill for the verifier's natural Document Build request", asyn
   });
 });
 
+it("retains PDF inspection through the actual Agent tool allowlist and capability selection", async () => {
+  // SAFETY: wrangler.runtime.jsonc owns this test-only direct binding to OsfoAgent.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The checked runtime config declares the binding that generated production Env types omit.
+  const runtimeEnv = env as typeof env & {
+    readonly OSFO_AGENT_TEST: DurableObjectNamespace<OsfoAgent>;
+  };
+  const stub = runtimeEnv.OSFO_AGENT_TEST.get(
+    runtimeEnv.OSFO_AGENT_TEST.idFromName("pdf-form-runtime-agent"),
+  );
+
+  await runInDurableObject(stub, async (_boundAgent, state) => {
+    const agent = new OsfoAgent(state, runtimeEnv);
+    await agent.initialize({
+      agentId: AgentId.make("pdf-form-runtime-agent"),
+      initializationId: "document-build-runtime-initialization",
+      initializedAt: "2026-08-29T12:00:00.000Z",
+      routeId: "document-build-runtime-route",
+      sessionId: "document-build-runtime-session",
+    });
+    await agent.onStart();
+    const metadata = documentBuildTurnMetadata();
+    const request = "Fill this PDF from File ID web:00000000-0000-4000-8000-000000000289.";
+    const userMessage: UIMessage = {
+      id: "document-build-runtime-message",
+      metadata: { turnMetadata: metadata },
+      parts: [{ text: request, type: "text" }],
+      role: "user",
+    };
+    await agent.addMessages([userMessage]);
+
+    const turn = await agent.beforeTurn({
+      continuation: false,
+      messages: [{ content: request, role: "user" }] satisfies Array<ModelMessage>,
+      model: new MockLanguageModelV4(),
+      system: "",
+      tools: {
+        ...agent.getTools(),
+        ...Object.fromEntries(
+          ["inspectPdfForm", "generateDocument"].map((name) => [
+            name,
+            tool({
+              description: "Compiled PDF Action",
+              inputSchema: effectToolSchema(Schema.Struct({})),
+              metadata: { cfThinkAction: true },
+            }),
+          ]),
+        ),
+      },
+    });
+
+    expect(turn.activeTools).toEqual(["loadSkill"]);
+    expect(turn.instructions).toContain("document-production@system-document-production-v1");
+    expect(turn.tools?.inspectPdfForm).toBeDefined();
+    expect(agent.getActions().inspectPdfForm.config.description).toContain("PDF");
+    expect(turn.tools?.loadSkill).toBe(agent.getTools().loadSkill);
+  });
+});
+
 it("publishes loadSkill for the verifier's exact Document Build status request", async () => {
   // SAFETY: wrangler.runtime.jsonc owns this test-only direct binding to OsfoAgent.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The checked runtime config declares the binding that generated production Env types omit.

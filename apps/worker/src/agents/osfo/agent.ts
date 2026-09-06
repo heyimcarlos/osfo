@@ -459,6 +459,7 @@ const capabilityActionNames = [
   "deleteDocument",
   "generateDiagram",
   "generateDocument",
+  "inspectPdfForm",
   "generateImage",
   "generatePresentation",
   documentBuildStartActionName,
