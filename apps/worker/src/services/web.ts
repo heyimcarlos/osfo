@@ -272,7 +272,7 @@ export interface MakeOptions<AuthorizationError, DiscoveryError, FetchError, Sta
   readonly makeId: () => string;
   readonly now: Effect.Effect<Date>;
   readonly state: WebState<StateError>;
-  readonly searchPolicy?: { readonly requestVendorUsdMicros: bigint };
+  readonly searchPolicy?: { readonly requestVendorUsdMicros: bigint } | undefined;
 }
 
 export interface Interface<Error> {
