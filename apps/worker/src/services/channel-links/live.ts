@@ -251,7 +251,11 @@ export const layer = (options: Options) =>
                   eq(channelLinks.author_id, address.authorId),
                 ),
               )
-              .orderBy(desc(channelLinks.created_at), desc(channelLinks.channel_link_id))
+              .orderBy(
+                desc(isNull(channelLinks.revoked_at)),
+                desc(channelLinks.created_at),
+                desc(channelLinks.channel_link_id),
+              )
               .limit(1),
           catch: (cause) =>
             new ChannelLinksUnavailable({ cause, operation: "resolveConversation" }),
