@@ -1,12 +1,13 @@
 import { Effect, Result, Schema } from "effect";
 
-import { ManifestVersion } from "../domain";
+import { ManifestVersion, ResourcePriceVersion } from "../domain";
 import type { AllowanceItem, AllowanceSource } from "../domain/allowance";
 import type { DocumentArtifact } from "../domain/document-artifact";
 import { retainedCatalog } from "../domain/plan-policy";
 import { managedModelRoutinePrice, rate } from "../domain/usage";
 import type { UsageEvent } from "../domain/usage-event";
 import type { CostEvidence } from "./document-generation";
+import type { ResearchCollector } from "./research-collector";
 import type { ResearchReport } from "./research-report";
 import type { ResearchSynthesis } from "./research-synthesis";
 
@@ -49,6 +50,7 @@ export interface Interface {
     artifact: DocumentArtifact.ArtifactRef,
     synthesisCost: ResearchSynthesis.CompanyCost,
     renderCost: CostEvidence,
+    searches?: ReadonlyArray<ResearchCollector.CompletedSearch>,
   ) => Effect.Effect<void, Unavailable>;
   readonly recordWorkflowStart: (report: ResearchReport.Record) => Effect.Effect<void, Unavailable>;
 }
@@ -68,8 +70,8 @@ export const make = (port: Port): Interface => ({
   // Provider-owned durable evidence retains Company Cost. User allowance changes only after useful success.
   recordRenderCost: () => Effect.void,
   recordSynthesisCost: () => Effect.void,
-  recordUsefulReport: (report, artifact, synthesisCost, renderCost) =>
-    usefulReportAccountingFor(report, artifact, synthesisCost, renderCost).pipe(
+  recordUsefulReport: (report, artifact, synthesisCost, renderCost, searches) =>
+    usefulReportAccountingFor(report, artifact, synthesisCost, renderCost, searches).pipe(
       Effect.flatMap((accounting) =>
         accounting._tag === "Shared"
           ? port.recordUsageEvent(accounting.event)
@@ -105,11 +107,57 @@ export const usefulReportAccountingFor = (
   artifact: DocumentArtifact.ArtifactRef,
   synthesisCost: ResearchSynthesis.CompanyCost,
   renderCost: CostEvidence,
+  searches: ReadonlyArray<ResearchCollector.CompletedSearch> = [],
 ): Effect.Effect<UsefulReportAccounting, Unavailable> => {
+  const searchCosts = searches.flatMap((search) => {
+    const cost = search.managedSearch.ratedCostUsdMicros;
+    const admission = search.searchAdmission.admission;
+    if (
+      search.workflowId !== report.workflowId ||
+      search.operationId !== search.managedSearch.attemptId ||
+      admission.allowancePeriodId !== report.allowancePeriodId ||
+      admission.planPolicyVersion !== report.planPolicyVersion ||
+      admission.capabilityCatalogVersion !== report.capabilityCatalogVersion ||
+      admission.originatingAuthority._tag !== "DurableTrigger" ||
+      admission.originatingAuthority.triggerId !== report.workflowId ||
+      cost === null ||
+      cost <= 0 ||
+      search.managedSearch.successfulSearches !== 1
+    )
+      return [];
+    return [
+      {
+        operationId: search.operationId,
+        ratedCostUsdMicros: BigInt(cost),
+        resourcePriceVersion: ResourcePriceVersion.make(search.managedSearch.resourcePriceVersion),
+      },
+    ];
+  });
+  if (
+    searchCosts.length !== searches.length ||
+    new Set(searchCosts.map((search) => search.operationId)).size !== searchCosts.length
+  ) {
+    return Effect.fail(
+      unavailable(
+        "usefulReport",
+        "Completed search cost or its report ownership cannot be established",
+      ),
+    );
+  }
   if (report.planPolicyVersion === "launch-v1") {
     return Effect.succeed({
       _tag: "Launch" as const,
       facts: [
+        ...searchCosts.map((search) => ({
+          items: [
+            {
+              allowanceKind: "vendorUsdMicros" as const,
+              basis: "observed" as const,
+              quantity: search.ratedCostUsdMicros,
+            },
+          ],
+          source: { sourceId: search.operationId, sourceType: "researchSearchOperation" },
+        })),
         ...(synthesisCost.usdMicros > 0n
           ? [
               {
@@ -180,7 +228,14 @@ export const usefulReportAccountingFor = (
         price: managedModelRoutinePrice,
       },
     ],
-    nonModel,
+    [
+      ...nonModel,
+      ...searchCosts.map((search) => ({
+        activity: "webAndResearch" as const,
+        ratedCostUsdMicros: search.ratedCostUsdMicros,
+        resourcePriceVersion: search.resourcePriceVersion,
+      })),
+    ],
     retainedCatalog,
     report.planPolicyVersion,
   );
@@ -197,6 +252,10 @@ export const usefulReportAccountingFor = (
     allowancePeriodId: report.allowancePeriodId,
     capabilityCatalogVersion: report.capabilityCatalogVersion,
     evidenceReferences: [
+      ...searchCosts.map((search) => ({
+        kind: "operationEvidence" as const,
+        reference: search.operationId,
+      })),
       { kind: "operationEvidence", reference: synthesisCost.providerOperationId },
       { kind: "operationEvidence", reference: artifact.content.contentId },
       ...(renderCost._tag === "Incurred"

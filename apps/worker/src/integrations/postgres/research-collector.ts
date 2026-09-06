@@ -231,6 +231,45 @@ export const make = (database: Database): ResearchCollector.PortInterface["persi
     ),
 });
 
+/** Read only completed search costs owned by this report for its existing publication transaction. */
+export const completedSearches = (database: Database, workflowId: ResearchReport.WorkflowId) =>
+  attempt("completedSearches", () =>
+    database
+      .select(selection)
+      .from(researchReportProviderOperations)
+      .where(
+        and(
+          eq(researchReportProviderOperations.workflow_id, workflowId),
+          eq(researchReportProviderOperations.kind, "search"),
+          eq(researchReportProviderOperations.state, "completed"),
+        ),
+      )
+      .orderBy(researchReportProviderOperations.sequence),
+  ).pipe(
+    Effect.flatMap((rows) => Effect.forEach(rows, decodeRow)),
+    Effect.flatMap((operations) =>
+      Effect.forEach(operations, (operation) =>
+        Effect.gen(function* () {
+          if (operation.result?._tag !== "Search")
+            return yield* unavailable("completedSearches", "Completed search has no result");
+          const result = operation.result;
+          if (result.managedSearch === undefined) return [];
+          if (result.searchAdmission === undefined)
+            return yield* unavailable("completedSearches", "Paid search has no admission evidence");
+          return [
+            {
+              operationId: operation.operationId,
+              workflowId: operation.workflowId,
+              managedSearch: result.managedSearch,
+              searchAdmission: result.searchAdmission,
+            },
+          ];
+        }),
+      ),
+    ),
+    Effect.map((searches) => searches.flat()),
+  );
+
 const decodeRow = (
   row: Row,
 ): Effect.Effect<ResearchCollector.Operation, ResearchCollector.Unavailable> =>

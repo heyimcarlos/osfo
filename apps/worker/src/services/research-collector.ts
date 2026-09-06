@@ -63,6 +63,14 @@ export const OperationResult = Schema.Union([
 ]);
 export type OperationResult = typeof OperationResult.Type;
 
+export const CompletedSearch = Schema.Struct({
+  operationId: OperationId,
+  workflowId: ResearchReport.WorkflowId,
+  managedSearch: ManagedSearchEvidence,
+  searchAdmission: SearchAdmission,
+});
+export type CompletedSearch = typeof CompletedSearch.Type;
+
 export const OperationState = Schema.Literals([
   "pending",
   "completed",
