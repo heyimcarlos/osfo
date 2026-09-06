@@ -179,6 +179,42 @@ it.effect("selects Scheduled Email after an earlier completed immediate Gmail re
   ),
 );
 
+it.effect("does not replay immediate Gmail history after a newer JSON-content user request", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(startProviderEmulator),
+    (emulator) =>
+      Effect.gen(function* () {
+        const binding = ResearchVerificationProvider.makeAiBinding({
+          _tag: "LocalVerification",
+          baseURL: emulator.origin,
+        });
+        const result = yield* Effect.promise(() =>
+          binding.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+            messages: [
+              {
+                content:
+                  "Send this exact Gmail message now: recipient=first@example.test; subject=First; body=First body",
+                role: "user",
+              },
+              { content: [{ type: "text", text: "Hello" }], role: "user" },
+            ],
+            tools: [
+              {
+                function: {
+                  name: "gmailSendEmail",
+                  parameters: { properties: {}, type: "object" },
+                },
+                type: "function",
+              },
+            ],
+          }),
+        );
+        expect(result).not.toHaveProperty("tool_calls");
+      }),
+    (emulator) => Effect.promise(emulator.close),
+  ),
+);
+
 it.effect("renders delivered Telegram replies in the run-owned provider inbox", () =>
   Effect.scoped(
     Effect.gen(function* () {

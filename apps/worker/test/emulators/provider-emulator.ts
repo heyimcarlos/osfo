@@ -1561,13 +1561,15 @@ const latestUserRequestMatch = (input: ResearchRequest, pattern: RegExp): RegExp
     if (
       found !== undefined ||
       message.role !== "user" ||
-      typeof message.content !== "string" ||
-      message.content.startsWith("Continue your previous response from exactly where it left off.")
+      (typeof message.content === "string" &&
+        message.content.startsWith(
+          "Continue your previous response from exactly where it left off.",
+        ))
     ) {
       return found;
     }
     // Approval continuations reuse the latest request; a newer request ends the historical search.
-    return pattern.exec(message.content);
+    return typeof message.content === "string" ? pattern.exec(message.content) : null;
   }, undefined) ?? null;
 
 const runOwnedRecallContext = (
