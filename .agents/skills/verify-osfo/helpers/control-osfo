@@ -579,7 +579,7 @@ qualify_journeys() {
 }
 
 evidence_start() {
-  local run_id feature artifact_dir feature_dir provider_origin
+  local run_id feature artifact_dir feature_dir provider_origin immediate_dir
   run_id="$1"
   feature="$2"
   doctor_run "$run_id" >/dev/null
@@ -588,6 +588,17 @@ evidence_start() {
   if [[ -e "$feature_dir/metadata.txt" ]]; then
     printf 'Evidence already started for %s in run %s\n' "$feature" "$run_id" >&2
     exit 1
+  fi
+  if [[ "$feature" == scheduled-email ]]; then
+    immediate_dir="$(feature_artifact_dir_for "$run_id" immediate-gmail-send)"
+    if [[ ! -s "$immediate_dir/observation-passed.txt" && \
+      ( -s "$immediate_dir/action.png" || -s "$immediate_dir/result.png" || \
+        -s "$immediate_dir/approval.json" || -s "$immediate_dir/browser-evidence.json" || \
+        -s "$immediate_dir/browser-actions.txt" ) ]]; then
+      printf 'Run %s observe %s immediate-gmail-send before starting Scheduled Email evidence; its provider reset would erase the unobserved Gmail send.\n' \
+        "$0" "$run_id" >&2
+      exit 1
+    fi
   fi
   mkdir -p "$feature_dir"
   printf 'run_id=%s\nfeature=%s\nstarted_at=%s\ncommit=%s\nlaunch_checkout=%s\nweb_origin=%s\nworker_origin=%s\ncommand=%q evidence %q %q start\n' \

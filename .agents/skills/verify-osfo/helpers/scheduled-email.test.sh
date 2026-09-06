@@ -86,4 +86,61 @@ if ! grep -F -q 'bash .agents/skills/verify-osfo/helpers/scheduled-email.test.sh
   exit 1
 fi
 
+fixture_dir="$(mktemp -d)"
+trap 'rm -rf "$fixture_dir"' EXIT
+eval "$(sed -n '/^evidence_start() {$/,/^}$/p' "$control")"
+doctor_run() { :; }
+artifact_dir_for() { printf '%s/%s\n' "$fixture_dir" "$1"; }
+feature_artifact_dir_for() { printf '%s/%s/%s\n' "$fixture_dir" "$1" "$2"; }
+state_value() { printf 'fixture-%s\n' "$2"; }
+curl() { printf '[]\n' >"$fixture_dir/provider-ledger.json"; }
+
+scheduled_dir="$fixture_dir/combined/scheduled-email"
+immediate_dir="$fixture_dir/combined/immediate-gmail-send"
+mkdir -p "$scheduled_dir" "$immediate_dir"
+printf 'preserve existing browser evidence\n' >"$scheduled_dir/browser-actions.txt"
+printf '["existing Gmail send"]\n' >"$fixture_dir/provider-ledger.json"
+for evidence in action.png result.png approval.json browser-evidence.json browser-actions.txt; do
+  printf 'captured evidence\n' >"$immediate_dir/$evidence"
+  if output="$(evidence_start combined scheduled-email 2>&1)"; then
+    printf 'Unobserved Immediate Gmail %s must prevent Scheduled Email evidence start\n' "$evidence" >&2
+    exit 1
+  fi
+  if [[ "$output" != *'observe combined immediate-gmail-send'* ]]; then
+    printf 'Guard must name the required observation command, got: %s\n' "$output" >&2
+    exit 1
+  fi
+  if [[ -e "$scheduled_dir/metadata.txt" || \
+    "$(<"$scheduled_dir/browser-actions.txt")" != 'preserve existing browser evidence' || \
+    "$(<"$fixture_dir/provider-ledger.json")" != '["existing Gmail send"]' || \
+    "$(<"$immediate_dir/$evidence")" != 'captured evidence' ]]; then
+    printf 'Rejected evidence start must preserve metadata, browser evidence, and the provider ledger\n' >&2
+    exit 1
+  fi
+  rm "$immediate_dir/$evidence"
+done
+
+printf 'captured evidence\n' >"$immediate_dir/browser-evidence.json"
+: >"$immediate_dir/observation-passed.txt"
+if (evidence_start combined scheduled-email >/dev/null 2>&1); then
+  printf 'An empty observation marker must not permit the provider reset\n' >&2
+  exit 1
+fi
+printf 'observed_at=2026-09-06T00:00:00Z\ncommit=fixture-commit\n' \
+  >"$immediate_dir/observation-passed.txt"
+evidence_start combined scheduled-email >/dev/null
+if [[ ! -s "$scheduled_dir/metadata.txt" || "$(<"$fixture_dir/provider-ledger.json")" != '[]' ]]; then
+  printf 'Observed Immediate Gmail must permit Scheduled Email evidence start and its provider reset\n' >&2
+  exit 1
+fi
+
+mkdir -p "$fixture_dir/scheduled-only/immediate-gmail-send"
+printf 'started evidence\n' >"$fixture_dir/scheduled-only/immediate-gmail-send/metadata.txt"
+: >"$fixture_dir/scheduled-only/immediate-gmail-send/browser-actions.txt"
+evidence_start scheduled-only scheduled-email >/dev/null
+if [[ ! -s "$fixture_dir/scheduled-only/scheduled-email/metadata.txt" ]]; then
+  printf 'A run without Immediate Gmail action or result evidence must remain usable\n' >&2
+  exit 1
+fi
+
 printf 'Scheduled Email verifier checks passed\n'

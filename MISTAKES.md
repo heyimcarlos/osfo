@@ -7,6 +7,13 @@ short, specific, and actionable.
   Prepare the unchanged image in a separately bounded CI step, then reuse Docker
   layers while keeping test execution and readiness checks bounded.
 
+- Starting Scheduled Email evidence resets the shared Integration provider ledger.
+  Observe Immediate Gmail before that reset; defer only its evidence finish until
+  retained account-deletion replay supplies the deletion receipt.
+- Different `127.0.0.1` ports share browser cookies. Keep one authenticated
+  verification run per Chrome profile; tabs and automation session names do not
+  isolate authentication.
+
 - Local model fixture matching must stop at the latest substantive User request.
   Searching older requests until a pattern matches can replay a completed action
   instead of selecting the current request. Skip only synthetic continuations.
