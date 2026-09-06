@@ -1,17 +1,29 @@
 /* oxlint-disable effecttsgo/async-function -- Durable Object and AI Tool test boundaries are Promise APIs. */
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it, vi } from "@effect/vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "@effect/vitest";
 import { tool, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { Effect, Option, Schema } from "effect";
 
 import { AgentId, ThinkSubmissionId, UserId } from "../../domain";
 import { ManagedTurnMetadata } from "../../domain/managed-conversation";
+import { IncidentControlsPostgres } from "../../integrations/postgres/incident-controls";
+import { IncidentControls } from "../../services/incident-controls";
 import { Integrations } from "../../services/integrations";
 import { OsfoAgent } from "./agent";
 import { effectToolSchema } from "./effect-tool-schema";
 import { IntegrationTools, type IntegrationToolExecutor } from "./integration-tools";
+
+// This runtime has no PostgreSQL authority; keep optional provider recall unavailable.
+beforeEach(() => {
+  vi.spyOn(IncidentControlsPostgres, "check").mockReturnValue(
+    Effect.fail(
+      new IncidentControls.Unavailable({ cause: new Error("No runtime PostgreSQL authority") }),
+    ),
+  );
+});
+afterEach(() => vi.restoreAllMocks());
 
 describe("Integration Tools", () => {
   it("publishes the curated reads and exact-approved Actions", () => {

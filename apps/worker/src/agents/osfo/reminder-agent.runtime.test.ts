@@ -1,14 +1,26 @@
 /* oxlint-disable effecttsgo/async-function -- Durable Object and Agents scheduler test boundaries are Promise APIs. */
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ModelMessage, UIMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { AgentId, ThinkSubmissionId, UserId } from "../../domain";
 import { ManagedTurnMetadata } from "../../domain/managed-conversation";
+import { IncidentControlsPostgres } from "../../integrations/postgres/incident-controls";
+import { IncidentControls } from "../../services/incident-controls";
 import { OsfoAgent } from "./agent";
+
+// This runtime has no PostgreSQL authority; keep optional provider recall unavailable.
+beforeEach(() => {
+  vi.spyOn(IncidentControlsPostgres, "check").mockReturnValue(
+    Effect.fail(
+      new IncidentControls.Unavailable({ cause: new Error("No runtime PostgreSQL authority") }),
+    ),
+  );
+});
+afterEach(() => vi.restoreAllMocks());
 
 it("registers Reminder Action/tools and decodes only the public scheduler payload", async () => {
   // SAFETY: wrangler.runtime.jsonc owns this test-only direct binding to OsfoAgent.
