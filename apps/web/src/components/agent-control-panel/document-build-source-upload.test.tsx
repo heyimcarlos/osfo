@@ -8,7 +8,7 @@ import {
   FileUploadRejected,
   FileUploadUnavailable,
 } from "@osfo/api";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
@@ -449,10 +449,13 @@ describe("DocumentBuildSourceUpload", () => {
       />,
     );
 
-    await user.upload(
-      screen.getByLabelText("Choose text file"),
-      new File(["source"], "source.txt", { type: "text/plain" }),
+    const file = new File(["source"], "source.txt", { type: "text/plain" });
+    vi.spyOn(file, "arrayBuffer").mockImplementation(
+      // oxlint-disable-next-line effecttsgo/global-timers -- This browser fixture delays file reading on Vitest fake timers.
+      () => new Promise((resolve) => setTimeout(() => resolve(new ArrayBuffer(6)), 500)),
     );
+    await user.upload(screen.getByLabelText("Choose text file"), file);
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Processing"));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });
