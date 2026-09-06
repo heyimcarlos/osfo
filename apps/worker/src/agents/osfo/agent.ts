@@ -7994,11 +7994,7 @@ export class OsfoAgent extends Think<Env> {
       Effect.all(
         {
           model: Effect.result(this.#modelCallUsage.reconcile),
-          conversation: Effect.result(
-            this.#reconcileCommittedTurns().pipe(
-              Effect.andThen(this.#reconcileConversationUsage()),
-            ),
-          ),
+          conversation: Effect.result(this.#reconcileConversationUsage()),
         },
         { concurrency: 1 },
       ).pipe(
