@@ -512,11 +512,16 @@ const makeUsageRecorder =
   (database: Database): ResearchReportDocument.PortInterface["recordUsage"] =>
   (report, artifact, synthesisCost, renderCost) =>
     Effect.gen(function* () {
+      const searches = yield* ResearchCollectorPostgres.completedSearches(
+        database,
+        report.workflowId,
+      );
       const accounting = yield* ResearchReportAccounting.usefulReportAccountingFor(
         report,
         artifact,
         synthesisCost,
         renderCost,
+        searches,
       );
       const completedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
       return yield* ResearchReportPublicationPostgres.complete(database, {
