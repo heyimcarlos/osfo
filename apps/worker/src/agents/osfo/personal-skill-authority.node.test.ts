@@ -562,7 +562,7 @@ describe("PersonalSkillAuthority", () => {
             "personal-agent",
             "skill-store",
           ] as const,
-          availableToolNames: ["generateDocument", "loadSkill"],
+          availableToolNames: ["generateDocument", "inspectPdfForm", "loadSkill"],
           catalogVersion: CapabilityCatalogVersion.make("governed-capabilities-v1"),
           declaredRequirements: [] as const,
           origin: "channelLink" as const,
