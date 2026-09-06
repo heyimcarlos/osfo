@@ -24,6 +24,10 @@ repository configuration.
 - Executor 1.6.8 and its MCP plugin use Effect 4.0.0-beta.59. A separate Node host
   can retain those peers while Worker/API code stays on the workspace version;
   only plain transport data and synchronous codecs cross the runtime boundary.
+- After editing an existing dependency patch, Bun 1.3.14 can leave previously
+  installed package code unchanged with `bun install --frozen-lockfile`. Use
+  `bun install --force --frozen-lockfile` and inspect the installed changed method
+  before testing a checkout that already had dependencies installed.
 - Codex app-server direct MCP calls can use a real returned thread identity with
   caller-generated turn correlation metadata. Browser calls still require the
   provisioned desktop broker and enabled browser extension. CLI login alone does
