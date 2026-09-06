@@ -183,6 +183,15 @@ it.effect("routes document, integration, and recall paraphrases without collisio
       { expected: ["file-read", "document-read"], taskDescription: "Open my uploaded document" },
       { expected: ["file-read"], taskDescription: "Please inspect the attached files." },
       {
+        expected: [],
+        taskDescription:
+          "Build a PDF from uploaded File ID web:00000000-0000-4000-8000-000000000289.",
+      },
+      {
+        expected: ["file-read", "document-read"],
+        taskDescription: "Read the uploaded file, then build a PDF from it.",
+      },
+      {
         expected: ["file-read", "page-read"],
         taskDescription: "Extract the fee from page 2 of the attached PDF",
       },
