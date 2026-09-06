@@ -1,3 +1,4 @@
+import type { BrowserTaskControls } from "./browser-task-controls";
 import { BrowserApprovalResume } from "./browser-approval-resume";
 import { BrowserCrypto } from "@effect/platform-browser";
 import { Think, type StreamCallback, type ThinkChannels } from "@cloudflare/think";
@@ -472,6 +473,24 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
     const agent = await this.subAgent(OsfoAgent, agentId);
     return agent.listActionPresentations(actor, selection);
+  }
+
+  async listBrowserTasks(agentId: string, actor: BrowserTaskControls.Actor) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.listBrowserTasks(actor);
+  }
+
+  async openBrowserTask(agentId: string, input: BrowserTaskControls.Request) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.openBrowserTask(input);
+  }
+
+  async resumeBrowserTask(agentId: string, input: BrowserTaskControls.Request) {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    return agent.resumeBrowserTask(input);
   }
 
   /** Resolve one User Agent's exact pending Action presentation. */

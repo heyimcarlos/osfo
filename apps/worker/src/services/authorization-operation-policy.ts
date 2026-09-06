@@ -30,7 +30,6 @@ const sharedUnmeteredOperations = new Set<AuthorizationOperationName>([
   "memory.forgetKnowledge",
   "file.read",
   "browser.inspect",
-  "browser.read",
   "browser.effect",
   "file.delete",
   "skill.inspect",
@@ -133,8 +132,12 @@ export const requiresApproval = (operation: AuthorizationOperation) =>
       operation.change === "oneTimeReactivate" ||
       operation.change === "recurringReactivate"));
 
-export const isSharedUnmetered = (operation: AuthorizationOperation) =>
+export const isSharedUnmetered = (
+  operation: AuthorizationOperation,
+  requestVendorUsdMicros: bigint,
+) =>
   sharedUnmeteredOperations.has(operation.kind) ||
+  (operation.kind === "browser.read" && requestVendorUsdMicros === 0n) ||
   (operation.kind === "reminder.manage" && operation.change === "cancel") ||
   (operation.kind === "workflow.manage" && operation.change === "stop") ||
   (operation.kind === "integration.connection.manage" && operation.change === "revoke");

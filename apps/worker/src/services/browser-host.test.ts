@@ -1,6 +1,6 @@
 /* oxlint-disable eslint/no-underscore-dangle -- Assertions use the canonical Effect outcome tag. */
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Redacted } from "effect";
+import { Effect } from "effect";
 
 import { executeBrowserInventory, makeBrowserTools } from "../agents/osfo/browser-tools";
 import { CapabilityCatalogVersion, ThinkSubmissionId, UserId } from "../domain";
@@ -10,20 +10,17 @@ import { Capabilities } from "./capabilities";
 const userId = UserId.make("browser-owner");
 const turnId = ThinkSubmissionId.make("browser-turn");
 const binding: Browser.Binding = {
-  allowedOrigins: [],
-  endpoint: "http://127.0.0.1:39270/inventory",
-  hostSessionId: "extension-instance",
+  hostSessionId: "hosted-agent",
   ownerUserId: userId,
-  token: Redacted.make("test-token"),
 };
 const inspection = { operationId: "inventory-call", turnId, userId };
 
-describe("private browser inventory", () => {
+describe("managed browser inventory", () => {
   it.effect("fails closed before admission or transport for a missing host or another owner", () =>
     Effect.gen(function* () {
       for (const configured of [null, { ...binding, ownerUserId: "another-owner" }]) {
         const browser = Browser.make({
-          binding: configured,
+          binding: () => configured,
           authorize: () => Effect.die(new Error("unexpected admission")),
           dispatch: () => Effect.die(new Error("unexpected dispatch")),
         });
@@ -38,7 +35,7 @@ describe("private browser inventory", () => {
       Effect.gen(function* () {
         const events: Array<string> = [];
         const browser = Browser.make({
-          binding,
+          binding: () => binding,
           authorize: () =>
             Effect.sync(() => {
               events.push("admit");
@@ -62,7 +59,7 @@ describe("private browser inventory", () => {
       const capabilities = Capabilities.make();
       const tools = makeBrowserTools({
         browser: Browser.make({
-          binding: null,
+          binding: () => null,
           authorize: () => Effect.void,
           dispatch: () => Effect.die(new Error("unexpected dispatch")),
         }),

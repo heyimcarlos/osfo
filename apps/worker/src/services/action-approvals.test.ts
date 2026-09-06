@@ -8,11 +8,14 @@ import { AuthSessionId } from "../domain/auth-session";
 import {
   ActionPresentation,
   ActionPresentationNotFound,
+  ActionPresentationStale,
+  ActionPresentationUnavailable,
   ActionPresentationId,
   makeThinkActionApprovalAdapter,
   type PendingThinkAction,
 } from "../agents/osfo/think-action-approvals";
 import {
+  browserApprovalSelection,
   reminderApprovalSelection,
   presentOsfoAction,
   scheduledEmailApprovalSelection,
@@ -630,4 +633,101 @@ it.effect("guards Reminder ownership, expiry, immutable facts, rejection, and re
     expect((yield* approvals.list(actor, reminderApprovalSelection)).presentations).toEqual([]);
     expect(creates).toBe(0);
   }),
+);
+
+it.effect(
+  "lists the new browser approval after human handoff invalidates the old observation",
+  () => {
+    const pending = ["before-handoff", "after-handoff"].map(
+      (observationId): PendingThinkAction => ({
+        descriptor: {
+          action: "executeBrowserEffect",
+          input: { taskId: "task-1", observationId },
+          kind: "durable-pause",
+          permissions: ["browser:interact"],
+          requestId: `request-${observationId}`,
+          risk: "high",
+          summary: "Click the visible browser target",
+          toolCallId: `action-${observationId}`,
+        },
+        executionId: ActionPresentationId.make(observationId),
+        source: "action",
+      }),
+    );
+    const retained: Array<string> = [];
+    let unavailable = false;
+    const approvals = makeActionApprovals({
+      authorizer: { ownsAgent: () => Effect.succeed(true) },
+      lifecycle: {
+        findPending: (id) => {
+          const found = pending.find((candidate) => candidate.executionId === id);
+          return found === undefined
+            ? Effect.die(new Error("Unexpected presentation"))
+            : Effect.succeed(found);
+        },
+        listPending: Effect.succeed(pending),
+        resolve: () => Effect.die(new Error("Listing must not decide an approval")),
+      },
+      now: Effect.succeed(new Date("2026-09-06T12:00:00.000Z")),
+      present: (candidate) => {
+        if (unavailable)
+          return Effect.fail(
+            new ActionPresentationUnavailable({
+              action: "executeBrowserEffect",
+              message: "Storage unavailable",
+            }),
+          );
+        if (candidate.executionId === "before-handoff")
+          return Effect.fail(
+            new ActionPresentationStale({
+              action: "executeBrowserEffect",
+              message: "Observation replaced",
+            }),
+          );
+        return Effect.succeed(
+          ActionPresentation.make({
+            actionDefinitionVersion: "osfo-browser-effect-v1",
+            actionId: ActionId.make(candidate.descriptor.toolCallId),
+            consequences: ["Click the selected target"],
+            description: candidate.descriptor.summary,
+            fields: [{ name: "observationId", label: "Observation", value: "after-handoff" }],
+            operation: "browser.effect",
+            presentationId: candidate.executionId,
+            title: "Click browser target",
+          }),
+        );
+      },
+      presentations: {
+        retain: (candidate) =>
+          Effect.sync(() => {
+            retained.push(candidate.presentationId);
+            return candidate;
+          }),
+      },
+    });
+    const actor = {
+      _tag: "AuthSession" as const,
+      authSessionId: AuthSessionId.make("session-1"),
+      expiresAt: new Date("2026-09-07T00:00:00.000Z"),
+      userId: UserId.make("user-1"),
+    };
+    return Effect.gen(function* () {
+      const listed = yield* approvals.list(actor, { ...browserApprovalSelection, maximum: 1 });
+      expect(listed.presentations.map((presentation) => presentation.presentationId)).toEqual([
+        "after-handoff",
+      ]);
+      expect(retained).toEqual(["after-handoff"]);
+      const stale = yield* approvals
+        .read(actor, ActionPresentationId.make("before-handoff"))
+        .pipe(Effect.result);
+      expect(Result.isFailure(stale) && stale.failure).toBeInstanceOf(ActionPresentationStale);
+      unavailable = true;
+      const failed = yield* approvals
+        .list(actor, { ...browserApprovalSelection, maximum: 1 })
+        .pipe(Effect.result);
+      expect(Result.isFailure(failed) && failed.failure).toBeInstanceOf(
+        ActionPresentationUnavailable,
+      );
+    });
+  },
 );

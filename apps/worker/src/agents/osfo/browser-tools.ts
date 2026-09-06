@@ -20,7 +20,7 @@ export interface Dependencies<Error> {
 export const makeBrowserTools = <Error>(dependencies: Dependencies<Error>): ToolSet => ({
   inspectBrowserInventory: tool({
     description:
-      "Inspect the available browsers and tab counts on your private provisioned browser host. This does not open, select, navigate, or read tabs.",
+      "Inspect your hosted browser sessions and tab counts. This does not open, navigate, or read pages.",
     inputSchema: effectToolSchema(Schema.Struct({})),
     execute: (_input, context) => executeBrowserInventory(dependencies, context.toolCallId),
   }),

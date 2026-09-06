@@ -99,7 +99,7 @@ export const authorizeShared = (
     if (mode === "recheck") return support.denied("approvalRequired");
     return { _tag: "ApprovalRequired", actionId: operation.actionId, operation: operation.kind };
   }
-  if (mode === "recheck" || isSharedUnmetered(operation)) {
+  if (mode === "recheck" || isSharedUnmetered(operation, context.requestVendorUsdMicros)) {
     return support.admitted(capabilityCatalog, "unmeteredContinuity");
   }
   if (!Predicate.isTagged(context.allowance, "Metered")) {
@@ -121,6 +121,9 @@ export const authorizeShared = (
   const pool = policyFor(allowancePolicy, allowance.plan).includedPlanUsageMicros;
   const recorded =
     allowance.usage.find((usage) => usage.allowanceKind === "planUsageMicros")?.quantity ?? 0n;
+  if (operation.kind === "browser.read" && recorded + context.requestVendorUsdMicros > pool) {
+    return support.denied("allowanceExhausted", allowance.endsAt);
+  }
   if (recorded < pool) {
     return {
       _tag: "Admitted",
@@ -163,7 +166,7 @@ const exceedsGovernedLiveLimit = (
   limits: CapabilityCatalog["planResourceLimits"]["free"],
 ) => {
   if (
-    !isSharedUnmetered(operation) &&
+    !isSharedUnmetered(operation, context.requestVendorUsdMicros) &&
     context.liveFacts.concurrentCostlyJobs >= BigInt(limits.concurrentCostlyJobs)
   ) {
     return true;

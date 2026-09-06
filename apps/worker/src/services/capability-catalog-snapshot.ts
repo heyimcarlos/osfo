@@ -269,7 +269,7 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
     }),
     entry(
       "browser-inventory",
-      "Inspect available private browsers and tab counts without reading tabs.",
+      "Inspect your hosted browser sessions and tab counts without reading pages.",
       "browser.inspect",
       {
         availabilityRequirements: ["browser-host", "personal-agent"],

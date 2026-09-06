@@ -37,3 +37,10 @@ repository configuration.
   qualify the actual Sandbox container even when the test Wrangler config
   declares it. Use the existing real-Wrangler verification helper for the
   Files/R2/Sandbox path; native transport tests remain supporting evidence.
+- Wrangler loads nearby environment files before using its saved OAuth login.
+  A valid AI-only API token can therefore cause deployment or Browser Run calls
+  to fail authorization. Check the intended credential source; qualify OAuth
+  from an isolated working directory instead of expanding the AI token.
+- Browser Run Live View URL expiry limits when a viewer can connect. It does
+  not close an already connected viewer. Use the provider's structured handoff
+  state and fresh page observations when returning control to automation.

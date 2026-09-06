@@ -6,7 +6,7 @@ import {
   BrowserRequest,
   type BrowserCommand,
 } from "@osfo/api/browser-host";
-import { Effect, Schema, Semaphore } from "effect";
+import { Clock, Effect, Schema, Semaphore } from "effect";
 
 import { UserId } from "../../domain";
 import { Browser } from "../../services/browser-host";
@@ -55,12 +55,13 @@ export type Task = typeof Task.Type;
 const encodeTask = Schema.encodeSync(Task);
 
 export interface Options {
-  readonly revoke: (
-    request: BrowserRequest,
-    binding: Browser.Binding,
-  ) => Effect.Effect<BrowserOutcome, Browser.BrowserUnavailable>;
+  readonly activeTaskIds: (
+    userId: UserId,
+  ) => Effect.Effect<ReadonlyArray<string>, Browser.BrowserUnavailable>;
+  readonly cleanup: (userId: UserId) => Effect.Effect<void, Browser.BrowserUnavailable>;
   readonly storage: DurableObjectStorage;
-  readonly binding: Browser.Binding | null;
+  readonly binding: (userId: UserId) => Browser.Binding | null;
+  readonly now?: Effect.Effect<number>;
   readonly authorize: (
     request: Browser.Inspection,
     command: BrowserCommand,
@@ -85,16 +86,17 @@ export const make = (options: Options) => {
       catch: unavailable,
     });
     const task = yield* Schema.decodeUnknownEffect(Task)(raw).pipe(Effect.mapError(unavailable));
-    if (task.userId !== userId || task.hostSessionId !== options.binding?.hostSessionId)
+    if (task.userId !== userId || task.hostSessionId !== options.binding(userId)?.hostSessionId)
       return yield* unavailable();
-    return task;
+    const now = yield* options.now ?? Clock.currentTimeMillis;
+    return expireObservation(task, now);
   });
   const dispatch = Effect.fn("BrowserTask.dispatch")(function* (
     inspection: Browser.Inspection,
     task: Task,
     command: BrowserCommand,
   ) {
-    const binding = options.binding;
+    const binding = options.binding(inspection.userId);
     if (binding === null || !Browser.isAvailable(binding, inspection.userId))
       return yield* unavailable();
     yield* options.authorize(inspection, command);
@@ -142,13 +144,15 @@ export const make = (options: Options) => {
     ) {
       return yield* lock.withPermit(
         Effect.gen(function* () {
-          const binding = options.binding;
+          const binding = options.binding(inspection.userId);
           if (binding === null || !Browser.isAvailable(binding, inspection.userId))
             return yield* unavailable();
           // Opening authority comes from the actual User request, never a page or model-provided scope.
           if (
             !URL.canParse(url) ||
-            !binding.allowedOrigins.includes(new URL(url).origin) ||
+            new URL(url).protocol !== "https:" ||
+            new URL(url).username !== "" ||
+            new URL(url).password !== "" ||
             !matchesSuppliedBrowserUrl(requestText, url)
           )
             return yield* unavailable();
@@ -216,21 +220,28 @@ export const make = (options: Options) => {
         _tag: "Outcome",
         operationId: inspection.operationId,
       });
+      const activeTaskIds = new Set(yield* options.activeTaskIds(inspection.userId));
       const rows = yield* Effect.tryPromise({
-        try: () => options.storage.list({ prefix: "browser-task:", limit: 100 }),
+        try: () => options.storage.list({ prefix: "browser-task:" }),
         catch: unavailable,
       });
       const tasks = yield* Effect.forEach(Array.from(rows.values()), (value) =>
         Schema.decodeUnknownEffect(Task)(value).pipe(Effect.mapError(unavailable)),
       );
-      const owned = tasks.filter((task) => task.userId === inspection.userId);
-      return [...owned.filter((task) => !task.closed), ...owned.filter((task) => task.closed)]
+      const now = yield* options.now ?? Clock.currentTimeMillis;
+      const owned = tasks
+        .filter((task) => task.userId === inspection.userId)
+        .map((task) => expireObservation(task, now));
+      return [
+        ...owned.filter((task) => activeTaskIds.has(task.taskId)),
+        ...owned.filter((task) => !activeTaskIds.has(task.taskId)),
+      ]
         .slice(0, 4)
         .map((task) => ({
           taskId: task.taskId,
           requestText: task.requestText,
           startUrl: task.startUrl,
-          closed: task.closed,
+          closed: !activeTaskIds.has(task.taskId),
           observation:
             task.observation === null
               ? null
@@ -245,6 +256,18 @@ export const make = (options: Options) => {
         }));
     }),
     read,
+    invalidateObservation: Effect.fn("BrowserTask.invalidateObservation")(function* (
+      taskId: string,
+      userId: UserId,
+    ) {
+      yield* lock.withPermit(
+        Effect.gen(function* () {
+          const task = yield* read(taskId, userId);
+          if (task.closed) return yield* unavailable();
+          return yield* retain({ ...task, observation: null });
+        }),
+      );
+    }),
     quiesce: Effect.fn("BrowserTask.quiesce")(function* (userId: UserId) {
       return yield* lock.withPermit(
         Effect.gen(function* () {
@@ -252,22 +275,12 @@ export const make = (options: Options) => {
             try: () => options.storage.list({ prefix: "browser-task:" }),
             catch: unavailable,
           });
-          if (rows.size === 0) return undefined;
-          const binding = options.binding;
-          if (binding === null || !Browser.isAvailable(binding, userId))
-            return yield* unavailable();
-          const outcome = yield* options.revoke(
-            {
-              ownerUserId: userId,
-              hostSessionId: binding.hostSessionId,
-              turnId: "account-deletion",
-              taskId: "account-deletion",
-              operationId: "account-deletion",
-              command: { _tag: "Revoke" },
-            },
-            binding,
+          const tasks = yield* Effect.forEach(Array.from(rows.values()), (value) =>
+            Schema.decodeUnknownEffect(Task)(value).pipe(Effect.mapError(unavailable)),
           );
-          if (outcome._tag !== "Closed") return yield* unavailable();
+          if (tasks.some((task) => task.userId !== userId)) return yield* unavailable();
+          yield* options.cleanup(userId);
+          if (rows.size === 0) return undefined;
           yield* Effect.tryPromise({
             try: () => options.storage.delete(Array.from(rows.keys())),
             catch: unavailable,
@@ -283,6 +296,12 @@ const unavailable = () =>
   new Browser.BrowserUnavailable({
     message: "The owned browser task is unavailable or requires a fresh observation.",
   });
+
+const expireObservation = (task: Task, now: number): Task =>
+  task.observation !== null &&
+  (task.observation.observedAt > now || now - task.observation.observedAt >= 5 * 60_000)
+    ? { ...task, observation: null }
+    : task;
 
 export * as BrowserTask from "./browser-task";
 

@@ -1,3 +1,4 @@
+import { BrowserTaskControls } from "./browser-task-controls";
 import { BrowserApprovalResume } from "./browser-approval-resume";
 import type { FiberRecoveryContext, StartFiberOptions } from "agents";
 import { appendBrowserApprovalLink, withBrowserApprovalReply } from "./browser-approval-reply";
@@ -24,7 +25,7 @@ import {
   type TurnConfig,
   type TurnContext,
 } from "@cloudflare/think";
-import { SkillChangeRequest, SkillDeletionRequest } from "@osfo/api";
+import { BrowserTasksUnavailable, SkillChangeRequest, SkillDeletionRequest } from "@osfo/api";
 import { channelLinks } from "@osfo/db/schema/channel-links";
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import { generateText, Output, tool, type ToolSet, type UIMessage } from "ai";
@@ -34,6 +35,7 @@ import { CHAT_MESSAGE_TYPES, parseProtocolMessage } from "agents/chat";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import {
   Cause,
+  Clock,
   Data,
   DateTime,
   Effect,
@@ -46,12 +48,12 @@ import {
   Schema,
   Semaphore,
 } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
 
 import type { AllowanceItem, AllowanceSource } from "../../domain/allowance";
 import {
   AgentId,
   AllowancePeriodId,
+  ModelAccessPolicyVersion,
   AssistantMessageId,
   ChannelLinkId,
   type CapabilityCatalogVersion,
@@ -289,6 +291,7 @@ import {
   type ActionPresentationFound,
   type ActionPresentationNotFound,
   ActionPresentationUnavailable,
+  ActionPresentationStale,
   ActionApprovalRequestInvalid,
   ApprovalActor,
   ApprovalActorAuthorizationUnavailable,
@@ -433,8 +436,10 @@ import {
 import { makeWebTools } from "./web-tools";
 import { makeBrowserTools, makeBrowserTaskTools } from "./browser-tools";
 import { BrowserTask, BrowserEffectInput, matchesObservation } from "./browser-task";
-import type { BrowserCommand } from "@osfo/api/browser-host";
+import type { BrowserCommand, BrowserRequest } from "@osfo/api/browser-host";
 import { Browser } from "../../services/browser-host";
+import { HostedBrowser } from "../../services/hosted-browser";
+import { HostedBrowserUsage } from "../../services/hosted-browser-usage";
 import {
   makeReminderAuthority,
   ReminderCallbackCapability,
@@ -992,24 +997,169 @@ export class OsfoAgent extends Think<Env> {
     now: Effect.sync(() => new Date()),
     state: this.#webState,
   });
-  readonly #browserBinding = loadConfig(this.env).browserHost;
+  #browserBinding(userId: UserId): Browser.Binding | null {
+    if (this.env.BROWSER === undefined) return null;
+    return this.#browserIdentity(userId);
+  }
+
+  #browserIdentity(userId: UserId): Browser.Binding {
+    return { ownerUserId: userId, hostSessionId: `hosted:${this.ctx.id.toString()}` };
+  }
+
+  #hostedBrowser(binding: Browser.Binding) {
+    return HostedBrowser.make({
+      storage: this.ctx.storage,
+      browser: this.env.BROWSER,
+      ownerUserId: binding.ownerUserId,
+      hostSessionId: binding.hostSessionId,
+      usage: this.#hostedBrowserUsage(binding.ownerUserId),
+    });
+  }
+
+  #hostedBrowserUsage(ownerUserId: string) {
+    return HostedBrowserUsage.make({
+      storage: this.ctx.storage,
+      ownerUserId,
+      admit: (request) => this.#admitBrowserUsage(request),
+      record: (evidence) => this.#recordBrowserUsage(evidence),
+    });
+  }
+
+  #admitBrowserUsage(
+    request: BrowserRequest,
+  ): Effect.Effect<HostedBrowserUsage.Admission, HostedBrowser.Unavailable> {
+    return this.#fileToolAuthorizationContext().pipe(
+      Effect.flatMap((context) => {
+        const active = this.#activeCapabilityMetadata;
+        if (
+          active === undefined ||
+          active.submissionId !== request.turnId ||
+          active.authorityIdentity.userId !== request.ownerUserId ||
+          context.user.userId !== request.ownerUserId
+        ) {
+          return Effect.fail(
+            new HostedBrowser.Unavailable({ message: "Browser usage authority is unavailable." }),
+          );
+        }
+        const admitted = authorization.admit(
+          {
+            ...context,
+            requestVendorUsdMicros: HostedBrowserUsage.admissionVendorUsdMicros,
+            approval: null,
+          },
+          {
+            actionId: request.operationId,
+            kind: "browser.read",
+            deadlineMilliseconds: 25_000n,
+            responseBytes: 262_144n,
+            retries: 0n,
+          },
+        );
+        if (
+          !Predicate.isTagged(admitted, "Admitted") ||
+          admitted.allowancePeriod._tag !== "Metered" ||
+          context.allowance._tag !== "Metered" ||
+          admitted.allowancePeriod.allowancePeriodId !== active.allowancePeriodId ||
+          context.allowance.planPolicyVersion !== active.planPolicyVersion
+        ) {
+          return Effect.fail(
+            new HostedBrowser.Unavailable({
+              message: "Browser usage has no admitted Plan period.",
+            }),
+          );
+        }
+        return Effect.succeed({
+          allowancePeriodId: admitted.allowancePeriod.allowancePeriodId,
+          planPolicyVersion: active.planPolicyVersion,
+          capabilityCatalogVersion: admitted.capabilityCatalogVersion,
+          modelAccessPolicyVersion: ModelAccessPolicyVersion.make(active.planPolicyVersion),
+          manifestVersion: admitted.manifestVersion,
+        });
+      }),
+      Effect.mapError(
+        () => new HostedBrowser.Unavailable({ message: "Browser usage admission is unavailable." }),
+      ),
+    );
+  }
+
+  #recordBrowserUsage(evidence: HostedBrowserUsage.Settlement) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined)
+      return Effect.fail(
+        new HostedBrowser.Unavailable({ message: "Browser usage recording is unavailable." }),
+      );
+    return Effect.tryPromise({
+      try: () =>
+        runtime.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const database = yield* Db.database;
+              const ownerUserId = yield* Schema.decodeEffect(UserId)(evidence.ownerUserId);
+              const allowances = Allowances.make({
+                billing: BillingDb.make(database),
+                catalog: retainedCatalog,
+                now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
+              });
+              yield* allowances.recordForUser(
+                ownerUserId,
+                evidence.allowancePeriodId,
+                evidence.source,
+                evidence.items,
+              );
+              if (evidence.usageEvent !== null) {
+                yield* BillingDb.make(database).recordUsageEvent(evidence.usageEvent);
+              }
+            }),
+          ),
+        ),
+      catch: () =>
+        new HostedBrowser.Unavailable({ message: "Browser usage recording is unavailable." }),
+    });
+  }
+
   readonly #browser = Browser.make({
-    binding: this.#browserBinding,
+    binding: (userId) => this.#browserBinding(userId),
     dispatch: (request, binding) =>
-      Browser.dispatch(request, binding).pipe(
-        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The Agent composes the private host HTTP client at its runtime entry point.
-        Effect.provide(FetchHttpClient.layer),
+      this.#accountDeletionFence.runTracked(
+        () =>
+          this.#hostedBrowser(binding)
+            .inspect(request)
+            .pipe(
+              Effect.map((outcome) => ({ request, outcome })),
+              Effect.mapError(
+                () =>
+                  new Browser.BrowserUnavailable({
+                    message: "The managed browser inventory is unavailable.",
+                  }),
+              ),
+            ),
+        () =>
+          new Browser.BrowserUnavailable({ message: "Account deletion has stopped browser work." }),
       ),
     authorize: (request) => this.#authorizeBrowser(request),
   });
   readonly #browserTasks = BrowserTask.make({
-    revoke: (request, binding) =>
-      Browser.execute(request, binding).pipe(
-        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Account deletion owns this control-only host cleanup transport.
-        Effect.provide(FetchHttpClient.layer),
+    activeTaskIds: (userId) =>
+      this.#hostedBrowser(this.#browserIdentity(userId))
+        .list()
+        .pipe(
+          Effect.map((items) => items.map((item) => item.taskId)),
+          Effect.mapError(
+            () =>
+              new Browser.BrowserUnavailable({ message: "Current browser tasks are unavailable." }),
+          ),
+        ),
+    cleanup: (userId) =>
+      this.#hostedBrowser(this.#browserIdentity(userId)).quiesce.pipe(
+        Effect.mapError(
+          () =>
+            new Browser.BrowserUnavailable({
+              message: "The managed browser could not be deleted.",
+            }),
+        ),
       ),
     storage: this.ctx.storage,
-    binding: this.#browserBinding,
+    binding: (userId) => this.#browserBinding(userId),
     authorize: (request, command) =>
       this.#authorizeBrowser(request, command).pipe(
         Effect.andThen(
@@ -1027,9 +1177,20 @@ export class OsfoAgent extends Think<Env> {
     dispatch: (request, binding) =>
       this.#accountDeletionFence.runTracked(
         () =>
-          Browser.execute(request, binding).pipe(
-            // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Agent-owned browser dispatch composes its HTTP transport.
-            Effect.provide(FetchHttpClient.layer),
+          (request.command._tag === "Open"
+            ? this.#scheduleBrowserCleanup(
+                request.ownerUserId,
+                HostedBrowser.taskLifetimeMilliseconds,
+              )
+            : Effect.void
+          ).pipe(
+            Effect.andThen(this.#hostedBrowser(binding).execute(request)),
+            Effect.mapError(
+              () =>
+                new Browser.BrowserUnavailable({
+                  message: "The managed browser operation is unavailable.",
+                }),
+            ),
           ),
         () =>
           new Browser.BrowserUnavailable({
@@ -2346,13 +2507,8 @@ export class OsfoAgent extends Think<Env> {
     const capabilityAvailability = {
       availableIntegrationToolkits,
       availableRequirements: [
-        ...(Browser.isAvailable(this.#browserBinding, metadata.authorityIdentity.userId)
-          ? (["browser-host"] as const)
-          : []),
-        ...(Browser.isAvailable(this.#browserBinding, metadata.authorityIdentity.userId) &&
-        this.#browserBinding !== null &&
-        this.#browserBinding.allowedOrigins.length > 0
-          ? (["browser-execution"] as const)
+        ...(this.#browserBinding(metadata.authorityIdentity.userId) !== null
+          ? (["browser-host", "browser-execution"] as const)
           : []),
         ...(Option.isSome(this.#integrations) ? (["composio"] as const) : []),
         "document-renderer",
@@ -2642,6 +2798,175 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  #scheduleBrowserCleanup(userId: string, delayMilliseconds: number) {
+    return Effect.tryPromise({
+      try: () =>
+        this.schedule(
+          Math.max(1, Math.ceil(delayMilliseconds / 1_000)),
+          "cleanupHostedBrowsers",
+          { userId },
+          {
+            // A running callback may be about to remove its row; every opening needs its own alarm.
+            idempotent: false,
+            retry: { baseDelayMs: 1_000, maxAttempts: 10, maxDelayMs: 60_000 },
+          },
+        ).then(() => undefined),
+      catch: () =>
+        new Browser.BrowserUnavailable({ message: "Browser cleanup could not be scheduled." }),
+    });
+  }
+
+  async cleanupHostedBrowsers(input: unknown): Promise<void> {
+    await this.#migrationsReady;
+    const payload = await Effect.runPromise(
+      Schema.decodeUnknownEffect(Schema.Struct({ userId: UserId }))(input),
+    );
+    const binding = this.#browserBinding(payload.userId);
+    if (binding === null)
+      throw new Browser.BrowserUnavailable({ message: "Browser cleanup is unavailable." });
+    const browser = this.#hostedBrowser(binding);
+    const result = await Effect.runPromise(
+      browser.sweep.pipe(
+        Effect.andThen(this.#hostedBrowserUsage(payload.userId).reconcile()),
+        Effect.result,
+      ),
+    );
+    if (Result.isFailure(result)) {
+      await Effect.runPromise(this.#scheduleBrowserCleanup(payload.userId, 60_000));
+      return;
+    }
+    const deadlines = await Effect.runPromise(
+      Effect.all([browser.nextExpiry(), this.#hostedBrowserUsage(payload.userId).nextExpiry()]),
+    );
+    const pendingDeadlines = deadlines.filter((deadline) => deadline !== null);
+    if (pendingDeadlines.length > 0) {
+      const next = Math.min(...pendingDeadlines);
+      const now = await Effect.runPromise(Clock.currentTimeMillis);
+      await Effect.runPromise(
+        this.#scheduleBrowserCleanup(payload.userId, Math.max(1_000, next - now)),
+      );
+    }
+  }
+
+  async listBrowserTasks(input: unknown) {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeUnknownEffect(BrowserTaskControls.Actor)(input).pipe(
+        Effect.flatMap((actor) => this.#authorizeBrowserTaskControl(actor)),
+        Effect.flatMap((binding) =>
+          this.#accountDeletionFence.runTracked(
+            () =>
+              this.#hostedBrowser(binding)
+                .list()
+                .pipe(Effect.map((items) => ({ items }))),
+            () =>
+              new BrowserTasksUnavailable({
+                message: "Account deletion has stopped browser work.",
+              }),
+          ),
+        ),
+        Effect.mapError(
+          () => new BrowserTasksUnavailable({ message: "Your browsers are unavailable." }),
+        ),
+      ),
+    );
+  }
+
+  async openBrowserTask(input: unknown) {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeUnknownEffect(BrowserTaskControls.Request)(input).pipe(
+        Effect.flatMap((request) =>
+          this.#authorizeBrowserTaskControl(request.actor).pipe(
+            Effect.flatMap((binding) =>
+              this.#accountDeletionFence.runTracked(
+                () =>
+                  this.#browserTasks
+                    .invalidateObservation(request.taskId, request.actor.userId)
+                    .pipe(
+                      Effect.andThen(this.#hostedBrowser(binding).liveView(request.taskId)),
+                      Effect.map((view) => ({ taskId: request.taskId, ...view })),
+                    ),
+                () =>
+                  new BrowserTasksUnavailable({
+                    message: "Account deletion has stopped browser work.",
+                  }),
+              ),
+            ),
+          ),
+        ),
+        Effect.mapError(
+          () => new BrowserTasksUnavailable({ message: "This browser could not be opened." }),
+        ),
+      ),
+    );
+  }
+
+  async resumeBrowserTask(input: unknown) {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeUnknownEffect(BrowserTaskControls.Request)(input).pipe(
+        Effect.flatMap((request) =>
+          this.#authorizeBrowserTaskControl(request.actor).pipe(
+            Effect.flatMap((binding) =>
+              this.#accountDeletionFence.runTracked(
+                () =>
+                  this.#browserTasks
+                    .invalidateObservation(request.taskId, request.actor.userId)
+                    .pipe(
+                      Effect.andThen(this.#hostedBrowser(binding).resume(request.taskId)),
+                      Effect.as({ taskId: request.taskId, state: "active" as const }),
+                    ),
+                () =>
+                  new BrowserTasksUnavailable({
+                    message: "Account deletion has stopped browser work.",
+                  }),
+              ),
+            ),
+          ),
+        ),
+        Effect.mapError(
+          () => new BrowserTasksUnavailable({ message: "This browser could not resume safely." }),
+        ),
+      ),
+    );
+  }
+
+  #authorizeBrowserTaskControl(actor: typeof BrowserTaskControls.Actor.Type) {
+    return Effect.all([
+      this.#userOwnsAgent(actor.userId),
+      this.#inspectSessionRecallAuthorization(actor),
+    ]).pipe(
+      Effect.flatMap(([ownsAgent, facts]) => {
+        const binding = this.#browserBinding(actor.userId);
+        const decision = authorization.recheck(
+          AuthorizationContext.make({
+            ...facts,
+            allowance: { _tag: "Unavailable" },
+            approval: null,
+            gmailConnection: null,
+            integrationConnections: [],
+            liveFacts: emptyLiveResourceFacts,
+            originatingAuthority: { _tag: "AuthSession", authSessionId: actor.authSessionId },
+            requestVendorUsdMicros: 0n,
+          }),
+          {
+            actionId: `browser-control:${actor.authSessionId}`,
+            kind: "browser.read",
+            deadlineMilliseconds: 25_000n,
+            responseBytes: 262_144n,
+            retries: 0n,
+          },
+        );
+        return ownsAgent && binding !== null && !Predicate.isTagged(decision, "Denied")
+          ? Effect.succeed(binding)
+          : Effect.fail(
+              new BrowserTasksUnavailable({ message: "Browser ownership is unavailable." }),
+            );
+      }),
+    );
+  }
+
   #authorizeBrowser(request: Browser.Inspection, command?: BrowserCommand) {
     if (command?._tag === "Interact") {
       const approved = this.#currentApprovedActions.get(ActionId.make(request.operationId));
@@ -2717,7 +3042,8 @@ export class OsfoAgent extends Think<Env> {
         const admitted = authorization.admit(
           {
             ...context,
-            requestVendorUsdMicros: 0n,
+            requestVendorUsdMicros:
+              command?._tag === "Open" ? HostedBrowserUsage.admissionVendorUsdMicros : 0n,
             approval: null,
           },
           operation,
@@ -4687,6 +5013,12 @@ export class OsfoAgent extends Think<Env> {
     );
     requireAccountDeletionQuiescence(quiescence);
     await Effect.runPromise(this.#browserTasks.quiesce(userId));
+    await Effect.runPromise(this.#hostedBrowserUsage(userId).reconcile());
+    if ((await Effect.runPromise(this.#hostedBrowserUsage(userId).nextExpiry())) !== null) {
+      throw new Browser.BrowserUnavailable({
+        message: "Browser usage obligations must finish before account erasure.",
+      });
+    }
     const immediateGmailSends = Option.getOrUndefined(this.#immediateGmailSends);
     if (immediateGmailSends === undefined) {
       const retained = await Effect.runPromise(
@@ -5932,6 +6264,7 @@ export class OsfoAgent extends Think<Env> {
     | ActionPresentationFound
     | ActionPresentationNotFound
     | ActionPresentationUnavailable
+    | ActionPresentationStale
     | ActionApprovalRequestInvalid
     | ApprovalActorAuthorizationUnavailable
     | ApprovalActorUnauthorized
@@ -5988,29 +6321,33 @@ export class OsfoAgent extends Think<Env> {
   #presentAction(
     pending: PendingThinkAction,
     userId: UserId,
-  ): Effect.Effect<ActionPresentation, ActionPresentationUnavailable> {
+  ): Effect.Effect<ActionPresentation, ActionPresentationUnavailable | ActionPresentationStale> {
     const projected = presentOsfoAction(pending, inspectCoreMemory(this.session), userId);
     if (pending.descriptor.action === "executeBrowserEffect") {
       const tasks = this.#browserTasks;
       return Effect.gen(function* () {
-        const input = yield* Schema.decodeUnknownEffect(BrowserEffectInput)(
-          pending.descriptor.input,
+        const taskAndInput = yield* Effect.gen(function* () {
+          const input = yield* Schema.decodeUnknownEffect(BrowserEffectInput)(
+            pending.descriptor.input,
+          );
+          const task = yield* tasks.read(input.taskId, userId);
+          return { task, input };
+        }).pipe(
+          Effect.mapError(
+            () =>
+              new ActionPresentationUnavailable({
+                action: pending.descriptor.action,
+                message: "The browser effect has no matching owned page evidence.",
+              }),
+          ),
         );
-        const task = yield* tasks.read(input.taskId, userId);
-        if (!matchesObservation(task, input))
-          return yield* new Browser.BrowserUnavailable({
-            message: "The browser target does not match retained page evidence.",
+        if (!matchesObservation(taskAndInput.task, taskAndInput.input))
+          return yield* new ActionPresentationStale({
+            action: pending.descriptor.action,
+            message: "The browser observation has changed or expired. Observe the page again.",
           });
         return yield* projected;
-      }).pipe(
-        Effect.mapError(
-          () =>
-            new ActionPresentationUnavailable({
-              action: pending.descriptor.action,
-              message: "The browser effect has no matching owned page evidence.",
-            }),
-        ),
-      );
+      });
     }
     if (pending.descriptor.action !== "gmailSendEmail") return projected;
     const immediateGmailSendStore = this.#immediateGmailSendStore;
@@ -6081,6 +6418,7 @@ export class OsfoAgent extends Think<Env> {
   ): Promise<
     | ActionPresentationNotFound
     | ActionPresentationUnavailable
+    | ActionPresentationStale
     | ActionApprovalRequestInvalid
     | ApprovalActorAuthorizationUnavailable
     | ApprovalActorUnauthorized

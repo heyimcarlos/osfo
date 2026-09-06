@@ -10,6 +10,7 @@ import { DocumentBuildHandlers } from "./handlers/document-builds";
 import { FilesHandlers } from "./handlers/files";
 import { SkillsHandlers } from "./handlers/skills";
 import { IntegrationHandlers } from "./handlers/integrations";
+import { BrowserTaskHandlers } from "./handlers/browser-tasks";
 import { BrowserApprovalHandlers } from "./handlers/browser-approvals";
 import { ReminderHandlers } from "./handlers/reminders";
 import { ScheduledEmailHandlers } from "./handlers/scheduled-emails";
@@ -25,6 +26,7 @@ export const layer = (
     IntegrationHandlers.Bindings &
     ReminderHandlers.Bindings &
     BrowserApprovalHandlers.Bindings &
+    BrowserTaskHandlers.Bindings &
     ScheduledEmailHandlers.Bindings &
     FilesHandlers.Bindings & { readonly DB: Pick<Hyperdrive, "connectionString"> },
 ) =>
@@ -46,6 +48,7 @@ export const layer = (
     ResearchReportHandlers.layer,
     ReminderHandlers.layer(bindings),
     BrowserApprovalHandlers.layer(bindings),
+    BrowserTaskHandlers.layer(bindings),
     ScheduledEmailHandlers.layer(bindings),
     SkillsHandlers.layer(bindings),
   );
