@@ -3,6 +3,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
 import { Option, Schema } from "effect";
+import { respond } from "../support/chat-pdf-form-model";
 
 /** One observed Twilio Verify request. */
 export interface TwilioLedgerEntry {
@@ -119,7 +120,7 @@ interface TelegramPayload {
 
 type JsonValue = boolean | number | string | null | JsonObject | ReadonlyArray<JsonValue>;
 
-interface JsonObject {
+export interface JsonObject {
   readonly [key: string]: JsonValue;
 }
 
@@ -187,8 +188,15 @@ const ResearchRequest = Schema.Struct({
   ),
   url: Schema.optional(Schema.String),
 });
-type ResearchRequest = typeof ResearchRequest.Type;
+export type ResearchRequest = typeof ResearchRequest.Type;
 const ResearchRequestFromJson = Schema.fromJsonString(ResearchRequest);
+
+const ChatPdfFormMedia = Schema.fromJsonString(
+  Schema.Struct({
+    image: Schema.String.check(Schema.isMaxLength(4_000_000)),
+    template: Schema.String.check(Schema.isMaxLength(4_000_000)),
+  }),
+);
 const LocalIntegrationRequestFromJson = Schema.fromJsonString(
   Schema.StructWithRest(
     Schema.Struct({
@@ -242,6 +250,7 @@ const startProvider = (options: {
     const supermemoryLedger: Array<SupermemoryLedgerEntry> = [];
     let promptBoundarySequence = 0;
     const telegramLedger: Array<TelegramLedgerEntry> = [];
+    const chatPdfFormMedia = new Map<string, { bytes: Uint8Array; mediaType: string }>();
     const twilioLedger: Array<TwilioLedgerEntry> = [];
     const whatsAppLedger: Array<WhatsAppLedgerEntry> = [];
     const researchLedger: Array<ResearchLedgerEntry> = [];
@@ -266,6 +275,54 @@ const startProvider = (options: {
       const rawUrl = request.url ?? "/";
       const url = new URL(rawUrl.startsWith("//") ? rawUrl.slice(1) : rawUrl, "http://localhost");
       const pathname = url.pathname;
+      if (
+        options.verificationRunId !== undefined &&
+        request.method === "POST" &&
+        pathname === "/_test/chat-pdf-form/media"
+      ) {
+        readTextBody(request)
+          .then(Schema.decodeUnknownPromise(ChatPdfFormMedia))
+          .then((media) => {
+            if (chatPdfFormMedia.size !== 0)
+              throw new Error("Chat PDF fixture is already registered");
+            const entries = [
+              ["verification-evidence", media.image, "image/png"],
+              ["verification-template", media.template, "application/pdf"],
+            ] as const;
+            if (entries.some(([, value]) => !/^[A-Za-z0-9+/]+={0,2}$/u.test(value)))
+              throw new Error("Invalid synthetic media encoding");
+            for (const [name, value, mediaType] of entries)
+              chatPdfFormMedia.set(name, { bytes: Buffer.from(value, "base64"), mediaType });
+            respondJson(response, 201, { registered: true });
+          })
+          .catch((cause: unknown) => respondJson(response, 400, { error: String(cause) }));
+        return;
+      }
+      if (
+        options.verificationRunId !== undefined &&
+        request.method === "GET" &&
+        pathname.startsWith("/file/bot") &&
+        pathname.includes("/verification-")
+      ) {
+        const media = chatPdfFormMedia.get(pathname.slice(pathname.lastIndexOf("/") + 1));
+        if (media === undefined) {
+          respondJson(response, 404, { error: "Synthetic media not found" });
+          return;
+        }
+        telegramLedger.push({
+          method: "downloadFile",
+          body: JSON.stringify({
+            file_path: pathname,
+            byteLength: media.bytes.byteLength,
+            sha256: `sha256:${createHash("sha256").update(media.bytes).digest("hex")}`,
+          }),
+        });
+        response.statusCode = 200;
+        response.setHeader("content-type", media.mediaType);
+        response.setHeader("content-length", media.bytes.byteLength);
+        response.end(media.bytes);
+        return;
+      }
       if (request.method === "GET" && pathname === "/inbox") {
         if (url.searchParams.get("channel") === "whatsapp") {
           renderWhatsAppInbox(
@@ -529,7 +586,15 @@ const startProvider = (options: {
       if (request.method === "POST" && pathname.startsWith("/_local/research/")) {
         const sequence = pathname.endsWith("/agent") ? ++promptBoundarySequence : null;
         if (sequence !== null) latestAgentSequence = sequence;
-        handleResearch(request, response, pathname, researchLedger, researchControl, sequence);
+        handleResearch(
+          request,
+          response,
+          pathname,
+          researchLedger,
+          researchControl,
+          sequence,
+          chatPdfFormMedia.size > 0,
+        );
         return;
       }
       if (request.method === "GET" && pathname === "/_test/whatsapp/ledger") {
@@ -645,7 +710,7 @@ const startProvider = (options: {
         return;
       }
       if (request.method === "POST" && /^\/bot[^/]+\/[A-Za-z]+$/u.test(pathname)) {
-        handleTelegram(request, response, pathname, telegramLedger);
+        handleTelegram(request, response, pathname, telegramLedger, chatPdfFormMedia);
         return;
       }
       if (request.method === "POST" && pathname.endsWith("/messages")) {
@@ -1084,6 +1149,7 @@ const handleResearch = (
   ledger: Array<ResearchLedgerEntry>,
   control: ResearchControl,
   sequence: number | null,
+  chatPdfFormEnabled: boolean,
 ): void => {
   readTextBody(request)
     .then(Schema.decodeUnknownPromise(ResearchRequestFromJson))
@@ -1103,6 +1169,29 @@ const handleResearch = (
             ? agentEntry
             : { ...agentEntry, recallRequest: recallContext.evidence, sequence },
         );
+        const chatPdfForm = chatPdfFormEnabled ? respond(input) : null;
+        if (chatPdfForm !== null) {
+          const last = input.messages?.at(-1);
+          if (last?.role === "tool")
+            ledger.push({
+              kind: "agent",
+              operationId: last.tool_call_id ?? null,
+              subject: `chat-pdf-form:${last.name ?? "unknown"}:actual-result`,
+              arguments: { actualToolResult: lastMessageContent(input) },
+            });
+          if (chatPdfForm.finish_reason === "tool_calls") {
+            for (const call of chatPdfForm.tool_calls)
+              ledger.push({
+                kind: "tool-selection",
+                operationId: call.id,
+                selectedTool: call.name,
+                subject: "chat-pdf-form",
+                arguments: call.arguments,
+              });
+          }
+          respondJson(response, 200, chatPdfForm);
+          return;
+        }
         const documentBuildRequest = currentUserInstruction;
         const documentBuildFileId = /web:[0-9a-f-]{36}/iu.exec(documentBuildRequest)?.[0];
         const documentBuildWorkflowId = /document-build:[\w:-]{8,300}/iu.exec(
@@ -1863,12 +1952,33 @@ const handleTelegram = (
   response: ServerResponse,
   pathname: string,
   ledger: Array<TelegramLedgerEntry>,
+  media: ReadonlyMap<string, { bytes: Uint8Array; mediaType: string }>,
 ): void => {
   readTextBody(request)
     .then((body) => {
       const method = pathname.slice(pathname.lastIndexOf("/") + 1);
       const payload = telegramPayload(body);
       ledger.push({ body, method });
+      if (method === "getFile") {
+        const fileId = new URLSearchParams(body).get("file_id") ?? "";
+        const file = media.get(fileId);
+        respondJson(
+          response,
+          file === undefined ? 404 : 200,
+          file === undefined
+            ? { ok: false, description: "Synthetic media not found" }
+            : {
+                ok: true,
+                result: {
+                  file_id: fileId,
+                  file_unique_id: fileId,
+                  file_path: fileId,
+                  file_size: file.bytes.byteLength,
+                },
+              },
+        );
+        return;
+      }
       if (method === "getMe") {
         respondJson(response, 200, {
           ok: true,
@@ -1912,6 +2022,7 @@ const renderTelegramInbox = (
 <h2>Latest delivery ${delivery.index}</h2>
 <p>Telegram method: <code>${escapeHtml(delivery.method)}</code></p>
 <pre>${escapeHtml(delivery.text)}</pre>
+${documentDownloadLinks(delivery.text)}
 </article>`;
   const message = includeHistory
     ? deliveries
@@ -1920,6 +2031,7 @@ const renderTelegramInbox = (
 <h2>Delivery ${item.index}</h2>
 <p>Telegram method: <code>${escapeHtml(item.method)}</code></p>
 <pre>${escapeHtml(item.text)}</pre>
+${documentDownloadLinks(item.text)}
 </article>`,
         )
         .join("\n") || "<p>No delivered Telegram messages.</p>"
@@ -1935,6 +2047,21 @@ const renderTelegramInbox = (
 ${message}
 </main></body></html>`);
 };
+
+/** Render the document URL actually accepted by the local Telegram boundary. */
+const documentDownloadLinks = (text: string) =>
+  [...text.matchAll(/https?:\/\/[^\s<>"']+/gu)]
+    .flatMap(([candidate]) => {
+      if (!URL.canParse(candidate)) return [];
+      const url = new URL(candidate);
+      if (
+        url.pathname !== "/documents/download" ||
+        url.searchParams.getAll("contentId").length !== 1
+      )
+        return [];
+      return [`<p><a href="${escapeHtml(candidate)}">Download document</a></p>`];
+    })
+    .join("\n");
 
 const renderWhatsAppInbox = (
   response: ServerResponse,

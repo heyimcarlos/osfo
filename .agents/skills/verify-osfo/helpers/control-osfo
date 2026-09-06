@@ -22,6 +22,10 @@ usage() {
     '  control-osfo assert-conversation-memory-evidence <run-id> <state-json> <provider-json>' \
     '  control-osfo channel-invite <run-id>' \
     '  control-osfo telegram-reply <run-id> <message>' \
+    '  control-osfo chat-pdf-form-prepare <run-id>' \
+    '  control-osfo chat-pdf-form-send <run-id> <image|template>' \
+    '  control-osfo chat-pdf-form-capture <run-id>' \
+    '  control-osfo chat-pdf-form-inspect <run-id> <browser-download> <generated-result.json>' \
     '  control-osfo document-build-free-denial <run-id> <file-id>' \
     '  control-osfo gmail-send-request <run-id>' \
     '  control-osfo scheduled-email-request <run-id>' \
@@ -883,6 +887,135 @@ channel_invite() {
   fi
   printf '%s\n' "$invite_url" >"$state_dir/channel-invite-url"
   printf 'invite_ready url=%s author=%s\n' "$invite_url" "$telegram_author"
+}
+
+render_verification_pdf() {
+  local input prefix renderer
+  input="$1"
+  prefix="$2"
+  shift 2
+  renderer="$(command -v pdftoppm)"
+  # The bundled Poppler can resolve incompatible substitute fonts; prefer system font discovery.
+  if [[ -x /usr/bin/pdftoppm ]]; then renderer=/usr/bin/pdftoppm; fi
+  printf 'renderer=%s\n' "$renderer" >"$prefix-renderer.txt"
+  "$renderer" -v >>"$prefix-renderer.txt" 2>&1
+  "$renderer" -f 1 -singlefile "$@" -png "$input" "$prefix" >"$prefix-render.log" 2>&1
+}
+
+# These preparation commands retain draft evidence. The feature file owns the remaining UI drive.
+chat_pdf_form_prepare() {
+  local run_id feature_dir provider_origin manifest
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  feature_dir="$(feature_artifact_dir_for "$run_id" chat-pdf-form)"
+  if [[ -e "$feature_dir" ]]; then
+    printf 'Chat PDF preparation already exists: %s\n' "$feature_dir" >&2
+    return 1
+  fi
+  command -v pdftoppm >/dev/null
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  bun "$repo_root/apps/worker/test/support/chat-pdf-form-fixture.ts" prepare "$feature_dir"
+  render_verification_pdf "$feature_dir/evidence.pdf" "$feature_dir/evidence" \
+    -scale-to-x 1200 -scale-to-y 1300
+  manifest="$(jq --arg imageSha256 "sha256:$(sha256sum "$feature_dir/evidence.png" | cut -d ' ' -f 1)" \
+    '. + {imageSha256: $imageSha256}' "$feature_dir/fixture.json")"
+  printf '%s\n' "$manifest" >"$feature_dir/fixture.json"
+  jq --null-input --rawfile image <(base64 -w 0 "$feature_dir/evidence.png") \
+    --rawfile template <(base64 -w 0 "$feature_dir/template.pdf") \
+    '{image: $image, template: $template}' \
+    | curl --fail --silent --show-error --header 'content-type: application/json' \
+        --data-binary @- "$provider_origin/_test/chat-pdf-form/media" \
+        >"$feature_dir/media-registration.json"
+  printf 'result=draft\nrun_id=%s\ncommit=%s\nprovider_origin=%s\nworker_origin=%s\n' \
+    "$run_id" "$(state_value "$run_id" commit)" "$provider_origin" \
+    "$(state_value "$run_id" worker-origin)" >"$feature_dir/preparation.txt"
+  printf 'draft fixtures=%s inbox=%s/inbox?history=1\n' "$feature_dir" "$provider_origin"
+}
+
+chat_pdf_form_send() {
+  local run_id kind feature_dir state_dir provider_origin worker_origin author ordinal caption file_id size payload status
+  run_id="$1"
+  kind="$2"
+  case "$kind" in
+    image)
+      ordinal=1
+      file_id=verification-evidence
+      caption='Read the attached synthetic document. Report applicant name, the literal document date, and missing expiry date with page evidence. Preserve date uncertainty.'
+      ;;
+    template)
+      ordinal=2
+      file_id=verification-template
+      caption='Fill the attached synthetic application using the document I supplied. Copy the applicant name and exact document date literal without interpreting date order. I choose Renewal and agree to contact. Leave the unknown expiry date, signature and office-only fields untouched. Return the filled PDF for download.'
+      ;;
+    *) printf 'Expected image or template\n' >&2; return 2 ;;
+  esac
+  doctor_run "$run_id" >/dev/null
+  state_dir="$(state_dir_for "$run_id")"
+  feature_dir="$(feature_artifact_dir_for "$run_id" chat-pdf-form)"
+  test -s "$feature_dir/preparation.txt"
+  "$script_dir/claim-single-attempt" "$state_dir/chat-pdf-form-$kind-attempted"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  worker_origin="$(state_value "$run_id" worker-origin)"
+  author="$(state_value "$run_id" telegram-author)"
+  if [[ "$kind" == image ]]; then size="$(wc -c <"$feature_dir/evidence.png")";
+  else size="$(wc -c <"$feature_dir/template.pdf")"; fi
+  payload="$(jq --null-input --arg kind "$kind" --arg fileId "$file_id" \
+    --arg caption "$caption" --argjson size "$size" --argjson author "$author" \
+    --argjson updateId "$((author + 400000000 + ordinal))" --argjson timestamp "$(date +%s)" '
+    {update_id: $updateId, message: {
+      message_id: $updateId, from: {id: $author, is_bot: false, first_name: "Verification"},
+      chat: {id: $author, type: "private", first_name: "Verification"}, date: $timestamp,
+      caption: $caption
+    }} | if $kind == "image" then
+      .message.photo = [{file_id: $fileId, file_unique_id: $fileId, file_size: $size, width: 1200, height: 1300}]
+    else .message.document = {file_id: $fileId, file_unique_id: $fileId, file_size: $size,
+      file_name: "synthetic-application.pdf", mime_type: "application/pdf"} end')"
+  printf '%s\n' "$payload" >"$feature_dir/$kind-envelope.json"
+  status="$(curl --silent --show-error --max-time 90 --output "$feature_dir/$kind-response.txt" \
+    --write-out '%{http_code}' --header 'content-type: application/json' \
+    --header "x-telegram-bot-api-secret-token: $telegram_secret" \
+    --data-binary @"$feature_dir/$kind-envelope.json" "$worker_origin/webhooks/telegram")"
+  printf '%s\n' "$status" >"$feature_dir/$kind-http-status.txt"
+  [[ "$status" == 200 ]] || { printf 'Attachment admission returned HTTP %s\n' "$status" >&2; return 1; }
+  printf 'admitted_only kind=%s inbox=%s/inbox?history=1\nWait for the actual Agent response before starting an observer.\n' \
+    "$kind" "$provider_origin"
+}
+
+chat_pdf_form_capture() {
+  local run_id feature_dir provider_origin generated download_url
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  feature_dir="$(feature_artifact_dir_for "$run_id" chat-pdf-form)"
+  test -s "$feature_dir/preparation.txt"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  curl --fail --silent --show-error "$provider_origin/_test/research/ledger" \
+    >"$feature_dir/model-ledger.json"
+  curl --fail --silent --show-error "$provider_origin/_test/telegram/ledger" \
+    >"$feature_dir/provider.json"
+  generated="$(jq --exit-status '
+    [.[] | select(.subject == "chat-pdf-form:generateDocument:actual-result") |
+      .arguments.actualToolResult | fromjson] | unique |
+    if length == 1 then .[0] else error("Expected one exact generated artifact result") end
+  ' "$feature_dir/model-ledger.json")"
+  download_url="$(jq --exit-status --raw-output '.downloadUrl | select(type == "string" and length > 0)' <<<"$generated")"
+  jq --exit-status --arg url "$download_url" '
+    any(.[]; (.method == "sendMessage" or .method == "editMessageText") and
+      (.body | fromjson? | (.text // .rich_message.markdown // "") | contains($url)))
+  ' "$feature_dir/provider.json" >/dev/null
+  printf '%s\n' "$generated" >"$feature_dir/generated-result.json"
+  printf 'actual_result=%s/generated-result.json delivered_url=%s result=draft\n' "$feature_dir" "$download_url"
+}
+
+chat_pdf_form_inspect() {
+  local run_id feature_dir
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  feature_dir="$(feature_artifact_dir_for "$run_id" chat-pdf-form)"
+  test -s "$feature_dir/preparation.txt"
+  bun "$repo_root/apps/worker/test/support/chat-pdf-form-fixture.ts" inspect "$feature_dir" "$2" "$3" "$(state_value "$run_id" web-origin)"
+  render_verification_pdf "$2" "$feature_dir/downloaded-page" -scale-to 1600
+  printf 'artifact_bytes_checked=%s/download-inspection.json render=%s/downloaded-page.png result=draft\n' \
+    "$feature_dir" "$feature_dir"
 }
 
 telegram_reply() {
@@ -3253,6 +3386,23 @@ case "$command_name" in
   channel-invite)
     require_run_id "${2:-}"
     channel_invite "$2"
+    ;;
+  chat-pdf-form-prepare)
+    require_run_id "${2:-}"
+    chat_pdf_form_prepare "$2"
+    ;;
+  chat-pdf-form-send)
+    require_run_id "${2:-}"
+    chat_pdf_form_send "$2" "${3:-}"
+    ;;
+  chat-pdf-form-capture)
+    require_run_id "${2:-}"
+    chat_pdf_form_capture "$2"
+    ;;
+  chat-pdf-form-inspect)
+    require_run_id "${2:-}"
+    [[ -n "${3:-}" && -n "${4:-}" ]] || { usage >&2; exit 2; }
+    chat_pdf_form_inspect "$2" "$3" "$4"
     ;;
   telegram-reply)
     require_run_id "${2:-}"
