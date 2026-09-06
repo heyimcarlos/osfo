@@ -224,6 +224,15 @@ export interface SkillPin {
   readonly skillVersion: string;
 }
 
+const conversationCapabilities = new Set<CapabilityId>([
+  "browser-task",
+  "web-search",
+  "page-read",
+  "file-read",
+  "document-generation",
+  "document-read",
+]);
+
 const systemSkills = [
   {
     capabilityIds: ["document-build", "document-read"],
@@ -297,12 +306,16 @@ export const make = (): Interface => {
       const catalog = pinnedCatalog.success.entries;
       const catalogCapabilityIds = catalog.map(({ id }) => id);
       const task = input.taskDescription.toLocaleLowerCase("en");
+      const standardConversation =
+        (input.origin === "authSession" || input.origin === "channelLink") &&
+        input.availableRequirements.includes("personal-agent");
       const matchedCapabilities = catalog.filter((capability) => {
         const taskKindMatches = capability.taskKinds.some((kind) => input.taskKinds.includes(kind));
         return (
-          taskKindMatches &&
-          (capabilityIntentPolicy[capability.id].matches(task) ||
-            input.trustedCapabilityIds?.includes(capability.id) === true)
+          (standardConversation && conversationCapabilities.has(capability.id)) ||
+          (taskKindMatches &&
+            (capabilityIntentPolicy[capability.id].matches(task) ||
+              input.trustedCapabilityIds?.includes(capability.id) === true))
         );
       });
       const directlySelectedCapabilities = matchedCapabilities.filter((capability) =>
@@ -374,6 +387,8 @@ export const make = (): Interface => {
       const deterministicCandidates = [...personalCandidates, ...systemCandidates]
         .sort(
           (left, right) =>
+            // Keep built-in procedures reachable within the five-Skill index.
+            Number(right.source === "system") - Number(left.source === "system") ||
             right.declaredRequirementMatches - left.declaredRequirementMatches ||
             (right.lastUsedAtEpochMillis ?? -1) - (left.lastUsedAtEpochMillis ?? -1) ||
             left.skillId.localeCompare(right.skillId),

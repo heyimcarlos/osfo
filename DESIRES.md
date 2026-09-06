@@ -105,3 +105,23 @@ state and live sessions.
 The fixed browser adapter currently denies downloads. Browser-generated files
 need to enter the existing Files ownership and retention flow before workflows
 can return downloaded forms or confirmation documents.
+
+# PDF form completion and delivery
+
+Date captured: 2026-09-06
+Horizon: document workflow completion in issue #340
+
+The current PDF path reads scanned pages through OCR and fills supported
+AcroForm text, checkbox and radio widgets. Flat or scanned forms have no editable
+widgets; filling their printed blanks needs a bounded overlay path that preserves
+unknown values, signatures and office-only regions.
+
+The production fill engine verifies canonical field values and widget appearances,
+but its rendered page count does not establish a final raster render or visual
+inspection. Final output needs page rendering and inspection before the agent can
+claim that the completed form is visually ready.
+
+The ordinary document link is wired through authenticated export. A prior Chrome
+drive reached the response but saved no file, so a successful browser download
+and byte comparison remain unqualified. Resolve that evidence gap before changing
+the download implementation.

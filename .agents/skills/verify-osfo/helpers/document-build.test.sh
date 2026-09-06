@@ -358,7 +358,7 @@ fi
 for required in \
   "publishes loadSkill for the verifier's natural Document Build request" \
   'Build a PDF from uploaded File ID' \
-  'expect(turn.activeTools).toEqual(["loadSkill"])'; do
+  'expect(turn.instructions).toContain("document-build@system-document-build-v1")'; do
   if ! grep -F -q "$required" "$agent_runtime_test"; then
     printf 'Agent runtime is missing Document Build publication regression: %s\n' "$required" >&2
     exit 1

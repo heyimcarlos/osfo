@@ -10,12 +10,15 @@ import { Clock, Effect, Schema, Semaphore } from "effect";
 
 import { UserId } from "../../domain";
 import { Browser } from "../../services/browser-host";
+import { isSafePublicUrl } from "../../services/web";
 
 const identity = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
 export const BrowserTaskInput = Schema.Struct({ taskId: identity });
-export const BrowserOpenInput = Schema.Struct({
-  url: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
-});
+export const BrowserOpenInput = Schema.Union([
+  Schema.Struct({ url: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)) }),
+  Schema.Struct({ resultId: identity }),
+]);
+export type BrowserOpenInput = typeof BrowserOpenInput.Type;
 export const BrowserEffectInput = Schema.Struct({
   taskId: identity,
   observationId: identity,
@@ -61,6 +64,10 @@ export interface Options {
   readonly cleanup: (userId: UserId) => Effect.Effect<void, Browser.BrowserUnavailable>;
   readonly storage: DurableObjectStorage;
   readonly binding: (userId: UserId) => Browser.Binding | null;
+  readonly readSearchResult: (
+    userId: UserId,
+    resultId: string,
+  ) => Effect.Effect<{ readonly url: string } | null, Browser.BrowserUnavailable>;
   readonly now?: Effect.Effect<number>;
   readonly authorize: (
     request: Browser.Inspection,
@@ -139,7 +146,7 @@ export const make = (options: Options) => {
   return {
     open: Effect.fn("BrowserTask.open")(function* (
       inspection: Browser.Inspection,
-      url: string,
+      input: BrowserOpenInput,
       requestText: string,
     ) {
       return yield* lock.withPermit(
@@ -147,13 +154,20 @@ export const make = (options: Options) => {
           const binding = options.binding(inspection.userId);
           if (binding === null || !Browser.isAvailable(binding, inspection.userId))
             return yield* unavailable();
-          // Opening authority comes from the actual User request, never a page or model-provided scope.
+          const selected =
+            "resultId" in input
+              ? yield* options.readSearchResult(inspection.userId, input.resultId)
+              : null;
+          // A result ID selects an owned discovery record, never a URL extracted from page text.
+          if ("resultId" in input && (selected === null || !isSafePublicUrl(selected.url)))
+            return yield* unavailable();
+          const url = "url" in input ? input.url : (selected?.url ?? "");
           if (
             !URL.canParse(url) ||
             new URL(url).protocol !== "https:" ||
             new URL(url).username !== "" ||
             new URL(url).password !== "" ||
-            !matchesSuppliedBrowserUrl(requestText, url)
+            ("url" in input && !matchesSuppliedBrowserUrl(requestText, url))
           )
             return yield* unavailable();
           const command = { _tag: "Open", url: new URL(url).href } as const;
