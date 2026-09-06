@@ -28,7 +28,7 @@ export const webOptionsForStage = (stage: string, apiUrl: Input<string>) => {
 
   return {
     ...webOptions,
-    routes: [{ pattern: "osfo.ai/*", zoneName: "osfo.ai" }],
+    domain: "osfo.ai",
   } satisfies ViteProps;
 };
 
