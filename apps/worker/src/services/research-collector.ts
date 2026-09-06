@@ -5,7 +5,7 @@ import { initialManagedSearchEvidence, ManagedSearchEvidence } from "../domain/w
 import type { Denied } from "./authorization";
 import { ResearchReport } from "./research-report";
 import type { DiscoveryResult, PageFetch } from "./web";
-import { canonicalPublicUrl, isSafePublicUrl, limits } from "./web";
+import { canonicalPublicUrl, isSafePublicUrl, limits, WebAdmission } from "./web";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Provider outcomes use the standard Effect _tag discriminator. */
 
@@ -30,12 +30,20 @@ const SearchItem = Schema.Struct({
   url: boundedText(4_096),
 });
 
+export const SearchAdmission = Schema.Struct({
+  admission: WebAdmission,
+  admittedVendorUsdMicros: Schema.BigIntFromString,
+});
+export type SearchAdmission = typeof SearchAdmission.Type;
+
 export const OperationResult = Schema.Union([
   Schema.TaggedStruct("SearchAttempt", {
     managedSearch: ManagedSearchEvidence,
+    searchAdmission: SearchAdmission,
   }),
   Schema.TaggedStruct("Search", {
     managedSearch: Schema.optionalKey(ManagedSearchEvidence),
+    searchAdmission: Schema.optionalKey(SearchAdmission),
     query: boundedText(500),
     requestId: boundedText(512),
     results: Schema.Array(SearchItem).check(Schema.isMaxLength(10)),
@@ -126,6 +134,10 @@ export class Unavailable extends Schema.TaggedError<Unavailable>()("ResearchColl
 }) {}
 
 export interface PortInterface {
+  readonly admitSearch?: (
+    report: ResearchReport.Record,
+    operation: Operation,
+  ) => Effect.Effect<SearchAdmission, Unavailable>;
   readonly authorize: (
     report: ResearchReport.Record,
   ) => Effect.Effect<
@@ -149,7 +161,7 @@ export interface PortInterface {
       operation: Operation,
       state: "canceled" | "failed" | "unknown",
       safeFailureCode: string,
-      managedSearch?: ManagedSearchEvidence,
+      searchAttempt?: Extract<OperationResult, { readonly _tag: "SearchAttempt" }>,
     ) => Effect.Effect<void, Unavailable>;
     readonly expireAmbiguous: (
       operation: Operation,
@@ -158,7 +170,7 @@ export interface PortInterface {
     readonly recordAttempt: (
       operationId: OperationId,
       expectedAttemptCount: number,
-      managedSearch?: ManagedSearchEvidence,
+      searchAttempt?: Extract<OperationResult, { readonly _tag: "SearchAttempt" }>,
     ) => Effect.Effect<
       | { readonly _tag: "InFlight"; readonly operation: Operation }
       | { readonly _tag: "Started"; readonly operation: Operation },
@@ -324,7 +336,20 @@ export const make = Effect.gen(function* () {
       if (Predicate.isTagged(result, "Page")) {
         yield* ports.sourceEvidence.removePage(report.userId, result.contentKey);
       }
-      yield* ports.persistence.finish(operation, "canceled", "authority-lost-after-provider");
+      yield* ports.persistence.finish(
+        operation,
+        "canceled",
+        "authority-lost-after-provider",
+        result._tag === "Search" &&
+          result.managedSearch !== undefined &&
+          result.searchAdmission !== undefined
+          ? {
+              _tag: "SearchAttempt",
+              managedSearch: result.managedSearch,
+              searchAdmission: result.searchAdmission,
+            }
+          : undefined,
+      );
       return yield* new Unavailable({
         cause: rechecked.failure,
         message: "Research Report authority ended during provider work",
@@ -528,12 +553,27 @@ const runProvider = (
 ): Effect.Effect<OperationResult, Unavailable> =>
   Effect.gen(function* () {
     const expectedAttemptCount = yield* Ref.make(operation.attemptCount);
+    const retainedAttempt = yield* Ref.make<
+      Extract<OperationResult, { readonly _tag: "SearchAttempt" }> | undefined
+    >(undefined);
     const provider = Effect.gen(function* () {
       const expected = yield* Ref.get(expectedAttemptCount);
-      const initial =
-        ports.provider.managedSearch === true && operation.input._tag === "Search"
-          ? initialManagedSearchEvidence(operation.operationId)
-          : undefined;
+      const initial = yield* Effect.gen(function* () {
+        if (ports.provider.managedSearch !== true || operation.input._tag !== "Search")
+          return undefined;
+        if (ports.admitSearch === undefined)
+          return yield* new Unavailable({
+            cause: operation.operationId,
+            message: "The paid research search has no admission owner",
+            reason: "authorizationDenied",
+          });
+        const searchAdmission = yield* ports.admitSearch(report, operation);
+        return {
+          _tag: "SearchAttempt" as const,
+          managedSearch: initialManagedSearchEvidence(operation.operationId),
+          searchAdmission,
+        };
+      });
       const attempt = yield* ports.persistence.recordAttempt(
         operation.operationId,
         expected,
@@ -554,38 +594,48 @@ const runProvider = (
         });
       }
       yield* Ref.set(expectedAttemptCount, attempt.operation.attemptCount);
-      return yield* providerEffect(ports, report, operation);
+      yield* Ref.set(retainedAttempt, initial);
+      return yield* providerEffect(ports, report, attempt.operation);
     });
     return yield* provider.pipe(
       Effect.retry({
         schedule: Schedule.recurs(1),
-        while: (failure) => "retry" in failure && failure.retry === "transient",
+        while: (failure) =>
+          (ports.provider.managedSearch !== true || operation.input._tag !== "Search") &&
+          "retry" in failure &&
+          failure.retry === "transient",
       }),
       Effect.catch((failure) => {
         if (Predicate.isTagged(failure, "ResearchCollectorUnavailable")) {
           return Effect.fail(failure);
         }
         const ambiguous = failure.retry === "ambiguous";
-        return ports.persistence
-          .finish(
-            operation,
-            ambiguous ? "unknown" : "failed",
-            ambiguous ? "ambiguous-provider-acceptance-company-cost" : "provider-unavailable",
-            failure.managedSearch,
-          )
-          .pipe(
-            Effect.andThen(
-              Effect.fail(
-                new Unavailable({
-                  cause: failure,
-                  message: ambiguous
-                    ? "The provider acceptance outcome is ambiguous"
-                    : "The public-web provider operation failed",
-                  reason: ambiguous ? "ambiguousOperation" : "providerUnavailable",
-                }),
+        return Ref.get(retainedAttempt).pipe(
+          Effect.flatMap((retained) =>
+            ports.persistence
+              .finish(
+                operation,
+                ambiguous ? "unknown" : "failed",
+                ambiguous ? "ambiguous-provider-acceptance-company-cost" : "provider-unavailable",
+                retained === undefined
+                  ? undefined
+                  : { ...retained, managedSearch: failure.managedSearch ?? retained.managedSearch },
+              )
+              .pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new Unavailable({
+                      cause: failure,
+                      message: ambiguous
+                        ? "The provider acceptance outcome is ambiguous"
+                        : "The public-web provider operation failed",
+                      reason: ambiguous ? "ambiguousOperation" : "providerUnavailable",
+                    }),
+                  ),
+                ),
               ),
-            ),
-          );
+          ),
+        );
       }),
     );
   });
@@ -612,7 +662,13 @@ const providerEffect = (
           ? initialManagedSearchEvidence(operation.operationId)
           : undefined,
       )
-      .pipe(Effect.map((result) => searchResult(input, result)));
+      .pipe(
+        Effect.map((result) => {
+          const search = searchResult(input, result);
+          if (operation.result?._tag !== "SearchAttempt" || search._tag !== "Search") return search;
+          return { ...search, searchAdmission: operation.result.searchAdmission };
+        }),
+      );
   }
   return ports.provider
     .fetchPage({ url: input.url })

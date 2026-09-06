@@ -146,12 +146,12 @@ export const make = (database: Database): ResearchCollector.PortInterface["persi
         }),
       ),
     ),
-  finish: (operation, state, safeFailureCode, managedSearch) =>
+  finish: (operation, state, safeFailureCode, searchAttempt) =>
     attempt("finish", () =>
       database
         .update(researchReportProviderOperations)
         .set({
-          result_json: managedSearch === undefined ? undefined : encodeResult({ _tag: "SearchAttempt", managedSearch }),
+          result_json: searchAttempt === undefined ? undefined : encodeResult(searchAttempt),
           safe_failure_code: safeFailureCode,
           state,
           updated_at: sql`clock_timestamp()`,
@@ -186,14 +186,14 @@ export const make = (database: Database): ResearchCollector.PortInterface["persi
         .returning({ operationId: researchReportProviderOperations.operation_id }),
     ).pipe(Effect.map(([updated]) => updated !== undefined));
   },
-  recordAttempt: (operationId, expectedAttemptCount, managedSearch) =>
+  recordAttempt: (operationId, expectedAttemptCount, searchAttempt) =>
     attempt("recordAttempt", () =>
       database.transaction(async (transaction) => {
         const [started] = await transaction
           .update(researchReportProviderOperations)
           .set({
             attempt_count: sql`${researchReportProviderOperations.attempt_count} + 1`,
-            result_json: managedSearch === undefined ? undefined : encodeResult({ _tag: "SearchAttempt", managedSearch }),
+            result_json: searchAttempt === undefined ? undefined : encodeResult(searchAttempt),
             started_at: sql`coalesce(${researchReportProviderOperations.started_at}, clock_timestamp())`,
             updated_at: sql`clock_timestamp()`,
           })

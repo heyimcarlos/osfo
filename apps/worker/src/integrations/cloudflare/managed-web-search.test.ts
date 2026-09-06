@@ -114,7 +114,8 @@ describe("managed public search", () => {
       const requests: Array<unknown> = [];
       const discover = makeDiscovery(
         {
-          run: (_model, inputs, options) => {
+          // oxlint-disable-next-line osfo/no-unknown-parameters -- The fake captures the overloaded AI binding request without interpreting it.
+          run: (_model: string, inputs: unknown, options?: unknown) => {
             requests.push({ inputs, options });
             return Promise.reject(new Error("lost acknowledgement"));
           },

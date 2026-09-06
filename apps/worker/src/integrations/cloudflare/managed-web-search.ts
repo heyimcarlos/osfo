@@ -59,16 +59,14 @@ const Output = Schema.Array(
 );
 
 /** One native paid search through Cloudflare-managed credentials, without provider retries. */
-export const makeDiscovery = (
-  binding: Pick<Ai, "run">,
-  gatewayId: string,
-) =>
+export const makeDiscovery = (binding: Pick<Ai, "run">, gatewayId: string) =>
   Effect.fn("ManagedWebSearch.discover")(function* (
     query: string,
     limit: number,
     dispatched?: ManagedSearchEvidence,
   ) {
     const initial =
+      // oxlint-disable-next-line effecttsgo/crypto-random-uuid-in-effect -- The provider boundary supplies an opaque request identity when no durable attempt was supplied.
       dispatched ?? initialManagedSearchEvidence(yield* Effect.sync(() => crypto.randomUUID()));
     const inputs = {
       include: ["web_search_call.action.sources"],
@@ -86,6 +84,7 @@ export const makeDiscovery = (
       !Number.isInteger(limit) ||
       limit < 1 ||
       limit > limits.resultsPerSearch ||
+      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Measure the exact serialized provider request, not untrusted JSON.
       new TextEncoder().encode(JSON.stringify(inputs)).byteLength > 4_096
     ) {
       return yield* unavailable(initial, "The managed search configuration or request is invalid.");

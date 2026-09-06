@@ -265,13 +265,40 @@ it.effect("retains a paid dispatch before I/O and refuses another search after r
       state: "unknown",
       result: {
         _tag: "SearchAttempt",
+        searchAdmission: {
+          admittedVendorUsdMicros: 50_000n,
+          admission: { allowancePeriodId: report.allowancePeriodId },
+        },
         managedSearch: { attemptId: `${workflowId}:provider:0`, ratedCostUsdMicros: null },
       },
     });
     const restarted = yield* run.pipe(Effect.provide(layer(fixture.port)));
     expect(Result.isFailure(restarted)).toBe(true);
     expect(fixture.discoveryCalls).toBe(1);
+    expect(fixture.searchAdmissionCalls).toBe(1);
   });
+});
+
+it.effect("does not dispatch a paid research search when its admission is denied", () => {
+  const fixture = makeFixture({ managedSearch: true });
+  const deniedPort = {
+    ...fixture.port,
+    admitSearch: () =>
+      Effect.fail(
+        new ResearchCollector.Unavailable({
+          cause: "plan-limit",
+          message: "Admission denied",
+          reason: "authorizationDenied",
+        }),
+      ),
+  };
+  return Effect.gen(function* () {
+    const collector = yield* ResearchCollector.Service;
+    const result = yield* Effect.result(collector.collect(report));
+    expect(Result.isFailure(result)).toBe(true);
+    expect(fixture.discoveryCalls).toBe(0);
+    expect(fixture.operations.get(`${workflowId}:provider:0`)?.attemptCount).toBe(0);
+  }).pipe(Effect.provide(layer(deniedPort)));
 });
 
 it.effect("retains rated search usage when later page grounding fails", () => {
@@ -489,12 +516,27 @@ const makeFixture = (
   const removedKeys = new Array<string>();
   let retainedManifest: ResearchCollector.SourceManifest | null = null;
   let authorizationCalls = 0;
+  let searchAdmissionCalls = 0;
   let discoveryCalls = 0;
   let pageFetchCalls = 0;
   let manifestWrites = 0;
   let ambiguousDiscoveryFailures = options.ambiguousDiscoveryFailures ?? 0;
   let transientPageFailures = options.transientPageFailures ?? 0;
   const port = ResearchCollector.Port.of({
+    admitSearch: (current) =>
+      Effect.sync(() => {
+        searchAdmissionCalls += 1;
+        return {
+          admittedVendorUsdMicros: 50_000n,
+          admission: {
+            allowancePeriodId: current.allowancePeriodId,
+            authorizedAt: providerAttemptStartedAt.toISOString(),
+            capabilityCatalogVersion: current.capabilityCatalogVersion,
+            originatingAuthority: current.originatingAuthority,
+            planPolicyVersion: current.planPolicyVersion,
+          },
+        };
+      }),
     authorize:
       options.authorize ??
       ((current) =>
@@ -543,13 +585,13 @@ const makeFixture = (
             return completed;
           }),
         ),
-      finish: (operation, state, safeFailureCode, managedSearch) =>
+      finish: (operation, state, safeFailureCode, searchAttempt) =>
         Effect.sync(() => {
           const retained = operations.get(operation.operationId) ?? operation;
           operations.set(operation.operationId, {
             ...retained,
             state,
-            result: managedSearch === undefined ? retained.result : { _tag: "SearchAttempt" as const, managedSearch },
+            result: searchAttempt ?? retained.result,
           });
           failureCodes.set(operation.operationId, safeFailureCode);
         }),
@@ -573,7 +615,7 @@ const makeFixture = (
           failureCodes.set(operation.operationId, "expired-ambiguous-provider-attempt");
           return true;
         }),
-      recordAttempt: (operationId, expectedAttemptCount, managedSearch) =>
+      recordAttempt: (operationId, expectedAttemptCount, searchAttempt) =>
         Effect.sync(() => {
           const operation = operations.get(operationId);
           if (operation === undefined) {
@@ -586,7 +628,7 @@ const makeFixture = (
             ...operation,
             attemptCount: operation.attemptCount + 1,
             startedAt: providerAttemptStartedAt,
-            result: managedSearch === undefined ? operation.result : { _tag: "SearchAttempt" as const, managedSearch },
+            result: searchAttempt ?? operation.result,
           };
           operations.set(operationId, started);
           return { _tag: "Started" as const, operation: started };
@@ -598,7 +640,7 @@ const makeFixture = (
         Effect.suspend(() => {
           discoveryCalls += 1;
           if (managedSearch !== undefined) {
-            expect(operations.get(managedSearch.attemptId)?.result).toEqual({
+            expect(operations.get(managedSearch.attemptId)?.result).toMatchObject({
               _tag: "SearchAttempt",
               managedSearch,
             });
@@ -609,12 +651,22 @@ const makeFixture = (
             return Effect.fail({ retry: "ambiguous" as const, managedSearch });
           }
           return Effect.succeed({
-            evidence: managedSearch === undefined
-              ? { latencyMs: 1, requestId: "discovery-request" }
-              : { latencyMs: 1, requestId: "discovery-request", managedSearch: {
-                ...managedSearch, cachedInputTokens: 0, inputTokens: 8541, outputTokens: 91,
-                providerRequestId: "response-1", ratedCostUsdMicros: 13_562, successfulSearches: 1,
-              } satisfies ManagedSearchEvidence },
+            evidence:
+              managedSearch === undefined
+                ? { latencyMs: 1, requestId: "discovery-request" }
+                : {
+                    latencyMs: 1,
+                    requestId: "discovery-request",
+                    managedSearch: {
+                      ...managedSearch,
+                      cachedInputTokens: 0,
+                      inputTokens: 8541,
+                      outputTokens: 91,
+                      providerRequestId: "response-1",
+                      ratedCostUsdMicros: 13_562,
+                      successfulSearches: 1,
+                    } satisfies ManagedSearchEvidence,
+                  },
             results: [
               ...(options.discoveryUrls ?? ["https://example.com/source"]).map((url) => ({
                 description: "DISCOVERY_ONLY_TEXT",
@@ -716,6 +768,9 @@ const makeFixture = (
     port,
     removedKeys,
     resultJson,
+    get searchAdmissionCalls() {
+      return searchAdmissionCalls;
+    },
     get discoveryCalls() {
       return discoveryCalls;
     },
