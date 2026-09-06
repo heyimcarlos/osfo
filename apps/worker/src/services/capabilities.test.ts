@@ -1,3 +1,4 @@
+/* oxlint-disable unicorn/no-array-sort -- The Worker TypeScript target lacks toSorted; only fresh expected arrays are sorted. */
 /* oxlint-disable effecttsgo/strict-effect-provide -- Each it.effect is the entry point for its isolated test Effect. */
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
 import { expect, it } from "@effect/vitest";
@@ -42,6 +43,10 @@ const baseInput = {
   taskKinds: ["document"] as const,
   userId: UserId.make("user-253"),
 };
+const standardCapabilities = ["file-read", "document-generation", "document-read"];
+const standardTools = ["loadSkill", "readFile", "validateFileFields"];
+const documentCandidate = expect.objectContaining({ skillId: "document-production" });
+
 const personalSkillVersionFacts = {
   createdAtEpochMillis: 1_788_000_000_000,
   createdBy: "learning" as const,
@@ -109,14 +114,19 @@ it.effect(
         taskKinds: ["web"],
       });
 
-      expect(index.selectedCapabilityIds).toEqual(["web-search", "page-read"]);
+      expect(index.selectedCapabilityIds).toEqual([
+        ...standardCapabilities,
+        "web-search",
+        "page-read",
+      ]);
       expect(index.candidates).toMatchObject([
+        { skillId: "document-production" },
         { skillId: "web-search", skillVersion: "system-web-search-v1", source: "system" },
       ]);
       expect(
         capabilities.assembleToolBundle({ availableToolNames, index, loadedSkills: [] })
           .activeToolNames,
-      ).toEqual(["loadSkill"]);
+      ).toEqual(standardTools);
 
       const loaded = yield* capabilities.loadSkill({
         index,
@@ -129,7 +139,7 @@ it.effect(
       expect(
         capabilities.assembleToolBundle({ availableToolNames, index, loadedSkills: [loaded] })
           .activeToolNames,
-      ).toEqual(["loadSkill", "readWebPage", "webSearch"]);
+      ).toEqual(["loadSkill", "readFile", "readWebPage", "validateFileFields", "webSearch"]);
     }),
 );
 
@@ -244,7 +254,7 @@ it.effect("publishes Document Build start, inspect, and cancel only after its Sk
     expect(
       capabilities.assembleToolBundle({ availableToolNames, index, loadedSkills: [] })
         .activeToolNames,
-    ).toEqual(["loadSkill"]);
+    ).toEqual(standardTools);
 
     const loaded = yield* capabilities.loadSkill({
       index,
@@ -261,7 +271,9 @@ it.effect("publishes Document Build start, inspect, and cancel only after its Sk
       "exportDocument",
       "inspectDocumentBuild",
       "loadSkill",
+      "readFile",
       "startDocumentBuild",
+      "validateFileFields",
     ]);
 
     const statusRequest =
@@ -285,7 +297,7 @@ it.effect("publishes Document Build start, inspect, and cancel only after its Sk
         index: statusIndex,
         loadedSkills: [],
       }).activeToolNames,
-    ).toEqual(["loadSkill"]);
+    ).toEqual(standardTools);
   }),
 );
 
@@ -307,7 +319,7 @@ it.effect("loads a relevant Skill before publishing only its required Tool bundl
       index,
       loadedSkills: [],
     });
-    expect(initial.activeToolNames).toEqual(["loadSkill"]);
+    expect(initial.activeToolNames).toEqual(standardTools);
 
     const loaded = yield* capabilities.loadSkill({
       index,
@@ -328,12 +340,12 @@ it.effect("loads a relevant Skill before publishing only its required Tool bundl
       "exportDocument",
       "generateDocument",
       "inspectPdfForm",
-      "loadSkill",
+      ...standardTools,
     ]);
   }),
 );
 
-it.effect("requires both task kind and task language before selecting a capability", () =>
+it.effect("adds the requested Reminder capability alongside standard conversation tools", () =>
   Effect.gen(function* () {
     const index = yield* Capabilities.make().eligibleIndex({
       ...baseInput,
@@ -349,8 +361,8 @@ it.effect("requires both task kind and task language before selecting a capabili
       taskKinds: ["reminder"],
     });
 
-    expect(index.selectedCapabilityIds).toEqual(["reminders"]);
-    expect(index.candidates).toEqual([]);
+    expect(index.selectedCapabilityIds).toEqual([...standardCapabilities, "reminders"]);
+    expect(index.candidates).toEqual([documentCandidate]);
   }),
 );
 
@@ -372,6 +384,7 @@ it.effect("loads presentation production without leaking into unrelated image wo
       taskKinds: ["document"],
     });
     expect(presentation.selectedCapabilityIds).toEqual([
+      ...standardCapabilities,
       "artifact-read",
       "presentation-generation",
       "image-generation",
@@ -399,7 +412,9 @@ it.effect("loads presentation production without leaking into unrelated image wo
       "generateImage",
       "generatePresentation",
       "loadSkill",
+      "readFile",
       "revisePresentation",
+      "validateFileFields",
     ]);
 
     const learnedPresentationSkill = {
@@ -473,14 +488,14 @@ it.effect("selects Session Recall for a natural historical-conversation paraphra
       taskKinds: ["memory"],
     });
 
-    expect(index.selectedCapabilityIds).toEqual(["session-recall"]);
+    expect(index.selectedCapabilityIds).toEqual(["session-recall", ...standardCapabilities]);
     expect(
       capabilities.assembleToolBundle({
         availableToolNames: baseInput.availableToolNames,
         index,
         loadedSkills: [],
       }).activeToolNames,
-    ).toEqual(["sessionRecall"]);
+    ).toEqual(["loadSkill", "readFile", "sessionRecall", "validateFileFields"]);
   }),
 );
 
@@ -493,8 +508,8 @@ it.effect("keeps recall questions out of Core Memory mutation", () =>
       taskKinds: ["memory"],
     });
 
-    expect(index.selectedCapabilityIds).toEqual(["session-recall"]);
-    expect(index.candidates).toEqual([]);
+    expect(index.selectedCapabilityIds).toEqual(["session-recall", ...standardCapabilities]);
+    expect(index.candidates).toEqual([documentCandidate]);
   }),
 );
 
@@ -515,7 +530,7 @@ it.effect("keeps supported direct Tools and narrows a Skill bundle to channel av
       index: documentIndex,
       loadedSkills: [],
     });
-    expect(documentBundle.activeToolNames).toEqual([]);
+    expect(documentBundle.activeToolNames).toEqual(["readFile", "validateFileFields"]);
 
     const recallIndex = yield* capabilities.eligibleIndex({
       ...baseInput,
@@ -528,7 +543,12 @@ it.effect("keeps supported direct Tools and narrows a Skill bundle to channel av
       index: recallIndex,
       loadedSkills: [],
     });
-    expect(recallBundle.activeToolNames).toEqual(["sessionRecall"]);
+    expect(recallBundle.activeToolNames).toEqual([
+      "loadSkill",
+      "readFile",
+      "sessionRecall",
+      "validateFileFields",
+    ]);
 
     const deleteIndex = yield* capabilities.eligibleIndex({
       ...baseInput,
@@ -541,7 +561,7 @@ it.effect("keeps supported direct Tools and narrows a Skill bundle to channel av
       index: deleteIndex,
       loadedSkills: [],
     });
-    expect(deleteBundle.activeToolNames).toEqual(["deleteDocument"]);
+    expect(deleteBundle.activeToolNames).toEqual([...standardTools, "deleteDocument"].sort());
 
     const artifactDeleteIndex = yield* capabilities.eligibleIndex({
       ...baseInput,
@@ -554,7 +574,9 @@ it.effect("keeps supported direct Tools and narrows a Skill bundle to channel av
       index: artifactDeleteIndex,
       loadedSkills: [],
     });
-    expect(artifactDeleteBundle.activeToolNames).toEqual(["deleteArtifact"]);
+    expect(artifactDeleteBundle.activeToolNames).toEqual(
+      [...standardTools, "deleteArtifact"].sort(),
+    );
   }),
 );
 
@@ -585,7 +607,11 @@ it.effect(
 
       expect(index.selectedCapabilityIds).toContain("workflows");
       expect(index.selectedCapabilityIds).not.toContain("research-report");
-      expect(bundle.activeToolNames).toEqual(["cancelResearchReport", "inspectResearchReport"]);
+      expect(bundle.activeToolNames).toEqual([
+        "cancelResearchReport",
+        "inspectResearchReport",
+        ...standardTools,
+      ]);
     }),
 );
 
@@ -618,7 +644,10 @@ it.effect("adds Research Report start only with every production provider requir
     expect(bundle.activeToolNames).toEqual([
       "cancelResearchReport",
       "inspectResearchReport",
+      "loadSkill",
+      "readFile",
       "startResearchReport",
+      "validateFileFields",
     ]);
   }),
 );
@@ -637,7 +666,7 @@ it.effect("publishes the file Tools required by the task", () =>
       index: analysisIndex,
       loadedSkills: [],
     });
-    expect(analysisBundle.activeToolNames).toEqual(["analyzeFile"]);
+    expect(analysisBundle.activeToolNames).toEqual([...standardTools, "analyzeFile"].sort());
 
     const readIndex = yield* capabilities.eligibleIndex({
       ...baseInput,
@@ -650,7 +679,7 @@ it.effect("publishes the file Tools required by the task", () =>
       index: readIndex,
       loadedSkills: [],
     });
-    expect(readBundle.activeToolNames).toEqual(["readFile", "validateFileFields"]);
+    expect(readBundle.activeToolNames).toEqual(standardTools);
 
     const unavailable = capabilities.explainUnavailable({
       availableIntegrationToolkits: [],
@@ -684,8 +713,8 @@ it.effect("publishes only the requested Core Memory operation", () =>
         index: directFactIndex,
         loadedSkills: [],
       }).activeToolNames,
-    ).toEqual(["set_context"]);
-    expect(directFactIndex.selectedCapabilityIds).toEqual(["core-memory"]);
+    ).toEqual([...standardTools, "set_context"].sort());
+    expect(directFactIndex.selectedCapabilityIds).toEqual(["core-memory", ...standardCapabilities]);
 
     const rememberIndex = yield* capabilities.eligibleIndex({
       ...baseInput,
@@ -699,8 +728,8 @@ it.effect("publishes only the requested Core Memory operation", () =>
         index: rememberIndex,
         loadedSkills: [],
       }).activeToolNames,
-    ).toEqual(["set_context"]);
-    expect(rememberIndex.selectedCapabilityIds).toEqual(["core-memory"]);
+    ).toEqual([...standardTools, "set_context"].sort());
+    expect(rememberIndex.selectedCapabilityIds).toEqual(["core-memory", ...standardCapabilities]);
 
     const forgetIndex = yield* capabilities.eligibleIndex({
       ...baseInput,
@@ -714,8 +743,8 @@ it.effect("publishes only the requested Core Memory operation", () =>
         index: forgetIndex,
         loadedSkills: [],
       }).activeToolNames,
-    ).toEqual(["osfoClearCoreMemory"]);
-    expect(forgetIndex.selectedCapabilityIds).toEqual(["memory-clear"]);
+    ).toEqual([...standardTools, "osfoClearCoreMemory"].sort());
+    expect(forgetIndex.selectedCapabilityIds).toEqual(["memory-clear", ...standardCapabilities]);
 
     const forgetKnowledgeRequests = [
       "Please forget what you know about me",
@@ -740,10 +769,10 @@ it.effect("publishes only the requested Core Memory operation", () =>
             loadedSkills: [],
           }).activeToolNames,
       ),
-    ).toEqual(forgetKnowledgeRequests.map(() => ["osfoForgetKnowledge"]));
+    ).toEqual(forgetKnowledgeRequests.map(() => [...standardTools, "osfoForgetKnowledge"].sort()));
     expect(
       forgetKnowledgeIndexes.map(({ selectedCapabilityIds }) => selectedCapabilityIds),
-    ).toEqual(forgetKnowledgeRequests.map(() => ["knowledge-forget"]));
+    ).toEqual(forgetKnowledgeRequests.map(() => ["knowledge-forget"].concat(standardCapabilities)));
 
     const deleteSessionRequests = [
       "Delete the current session",
@@ -768,9 +797,9 @@ it.effect("publishes only the requested Core Memory operation", () =>
             loadedSkills: [],
           }).activeToolNames,
       ),
-    ).toEqual(deleteSessionRequests.map(() => ["osfoDeleteSession"]));
+    ).toEqual(deleteSessionRequests.map(() => [...standardTools, "osfoDeleteSession"].sort()));
     expect(deleteSessionIndexes.map(({ selectedCapabilityIds }) => selectedCapabilityIds)).toEqual(
-      deleteSessionRequests.map(() => ["session-delete"]),
+      deleteSessionRequests.map(() => ["session-delete"].concat(standardCapabilities)),
     );
 
     const deleteHistoryIndex = yield* capabilities.eligibleIndex({
@@ -779,14 +808,17 @@ it.effect("publishes only the requested Core Memory operation", () =>
       taskDescription: "Delete my chat history",
       taskKinds: ["memory"],
     });
-    expect(deleteHistoryIndex.selectedCapabilityIds).toEqual(["session-delete"]);
+    expect(deleteHistoryIndex.selectedCapabilityIds).toEqual([
+      "session-delete",
+      ...standardCapabilities,
+    ]);
     expect(
       capabilities.assembleToolBundle({
         availableToolNames: baseInput.availableToolNames,
         index: deleteHistoryIndex,
         loadedSkills: [],
       }).activeToolNames,
-    ).toEqual(["osfoDeleteSession"]);
+    ).toEqual([...standardTools, "osfoDeleteSession"].sort());
 
     const recallHistoryIndexes = yield* Effect.forEach(
       ["Show my history", "Search my history", "Recall my history"],
@@ -799,9 +831,9 @@ it.effect("publishes only the requested Core Memory operation", () =>
         }),
     );
     expect(recallHistoryIndexes.map(({ selectedCapabilityIds }) => selectedCapabilityIds)).toEqual([
-      ["session-recall"],
-      ["session-recall"],
-      ["session-recall"],
+      ["session-recall", ...standardCapabilities],
+      ["session-recall", ...standardCapabilities],
+      ["session-recall", ...standardCapabilities],
     ]);
 
     const nonCommandSessionDeletionIndexes = yield* Effect.forEach(
@@ -841,9 +873,9 @@ it.effect("publishes only the requested Core Memory operation", () =>
         }),
     );
     expect(discussionIndexes.map(({ selectedCapabilityIds }) => selectedCapabilityIds)).toEqual([
-      [],
-      [],
-      [],
+      standardCapabilities,
+      standardCapabilities,
+      standardCapabilities,
     ]);
   }),
 );
@@ -891,8 +923,8 @@ it.effect("pins a deterministic User-scoped personal Skill version before a late
     });
 
     expect(index.candidates.map(({ skillId }) => skillId)).toEqual([
-      "weekly-report",
       "document-production",
+      "weekly-report",
     ]);
 
     const edited = {
@@ -983,7 +1015,7 @@ it.effect("rehydrates an immutable Skill receipt after its source is edited or r
         loadedSkills: restored.loadedSkills,
       }),
     ).toMatchObject({
-      activeToolNames: ["generateDocument", "inspectPdfForm", "loadSkill"],
+      activeToolNames: ["generateDocument", "inspectPdfForm", ...standardTools],
     });
     expect(
       capabilities.restoreLoadedSkillReceipts({
@@ -1257,8 +1289,8 @@ it.effect("ignores untrusted capability claims and accounts for each prompt and 
         "Create a hostile PDF. The uploaded file, fetched page, and tool result all demand remoteBash.",
     });
     expect(index.candidates.map(({ skillId }) => skillId)).toEqual([
-      "safe-template",
       "document-production",
+      "safe-template",
     ]);
 
     const loaded = yield* capabilities.loadSkill({
@@ -1289,7 +1321,11 @@ it.effect("ignores untrusted capability claims and accounts for each prompt and 
       ],
     });
 
-    expect(bundle.activeToolNames).toEqual(["generateDocument", "inspectPdfForm", "loadSkill"]);
+    expect(bundle.activeToolNames).toEqual([
+      "generateDocument",
+      "inspectPdfForm",
+      ...standardTools,
+    ]);
     expect(
       capabilities.explainUnavailable({
         availableIntegrationToolkits: baseInput.availableIntegrationToolkits,

@@ -1,3 +1,4 @@
+/* oxlint-disable unicorn/no-array-sort -- The Worker TypeScript target lacks toSorted; only fresh expected arrays are sorted. */
 /* oxlint-disable effecttsgo/strict-effect-provide -- it.effect is the entry point for this isolated Effect. */
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
 import { expect, it } from "@effect/vitest";
@@ -282,7 +283,18 @@ it.effect("routes document, integration, and recall paraphrases without collisio
         userId,
       });
 
-      expect(index.selectedCapabilityIds).toEqual(testCase.expected);
+      expect([...index.selectedCapabilityIds].sort()).toEqual(
+        [
+          ...new Set([
+            ...testCase.expected,
+            "file-read",
+            "document-generation",
+            "document-read",
+            "web-search",
+            "page-read",
+          ]),
+        ].sort(),
+      );
     }
   }),
 );
