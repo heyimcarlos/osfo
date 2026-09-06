@@ -1,3 +1,4 @@
+/* oxlint-disable effecttsgo/prefer-schema-over-json -- These assertions inspect serialized provider projections, not untrusted JSON decoding. */
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside Effect tests. */
 import { expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
@@ -71,28 +72,26 @@ it.effect("does not process an earlier submission on an unrelated turn", () =>
 );
 
 it.effect("rejects retained sender or endpoint mismatches before accessing provider bytes", () =>
-  Effect.gen(function* () {
-    yield* Effect.forEach(
-      [
-        { ...messenger, messengerId: "different-endpoint" },
-        { ...messenger, message: { ...messenger.message, author: { userId: "different-owner" } } },
-      ],
-      (context) =>
-        Effect.gen(function* () {
-          const test = harness();
-          const result = yield* MessengerFileTurn.prepare(
-            {
-              metadata,
-              messages: [{ ...source, metadata: { messenger: context } }],
-              modelMessages: history,
-            },
-            test.dependencies,
-          ).pipe(Effect.result);
-          expect(Result.isFailure(result)).toBe(true);
-          expect(test.events).toEqual([]);
-        }),
-    );
-  }),
+  Effect.forEach(
+    [
+      { ...messenger, messengerId: "different-endpoint" },
+      { ...messenger, message: { ...messenger.message, author: { userId: "different-owner" } } },
+    ],
+    (context) =>
+      Effect.gen(function* () {
+        const test = harness();
+        const result = yield* MessengerFileTurn.prepare(
+          {
+            metadata,
+            messages: [{ ...source, metadata: { messenger: context } }],
+            modelMessages: history,
+          },
+          test.dependencies,
+        ).pipe(Effect.result);
+        expect(Result.isFailure(result)).toBe(true);
+        expect(test.events).toEqual([]);
+      }),
+  ),
 );
 
 it.effect("rejects malformed retained metadata without forwarding raw file URLs", () =>

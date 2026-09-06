@@ -1,6 +1,6 @@
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import { convertToModelMessages, type ModelMessage, type UIMessage } from "ai";
-import { Effect, Schema } from "effect";
+import { Array, Effect, Option, Predicate, Schema } from "effect";
 
 import type { ManagedTurnMetadata } from "../../domain/managed-conversation";
 import type { ThinkSubmissionId } from "../../domain";
@@ -25,7 +25,7 @@ const retainedMessenger = Schema.Struct({
       attachments: Schema.Array(
         Schema.Struct({
           mediaType: Schema.optionalKey(Schema.String),
-          size: Schema.optionalKey(Schema.Number),
+          size: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
           fetchMetadata: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
         }),
       ),
@@ -44,12 +44,16 @@ export const messageForSubmission = (
   context: MessengerContext,
   submissionId: ThinkSubmissionId,
 ): UIMessage => ({
-  ...(typeof userMessage === "string"
+  ...(Predicate.isString(userMessage)
     ? { role: "user" as const, parts: [{ type: "text" as const, text: userMessage }] }
     : userMessage),
   id: submissionId,
   metadata: { messenger: context },
 });
+
+/** The latest User message remains current during assistant/tool continuations. */
+export const currentUserMessage = (messages: ReadonlyArray<UIMessage>) =>
+  Option.getOrUndefined(Array.findLast(messages, (message) => message.role === "user"));
 
 /** Replace only the admitted User message; keep Think's repaired and truncated history intact. */
 export const prepare = Effect.fn("MessengerFileTurn.prepare")(function* <
@@ -61,15 +65,15 @@ export const prepare = Effect.fn("MessengerFileTurn.prepare")(function* <
   input: {
     readonly metadata: Pick<ManagedTurnMetadata, "authorityIdentity" | "submissionId">;
     readonly messages: ReadonlyArray<UIMessage>;
-    readonly modelMessages: Array<ModelMessage>;
+    readonly modelMessages: globalThis.Array<ModelMessage>;
   },
   dependencies: MessengerFileIngress.Dependencies<AuthorizationError, UploadError, ReadError> & {
     readonly persist: (message: UIMessage) => Effect.Effect<void, PersistError>;
   },
 ) {
   const authority = input.metadata.authorityIdentity;
-  if (authority._tag !== "ChannelLink") return input.modelMessages;
-  const source = input.messages.filter((message) => message.role === "user").at(-1);
+  if (!Predicate.isTagged(authority, "ChannelLink")) return input.modelMessages;
+  const source = currentUserMessage(input.messages);
   // Only a native submission owns this identity. Unrelated turns must not reprocess old media.
   if (source === undefined || source.id !== input.metadata.submissionId) return input.modelMessages;
   const retained = yield* Schema.decodeUnknownEffect(retainedMessenger)(source.metadata).pipe(
@@ -106,7 +110,7 @@ export const prepare = Effect.fn("MessengerFileTurn.prepare")(function* <
     },
     dependencies,
   );
-  if (typeof prepared === "string") return yield* unavailable("Expected a native User message");
+  if (Predicate.isString(prepared)) return yield* unavailable("Expected a native User message");
   if (!(yield* dependencies.authorize))
     return yield* unavailable("Current file authority was revoked");
   yield* dependencies.persist(prepared);

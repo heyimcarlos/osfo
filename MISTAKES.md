@@ -121,3 +121,6 @@ short, specific, and actionable.
   admission correctly rejected it. Render actual JPEG photo bytes and validate
   fixture registration through the production file inspector; retain a regression
   covering the installed adapter, downloaded bytes, and mismatched PNG rejection.
+- A base SDK transport regression must invoke the same base method as its
+  production caller. Typing a Directory instance as Think still dispatches its
+  invitation override; use the actual base entry point and verify model calls.

@@ -1,5 +1,5 @@
-/* oxlint-disable effecttsgo/async-function -- Native Think lifecycle and model callbacks are Promise boundaries. */
-import type { Think } from "@cloudflare/think";
+/* oxlint-disable effecttsgo/async-function, vitest/no-conditional-expect -- Each parameterized provider exercises its distinct public entry point; Native Think lifecycle and model callbacks are Promise boundaries. */
+import { Think } from "@cloudflare/think";
 import { TextStreamCallback, toMessengerUserMessage } from "@cloudflare/think/messengers";
 import { expect, it } from "@effect/vitest";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
@@ -27,10 +27,13 @@ it.each(["whatsapp", "telegram"] as const)(
         messengerId: provider,
         message: {
           ...messenger.message,
-          attachments: messenger.message.attachments.map((attachment) => ({
-            ...attachment,
-            url: "https://media.invalid/private",
-          })),
+          attachments: [
+            {
+              mediaType: "application/pdf",
+              fetchMetadata: { fileId: "media-1", mediaId: "media-1" },
+              url: "https://media.invalid/private",
+            },
+          ],
         },
       };
       const turnMetadata = {
@@ -82,11 +85,11 @@ it.each(["whatsapp", "telegram"] as const)(
         },
       });
       const selected = vi.spyOn(think, "getModel").mockReturnValue(model);
-      const prepared = vi.spyOn(think, "beforeTurn").mockImplementation(async (context) => ({
+      const prepared = vi.spyOn(think, "beforeTurn").mockImplementation(async (turn) => ({
         maxSteps: 1,
         messages: await Effect.runPromise(
           MessengerFileTurn.prepare(
-            { metadata: turnMetadata, messages: think.messages, modelMessages: context.messages },
+            { metadata: turnMetadata, messages: think.messages, modelMessages: turn.messages },
             {
               ...test.dependencies,
               persist: (message) =>
@@ -97,9 +100,15 @@ it.each(["whatsapp", "telegram"] as const)(
       }));
       try {
         if (provider === "telegram") {
-          await think.chatWithMessengerContext(nativeMessage, new TextStreamCallback(), context, {
-            metadata: turnMetadata,
-          });
+          await Think.prototype.chatWithMessengerContext.call(
+            think,
+            nativeMessage,
+            new TextStreamCallback(),
+            context,
+            {
+              metadata: turnMetadata,
+            },
+          );
         } else {
           const accepted = await think.runTurn({
             mode: "submit",

@@ -8049,17 +8049,16 @@ export class OsfoAgent extends Think<Env> {
   #prepareMessengerFiles(context: TurnContext, metadata: ManagedTurnMetadata) {
     if (
       metadata.authorityIdentity._tag !== "ChannelLink" ||
-      this.messages.filter((message) => message.role === "user").at(-1)?.id !==
-        metadata.submissionId
+      MessengerFileTurn.currentUserMessage(this.messages)?.id !== metadata.submissionId
     ) {
       return Promise.resolve(context.messages);
     }
     const config = loadConfig(this.env);
     const authority = metadata.authorityIdentity;
-    const authorization = this.#fileToolAuthorizationContext().pipe(
+    const currentAuthorization = this.#fileToolAuthorizationContext().pipe(
       Effect.flatMap((retained) => this.#currentFileAuthorizationContext(retained)),
     );
-    const authorize = authorization.pipe(
+    const authorize = currentAuthorization.pipe(
       Effect.map(
         (current) =>
           authority._tag === "ChannelLink" &&
@@ -8088,11 +8087,11 @@ export class OsfoAgent extends Think<Env> {
               },
             }).download,
             read: (input) =>
-              authorization.pipe(
+              currentAuthorization.pipe(
                 Effect.flatMap((current) => this.#files.read({ ...input, context: current })),
               ),
             upload: (input) =>
-              authorization.pipe(
+              currentAuthorization.pipe(
                 Effect.flatMap((current) => this.#files.upload({ ...input, context: current })),
               ),
             persist: (message) =>

@@ -4,7 +4,7 @@ import { ChannelLinkId, ThinkSubmissionId, UserId } from "../../src/domain";
 import { ChannelAddress } from "../../src/domain/channel-link";
 import { FileRecord, type FileId } from "../../src/domain/file";
 import { FileContentUnavailable } from "../../src/services/files";
-import { MessengerFileIngress } from "../../src/agents/osfo/messenger-file-ingress";
+import type { MessengerFileIngress } from "../../src/agents/osfo/messenger-file-ingress";
 
 export const metadata = {
   authorityIdentity: {
@@ -75,9 +75,9 @@ export const harness = () => {
         return { bytes, mediaType: "application/pdf", name: undefined };
       }),
     upload: (input) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         events.push("upload");
-        const file = Schema.decodeUnknownSync(FileRecord)({
+        const file = yield* Schema.decodeUnknownEffect(FileRecord)({
           ...input,
           acceptedAt: "2026-09-05T00:00:00.000Z",
           allowancePeriodId: "period-1",
@@ -92,8 +92,8 @@ export const harness = () => {
           normalizedText: "[Page 1 — ocr]\nReference: SAMPLE-4821",
           provenanceJson: "{}",
           state: "ready",
-        });
-        if (file.state !== "ready") throw new Error("Expected ready fixture");
+        }).pipe(Effect.orDie);
+        if (file.state !== "ready") return yield* Effect.die(new Error("Expected ready fixture"));
         files.set(input.fileId, file);
         return { _tag: "FileReady", file };
       }),

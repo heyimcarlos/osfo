@@ -28,3 +28,8 @@ repository configuration.
   caller-generated turn correlation metadata. Browser calls still require the
   provisioned desktop broker and enabled browser extension. CLI login alone does
   not provision that connection.
+- Installed `@cloudflare/vitest-plugin@1.0.0` explicitly sets
+  `enableContainers: false` while deriving Worker options. Its pool cannot
+  qualify the actual Sandbox container even when the test Wrangler config
+  declares it. Use the existing real-Wrangler verification helper for the
+  Files/R2/Sandbox path; native transport tests remain supporting evidence.
