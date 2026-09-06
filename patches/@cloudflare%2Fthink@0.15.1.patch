@@ -660,3 +660,36 @@ diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
    /**
     * Reject a parked `kind: "durable-pause"` action. Claim-by-delete consumes
     * the pending row (idempotent across tabs/recovery), the action's `execute`
+--- a/dist/think.js
++++ b/dist/think.js
+@@ -1861,7 +1861,11 @@
+ 		try {
+ 			if (channelId === "web") await this.addMessages([this._noticeMessage(informModel ? annotated : plain, kind)]);
+ 			else {
+-				const surface = this._activeDeliverySurface ?? await this._messengerRuntime?.resolveDeliverySurface(channelId, options?.thread);
++				const explicitTarget = options?.channel !== void 0 || options?.thread !== void 0;
++				if (explicitTarget) await this._initializeChannels();
++				const surface = explicitTarget
++					? await this._messengerRuntime?.resolveDeliverySurface(channelId, options?.thread)
++					: this._activeDeliverySurface ?? await this._messengerRuntime?.resolveDeliverySurface(channelId, options?.thread);
+ 				if (!surface) {
+ 					const kindOf = this._channels?.get(channelId)?.kind;
+ 					let hint;
+--- a/dist/chat-sdk-iuBa-CGM.js
++++ b/dist/chat-sdk-iuBa-CGM.js
+@@ -669,8 +669,13 @@
+ 	* was supplied so the caller can fail fast.
+ 	*/
+ 	async resolveDeliverySurface(channelId, threadId) {
+-		if (!this.definitionsById.get(channelId) || !threadId) return;
+-		return (this.chat ?? this.createChat()).thread(threadId);
++		const definition = this.definitionsById.get(channelId);
++		if (!definition || !threadId) return;
++		const chat = this.chat ??= this.createChat();
++		const surface = chat.thread(threadId);
++		if (surface.toJSON().adapterName !== definition.adapterName) return;
++		await chat.initialize();
++		return surface;
+ 	}
+ 	async resolveTarget(definition, event) {
+ 		const conversation = definition.conversation ?? "thread";
