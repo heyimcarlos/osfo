@@ -41,6 +41,7 @@ export const PdfFormInspection = Schema.Struct({
     Schema.Struct({
       name: fieldName,
       label: Schema.NullOr(Schema.String),
+      currentValue: Schema.NullOr(Schema.String.check(Schema.isMaxLength(10_000))),
       kind: Schema.Literals(["text", "checkbox", "radio", "unsupported"]),
       restriction: Schema.NullOr(Schema.Literals(["is protected", "has no established purpose"])),
       exportValues: Schema.Array(Schema.String).check(Schema.isMaxLength(300)),

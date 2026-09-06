@@ -20,7 +20,7 @@ def fixture(password="", permitted=True):
                            ("a3", "Signature", 500), ("a4", "Office use only", 400)]:
         pdf.drawString(40, y + 23, label)
         pdf.acroForm.textfield(name=name, x=40, y=y, width=220, height=20,
-                              value="Reserved" if name == "a4" else "")
+                              value="Reserved" if name == "a4" else "Nov 17, 2022" if name == "a2" else "")
     pdf.drawString(280, 723, "Unknown")
     pdf.acroForm.textfield(name="a5", x=280, y=700, width=150, height=20)
     pdf.acroForm.checkbox(name="ContactConsent", x=300, y=750, checked=False)
@@ -48,6 +48,8 @@ class PdfFormTests(unittest.TestCase):
         observed = inspect(data)
         self.assertTrue(observed["encrypted"])
         fields = {field["name"]: field for field in observed["fields"]}
+        self.assertEqual(fields["a2"]["currentValue"], "Nov 17, 2022")
+        self.assertEqual(fields["a4"]["currentValue"], "Reserved")
         self.assertIsNone(fields["a1"]["restriction"])
         self.assertEqual(fields["a2"]["restriction"], "has no established purpose")
         self.assertEqual(fields["a5"]["restriction"], "has no established purpose")
@@ -63,7 +65,7 @@ class PdfFormTests(unittest.TestCase):
             self.assertEqual(result["a1"]["/V"], "Example Applicant")
             self.assertEqual(result["ContactConsent"]["/V"], "/Accepted")
             self.assertEqual(result["ServiceChoice"]["/V"], "/Renewal")
-            self.assertEqual(result["a2"]["/V"], "")
+            self.assertEqual(result["a2"]["/V"], "Nov 17, 2022")
             self.assertEqual(result["a3"]["/V"], "")
             self.assertEqual(result["a4"]["/V"], "Reserved")
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.constants import UserAccessPermissions
-from pypdf.generic import NameObject
+from pypdf.generic import NameObject, TextStringObject
 
 
 PROTECTED = re.compile(r"signature|sign[ _-]?here|office|official|admin|staff|witness|certif", re.I)
@@ -163,7 +163,13 @@ def inspect_reader(reader):
                 exports.extend(str(value)[1:] for value in normal.get_object().keys())
         if field_type == "/Sig" and inherited(field, "/V") is not None:
             raise ValueError("Signed PDFs cannot be rewritten")
-        result.append({"name": name, "label": str(label) if label is not None else None,
+        raw_value = inherited(field, "/V")
+        current_value = (str(raw_value) if kind == "text" and isinstance(raw_value, TextStringObject)
+                         else str(raw_value)[1:] if kind in ("checkbox", "radio") and isinstance(raw_value, NameObject)
+                         else None)
+        if current_value is not None and len(current_value) > 10000:
+            raise ValueError("PDF field value exceeds inspection limit")
+        result.append({"currentValue": current_value, "name": name, "label": str(label) if label is not None else None,
                        "kind": kind, "restriction": restriction, "exportValues": sorted(set(exports)),
                        "widgets": widgets[name]})
     return {"pageCount": len(reader.pages), "encrypted": reader.is_encrypted, "fields": result}
