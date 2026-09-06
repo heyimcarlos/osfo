@@ -51,6 +51,7 @@ export const registeredToolNameValues = [
   "startDocumentBuild",
   "scheduleEmail",
   "readFile",
+  "validateFileFields",
   "readWebPage",
   "sessionRecall",
   "set_context",

@@ -77,6 +77,14 @@ const matchesSessionRecallIntent = anyIntentPhrase(
   "what were we talking about",
 );
 
+const matchesDocumentBuildIntent: CapabilityIntentPredicate = (task) =>
+  (everyIntentGroup(
+    ["build", "convert", "create", "generate", "make"],
+    ["document", "docx", "file", "pdf"],
+  )(task) &&
+    anyIntentPhrase("from file", "from my file", "using file", "uploaded file")(task)) ||
+  anyIntentPhrase("inspect document build", "document build status")(task);
+
 export const capabilityIntentPolicy = {
   conversation: { matches: () => true, taskKinds: ["conversation"] },
   "core-memory": {
@@ -134,20 +142,40 @@ export const capabilityIntentPolicy = {
     taskKinds: ["memory"],
   },
   "file-read": {
-    matches: excludingIntentPhrases(
-      anyIntentPhrase("attachment", "open", "read"),
-      "calendar",
-      "document",
-      "docx",
-      "drive",
-      "email",
-      "gmail",
-      "link",
-      "page",
-      "pdf",
-      "url",
-      "website",
-    ),
+    matches: (task) =>
+      (!matchesDocumentBuildIntent(task) || anyIntentPhrase("read", "open", "extract")(task)) &&
+      (anyIntentPhrase("owned file", "retained file")(task) ||
+        excludingIntentPhrases(
+          anyIntentPhrase(
+            "attachment",
+            "attachments",
+            "attached",
+            "uploaded file",
+            "uploaded pdf",
+            "uploaded document",
+          ),
+          "calendar",
+          "drive",
+          "email",
+          "gmail",
+          "link",
+          "url",
+          "website",
+        )(task) ||
+        excludingIntentPhrases(
+          anyIntentPhrase("open", "read"),
+          "calendar",
+          "document",
+          "docx",
+          "drive",
+          "email",
+          "gmail",
+          "link",
+          "page",
+          "pdf",
+          "url",
+          "website",
+        )(task)),
     taskKinds: ["file"],
   },
   "file-analysis": {
@@ -170,13 +198,7 @@ export const capabilityIntentPolicy = {
     taskKinds: ["document"],
   },
   "document-build": {
-    matches: (task) =>
-      (everyIntentGroup(
-        ["build", "convert", "create", "generate", "make"],
-        ["document", "docx", "file", "pdf"],
-      )(task) &&
-        anyIntentPhrase("from file", "from my file", "using file", "uploaded file")(task)) ||
-      anyIntentPhrase("inspect document build", "document build status")(task),
+    matches: matchesDocumentBuildIntent,
     taskKinds: ["document", "workflow"],
   },
   "document-read": {

@@ -4,6 +4,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { Effect, Schema } from "effect";
 
 import type { FileMediaType } from "../../domain/file-content";
+import { FilePagesEvidence } from "../../domain/file-evidence";
 import {
   FileComputeFailed,
   type FileAnalysisComputeResult,
@@ -20,6 +21,7 @@ const taskTimeoutMilliseconds = 30_000;
 const SuccessfulTask = Schema.Struct({
   normalizedText: Schema.optional(Schema.String),
   ok: Schema.Literal(true),
+  pages: Schema.optional(FilePagesEvidence),
   parser: Schema.optional(Schema.String),
   resultText: Schema.optional(Schema.String),
 });
@@ -119,8 +121,18 @@ export const makeFileCompute = (sandboxFor: (taskId: string) => FileTaskSandbox)
             return yield* invalidTaskResult("Normalization output is incomplete");
           }
           if (
+            (input.mediaType === "application/pdf" || input.mediaType.startsWith("image/")) &&
+            result.pages === undefined
+          ) {
+            return yield* invalidTaskResult("Document page evidence is missing");
+          }
+          if (
             new TextEncoder().encode(result.normalizedText).byteLength >
-            input.limits.maximumNormalizedTextBytes
+              input.limits.maximumNormalizedTextBytes ||
+            (result.pages ?? []).reduce(
+              (total, page) => total + new TextEncoder().encode(page.text).byteLength,
+              0,
+            ) > input.limits.maximumNormalizedTextBytes
           ) {
             return yield* new FileComputeFailed({
               basis: null,
@@ -132,6 +144,7 @@ export const makeFileCompute = (sandboxFor: (taskId: string) => FileTaskSandbox)
           }
           const provenance = yield* Schema.decodeEffect(FileNormalizationProvenance)({
             mediaType: input.mediaType,
+            pages: result.pages,
             parser: result.parser,
             sourceSha256: input.sha256,
           }).pipe(Effect.mapError(() => invalidTaskResult("Normalization provenance is invalid")));
