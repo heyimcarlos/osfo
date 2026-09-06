@@ -529,3 +529,134 @@ diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
  		});
  	}
  	/**
+--- a/dist/think.js
++++ b/dist/think.js
+@@ -7325,8 +7325,8 @@
+ 	*
+ 	* Client-callable.
+ 	*/
+-	async approveExecution(executionId) {
+-		if (executionId.startsWith(ACTION_PAUSE_ID_PREFIX)) return await this._approveActionPause(executionId);
++	async approveExecution(executionId, options) {
++		if (executionId.startsWith(ACTION_PAUSE_ID_PREFIX)) return await this._approveActionPause(executionId, options);
+ 		const runtime = this._codemodeRuntime();
+ 		if (!runtime) return {
+ 			status: "error",
+@@ -7334,7 +7334,7 @@
+ 			error: "No codemode runtime is configured — the execute tool was never created on this agent."
+ 		};
+ 		const output = truncatePausedExecutionOutput(await runtime.approve({ executionId }));
+-		await this._applyExecutionOutcome(executionId, output);
++		await this._applyExecutionOutcome(executionId, output, options);
+ 		return output;
+ 	}
+ 	/**
+@@ -7348,7 +7348,7 @@
+ 	* ledger so its side effect stays replay-safe, the outcome replaces the
+ 	* paused transcript part, and the chat continues even with no socket open.
+ 	*/
+-	async _approveActionPause(executionId) {
++	async _approveActionPause(executionId, options) {
+ 		const row = this._claimActionPendingRow(executionId);
+ 		if (!row) return {
+ 			status: "error",
+@@ -7363,7 +7363,7 @@
+ 				action: row.action_name,
+ 				error: `Action "${row.action_name}" is no longer registered, so the approved call cannot run. The approval was consumed.`
+ 			};
+-			await this._applyExecutionOutcome(executionId, output);
++			await this._applyExecutionOutcome(executionId, output, options);
+ 			return output;
+ 		}
+ 		let input;
+@@ -7380,7 +7380,7 @@
+ 				executionId
+ 			}
+ 		});
+-		await this._applyExecutionOutcome(executionId, output);
++		await this._applyExecutionOutcome(executionId, output, options);
+ 		return output;
+ 	}
+ 	/** Resolve a registered action by its resolved name (config.name ?? key). */
+@@ -7444,8 +7444,8 @@
+ 	*
+ 	* Client-callable.
+ 	*/
+-	async rejectExecution(executionId, reason) {
+-		if (executionId.startsWith(ACTION_PAUSE_ID_PREFIX)) return await this._rejectActionPause(executionId, reason);
++	async rejectExecution(executionId, reason, options) {
++		if (executionId.startsWith(ACTION_PAUSE_ID_PREFIX)) return await this._rejectActionPause(executionId, reason, options);
+ 		const runtime = this._codemodeRuntime();
+ 		if (!runtime) return {
+ 			status: "error",
+@@ -7471,7 +7471,7 @@
+ 			executionId,
+ 			reason: reason ?? "Rejected by user"
+ 		};
+-		await this._applyExecutionOutcome(executionId, output);
++		await this._applyExecutionOutcome(executionId, output, options);
+ 		return output;
+ 	}
+ 	/**
+@@ -7480,7 +7480,7 @@
+ 	* never runs, and the paused transcript part is replaced with a `rejected`
+ 	* outcome so the model can adapt or explain.
+ 	*/
+-	async _rejectActionPause(executionId, reason) {
++	async _rejectActionPause(executionId, reason, options) {
+ 		const row = this._claimActionPendingRow(executionId);
+ 		if (!row) return {
+ 			status: "error",
+@@ -7500,7 +7500,7 @@
+ 				executionId
+ 			}
+ 		});
+-		await this._applyExecutionOutcome(executionId, output);
++		await this._applyExecutionOutcome(executionId, output, options);
+ 		return output;
+ 	}
+ 	/**
+@@ -7514,7 +7514,7 @@
+ 	* must not be dropped: it is appended as a system note instead, and the
+ 	* continuation still fires so the model can act on it.
+ 	*/
+-	async _applyExecutionOutcome(executionId, output) {
++	async _applyExecutionOutcome(executionId, output, options) {
+ 		const toolCallId = this._findPausedExecutionToolCall(executionId);
+ 		if (!toolCallId) {
+ 			if (this._findExecutionToolCall(executionId) != null) return false;
+@@ -7533,6 +7533,7 @@
+ 				}]
+ 			});
+ 		} else await this._enqueueInteractionApply(() => this._applyToolUpdateToMessages(pausedExecutionUpdate(toolCallId, executionId, output)));
++		if (options?.autoContinue === false) return true;
+ 		const { connection } = getCurrentAgent();
+ 		let target = connection;
+ 		if (!target) for (const open of this.getConnections()) {
+--- a/dist/index-s3Pl812H.d.ts
++++ b/dist/index-s3Pl812H.d.ts
+@@ -3282,7 +3282,10 @@
+    *
+    * Client-callable.
+    */
+-  approveExecution(executionId: string): Promise<unknown>;
++  approveExecution(
++    executionId: string,
++    options?: { /** Defaults to true. False retains the outcome without scheduling inference. */ autoContinue?: boolean }
++  ): Promise<unknown>;
+   /**
+    * Approve a parked `kind: "durable-pause"` action and run its `execute`.
+    *
+@@ -3311,7 +3314,11 @@
+    *
+    * Client-callable.
+    */
+-  rejectExecution(executionId: string, reason?: string): Promise<unknown>;
++  rejectExecution(
++    executionId: string,
++    reason?: string,
++    options?: { /** Defaults to true. False retains the outcome without scheduling inference. */ autoContinue?: boolean }
++  ): Promise<unknown>;
+   /**
+    * Reject a parked `kind: "durable-pause"` action. Claim-by-delete consumes
+    * the pending row (idempotent across tabs/recovery), the action's `execute`
