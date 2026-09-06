@@ -137,3 +137,8 @@ short, specific, and actionable.
   editable controls and exposed radio option labels where production uses
   appearance exports. Keep editable regions separate, author visible labels and
   matching exports, and check real rendered output plus canonical field types.
+- Exercise browser HTTP transport in Workerd. Its fetch rejects redirect mode
+  `error` before networking; use `manual` and reject non-200 responses so host
+  credentials and commands cannot follow redirects. Keep local bearer bindings
+  in restrictive `.dev.vars` files because ordinary Wrangler vars appear in
+  retained startup logs. Test the actual startup log with a synthetic canary.

@@ -994,7 +994,6 @@ export class OsfoAgent extends Think<Env> {
       Browser.dispatch(request, binding).pipe(
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The Agent composes the private host HTTP client at its runtime entry point.
         Effect.provide(FetchHttpClient.layer),
-        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
       ),
     authorize: (request) => this.#authorizeBrowser(request),
   });
@@ -1003,7 +1002,6 @@ export class OsfoAgent extends Think<Env> {
       Browser.execute(request, binding).pipe(
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Account deletion owns this control-only host cleanup transport.
         Effect.provide(FetchHttpClient.layer),
-        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
       ),
     storage: this.ctx.storage,
     binding: this.#browserBinding,
@@ -1027,7 +1025,6 @@ export class OsfoAgent extends Think<Env> {
           Browser.execute(request, binding).pipe(
             // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Agent-owned browser dispatch composes its HTTP transport.
             Effect.provide(FetchHttpClient.layer),
-            Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
           ),
         () =>
           new Browser.BrowserUnavailable({

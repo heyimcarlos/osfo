@@ -7,7 +7,7 @@ import {
   requestIdentity,
 } from "@osfo/api/browser-host";
 import { Effect, Schema, Stream, type Redacted } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import type { ThinkSubmissionId, UserId } from "../domain";
 
@@ -96,7 +96,13 @@ export const dispatch = Effect.fn("BrowserHost.dispatch")(
       new TextDecoder().decode(bytes),
     );
   },
-  (effect) => effect.pipe(Effect.timeout("20 seconds"), Effect.mapError(unavailable)),
+  (effect) =>
+    effect.pipe(
+      // Workerd rejects redirect:error. Manual mode leaves redirects for the status check above.
+      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+      Effect.timeout("20 seconds"),
+      Effect.mapError(unavailable),
+    ),
 );
 
 /** The same private host connection carries fixed browser commands with bounded evidence. */
@@ -135,7 +141,13 @@ export const execute = Effect.fn("BrowserHost.execute")(
       return yield* unavailable();
     return result.outcome;
   },
-  (effect) => effect.pipe(Effect.timeout("25 seconds"), Effect.mapError(unavailable)),
+  (effect) =>
+    effect.pipe(
+      // Workerd rejects redirect:error. Manual mode leaves redirects for the status check above.
+      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+      Effect.timeout("25 seconds"),
+      Effect.mapError(unavailable),
+    ),
 );
 
 export * as Browser from "./browser-host";

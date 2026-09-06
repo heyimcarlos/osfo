@@ -225,6 +225,9 @@ browser_bind() {
   [[ "$phone" =~ ^\+1[0-9]{10}$ ]] || { printf 'Invalid run phone\n' >&2; return 1; }
   owner="$(docker exec --env PGPASSWORD=osfo "$container_id" psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
     --command "select u.id from users u where u.phone_number = '$phone'
+      and u.phone_number_verified is true
+      and u.registration_completed_at is not null
+      and exists (select 1 from agents a where a.user_id = u.id)
       and exists (select 1 from sessions s where s.user_id = u.id and s.expires_at > now())
       and not exists (select 1 from channel_links c where c.user_id = u.id);")"
   [[ -n "$owner" && "$owner" != *$'\n'* ]] || { printf 'Bind after registration and before channel linking/chat work\n' >&2; return 1; }
