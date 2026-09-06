@@ -37,7 +37,26 @@ export const respondBrowserTask = (input: ResearchRequest) => {
     -1,
   );
   const instruction = text(messages[currentIndex]?.content).trimEnd().split(/\r?\n/u).at(-1) ?? "";
-  if (!/synthetic browser (?:appointment|task)/iu.test(instruction)) return null;
+  const resumed = instruction.startsWith(
+    "Continue the existing browser task within the User's retained preferences.",
+  );
+  if (instruction.startsWith("The browser approval outcome is unresolved."))
+    return stop("The browser result is unknown. I have not retried the action.");
+  if (instruction.startsWith("The User rejected the pending browser action.")) {
+    const outcome = instruction.split("Native outcome: ")[1];
+    const rejected =
+      outcome === undefined
+        ? Option.none()
+        : Schema.decodeOption(
+            Schema.fromJsonString(
+              Schema.Struct({ status: Schema.Literal("rejected"), executionId: Schema.String }),
+            ),
+          )(outcome);
+    return Option.isSome(rejected)
+      ? stop("You rejected this browser action. It has not run.")
+      : stop("The browser decision outcome is unresolved. No further action was requested.");
+  }
+  if (!resumed && !/synthetic browser (?:appointment|task)/iu.test(instruction)) return null;
   const tools = input.tools?.flatMap((tool) => tool.function?.name ?? []) ?? [];
   const select = (name: string, arguments_: JsonObject) => {
     if (!tools.includes(name))
@@ -61,6 +80,12 @@ export const respondBrowserTask = (input: ResearchRequest) => {
   const closing = /close.*synthetic browser task/iu.test(instruction);
   const inspecting = /inspect.*synthetic browser task/iu.test(instruction);
   if (last === undefined) {
+    if (resumed) {
+      const taskId = /Browser task: ([^. ]+)\. Native outcome:/u.exec(instruction)?.[1];
+      return taskId === undefined
+        ? stop("The browser continuation has no task identity.")
+        : select("observeBrowserTask", { taskId });
+    }
     const url = /http:\/\/127\.0\.0\.1:39271\/book\b/u.exec(instruction)?.[0];
     return url === undefined ? select("listBrowserTasks", {}) : select("openBrowserTask", { url });
   }

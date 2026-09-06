@@ -1,4 +1,6 @@
-import { appendBrowserApprovalLink } from "./browser-approval-reply";
+import { BrowserApprovalResume } from "./browser-approval-resume";
+import type { FiberRecoveryContext, StartFiberOptions } from "agents";
+import { appendBrowserApprovalLink, withBrowserApprovalReply } from "./browser-approval-reply";
 import { documentDownloadUrl } from "@osfo/api/document-download";
 import { PdfForm } from "../../integrations/pdf/pdf-form";
 import { IncidentControlsPostgres } from "../../integrations/postgres/incident-controls";
@@ -1052,10 +1054,12 @@ export class OsfoAgent extends Think<Env> {
   readonly #capabilityStateSemaphore = Semaphore.makeUnsafe(1);
   #activeModelStepNumber: ModelStepNumber | undefined = ModelStepNumber.make(1);
   readonly #completedModelSteps = new Set<number>();
+  readonly #browserApprovalResumes = BrowserApprovalResume.make(this.ctx.storage);
   readonly #currentApprovedActions = new Map<
     ActionId,
     {
       readonly actionPresentation: ActionPresentation;
+      readonly actor: ApprovalActor;
       readonly connectionBinding: Integrations.IntegrationConnectionBinding | undefined;
       readonly operation:
         | "artifact.delete"
@@ -1788,7 +1792,39 @@ export class OsfoAgent extends Think<Env> {
             context,
             submissionId,
           );
-          await super.chatWithMessengerContext(nativeMessage, callback, context, {
+          const reply = withBrowserApprovalReply(callback, () =>
+            Effect.gen({ self: this }, function* () {
+              const current = yield* this.#inspectCurrentChannelLinkAuthorization(link);
+              if (
+                Predicate.isTagged(
+                  authorization.recheck(current, {
+                    actionId: submissionId,
+                    kind: "conversation.run",
+                    modelSteps: 0n,
+                  }),
+                  "Denied",
+                )
+              )
+                return "";
+              const metadata = Schema.decodeUnknownOption(ManagedTurnMetadata)(
+                this.activeTurnMetadata,
+              );
+              const response = this.messages.at(-1);
+              if (
+                Option.isNone(metadata) ||
+                metadata.value.submissionId !== submissionId ||
+                response?.role !== "assistant"
+              )
+                return "";
+              return yield* appendBrowserApprovalLink({
+                parts: response.parts,
+                text: "",
+                webBaseUrl: publicWebBaseUrl(loadConfig(this.env).auth),
+                pending: (executionId) => this.pendingApprovals(executionId),
+              });
+            }),
+          );
+          await super.chatWithMessengerContext(nativeMessage, reply, context, {
             metadata: admission.metadata,
             signal,
           });
@@ -2014,12 +2050,262 @@ export class OsfoAgent extends Think<Env> {
     return nativeApprovalDecisionDenied(executionId);
   }
 
-  #approveThinkExecution(executionId: string) {
-    return super.approveExecution(executionId);
+  async #approveThinkExecution(executionId: string) {
+    const current = [...this.#currentApprovedActions.values()].find(
+      (item) =>
+        item.operation === "browser.effect" &&
+        item.actionPresentation.presentationId === executionId,
+    );
+    if (current === undefined) return super.approveExecution(executionId);
+    const result = await super.approveExecution(executionId, { autoContinue: false });
+    await this.#retainBrowserDecisionOutcome(current.actionPresentation.actionId, result);
+    return result;
   }
 
-  #rejectThinkExecution(executionId: string, reason?: string) {
-    return super.rejectExecution(executionId, reason);
+  async #rejectThinkExecution(executionId: string, reason?: string) {
+    const current = [...this.#currentApprovedActions.values()].find(
+      (item) =>
+        item.operation === "browser.effect" &&
+        item.actionPresentation.presentationId === executionId,
+    );
+    if (current === undefined) return super.rejectExecution(executionId, reason);
+    const result = await super.rejectExecution(executionId, reason, { autoContinue: false });
+    await this.#retainBrowserDecisionOutcome(current.actionPresentation.actionId, result);
+    return result;
+  }
+
+  #retainBrowserDecisionOutcome(actionId: ActionId, outcome: unknown) {
+    return Effect.runPromise(
+      Effect.gen({ self: this }, function* () {
+        const decision = yield* this.#browserApprovalResumes.decision(actionId);
+        yield* this.#browserApprovalResumes.retainDecision({ ...decision, outcome, settled: true });
+      }),
+    );
+  }
+
+  async #startBrowserFollowUp(actionId: ActionId) {
+    const decision = await Effect.runPromise(this.#browserApprovalResumes.decision(actionId));
+    const pending = decision.settled ? [] : await this.pendingApprovals(decision.presentationId);
+    const key = BrowserApprovalResume.followUpKey(decision, pending.length > 0);
+    if (key === null) return;
+    const existing = await this.inspectFiberByKey(key);
+    if (existing !== null) {
+      const snapshot = await Effect.runPromise(
+        Schema.decodeUnknownEffect(BrowserApprovalResume.Delivery)(existing.snapshot),
+      );
+      if (snapshot.stage !== "pending") {
+        if (snapshot.stage === "completed" && decision.settled)
+          await Effect.runPromise(this.#browserApprovalResumes.forget(actionId));
+        return;
+      }
+    }
+    const settled = decision.settled;
+    const options: StartFiberOptions = {
+      idempotencyKey: key,
+      initialSnapshot: { actionId, stage: "pending", settled },
+      retryOnError: true,
+    };
+    if (existing !== null) {
+      options.fiberId = existing.fiberId;
+      options.resumeInterrupted = existing.status === "interrupted";
+    }
+    await this.startFiber(
+      "osfo:browser-approval-reply",
+      (fiber) =>
+        this.#runBrowserFollowUp(actionId, settled, (stage) =>
+          fiber.stash({ actionId, stage, settled }),
+        ),
+      options,
+    );
+  }
+
+  override async onFiberRecovered(context: FiberRecoveryContext) {
+    if (context.name !== "osfo:browser-approval-reply") return super.onFiberRecovered(context);
+    const snapshot = await Effect.runPromise(
+      Schema.decodeUnknownEffect(BrowserApprovalResume.Delivery)(context.snapshot),
+    );
+    if (snapshot.stage !== "pending") {
+      await this.resolveFiber(context.id, {
+        status: snapshot.stage === "completed" ? "completed" : "error",
+        snapshot,
+      });
+      return undefined;
+    }
+    await this.startFiber(
+      "osfo:browser-approval-reply",
+      (fiber) =>
+        this.#runBrowserFollowUp(snapshot.actionId, snapshot.settled, (stage) =>
+          fiber.stash({ ...snapshot, stage }),
+        ),
+      {
+        fiberId: context.id,
+        resumeInterrupted: true,
+        retryOnError: true,
+      },
+    );
+    return undefined;
+  }
+
+  #runBrowserFollowUp(
+    actionId: ActionId,
+    settled: boolean,
+    checkpoint: (stage: BrowserApprovalResume.Delivery["stage"]) => void | Promise<void>,
+  ) {
+    return Effect.runPromise(
+      this.#accountDeletionFence.runTracked(
+        (signal) =>
+          Effect.gen({ self: this }, function* () {
+            const decision = yield* this.#browserApprovalResumes.decision(actionId);
+            if (decision.settled !== settled) {
+              yield* Effect.promise(() => Promise.resolve(checkpoint("completed")));
+              return yield* Effect.void;
+            }
+            const finish = Effect.promise(() => Promise.resolve(checkpoint("completed"))).pipe(
+              Effect.andThen(
+                decision.settled ? this.#browserApprovalResumes.forget(actionId) : Effect.void,
+              ),
+            );
+            const origin = decision.origin;
+            const resolve = () =>
+              this.#resolveMessengerLink(
+                origin.messenger.messengerId,
+                origin.messenger.message.author.userId,
+              );
+            const resolution = yield* Effect.promise(resolve);
+            if (resolution._tag === "Unavailable")
+              return yield* new BrowserApprovalResume.Unavailable({ cause: "channel unavailable" });
+            if (
+              resolution.link === null ||
+              resolution.link.channelLinkId !== origin.channelLinkId ||
+              resolution.link.userId !== origin.userId ||
+              !(yield* this.#store.ownsSession(origin.sessionId))
+            )
+              return yield* finish;
+            const current = yield* this.#inspectCurrentChannelLinkAuthorization(resolution.link);
+            const submissionId = yield* Effect.promise(() =>
+              messengerSubmissionId(
+                origin.messenger.messengerId,
+                origin.messenger.thread.id,
+                `browser-approval:${actionId}:${settled ? "settled" : "unknown"}`,
+              ),
+            );
+            const existing = yield* Effect.promise(() => this.inspectSubmission(submissionId));
+            if (existing === null) {
+              const admission = yield* admitManagedConversation(
+                {
+                  authorization: current,
+                  idempotencyKey: `browser-approval:${actionId}:${settled ? "settled" : "unknown"}`,
+                  message: BrowserApprovalResume.instruction(decision),
+                  routeId: origin.routeId,
+                  submissionId,
+                },
+                { routeId: origin.routeId, currentSessionId: origin.sessionId },
+              );
+              if (!Predicate.isTagged(admission, "ManagedConversationAdmitted"))
+                return yield* finish;
+              yield* Effect.promise(() =>
+                this.runTurn({
+                  mode: "submit",
+                  submissionId,
+                  idempotencyKey: admission.idempotencyKey,
+                  channel: origin.messenger.messengerId,
+                  metadata: admission.metadata,
+                  input: {
+                    id: submissionId,
+                    role: "user",
+                    metadata: {
+                      turnMetadata: admission.metadata,
+                      messenger: {
+                        ...origin.messenger,
+                        message: {
+                          ...origin.messenger.message,
+                          text: admission.message,
+                          attachments: [],
+                        },
+                      },
+                    },
+                    parts: [{ type: "text", text: admission.message }],
+                  },
+                }),
+              );
+            }
+            const terminal = yield* Effect.promise(() =>
+              this.waitForSubmission(submissionId, { signal }),
+            );
+            if (signal.aborted) return yield* finish;
+            const latest = yield* Effect.promise(resolve);
+            if (latest._tag === "Unavailable")
+              return yield* new BrowserApprovalResume.Unavailable({ cause: "channel unavailable" });
+            if (
+              latest.link === null ||
+              latest.link.channelLinkId !== origin.channelLinkId ||
+              latest.link.userId !== origin.userId
+            )
+              return yield* finish;
+            const authorized = yield* this.#inspectCurrentChannelLinkAuthorization(latest.link);
+            if (
+              Predicate.isTagged(
+                authorization.recheck(authorized, {
+                  actionId: submissionId,
+                  kind: "conversation.run",
+                  modelSteps: 0n,
+                }),
+                "Denied",
+              )
+            )
+              return yield* finish;
+            if (terminal.status !== "completed")
+              return yield* new BrowserApprovalResume.Unavailable({
+                cause: "continuation did not complete",
+              });
+            const committed = this.#db
+              .select()
+              .from(committedTurns)
+              .where(eq(committedTurns.think_request_id, ThinkRequestId.make(submissionId)))
+              .get();
+            if (committed === undefined || committed.session_id !== origin.sessionId)
+              return yield* new BrowserApprovalResume.Unavailable({
+                cause: "missing continuation evidence",
+              });
+            const response = yield* readThinkMessage(
+              Session.create(this),
+              origin.sessionId,
+              committed.assistant_message_id,
+            );
+            if (response === null)
+              return yield* new BrowserApprovalResume.Unavailable({
+                cause: "missing continuation response",
+              });
+            const text = response.parts
+              .flatMap((part) =>
+                part.type === "text" && Predicate.isString(part.text) ? [part.text] : [],
+              )
+              .join("");
+            const reply = yield* appendBrowserApprovalLink({
+              parts: response.parts,
+              text,
+              webBaseUrl: publicWebBaseUrl(loadConfig(this.env).auth),
+              pending: (id) => this.pendingApprovals(id),
+            });
+            if (reply === "" || signal.aborted) return yield* finish;
+            yield* Effect.promise(() => Promise.resolve(checkpoint("sending")));
+            yield* Effect.tryPromise({
+              try: async () => {
+                const { OsfoDirectory } = await import("./directory");
+                const directory = await this.parentAgent(OsfoDirectory);
+                await directory.deliverBrowserApprovalReply({
+                  agentId: this.name,
+                  origin,
+                  text: reply,
+                });
+              },
+              catch: (cause) => new BrowserApprovalResume.Unavailable({ cause }),
+            });
+            return yield* finish;
+          }),
+        () => new BrowserApprovalResume.Unavailable({ cause: "account deletion fence" }),
+      ),
+    );
   }
 
   /** Apply only the route and limits pinned to the current durable Think Submission. */
@@ -2215,6 +2501,41 @@ export class OsfoAgent extends Think<Env> {
   override async authorizeAction(
     context: ActionAuthorizationContext,
   ): Promise<ActionAuthorizationDecision> {
+    if (context.action === "executeBrowserEffect") {
+      const permitted = await super.authorizeAction(context);
+      if (permitted === false || (Predicate.isObject(permitted) && !permitted.allowed))
+        return permitted;
+      const retained = await Effect.runPromiseExit(
+        Effect.gen({ self: this }, function* () {
+          const metadata = yield* Schema.decodeUnknownEffect(ManagedTurnMetadata)(
+            this.activeTurnMetadata,
+          );
+          if (metadata.authorityIdentity._tag !== "ChannelLink")
+            return yield* new BrowserApprovalResume.Unavailable({
+              cause: "A linked conversation is required.",
+            });
+          const source = findConversationSubmissionMessage(this.messages, metadata.submissionId);
+          const origin = yield* Schema.decodeUnknownEffect(BrowserApprovalResume.MessengerOrigin)(
+            source?.metadata,
+          );
+          const input = yield* Schema.decodeUnknownEffect(BrowserEffectInput)(context.input);
+          yield* this.#browserApprovalResumes.retainOrigin({
+            actionId: ActionId.make(context.toolCallId),
+            channelLinkId: metadata.authorityIdentity.channelLinkId,
+            userId: metadata.authorityIdentity.userId,
+            routeId: metadata.routeId,
+            sessionId: metadata.sessionId,
+            submissionId: metadata.submissionId,
+            messenger: origin.messenger,
+            input,
+          });
+          return yield* Effect.void;
+        }),
+      );
+      return Exit.isSuccess(retained)
+        ? permitted
+        : { allowed: false, reason: "The browser approval conversation could not be retained." };
+    }
     if (context.action !== coreMemoryClearActionName) return super.authorizeAction(context);
     const current = await runRpc(this.#readCoreMemoryAuthorization());
     if (Predicate.isTagged(current, "CoreMemoryUnavailable")) {
@@ -2288,10 +2609,8 @@ export class OsfoAgent extends Think<Env> {
   }
 
   async #executeBrowserEffect(input: BrowserEffectInput, actionId: ActionId) {
-    const active = this.#activeCapabilityMetadata;
     const approved = this.#currentApprovedActions.get(actionId);
     if (
-      active === undefined ||
       approved?.operation !== "browser.effect" ||
       !hasExactBrowserInput(approved.actionPresentation, input)
     )
@@ -2301,7 +2620,7 @@ export class OsfoAgent extends Think<Env> {
     const tasks = this.#browserTasks;
     return Effect.runPromise(
       Effect.gen(function* () {
-        const task = yield* tasks.read(input.taskId, active.authorityIdentity.userId);
+        const task = yield* tasks.read(input.taskId, approved.actor.userId);
         if (!matchesObservation(task, input))
           return yield* new Browser.BrowserUnavailable({
             message: "The browser page no longer matches the approved interaction.",
@@ -2309,8 +2628,8 @@ export class OsfoAgent extends Think<Env> {
         return yield* tasks.run(
           {
             operationId: actionId,
-            turnId: active.submissionId,
-            userId: active.authorityIdentity.userId,
+            turnId: ThinkSubmissionId.make(task.lastRequest.turnId),
+            userId: approved.actor.userId,
           },
           input.taskId,
           {
@@ -2324,6 +2643,46 @@ export class OsfoAgent extends Think<Env> {
   }
 
   #authorizeBrowser(request: Browser.Inspection, command?: BrowserCommand) {
+    if (command?._tag === "Interact") {
+      const approved = this.#currentApprovedActions.get(ActionId.make(request.operationId));
+      if (
+        approved?.operation !== "browser.effect" ||
+        approved.actor.userId !== request.userId ||
+        approved.actor._tag !== "AuthSession"
+      )
+        return Effect.fail(
+          new Browser.BrowserUnavailable({ message: "Browser approval authority is unavailable." }),
+        );
+      return this.#managedActionAuthorization
+        .recheck(
+          approved.actor,
+          {
+            actionId: request.operationId,
+            kind: "browser.effect",
+            deadlineMilliseconds: 25_000n,
+            responseBytes: 262_144n,
+            retries: 0n,
+          },
+          approved.presentation,
+        )
+        .pipe(
+          Effect.flatMap((decision) =>
+            Predicate.isTagged(decision, "Denied")
+              ? Effect.fail(
+                  new Browser.BrowserUnavailable({
+                    message: "Browser approval authority is no longer permitted.",
+                  }),
+                )
+              : Effect.void,
+          ),
+          Effect.mapError(
+            () =>
+              new Browser.BrowserUnavailable({
+                message: "Current browser approval authority is unavailable.",
+              }),
+          ),
+        );
+    }
     const active = this.#activeCapabilityMetadata;
     if (
       active === undefined ||
@@ -2350,34 +2709,16 @@ export class OsfoAgent extends Think<Env> {
         }
         const operation = {
           actionId: request.operationId,
-          kind:
-            command === undefined
-              ? ("browser.inspect" as const)
-              : command._tag === "Interact"
-                ? ("browser.effect" as const)
-                : ("browser.read" as const),
+          kind: command === undefined ? ("browser.inspect" as const) : ("browser.read" as const),
           deadlineMilliseconds: command === undefined ? 15_000n : 25_000n,
           responseBytes: command === undefined ? 16_384n : 262_144n,
           retries: 0n as const,
         };
-        const approved =
-          command?._tag === "Interact"
-            ? this.#currentApprovedActions.get(ActionId.make(request.operationId))
-            : undefined;
-        if (command?._tag === "Interact" && approved?.operation !== "browser.effect")
-          return Effect.fail(
-            new Browser.BrowserUnavailable({
-              message: "The exact browser Action approval is unavailable.",
-            }),
-          );
         const admitted = authorization.admit(
           {
             ...context,
             requestVendorUsdMicros: 0n,
-            approval:
-              approved === undefined
-                ? null
-                : approvalFor(request.userId, operation, approved.presentation),
+            approval: null,
           },
           operation,
         );
@@ -3828,6 +4169,26 @@ export class OsfoAgent extends Think<Env> {
           ),
       );
     }
+    this.ctx.waitUntil(
+      Effect.runPromise(
+        this.#browserApprovalResumes.pending().pipe(
+          Effect.flatMap((decisions) =>
+            Effect.gen({ self: this }, function* () {
+              const pending = yield* Effect.promise(() => this.pendingApprovals());
+              yield* this.#browserApprovalResumes.pruneOrigins(
+                new Set([
+                  ...pending.map((item) => item.descriptor.toolCallId),
+                  ...decisions.map((item) => item.origin.actionId),
+                ]),
+              );
+              yield* Effect.forEach(decisions, (decision) =>
+                Effect.promise(() => this.#startBrowserFollowUp(decision.origin.actionId)),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
     this.ctx.waitUntil(this.#recoverRetainedSkillLearning());
     this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
   }
@@ -5728,6 +6089,8 @@ export class OsfoAgent extends Think<Env> {
     | ThinkApprovalUnavailable
   > {
     await this.#migrationsReady;
+    const browserApprovalResumes = this.#browserApprovalResumes;
+    const startBrowserFollowUp = (actionId: ActionId) => this.#startBrowserFollowUp(actionId);
     const actionApprovals = this.#actionApprovals;
     const currentApprovedActions = this.#currentApprovedActions;
     const immediateGmailSends = Option.getOrUndefined(this.#immediateGmailSends);
@@ -5791,8 +6154,45 @@ export class OsfoAgent extends Think<Env> {
                             ),
                           );
                       }
+                      if (found.presentation.operation === "browser.effect") {
+                        const origin = yield* browserApprovalResumes.origin(actionId).pipe(
+                          Effect.mapError(
+                            (cause) =>
+                              new ThinkApprovalUnavailable({
+                                cause,
+                                message: "The browser approval conversation is unavailable.",
+                                operation: "browserApproval.origin",
+                              }),
+                          ),
+                        );
+                        if (origin.userId !== parsed.actor.userId)
+                          return yield* new ThinkApprovalUnavailable({
+                            cause: "owner mismatch",
+                            message: "The browser approval owner changed.",
+                            operation: "browserApproval.origin",
+                          });
+                        yield* browserApprovalResumes
+                          .retainDecision({
+                            origin,
+                            presentationId: parsed.presentationId,
+                            decision: parsed.decision,
+                            outcome: { status: "unknown" },
+                            settled: false,
+                          })
+                          .pipe(
+                            Effect.mapError(
+                              (cause) =>
+                                new ThinkApprovalUnavailable({
+                                  cause,
+                                  message: "The browser approval could not be retained.",
+                                  operation: "browserApproval.prepare",
+                                }),
+                            ),
+                          );
+                      }
                       if (
-                        parsed.decision === "approve" &&
+                        (parsed.decision === "approve" ||
+                          found.presentation.operation === "browser.effect") &&
                         (found.presentation.operation === "artifact.delete" ||
                           found.presentation.operation === "memory.clear" ||
                           found.presentation.operation === "file.delete" ||
@@ -5806,6 +6206,7 @@ export class OsfoAgent extends Think<Env> {
                       ) {
                         currentApprovedActions.set(actionId, {
                           actionPresentation: found.presentation,
+                          actor: parsed.actor,
                           connectionBinding,
                           operation: found.presentation.operation,
                           presentation: approvalPresentationFor(found.presentation),
@@ -5850,6 +6251,17 @@ export class OsfoAgent extends Think<Env> {
                             Effect.sync(() => currentApprovedActions.delete(actionId)),
                           ),
                         );
+                      if (found.presentation.operation === "browser.effect") {
+                        yield* Effect.tryPromise({
+                          try: () => startBrowserFollowUp(actionId),
+                          catch: (cause) =>
+                            new ThinkApprovalUnavailable({
+                              cause,
+                              message: "The browser result follow-up is pending.",
+                              operation: "browserApproval.followUp",
+                            }),
+                        });
+                      }
                       if (approvalBinding !== undefined) {
                         yield* completeImmediateGmailDecision(approvalBinding, parsed.decision);
                       }

@@ -1,3 +1,4 @@
+import { BrowserApprovalResume } from "./browser-approval-resume";
 import { BrowserCrypto } from "@effect/platform-browser";
 import { Think, type StreamCallback, type ThinkChannels } from "@cloudflare/think";
 import type { MessengerContext } from "@cloudflare/think/messengers";
@@ -145,6 +146,41 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
           Effect.provide(directoryMessengerLayer(this.env)),
           Effect.orElseSucceed(() => ({ kind: "unavailable" as const })),
         ),
+      ),
+    );
+  }
+
+  /** Deliver through the registered root transport only while the original link still owns this facet. */
+  deliverBrowserApprovalReply(encoded: unknown) {
+    return Effect.runPromise(
+      Effect.scoped(
+        Effect.gen({ self: this }, function* () {
+          const reply = yield* Schema.decodeUnknownEffect(BrowserApprovalResume.Reply)(encoded);
+          if (!this.hasSubAgent(OsfoAgent, reply.agentId)) return yield* Effect.void;
+          const current = yield* this.#resolveMessengerAddress(
+            channelAddressOf(
+              reply.origin.messenger.messengerId,
+              reply.origin.messenger.message.author.userId,
+            ),
+          );
+          if (current._tag === "Unavailable")
+            return yield* new BrowserApprovalResume.Unavailable({ cause: "channel unavailable" });
+          if (
+            current._tag !== "Linked" ||
+            current.agentId !== reply.agentId ||
+            current.userId !== reply.origin.userId ||
+            current.channelLinkId !== reply.origin.channelLinkId
+          )
+            return yield* Effect.void;
+          return yield* Effect.tryPromise({
+            try: () =>
+              this.deliverNotice(reply.text, {
+                channel: reply.origin.messenger.messengerId,
+                thread: reply.origin.messenger.thread.id,
+              }),
+            catch: (cause) => new BrowserApprovalResume.Unavailable({ cause }),
+          });
+        }).pipe(Effect.provide(directoryMessengerLayer(this.env))),
       ),
     );
   }

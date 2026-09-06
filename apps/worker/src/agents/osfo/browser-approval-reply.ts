@@ -1,5 +1,31 @@
-import type { PendingApproval } from "@cloudflare/think";
+import type { PendingApproval, StreamCallback } from "@cloudflare/think";
 import { Effect, Option, Schema } from "effect";
+
+import { emitTextDelta, makeMessengerStream } from "./messenger-stream";
+
+/** Keep browser review links in the same provider stream, before native completion closes it. */
+export const withBrowserApprovalReply = <E>(
+  callback: StreamCallback,
+  reviewLink: () => Effect.Effect<string, E>,
+): StreamCallback => ({
+  onStart: (event) => callback.onStart(event),
+  onEvent: (event) => callback.onEvent(event),
+  onError: (error) => callback.onError(error),
+  onInterrupted: () => callback.onInterrupted?.(),
+  onDone: () =>
+    Effect.runPromise(
+      reviewLink().pipe(
+        Effect.flatMap((text) =>
+          text === "" ? Effect.void : emitTextDelta(makeMessengerStream(callback), text),
+        ),
+        Effect.ensuring(
+          makeMessengerStream(callback)
+            .use("done", (raw) => raw.onDone())
+            .pipe(Effect.orDie),
+        ),
+      ),
+    ),
+});
 
 const BrowserPause = Schema.Struct({
   status: Schema.Literal("paused"),

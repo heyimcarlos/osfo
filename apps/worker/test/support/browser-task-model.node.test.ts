@@ -168,3 +168,60 @@ it("reports a native pause as awaiting review without claiming a missing observa
   expect(response?.response).toContain("waiting for your decision");
   expect(response?.response).toContain("has not run");
 });
+
+it("stops after a retained native rejection without proposing another effect", () => {
+  expect(
+    respondBrowserTask({
+      messages: [
+        {
+          role: "user",
+          content:
+            'The User rejected the pending browser action. Do not execute, recreate, or propose that interaction again. Send a brief no-effect confirmation in their chat. Browser task: actual-task. Native outcome: {"status":"rejected","executionId":"actpause_test"}',
+        },
+      ],
+      tools,
+    }),
+  ).toMatchObject({
+    finish_reason: "stop",
+    response: "You rejected this browser action. It has not run.",
+  });
+});
+
+it("reads the actual task after approval and requires a separately approved confirmation", () => {
+  const instruction = {
+    role: "user",
+    content:
+      'Continue the existing browser task within the User\'s retained preferences. The User approved one action; approval alone is not proof of success. Inspect the retained native outcome and current browser result before stating what happened. Any further side effect requires its own approval. Browser task: actual-task. Native outcome: {"status":"completed"}',
+  };
+  expect(respondBrowserTask({ messages: [instruction], tools })).toMatchObject({
+    tool_calls: [{ name: "observeBrowserTask", arguments: { taskId: "actual-task" } }],
+  });
+  const observation = {
+    ...page,
+    text: "Selected: Tuesday at 10:00 AM\n9 button Confirm synthetic appointment",
+  };
+  const next = respondBrowserTask({
+    messages: [
+      instruction,
+      {
+        role: "tool",
+        name: "observeBrowserTask",
+        content: encode({ ...task, observation, lastOutcome: { _tag: "Observed", observation } }),
+      },
+    ],
+    tools,
+  });
+  expect(next).toMatchObject({
+    tool_calls: [
+      {
+        name: "executeBrowserEffect",
+        arguments: {
+          taskId: "actual-task",
+          observationId: page.observationId,
+          interaction: { _tag: "Click", target: "9" },
+        },
+      },
+    ],
+  });
+  expect(next?.response).not.toContain("confirmed");
+});

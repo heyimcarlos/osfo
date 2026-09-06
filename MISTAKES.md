@@ -164,3 +164,11 @@ short, specific, and actionable.
   revocation can remain unknown even after a successful Close. Keep the dedicated
   connection scoped and test cleanup beyond the task's idle lifetime with the real
   synthetic protocol bridge.
+
+### Browser approvals need a managed continuation and the owning messenger transport
+
+A native durable-pause decision executes outside `beforeTurn`; browser effects cannot depend on a prior instance's capability cache. Think's metadata getter reads the latest durable user message, which is also insufficient to identify an older pause after Session changes. Retain the exact pause origin, recheck the authenticated decision actor at effect time, preserve the native Action ledger, and explicitly admit the result continuation. The pinned SDK approval option suppresses only automatic continuation; it still applies the native outcome.
+
+Telegram uses the streaming `chatWithMessengerContext` path. The accepted `followMessengerInput` path currently belongs to WhatsApp, so testing that helper does not establish Telegram delivery. Add review links before the actual Telegram callback closes, and send later results through the Directory's registered transport with an explicit channel and thread. A child facet has no registered channel transport. Keep a pre-send checkpoint and never retry an ambiguous send.
+
+An undecided native pending row is not an uncertain consumed effect. Recovery must leave it pending, distinguish later settled continuation identities, carry the verified conversation origin into subsequent approvals, and re-enter the native managed Fiber before fallible recovery reads. Helper and storage tests qualify those boundaries; the authenticated Agent-to-Directory journey still requires composed verification.
