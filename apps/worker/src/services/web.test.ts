@@ -3,7 +3,14 @@ import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 
 import { makeWebTools } from "../agents/osfo/web-tools";
-import { CapabilityCatalogVersion, ThinkSubmissionId, UserId } from "../domain";
+import {
+  AllowancePeriodId,
+  CapabilityCatalogVersion,
+  PlanPolicyVersion,
+  ThinkSubmissionId,
+  UserId,
+} from "../domain";
+import { AuthSessionId } from "../domain/auth-session";
 import { Capabilities } from "./capabilities";
 import {
   type CompletedOperation,
@@ -17,6 +24,17 @@ import {
 } from "./web";
 
 /* oxlint-disable effecttsgo/global-date-in-effect, eslint/no-underscore-dangle, vitest/no-standalone-expect -- Fixed evidence times and tagged assertions execute inside Effect Vitest generators. */
+
+const paidAdmission = {
+  allowancePeriodId: AllowancePeriodId.make("paid-period-original"),
+  authorizedAt: "2026-08-27T12:00:00Z",
+  capabilityCatalogVersion: CapabilityCatalogVersion.make("governed-capabilities-v1"),
+  originatingAuthority: {
+    _tag: "AuthSession" as const,
+    authSessionId: AuthSessionId.make("paid-auth"),
+  },
+  planPolicyVersion: PlanPolicyVersion.make("shared-usage-v1"),
+};
 
 const userId = UserId.make("user-1");
 const turnId = ThinkSubmissionId.make("turn-1");
@@ -70,7 +88,7 @@ describe("Web", () => {
     Effect.gen(function* () {
       let calls = 0;
       const web = make({
-        authorize: () => Effect.void,
+        authorize: () => Effect.succeed(paidAdmission),
         discover: () =>
           Effect.sync(() => {
             calls += 1;

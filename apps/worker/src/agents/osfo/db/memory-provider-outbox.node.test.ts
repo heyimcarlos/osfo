@@ -20,6 +20,8 @@ import {
   AgentId,
   AgentInitializationId,
   AllowancePeriodId,
+  CapabilityCatalogVersion,
+  PlanPolicyVersion,
   AssistantMessageId,
   ConversationRouteId,
   ResourcePriceVersion,
@@ -68,6 +70,17 @@ const testSessionWriteSelection = {
   prepareSession: (sessionId: SessionId) => Effect.succeed(sessionId),
   retainIntent: () => Effect.void,
   selectSessionForWrites: () => Effect.void,
+};
+
+const paidAdmission = {
+  allowancePeriodId: AllowancePeriodId.make("paid-period-original"),
+  authorizedAt: "2026-08-27T12:00:00Z",
+  capabilityCatalogVersion: CapabilityCatalogVersion.make("governed-capabilities-v1"),
+  originatingAuthority: {
+    _tag: "AuthSession" as const,
+    authSessionId: AuthSessionId.make("paid-auth"),
+  },
+  planPolicyVersion: PlanPolicyVersion.make("shared-usage-v1"),
 };
 
 const now = DbTimestamp.make("2026-08-23T12:00:00.000Z");
@@ -376,12 +389,14 @@ it.effect("bounds retained public-web operations and result identities per User"
 );
 
 it.effect(
-  "retains failed paid provider evidence and rejects duplicate dispatch after restart",
+  "retains the original admission across period rollover and restart after paid failure",
   () =>
     withDatabase(({ database, storage }) =>
       Effect.gen(function* () {
         const db = makeAgentDb(asDurableObjectStorage(storage));
         let calls = 0;
+        let authorizations = 0;
+        let currentAdmission = paidAdmission;
         const evidence = {
           ...initialManagedSearchEvidence("provider-attempt"),
           inputTokens: 123,
@@ -390,7 +405,11 @@ it.effect(
           successfulSearches: 0,
         };
         const options = {
-          authorize: () => Effect.void,
+          authorize: () =>
+            Effect.sync(() => {
+              authorizations += 1;
+              return currentAdmission;
+            }),
           discover: () =>
             Effect.sync(() => {
               calls += 1;
@@ -410,18 +429,24 @@ it.effect(
         };
         const first = Web.make({ ...options, state: makeWebState(db, () => 1_000) });
         expect(Result.isFailure(yield* first.search(input).pipe(Effect.result))).toBe(true);
+        currentAdmission = {
+          ...paidAdmission,
+          allowancePeriodId: AllowancePeriodId.make("paid-period-next"),
+        };
         const restarted = Web.make({ ...options, state: makeWebState(db, () => 100_000) });
         const replay = yield* restarted.search(input).pipe(Effect.result);
         expect(Result.isFailure(replay)).toBe(true);
         if (Result.isFailure(replay))
           expect(replay.failure).toMatchObject({ reason: "operationFailed" });
         expect(calls).toBe(1);
+        expect(authorizations).toBe(1);
         expect(
           database
             .prepare("SELECT paid_attempt_json FROM osfo_web_operations WHERE operation_id = ?")
             .get(input.operationId),
         ).toEqual({
           paid_attempt_json: yield* Schema.encodeEffect(Schema.fromJsonString(PaidSearchAttempt))({
+            admission: paidAdmission,
             admittedVendorUsdMicros: 50_000n,
             evidence,
             outcome: "failed",
@@ -444,7 +469,7 @@ it.effect("keeps successful provider cost when page grounding exceeds the operat
       };
       let dispatches = 0;
       const web = Web.make({
-        authorize: () => Effect.void,
+        authorize: () => Effect.succeed(paidAdmission),
         discover: () =>
           Effect.sync(() => {
             dispatches += 1;
@@ -482,6 +507,7 @@ it.effect("keeps successful provider cost when page grounding exceeds the operat
           .get(input.operationId),
       ).toEqual({
         paid_attempt_json: yield* Schema.encodeEffect(Schema.fromJsonString(PaidSearchAttempt))({
+          admission: paidAdmission,
           admittedVendorUsdMicros: 50_000n,
           evidence,
           outcome: "succeeded",
@@ -515,6 +541,7 @@ it.effect("keeps compact paid search identities after the ordinary operation ret
         successfulSearches: 1,
       };
       yield* state.retainSearchAttempt(userId, input.operationId, claim.lease, {
+        admission: paidAdmission,
         admittedVendorUsdMicros: 50_000n,
         evidence,
         outcome: "succeeded",
@@ -576,6 +603,7 @@ it.effect("never reclaims a dispatched paid search after restart or explicit fai
       if (claim._tag !== "Claimed") throw new Error("Expected a search claim");
       const evidence = initialManagedSearchEvidence("paid-attempt");
       yield* state.retainSearchAttempt(input.userId, input.operationId, claim.lease, {
+        admission: paidAdmission,
         admittedVendorUsdMicros: 50_000n,
         evidence,
         outcome: "unknown",
@@ -594,6 +622,7 @@ it.effect("never reclaims a dispatched paid search after restart or explicit fai
           .get(input.operationId),
       ).toEqual({
         paid_attempt_json: yield* Schema.encodeEffect(Schema.fromJsonString(PaidSearchAttempt))({
+          admission: paidAdmission,
           admittedVendorUsdMicros: 50_000n,
           evidence,
           outcome: "unknown",
