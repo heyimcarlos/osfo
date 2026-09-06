@@ -1,3 +1,4 @@
+/* oxlint-disable effecttsgo/prefer-schema-over-json -- Tests inspect public JSON serialization for credential leaks and construct synthetic configuration. */
 import { env } from "cloudflare:workers";
 import { expect, it } from "@effect/vitest";
 
@@ -18,6 +19,7 @@ it("enables browser inventory only for an explicit complete local owner binding"
   expect(loadConfig(configured).browserHost).toMatchObject({
     ownerUserId: "test-owner",
     hostSessionId: "test-extension-instance",
+    allowedOrigins: [],
   });
   expect(loadConfig({ ...configured, BROWSER_HOST_TOKEN: "" }).browserHost).toBeNull();
   expect(
@@ -25,6 +27,19 @@ it("enables browser inventory only for an explicit complete local owner binding"
       .browserHost,
   ).toBeNull();
   expect(loadConfig({ ...configured, OSFO_STAGE: "preview" }).browserHost).toBeNull();
+  expect(
+    loadConfig({ ...configured, BROWSER_HOST_ALLOWED_ORIGINS: '["https://portal.example"]' })
+      .browserHost?.allowedOrigins,
+  ).toEqual(["https://portal.example"]);
+  for (const origins of [
+    '["https://portal.example/path"]',
+    '["http://remote.example"]',
+    "invalid",
+  ]) {
+    expect(
+      loadConfig({ ...configured, BROWSER_HOST_ALLOWED_ORIGINS: origins }).browserHost,
+    ).toBeNull();
+  }
 });
 
 it("rejects a malformed nonempty Company Conversation daily limit", () => {
@@ -153,4 +168,43 @@ it("keeps WhatsApp Wake-up inactive unless the exact policy attestation is prese
     templateName: "osfo_update",
     templatePolicyVersion: "whatsapp-wakeup-v1",
   });
+});
+
+it("loads only complete production browser bindings and keeps unconfigured production disabled", () => {
+  const production = {
+    ...env,
+    OSFO_STAGE: "production",
+    COMPOSIO_API_KEY: "configured-for-browser-test",
+    INTEGRATION_PROVIDER_BASE_URL: "",
+    RESEARCH_REPORT_PROVIDER_BASE_URL: "",
+    BROWSER_HOST_ENDPOINT: "",
+    BROWSER_HOST_OWNER_USER_ID: "",
+    BROWSER_HOST_SESSION_ID: "",
+    BROWSER_HOST_TOKEN: "",
+    BROWSER_HOST_ALLOWED_ORIGINS: "[]",
+  };
+  expect(loadConfig(production).browserHost).toBeNull();
+  const configured = {
+    ...production,
+    BROWSER_HOST_ENDPOINT: "https://browser.example/inventory",
+    BROWSER_HOST_OWNER_USER_ID: "test-owner",
+    BROWSER_HOST_SESSION_ID: "test-extension-instance",
+    BROWSER_HOST_TOKEN: "synthetic-test-token-with-32-characters",
+    BROWSER_HOST_ALLOWED_ORIGINS: '["https://portal.example"]',
+  };
+  expect(loadConfig(configured).browserHost).toMatchObject({
+    endpoint: configured.BROWSER_HOST_ENDPOINT,
+    ownerUserId: configured.BROWSER_HOST_OWNER_USER_ID,
+    hostSessionId: configured.BROWSER_HOST_SESSION_ID,
+    allowedOrigins: ["https://portal.example"],
+  });
+  expect(JSON.stringify(loadConfig(configured).browserHost)).not.toContain(
+    configured.BROWSER_HOST_TOKEN,
+  );
+  expect(() => loadConfig({ ...configured, BROWSER_HOST_TOKEN: "" })).toThrowError(
+    "BROWSER_HOST bindings require",
+  );
+  expect(() =>
+    loadConfig({ ...configured, BROWSER_HOST_ENDPOINT: "http://127.0.0.1:39270/inventory" }),
+  ).toThrowError("BROWSER_HOST bindings require");
 });

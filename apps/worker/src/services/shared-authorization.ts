@@ -259,6 +259,13 @@ const exceedsGovernedOperationLimit = (
         operation.redirects > 3n ||
         operation.retries > 1n
       );
+    case "browser.read":
+    case "browser.effect":
+      return (
+        operation.responseBytes > 262_144n ||
+        operation.deadlineMilliseconds > 25_000n ||
+        operation.retries !== 0n
+      );
     case "browser.inspect":
       return (
         operation.responseBytes > 16_384n ||

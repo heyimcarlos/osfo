@@ -1,13 +1,18 @@
+/* oxlint-disable eslint/no-underscore-dangle -- Browser wire outcomes use the canonical _tag discriminator. */
 import { timingSafeEqual } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import {
   decodeInventoryRequest,
+  decodeBrowserRequest,
   decodeInventoryResponse,
   encodeInventoryResponse,
+  encodeBrowserResponse,
   requestIdentity,
   type InventoryResponse,
 } from "@osfo/api/browser-host";
 import { Clock, Data, Effect, Option, Schema } from "effect";
+
+import { BrowserTask } from "./browser-task.ts";
 
 const Stored = Schema.Struct({ response: Schema.NullOr(Schema.String), expires_at: Schema.Int });
 const Count = Schema.Struct({ count: Schema.Int });
@@ -29,6 +34,10 @@ export class StorageUnavailable extends Data.TaggedError("BrowserHostStorageUnav
 export const make = Effect.fn("BrowserHost.make")(function* (
   options: Options,
   inspect: Effect.Effect<InventoryResponse["outcome"]>,
+  browser?: {
+    readonly runtime: BrowserTask.Runtime;
+    readonly allowedOrigins: ReadonlyArray<string>;
+  },
 ) {
   const database = yield* Effect.acquireRelease(
     storage(() => new DatabaseSync(options.databasePath)),
@@ -39,6 +48,7 @@ export const make = Effect.fn("BrowserHost.make")(function* (
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS binding (id INTEGER PRIMARY KEY CHECK (id = 1), owner TEXT NOT NULL, session TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS requests (identity TEXT PRIMARY KEY, response TEXT, expires_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS revocations (id INTEGER PRIMARY KEY CHECK (id = 1));
   `);
     database
       .prepare("INSERT OR IGNORE INTO binding VALUES (1, ?, ?)")
@@ -51,15 +61,59 @@ export const make = Effect.fn("BrowserHost.make")(function* (
     }
   });
   let busy = false;
-  return {
+  const executeBrowser =
+    browser === undefined
+      ? undefined
+      : yield* storage(() => BrowserTask.make(database, browser.runtime, browser.allowedOrigins));
+  const authenticated = (authorization: string | undefined) => {
+    const supplied = Buffer.from(authorization ?? "");
+    const expected = Buffer.from(`Bearer ${options.token}`);
+    return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+  };
+  const handlers = {
+    handleBrowser: Effect.fn("BrowserHost.handleBrowser")(function* (
+      authorization: string | undefined,
+      body: string,
+    ) {
+      if (!authenticated(authorization)) return { status: 401, body: "" };
+      const request = decodeBrowserRequest(body);
+      if (request === undefined) return { status: 400, body: "" };
+      if (
+        request.ownerUserId !== options.ownerUserId ||
+        request.hostSessionId !== options.hostSessionId
+      )
+        return { status: 403, body: "" };
+      if (executeBrowser === undefined) return { status: 503, body: "" };
+      if (request.command._tag === "Revoke") {
+        yield* storage(() =>
+          database.prepare("INSERT OR IGNORE INTO revocations VALUES (1)").run(),
+        );
+        const closed = busy ? false : yield* executeBrowser.revoke;
+        if (closed) yield* storage(() => database.exec("DELETE FROM requests;"));
+        return {
+          status: 200,
+          body: encodeBrowserResponse({
+            request,
+            outcome: closed ? { _tag: "Closed" } : { _tag: "Unknown" },
+          }),
+        };
+      }
+      const revoked = yield* storage(
+        () => database.prepare("SELECT id FROM revocations WHERE id = 1").get() !== undefined,
+      );
+      if (revoked) return { status: 403, body: "" };
+      const outcome = yield* executeBrowser.execute(request);
+      return { status: 200, body: encodeBrowserResponse({ request, outcome }) };
+    }),
     handle: Effect.fn("BrowserHost.handle")(function* (
       authorization: string | undefined,
       body: string,
     ) {
-      const supplied = Buffer.from(authorization ?? "");
-      const expected = Buffer.from(`Bearer ${options.token}`);
-      if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
-        return { status: 401, body: "" };
+      if (!authenticated(authorization)) return { status: 401, body: "" };
+      const revoked = yield* storage(
+        () => database.prepare("SELECT id FROM revocations WHERE id = 1").get() !== undefined,
+      );
+      if (revoked) return { status: 403, body: "" };
       const request = decodeInventoryRequest(body);
       if (request === undefined) return { status: 400, body: "" };
       if (
@@ -113,6 +167,38 @@ export const make = Effect.fn("BrowserHost.make")(function* (
         (existing) =>
           Effect.sync(() => {
             if (existing === undefined) busy = false;
+          }),
+      );
+    }),
+  };
+  let readingRequest = false;
+  return {
+    ...handlers,
+    handleRequest: Effect.fn("BrowserHost.handleRequest")(function* <E>(
+      route: "inventory" | "browser",
+      authorization: string | undefined,
+      readBody: Effect.Effect<string, E>,
+    ) {
+      return yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          if (!authenticated(authorization)) return { status: 401, body: "" };
+          if (readingRequest) return { status: 503, body: "" };
+          readingRequest = true;
+          return undefined;
+        }),
+        (refused) =>
+          refused !== undefined
+            ? Effect.succeed(refused)
+            : readBody.pipe(
+                Effect.flatMap((body) =>
+                  route === "inventory"
+                    ? handlers.handle(authorization, body)
+                    : handlers.handleBrowser(authorization, body),
+                ),
+              ),
+        (refused) =>
+          Effect.sync(() => {
+            if (refused === undefined) readingRequest = false;
           }),
       );
     }),

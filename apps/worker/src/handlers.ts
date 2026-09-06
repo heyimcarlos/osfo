@@ -10,6 +10,7 @@ import { DocumentBuildHandlers } from "./handlers/document-builds";
 import { FilesHandlers } from "./handlers/files";
 import { SkillsHandlers } from "./handlers/skills";
 import { IntegrationHandlers } from "./handlers/integrations";
+import { BrowserApprovalHandlers } from "./handlers/browser-approvals";
 import { ReminderHandlers } from "./handlers/reminders";
 import { ScheduledEmailHandlers } from "./handlers/scheduled-emails";
 import { publicWebBaseUrl, type CloudflareConfig } from "./config";
@@ -23,6 +24,7 @@ export const layer = (
     SkillsHandlers.Bindings &
     IntegrationHandlers.Bindings &
     ReminderHandlers.Bindings &
+    BrowserApprovalHandlers.Bindings &
     ScheduledEmailHandlers.Bindings &
     FilesHandlers.Bindings & { readonly DB: Pick<Hyperdrive, "connectionString"> },
 ) =>
@@ -43,6 +45,7 @@ export const layer = (
     RegistrationHandlers.layer,
     ResearchReportHandlers.layer,
     ReminderHandlers.layer(bindings),
+    BrowserApprovalHandlers.layer(bindings),
     ScheduledEmailHandlers.layer(bindings),
     SkillsHandlers.layer(bindings),
   );

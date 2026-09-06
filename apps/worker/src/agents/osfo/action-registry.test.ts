@@ -12,6 +12,7 @@ import {
 } from "./think-action-approvals";
 import {
   hasExactActionInput,
+  hasExactBrowserInput,
   hasExactForgetKnowledgeInput,
   hasExactIntegrationActionInput,
   hasExactPersonalSkillDeleteInput,
@@ -25,6 +26,7 @@ import {
   scheduledEmailStartActionName,
 } from "./action-presentation";
 import { ForgetKnowledgeInput } from "./deletion-actions";
+import { BrowserEffectInput } from "./browser-task";
 import { ReminderId } from "./reminders";
 
 it.effect("projects and fences every protected Research Report start fact", () =>
@@ -773,4 +775,75 @@ it.effect("presents and fences the complete owned Drive artifact delivery", () =
       }),
     ).toBe(false);
   }),
+);
+
+it.effect(
+  "binds browser Approval to the destination, observation, target, values, and consequence",
+  () =>
+    Effect.gen(function* () {
+      const input = {
+        taskId: "task-one",
+        observationId: "observation-one",
+        expectedUrl: "https://portal.example/book",
+        targetDescription: "4 AXTextField Contact name",
+        interaction: { _tag: "Fill", target: "4", value: "Synthetic visitor" } as const,
+        consequence: "Transmit the displayed contact name to this portal",
+      };
+      const presentation = yield* presentOsfoAction({
+        descriptor: {
+          action: "executeBrowserEffect",
+          input,
+          kind: "durable-pause",
+          permissions: ["browser:interact"],
+          requestId: "browser-request",
+          risk: "high",
+          summary: "Fill the exact field",
+          toolCallId: "browser-action",
+        },
+        executionId: ActionPresentationId.make("browser-execution"),
+        source: "action",
+      });
+      expect(hasExactBrowserInput(presentation, input)).toBe(true);
+      for (const changed of [
+        { ...input, taskId: "another-task" },
+        { ...input, observationId: "new-observation" },
+        { ...input, expectedUrl: "https://other.example/book" },
+        { ...input, targetDescription: "4 AXButton Submit" },
+        { ...input, consequence: "Read only" },
+        { ...input, interaction: { ...input.interaction, value: "Changed value" } },
+        { ...input, interaction: { ...input.interaction, target: "5" } },
+      ])
+        expect(hasExactBrowserInput(presentation, changed)).toBe(false);
+    }),
+);
+
+it.effect(
+  "accepts only browser consequences that fit the immutable presentation without truncation",
+  () =>
+    Effect.gen(function* () {
+      const input = {
+        taskId: "task",
+        observationId: "observation",
+        expectedUrl: "https://portal.example/book",
+        targetDescription: "9 button Submit",
+        interaction: { _tag: "Click", target: "9" } as const,
+        consequence: "c".repeat(500),
+      };
+      expect(Schema.is(BrowserEffectInput)(input)).toBe(true);
+      expect(Schema.is(BrowserEffectInput)({ ...input, consequence: "c".repeat(501) })).toBe(false);
+      const presentation = yield* presentOsfoAction({
+        descriptor: {
+          action: "executeBrowserEffect",
+          input,
+          kind: "durable-pause",
+          permissions: ["browser:interact"],
+          requestId: "request",
+          summary: "Submit",
+          toolCallId: "action",
+        },
+        executionId: ActionPresentationId.make("pause"),
+        source: "action",
+      });
+      expect(presentation.consequences).toContain(input.consequence);
+    }),
 );

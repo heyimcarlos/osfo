@@ -21,6 +21,7 @@ import { DocumentBuildComposition } from "./composition/document-build";
 import type { SkillsHandlers } from "./handlers/skills";
 import type { IntegrationHandlers } from "./handlers/integrations";
 import type { FilesHandlers } from "./handlers/files";
+import type { BrowserApprovalHandlers } from "./handlers/browser-approvals";
 import type { ReminderHandlers } from "./handlers/reminders";
 import type { ScheduledEmailHandlers } from "./handlers/scheduled-emails";
 import { ScheduledEmailComposition } from "./composition/scheduled-email";
@@ -31,6 +32,7 @@ export type Bindings = AccountDeletionComposition.Bindings &
   SkillsHandlers.Bindings &
   IntegrationHandlers.Bindings &
   ReminderHandlers.Bindings &
+  BrowserApprovalHandlers.Bindings &
   ScheduledEmailHandlers.Bindings &
   FilesHandlers.Bindings &
   WebhookHandlers.Bindings & {

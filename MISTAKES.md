@@ -137,3 +137,38 @@ short, specific, and actionable.
   editable controls and exposed radio option labels where production uses
   appearance exports. Keep editable regions separate, author visible labels and
   matching exports, and check real rendered output plus canonical field types.
+- Exercise browser HTTP transport in Workerd. Its fetch rejects redirect mode
+  `error` before networking; use `manual` and reject non-200 responses so host
+  credentials and commands cannot follow redirects. Keep local bearer bindings
+  in restrictive `.dev.vars` files because ordinary Wrangler vars appear in
+  retained startup logs. Test the actual startup log with a synthetic canary.
+
+- Build browser verification fixtures from actual accessibility output. Chrome
+  reports `button` roles, not the assumed `AXButton` spelling. Select the current
+  synthetic instruction after provider context so a historical URL cannot turn a
+  close request into another open request.
+
+- Qualify native Action pauses through the authenticated review page and the
+  originating chat. A retained pause needs a real decision route, a delivered
+  review link, and an observed native continuation before the user flow is ready.
+
+- Include each native browser Action in pending-input sanitization. Projection
+  tests must pass through the actual sanitizer and native pending adapter; testing
+  an unsanitized descriptor missed the input being replaced with an empty object.
+- Deliver approval links through the accepted messenger reply that owns external
+  delivery. A separate native notice is not included when that reply reads only
+  the exact committed assistant message. Use committed pause parts and recheck
+  the current pending ledger after the existing channel authority check.
+- Match a stateful browser connection's lifetime to its host scope. Executor's
+  five-minute idle pool eviction discards the REPL that owns tab handles, so later
+  revocation can remain unknown even after a successful Close. Keep the dedicated
+  connection scoped and test cleanup beyond the task's idle lifetime with the real
+  synthetic protocol bridge.
+
+### Browser approvals need a managed continuation and the owning messenger transport
+
+A native durable-pause decision executes outside `beforeTurn`; browser effects cannot depend on a prior instance's capability cache. Think's metadata getter reads the latest durable user message, which is also insufficient to identify an older pause after Session changes. Retain the exact pause origin, recheck the authenticated decision actor at effect time, preserve the native Action ledger, and explicitly admit the result continuation. The pinned SDK approval option suppresses only automatic continuation; it still applies the native outcome.
+
+Telegram uses the streaming `chatWithMessengerContext` path. The accepted `followMessengerInput` path currently belongs to WhatsApp, so testing that helper does not establish Telegram delivery. Add review links before the actual Telegram callback closes, and send later results through the Directory's registered transport with an explicit channel and thread. A child facet has no registered channel transport. Keep a pre-send checkpoint and never retry an ambiguous send.
+
+An undecided native pending row is not an uncertain consumed effect. Recovery must leave it pending, distinguish later settled continuation identities, carry the verified conversation origin into subsequent approvals, and re-enter the native managed Fiber before fallible recovery reads. Helper and storage tests qualify those boundaries; the authenticated Agent-to-Directory journey still requires composed verification.

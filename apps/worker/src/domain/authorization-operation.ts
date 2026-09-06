@@ -62,6 +62,8 @@ export const AuthorizationOperationName = Schema.Literals([
   "web.search",
   "web.read",
   "browser.inspect",
+  "browser.read",
+  "browser.effect",
 ]);
 
 /** Stable closed names for all launch authorization operations. */
@@ -69,6 +71,13 @@ export type AuthorizationOperationName = typeof AuthorizationOperationName.Type;
 
 /** Closed, schema-checked union of launch authorization operations. */
 export const AuthorizationOperation = Schema.Union([
+  Schema.Struct({
+    actionId: Schema.String,
+    kind: Schema.Literals(["browser.read", "browser.effect"]),
+    deadlineMilliseconds: positive,
+    responseBytes: positive,
+    retries: Schema.Literal(0n),
+  }),
   Schema.Struct({
     actionId: Schema.String,
     kind: Schema.Literal("browser.inspect"),

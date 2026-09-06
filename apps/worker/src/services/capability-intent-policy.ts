@@ -238,6 +238,10 @@ export const capabilityIntentPolicy = {
     ),
     taskKinds: ["web"],
   },
+  "browser-task": {
+    matches: anyIntentPhrase("browser", "booking", "appointment", "portal"),
+    taskKinds: ["web"],
+  },
   "browser-inventory": {
     matches: anyIntentPhrase(
       "browser inventory",

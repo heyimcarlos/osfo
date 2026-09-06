@@ -34,6 +34,7 @@ import { ReminderManageInput, reminderManageActionName } from "./reminder-tool-c
 import { ResearchReport } from "../../services/research-report";
 import { DocumentBuild } from "../../services/document-build";
 import { ScheduledEmail } from "../../services/scheduled-email";
+import { BrowserEffectInput } from "./browser-task";
 import {
   CalendarCreateEventInput,
   CalendarDeleteEventInput,
@@ -58,6 +59,11 @@ export const scheduledEmailStartActionName = "scheduleEmail";
 export const scheduledEmailApprovalSelection: ActionApprovalSelection = {
   maximum: 50,
   select: (pending) => pending.descriptor.action === scheduledEmailStartActionName,
+};
+
+export const browserApprovalSelection: ActionApprovalSelection = {
+  maximum: 50,
+  select: (pending) => pending.descriptor.action === "executeBrowserEffect",
 };
 
 export const reminderApprovalSelection: ActionApprovalSelection = {
@@ -93,6 +99,29 @@ export const presentOsfoAction = Effect.fn("ActionPresentation.present")(functio
   inspectCurrentCoreMemory?: Effect.Effect<CoreMemoryInspected, CoreMemoryUnavailable>,
   ownerUserId?: UserId,
 ) {
+  if (pending.descriptor.action === "executeBrowserEffect") {
+    const input = yield* Schema.decodeUnknownEffect(BrowserEffectInput)(
+      pending.descriptor.input,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "The browser effect cannot be projected safely",
+          }),
+      ),
+    );
+    return ActionPresentation.make({
+      actionDefinitionVersion: "osfo-browser-effect-v1",
+      actionId: ActionId.make(pending.descriptor.toolCallId),
+      consequences: [input.consequence],
+      description: "Perform this exact interaction on the shown owned browser page.",
+      fields: browserPresentationFields(input),
+      operation: "browser.effect",
+      presentationId: ActionPresentationId.make(pending.executionId),
+      title: "Browser interaction",
+    });
+  }
   if (pending.descriptor.action === reminderManageActionName) {
     return yield* presentReminderManageAction(pending, ownerUserId);
   }
@@ -140,6 +169,29 @@ export const presentOsfoAction = Effect.fn("ActionPresentation.present")(functio
     message: "The Action has no safe presentation projection",
   });
 });
+
+export const hasExactBrowserInput = (presentation: ActionPresentation, input: BrowserEffectInput) =>
+  hasExactFields(
+    presentation,
+    "browser.effect",
+    "osfo-browser-effect-v1",
+    browserPresentationFields(input),
+  );
+
+const browserPresentationFields = (input: BrowserEffectInput) => [
+  { label: "Destination", name: "url", value: input.expectedUrl },
+  { label: "Visible target", name: "target", value: input.targetDescription },
+  {
+    label: "Exact interaction",
+    name: "interaction",
+    value: Schema.encodeSync(Schema.fromJsonString(BrowserEffectInput.fields.interaction))(
+      input.interaction,
+    ),
+  },
+  { label: "Consequence", name: "consequence", value: input.consequence },
+  { label: "Browser task", name: "taskId", value: input.taskId },
+  { label: "Page observation", name: "observationId", value: input.observationId },
+];
 
 /** Verify every protected Reminder fact against the immutable approved projection. */
 export const hasExactReminderManageInput = (

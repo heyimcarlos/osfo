@@ -14,6 +14,7 @@ usage() {
     '  control-osfo start <run-id>' \
     '  control-osfo doctor <run-id>' \
     '  control-osfo identity <run-id>' \
+    '  control-osfo browser-bind <run-id> <private-bindings-json>' \
     '  control-osfo journeys <run-id>' \
     '  control-osfo account-deletion-envelope-journey <run-id>' \
     '  control-osfo evidence <run-id> <registration|channel-linking|conversation-memory|research-report|document-build-free-denial|document-build|immediate-gmail-send|scheduled-email|billing|whatsapp-wakeup|account-deletion|account-deletion-replay> start' \
@@ -210,6 +211,31 @@ stop_process() {
   done
   printf 'Process group %s for %s survived teardown\n' "$process_group_id" "$name" >&2
   return 1
+}
+
+browser_bind() {
+  local run_id state_dir container_id phone owner binding_path
+  run_id="$1"
+  binding_path="$2"
+  doctor_run "$run_id" >/dev/null
+  state_dir="$(state_dir_for "$run_id")"
+  container_id="$(state_value "$run_id" container-id)"
+  phone="$(state_value "$run_id" phone-e164)"
+  # Run-generated phone digits are validated before interpolation into this read-only query.
+  [[ "$phone" =~ ^\+1[0-9]{10}$ ]] || { printf 'Invalid run phone\n' >&2; return 1; }
+  owner="$(docker exec --env PGPASSWORD=osfo "$container_id" psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select u.id from users u where u.phone_number = '$phone'
+      and u.phone_number_verified is true
+      and u.registration_completed_at is not null
+      and exists (select 1 from agents a where a.user_id = u.id)
+      and exists (select 1 from sessions s where s.user_id = u.id and s.expires_at > now())
+      and not exists (select 1 from channel_links c where c.user_id = u.id);")"
+  [[ -n "$owner" && "$owner" != *$'\n'* ]] || { printf 'Bind after registration and before channel linking/chat work\n' >&2; return 1; }
+  bun "$script_dir/browser-binding.mjs" "$state_dir/wrangler.json" "$binding_path" "$owner"
+  chmod 600 "$state_dir/wrangler.json"
+  stop_process "$state_dir" worker
+  start_worker_process "$run_id"
+  doctor_run "$run_id"
 }
 
 write_wrangler_config() {
@@ -3331,6 +3357,11 @@ case "$command_name" in
   doctor)
     require_run_id "${2:-}"
     doctor_run "$2"
+    ;;
+  browser-bind)
+    require_run_id "${2:-}"
+    [[ -n "${3:-}" ]] || { usage >&2; exit 2; }
+    browser_bind "$2" "$3"
     ;;
   identity)
     require_run_id "${2:-}"

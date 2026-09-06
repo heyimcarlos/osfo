@@ -2,6 +2,7 @@ import { Link, Outlet, useRouter, useRouterState } from "@tanstack/react-router"
 import {
   ArrowLeft,
   Bell,
+  Globe,
   CreditCard,
   LogOut,
   MessagesSquare,
@@ -20,6 +21,7 @@ type SettingsDestination =
   | "/settings/general"
   | "/settings/channels"
   | "/settings/reminders"
+  | "/settings/browser"
   | "/settings/integrations"
   | "/settings/profile"
   | "/settings/privacy"
@@ -36,6 +38,7 @@ const settingsItems: ReadonlyArray<SettingsNavigationItem> = [
   { icon: Settings, label: "Settings", to: "/settings/general" },
   { icon: MessagesSquare, label: "Channels", to: "/settings/channels" },
   { icon: Plug, label: "Integrations", to: "/settings/integrations" },
+  { icon: Globe, label: "Browser", to: "/settings/browser" },
   { icon: Bell, label: "Reminders", to: "/settings/reminders" },
   { icon: UserRound, label: "Profile", to: "/settings/profile" },
   { icon: ShieldCheck, label: "Privacy", to: "/settings/privacy" },
@@ -44,6 +47,7 @@ const settingsItems: ReadonlyArray<SettingsNavigationItem> = [
 ];
 
 const pageDetails = {
+  "/settings/browser": { subtitle: "Review exact browser interactions", title: "Browser" },
   "/settings/reminders": {
     subtitle: "Review and approve your exact reminders",
     title: "Reminders",
@@ -70,6 +74,7 @@ const getPageDetails = (pathname: string) => {
     case "/settings/general":
     case "/settings/integrations":
     case "/settings/reminders":
+    case "/settings/browser":
     case "/settings/privacy":
     case "/settings/profile":
     case "/settings/skills":

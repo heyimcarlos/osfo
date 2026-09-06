@@ -11,6 +11,7 @@ import {
   type RegistrationLocale,
   type ScheduledEmailApprovalDecision,
   type ReminderApprovalDecision,
+  type BrowserApprovalDecision,
   type SkillChangeRequest,
   type SkillDeletionPresentation,
   skillDeletionConfirmation,
@@ -253,4 +254,15 @@ export const decideReminderApproval = (payload: ReminderApprovalDecision) =>
   Effect.gen(function* () {
     const client = yield* apiClient;
     return yield* client.reminders.decideApproval({ payload });
+  });
+
+export const inspectBrowserApprovals = Effect.gen(function* () {
+  const client = yield* apiClient;
+  return yield* client.browserApprovals.approvals();
+});
+
+export const decideBrowserApproval = (payload: BrowserApprovalDecision) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    return yield* client.browserApprovals.decideApproval({ payload });
   });

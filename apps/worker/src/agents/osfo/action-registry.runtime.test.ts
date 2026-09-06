@@ -1,7 +1,7 @@
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the returned Effect. */
 import type { PendingApproval } from "@cloudflare/think";
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Result, Schema } from "effect";
 
 import { presentOsfoAction, scheduledEmailStartActionName } from "./action-presentation";
 import {
@@ -11,7 +11,8 @@ import {
 } from "./action-registry";
 import { UserId } from "../../domain";
 import { decodeReminderActionInput } from "./reminder-tools";
-import { ActionPresentationId } from "./think-action-approvals";
+import { BrowserEffectInput } from "./browser-task";
+import { ActionPresentationId, makeThinkActionApprovalAdapter } from "./think-action-approvals";
 
 it.effect("preserves encoded Scheduled Email input through the pending Approval boundary", () =>
   Effect.gen(function* () {
@@ -158,4 +159,67 @@ it.effect("preserves exact Reminder facts through pending sanitization and durab
     expect(resumed.firstDueAt.toISOString()).toBe(input.firstDueAt);
     expect(yield* decodeReminderActionInput(resumed)).toEqual(resumed);
   }),
+);
+
+it.effect(
+  "preserves browser input through sanitizer, native pending adapter and immutable presentation",
+  () =>
+    Effect.gen(function* () {
+      const input = {
+        taskId: "task",
+        observationId: "observation",
+        expectedUrl: "https://portal.example/book",
+        targetDescription: "9 button Choose Tuesday",
+        interaction: { _tag: "Click", target: "9" } as const,
+        consequence: "Select Tuesday without confirming",
+      };
+      const pending = {
+        executionId: "actpause_browser",
+        source: "action",
+        descriptor: {
+          action: "executeBrowserEffect",
+          requestId: "request",
+          toolCallId: "call",
+          summary: "Choose Tuesday",
+          kind: "durable-pause",
+          permissions: ["browser:interact"],
+          input: {
+            ...input,
+            untrustedExtra: "discard",
+            interaction: { ...input.interaction, untrustedExtra: "discard" },
+          },
+        },
+      } satisfies PendingApproval;
+      const sanitized = sanitizePendingApproval(pending);
+      expect(sanitized.descriptor.input).toEqual(input);
+      const adapter = makeThinkActionApprovalAdapter({
+        think: {
+          pending: () => Promise.resolve([sanitized]),
+          approve: () => Promise.resolve({}),
+          reject: () => Promise.resolve({}),
+        },
+      });
+      const decoded = yield* adapter.findPending(ActionPresentationId.make(pending.executionId));
+      const presentation = yield* presentOsfoAction(decoded);
+      expect(presentation.operation).toBe("browser.effect");
+      expect(presentation.consequences).toEqual([input.consequence]);
+      expect(presentation.fields).toContainEqual({
+        name: "target",
+        label: "Visible target",
+        value: input.targetDescription,
+      });
+      const malformed = sanitizePendingApproval({
+        ...pending,
+        descriptor: {
+          ...pending.descriptor,
+          input: { ...input, interaction: { _tag: "Click", target: 9 } },
+        },
+      });
+      expect(Schema.is(BrowserEffectInput)(malformed.descriptor.input)).toBe(false);
+      const failure = yield* presentOsfoAction({
+        ...decoded,
+        descriptor: { ...decoded.descriptor, input: malformed.descriptor.input },
+      }).pipe(Effect.result);
+      expect(Result.isFailure(failure)).toBe(true);
+    }),
 );

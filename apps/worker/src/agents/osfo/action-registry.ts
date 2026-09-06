@@ -1,3 +1,4 @@
+import { BrowserEffectInput } from "./browser-task";
 import { action, type PendingApproval } from "@cloudflare/think";
 import { Option, Schema } from "effect";
 
@@ -49,6 +50,7 @@ import { ReminderManageInput, reminderManageActionName } from "./reminder-tool-c
 import { effectToolSchema } from "./effect-tool-schema";
 
 type SanitizedPendingApprovalInput =
+  | Partial<BrowserEffectInput>
   | Partial<typeof ReminderManageInput.Encoded>
   | Partial<ClearCoreMemoryInput>
   | Partial<ForgetKnowledgeInput>
@@ -74,6 +76,7 @@ export {
   RetainedDocumentInput,
   scheduledEmailApprovalSelection,
   reminderApprovalSelection,
+  browserApprovalSelection,
   scheduledEmailStartActionName,
   ScheduledEmailIdentityInput,
   ScheduledEmailStartInput,
@@ -178,6 +181,14 @@ export const makeOsfoActions = (options: {
 /** Keep only definition-owned input fields on every pending Approval. */
 export const sanitizePendingApproval = (approval: PendingApproval): PendingApproval => {
   if (approval.source !== "action") return withoutInput(approval);
+  if (approval.descriptor.action === "executeBrowserEffect") {
+    return withInput(
+      approval,
+      Schema.decodeUnknownOption(BrowserEffectInput)(approval.descriptor.input).pipe(
+        Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
+      ),
+    );
+  }
   if (approval.descriptor.action === coreMemoryClearActionName) {
     return withInput(
       approval,
