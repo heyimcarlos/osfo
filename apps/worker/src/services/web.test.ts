@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Fiber } from "effect";
+import { IncidentControls } from "./incident-controls";
 import { TestClock } from "effect/testing";
 
 import { makeWebTools } from "../agents/osfo/web-tools";
@@ -82,6 +83,61 @@ describe("Web", () => {
       expect(state.claimCalls).toBe(0);
       expect(dispatched).toBe(false);
     }),
+  );
+
+  it.effect(
+    "keeps a paused paid search unclaimed and permits its completed replay while paused",
+    () =>
+      Effect.gen(function* () {
+        let paused = true;
+        let checks = 0;
+        let calls = 0;
+        const controls = IncidentControls.make(() =>
+          Effect.sync(() => {
+            checks += 1;
+            return paused;
+          }),
+        );
+        const state = memoryState();
+        const web = make({
+          authorize: () => controls.check("newCostlyWork").pipe(Effect.as(paidAdmission)),
+          discover: (_query, _remaining, evidence) =>
+            Effect.gen(function* () {
+              if (!evidence)
+                return yield* Effect.die(new Error("Paid attempt evidence is required"));
+              calls += 1;
+              return {
+                evidence: { latencyMs: 0, requestId: "paid-result", managedSearch: evidence },
+                results: [],
+              };
+            }),
+          fetchPage: () => Effect.die(new Error("No discovery result exists")),
+          makeId: sequenceIds("paid-attempt"),
+          now: Effect.succeed(new Date("2026-08-27T12:00:00Z")),
+          searchPolicy: { requestVendorUsdMicros: 25_000n },
+          state,
+        });
+        const input = {
+          operationId: "paused-paid",
+          query: "current releases",
+          requestText: "Search current releases",
+          turnId,
+          userId,
+        };
+        expect(yield* web.search(input).pipe(Effect.flip)).toMatchObject({
+          _tag: "IncidentWorkPaused",
+        });
+        expect(state.claimCalls).toBe(0);
+        expect(state.pendingOperations).toBe(0);
+        expect(calls).toBe(0);
+        paused = false;
+        const completed = yield* web.search(input);
+        paused = true;
+        expect(yield* web.search(input)).toEqual(completed);
+        expect(checks).toBe(2);
+        expect(calls).toBe(1);
+        expect(state.claimCalls).toBe(1);
+      }),
   );
 
   it.effect("does not retry paid discovery when its response times out", () =>

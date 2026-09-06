@@ -1,6 +1,7 @@
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/global-date -- Tests inspect tagged outcomes and fixed immutable event timestamps. */
 /* oxlint-disable vitest/no-standalone-expect -- Assertions run inside Effect tests. */
 import { expect, it } from "@effect/vitest";
+import { IncidentControls } from "../../services/incident-controls";
 import { Effect, Schema } from "effect";
 
 import {
@@ -249,4 +250,64 @@ it.effect("continues newer settlements when an older completed turn has unreport
     expect(settled).toBe(1);
     expect(terminal.usageSettled).toBe(true);
   }),
+);
+
+it.effect(
+  "retains completed step cost when a later dispatch is refused without charging failed work",
+  () =>
+    Effect.gen(function* () {
+      const retained = yield* retainConversationModelStep(
+        [userMessage],
+        metadata.submissionId,
+        step,
+      );
+      const controls = IncidentControls.make(() => Effect.succeed(true));
+      yield* controls.check("newCostlyWork").pipe(Effect.flip);
+      // Refusal never calls retainConversationModelStep, so no second provider step exists.
+      expect(retained.metadata).toMatchObject({ osfoConversationModelSteps: [step] });
+      const event = yield* conversationUsageEvent([retained], metadata, [], occurredAt, 1);
+      expect(event.outcome).toMatchObject({
+        _tag: "Completed",
+        charge: { ratedCostUsdMicros: 530n },
+      });
+      let dispatches = 0;
+      const failed = CommittedTurnTerminal.make({
+        requestId: ThinkRequestId.make("failed-after-pause"),
+        status: "error",
+        usageOccurredAt: occurredAt.toISOString(),
+        usageExpectedModelSteps: 1,
+      });
+      yield* settleConversationUsage({
+        read: Effect.succeed(failed),
+        prepare: () => Effect.die(new Error("Failed work retains Company Cost only")),
+        retain: () => Effect.die(new Error("Failed work must not freeze User usage")),
+        dispatch: () =>
+          Effect.sync(() => {
+            dispatches += 1;
+          }),
+      });
+      expect(dispatches).toBe(0);
+      let terminal = CommittedTurnTerminal.make({
+        requestId: ThinkRequestId.make("useful-completed"),
+        status: "completed",
+        usageOccurredAt: occurredAt.toISOString(),
+        usageExpectedModelSteps: 1,
+      });
+      const settle = settleConversationUsage({
+        read: Effect.sync(() => terminal),
+        prepare: () => Effect.succeed(event),
+        retain: (next) =>
+          Effect.sync(() => {
+            terminal = next;
+          }),
+        dispatch: () =>
+          Effect.sync(() => {
+            dispatches += 1;
+          }),
+      });
+      yield* settle;
+      yield* settle;
+      expect(dispatches).toBe(1);
+      expect(retained.metadata).toMatchObject({ osfoConversationModelSteps: [step] });
+    }),
 );

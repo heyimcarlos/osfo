@@ -1996,6 +1996,19 @@ export class OsfoAgent extends Think<Env> {
       );
     }
     return this.#fileToolAuthorizationContext().pipe(
+      Effect.tap(() =>
+        request.requestVendorUsdMicros > 0n
+          ? IncidentControlsPostgres.check(this.env.DB, "newCostlyWork").pipe(
+              Effect.mapError(
+                () =>
+                  new WebUnavailable({
+                    message: "New paid public-web work is temporarily unavailable.",
+                    reason: "authorizationDenied",
+                  }),
+              ),
+            )
+          : Effect.void,
+      ),
       Effect.flatMap((context) => {
         const operation =
           request.searches > 0
@@ -7567,10 +7580,13 @@ export class OsfoAgent extends Think<Env> {
           activeTurn.value.sessionId,
         ),
       );
+    // A refused next dispatch clears the active marker, not evidence from completed steps.
+    const completedModelStepCount = Math.max(0, ...this.#completedModelSteps);
     const completed =
       useful &&
       Option.isSome(activeTurn) &&
       result.status === "completed" &&
+      completedModelStepCount > 0 &&
       activeTurn.value.planPolicyVersion === "shared-usage-v1" &&
       activeTurn.value.conversationResourcePriceVersion !== undefined &&
       activeTurn.value.executionMode !== "companyContinuity" &&
@@ -7578,7 +7594,7 @@ export class OsfoAgent extends Think<Env> {
         ? {
             ...captured,
             usageOccurredAt: new Date().toISOString(),
-            usageExpectedModelSteps: this.#activeModelStepNumber,
+            usageExpectedModelSteps: completedModelStepCount,
             usageSubmissionMessageId: this.#activeConversationSubmissionMessageId,
           }
         : captured;

@@ -78,6 +78,32 @@ const report: ResearchReport.Record = {
   workflowId,
 };
 
+it.effect(
+  "refuses paused Research search before retaining a paid attempt or contacting the provider",
+  () => {
+    const fixture = makeFixture({
+      managedSearch: true,
+      checkNewDispatch: Effect.fail(
+        new ResearchCollector.Unavailable({
+          cause: "incident paused",
+          message: "New work is paused",
+          reason: "authorizationDenied",
+        }),
+      ),
+    });
+    return Effect.gen(function* () {
+      const collector = yield* ResearchCollector.Service;
+      yield* collector.collect(report).pipe(Effect.result);
+      expect(fixture.discoveryCalls).toBe(0);
+      expect(fixture.searchAdmissionCalls).toBe(0);
+      expect(
+        [...fixture.operations.values()].every((operation) => operation.attemptCount === 0),
+      ).toBe(true);
+      expect([...fixture.resultJson.values()]).toEqual([]);
+    }).pipe(Effect.provide(layer(fixture.port)));
+  },
+);
+
 it.effect("retains source bodies only in R2 evidence and cites fetched pages only", () => {
   const fixture = makeFixture();
   return Effect.gen(function* () {
@@ -491,6 +517,7 @@ it.effect("removes a late page write after the committed PostgreSQL deletion fen
 
 const makeFixture = (
   options: {
+    readonly checkNewDispatch?: ResearchCollector.PortInterface["checkNewDispatch"];
     readonly pendingAttemptCount?: number;
     readonly managedSearch?: boolean;
     readonly pendingStartedAt?: Date;
@@ -523,7 +550,7 @@ const makeFixture = (
   let ambiguousDiscoveryFailures = options.ambiguousDiscoveryFailures ?? 0;
   let transientPageFailures = options.transientPageFailures ?? 0;
   const port = ResearchCollector.Port.of({
-    checkNewDispatch: Effect.void,
+    checkNewDispatch: options.checkNewDispatch ?? Effect.void,
     admitSearch: (current) =>
       Effect.sync(() => {
         searchAdmissionCalls += 1;
