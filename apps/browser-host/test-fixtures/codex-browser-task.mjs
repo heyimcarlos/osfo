@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /* oxlint-disable effecttsgo/async-function -- This app-server fixture implements the documented CUA Promise interface. */
 /* oxlint-disable effecttsgo/node-builtin-import, effecttsgo/process-env -- This isolated protocol fixture executes generated adapter programs against synthetic browser objects only. */
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
+import { setTimeout } from "node:timers/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { runInNewContext } from "node:vm";
@@ -59,6 +60,12 @@ const context = {
         getAXState: async () => tab.text,
         click: async (target) => {
           events({ operation: "click", id, target });
+          if (tab.url.endsWith("/delayed")) {
+            // oxlint-disable-next-line eslint/no-await-in-loop -- One in-flight protocol call must await the test-owned release before replying.
+            while (!existsSync(join(process.env.CODEX_HOME, "release"))) await setTimeout(10);
+            events({ operation: "settled", id });
+          }
+          if (tab.url.endsWith("/cross-origin")) tab.url = "https://redirect.example/confirmed";
           tab.text =
             "0 AXWebArea Confirmed\n  1 AXStaticText Confirmation SYNTHETIC-1\n  2 AXLink Cancel appointment";
         },

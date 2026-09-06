@@ -17,11 +17,12 @@ export type Page = typeof Page.Type;
 
 export interface Runtime {
   readonly closeAll: Effect.Effect<boolean>;
+  /** Unavailable proves no create was dispatched; every uncertain create returns Unknown. */
   readonly open: (
     url: string,
   ) => Effect.Effect<
     | { readonly _tag: "Opened"; readonly tabId: string; readonly page: Page }
-    | { readonly _tag: "HumanRequired" | "Unknown" | "Unavailable" }
+    | { readonly _tag: "Unknown" | "Unavailable" }
   >;
   readonly observe: (
     tabId: string,
@@ -153,6 +154,13 @@ export const make = (
             .run(taskIdentity, url.origin, now + 3_600_000),
         );
         const opened = yield* runtime.open(url.href);
+        if (opened._tag === "Unavailable") {
+          // The runtime's Open Unavailable outcome proves no create was dispatched.
+          yield* storage(() =>
+            database.prepare("DELETE FROM browser_tasks WHERE identity = ?").run(taskIdentity),
+          );
+          return opened;
+        }
         if (opened._tag !== "Opened") return opened;
         yield* storage(() =>
           database
@@ -213,6 +221,12 @@ export const make = (
 
   const revoke = Effect.fn("BrowserTask.revoke")(function* () {
     if (!(yield* runtime.closeAll)) return false;
+    // A missing tab ID may mean create succeeded before its response was retained.
+    // A restarted runtime's empty handle map cannot discharge that cleanup obligation.
+    const unresolved = yield* storage(() =>
+      database.prepare("SELECT identity FROM browser_tasks WHERE tab_id IS NULL LIMIT 1").get(),
+    );
+    if (unresolved !== undefined) return false;
     const tabs = yield* storage(() =>
       Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ tab_id: Schema.String })))(
         database.prepare("SELECT tab_id FROM browser_tasks WHERE tab_id IS NOT NULL").all(),

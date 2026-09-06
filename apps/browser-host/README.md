@@ -97,3 +97,37 @@ These tests do not establish authenticated live browser qualification. That proo
 requires a separately coordinated synthetic portal journey through an actual Osfo
 turn and Action approval. This slice does not claim OCR, arbitrary navigation,
 profile isolation, production reachability, or completion of a real booking.
+
+## Reconcile an unresolved tab creation
+
+An Open refusal reported as `Unavailable` proves no create was dispatched. Its
+empty task row is removed while its original operation outcome stays retained.
+An `Unknown` Open may have created a tab. Its NULL tab ID is a cleanup obligation,
+not proof that no tab exists. Revocation stays pending even if a restarted runtime
+reports an empty owned-handle map.
+
+An operator can resolve that obligation only with positive evidence linking the
+original operation to one exact tab in the bound Chrome extension:
+
+1. Keep the account deletion pending and the host revoked. Stop the host before
+   repairing its private database. Retain the `browser_operations` entry and the
+   unresolved `browser_tasks.identity`; do not delete either as a workaround.
+2. Use the original creation receipt or captured broker evidence to establish the
+   exact tab ID, extension, and operation identity. A matching URL, title, or an
+   empty current handle map is insufficient. If that correlation is unavailable,
+   leave cleanup pending for further investigation.
+3. Close only the proven tab through the provisioned browser's supported operator
+   control. Retain a private receipt of that exact close and its identity. Do not
+   inspect unrelated tabs, clear a shared profile, or infer deletion of cookies.
+4. With the host stopped, bind that proven ID to the unresolved row using a
+   parameterized statement:
+   `UPDATE browser_tasks SET tab_id = ? WHERE identity = ? AND tab_id IS NULL`.
+   Require exactly one changed row. Keep the original operation entry unchanged.
+5. Restart the same owner/extension/database binding and retry account deletion.
+   Revocation remains persisted. The host verifies that this recorded tab is
+   absent before erasing retained task results. If it is still present or the
+   binding cannot be verified, cleanup remains pending.
+
+Store the correlation evidence, close receipt, database repair result, and final
+revocation result in the private incident record. Never publish credentials or
+page content from the provisioned profile.

@@ -139,27 +139,41 @@ export const make = Effect.fn("BrowserRuntime.make")(function* (options: Options
   const run = Effect.fn("BrowserRuntime.run")(function* (program: string, cleanup = false) {
     if (pending || (uncertain && !cleanup)) return { _tag: "Unknown" } as const;
     elicited = false;
-    const result = yield* call(
-      `nodeRepl.write(JSON.stringify(await (async () => { ${program} })()));`,
-    ).pipe(Effect.timeout("20 seconds"), Effect.option);
-    if (elicited) return { _tag: "HumanRequired" } as const;
-    if (Option.isNone(result)) {
-      // Interruption cannot cancel CUA's in-flight Promise. Refuse subsequent effects.
-      uncertain = true;
-      return { _tag: "Unknown" } as const;
-    }
-    const envelope = Schema.decodeUnknownOption(McpResult)(result.value);
-    if (Option.isNone(envelope) || envelope.value.data.isError === true)
-      return { _tag: "Unknown" } as const;
-    const outcomes = envelope.value.data.content.flatMap((block) => {
-      if (block.type !== "text" || block.text === undefined || block.text.length > 262_144)
-        return [];
-      const outcome = Schema.decodeOption(Schema.fromJsonString(Result))(block.text);
-      return Option.isSome(outcome) ? [outcome.value] : [];
-    });
-    return outcomes.length === 1
-      ? (outcomes[0] ?? ({ _tag: "Unknown" } as const))
-      : ({ _tag: "Unknown" } as const);
+    let classified = false;
+    return yield* Effect.gen(function* () {
+      const result = yield* call(
+        `nodeRepl.write(JSON.stringify(await (async () => { ${program} })()));`,
+      ).pipe(Effect.timeout("20 seconds"), Effect.option);
+      if (elicited) {
+        classified = true;
+        return { _tag: "HumanRequired" } as const;
+      }
+      if (Option.isNone(result)) {
+        return { _tag: "Unknown" } as const;
+      }
+      const envelope = Schema.decodeUnknownOption(McpResult)(result.value);
+      if (Option.isNone(envelope) || envelope.value.data.isError === true)
+        return { _tag: "Unknown" } as const;
+      const outcomes = envelope.value.data.content.flatMap((block) => {
+        if (block.type !== "text" || block.text === undefined || block.text.length > 262_144)
+          return [];
+        const outcome = Schema.decodeOption(Schema.fromJsonString(Result))(block.text);
+        return Option.isSome(outcome) ? [outcome.value] : [];
+      });
+      const outcome =
+        outcomes.length === 1
+          ? (outcomes[0] ?? ({ _tag: "Unknown" } as const))
+          : ({ _tag: "Unknown" } as const);
+      classified = outcome._tag !== "Unknown";
+      return outcome;
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          // CUA Promises survive interruption. Only a classified response permits later effects.
+          if (!classified) uncertain = true;
+        }),
+      ),
+    );
   });
   const closeAll = run(
     `
@@ -174,21 +188,21 @@ export const make = Effect.fn("BrowserRuntime.make")(function* (options: Options
   return {
     closeAll,
     open: (url) =>
-      run(`
+      Effect.gen(function* () {
+        // This refusal happens before dispatch, so this operation cannot have created a tab.
+        if (pending || uncertain) return { _tag: "Unavailable" } as const;
+        return yield* run(`
       const tab = await cua.createBrowserTab(osfoBrowser.browserId, "about:blank", { sessionName: "🔎 Osfo browser task" });
       osfoTabs.set(tab.id, tab);
       await tab.goto(${jsString(url)});
       ${readPage(new URL(url).origin)}
       return { _tag: "Opened", tabId: tab.id, page };
     `).pipe(
-        Effect.map((outcome) =>
-          outcome._tag === "Opened" ||
-          outcome._tag === "HumanRequired" ||
-          outcome._tag === "Unavailable"
-            ? outcome
-            : ({ _tag: "Unknown" } as const),
-        ),
-      ),
+          Effect.map((outcome) =>
+            outcome._tag === "Opened" ? outcome : ({ _tag: "Unknown" } as const),
+          ),
+        );
+      }),
     observe: (tabId, origin) =>
       run(`
       const tab = osfoTabs.get(${jsString(tabId)});
@@ -205,7 +219,7 @@ export const make = Effect.fn("BrowserRuntime.make")(function* (options: Options
       const target = ${jsString(interaction.target)};
       if (!/^[0-9]+$/.test(target) || !Number.isSafeInteger(Number(target)) || !page.text.split(String.fromCharCode(10)).some((line) => line.trim().startsWith(target + " "))) return { _tag: "Stale" };
       ${interaction._tag === "Click" ? "await tab.click(Number(target));" : `await tab.setValue(Number(target), ${jsString(interaction.value)});`}
-      ${readPage(origin, "after")}
+      ${readPage(origin, "after", "Unknown")}
       return { _tag: "Page", page: after };
     `).pipe(Effect.map((outcome) => (outcome._tag === "Stale" ? outcome : pageOutcome(outcome)))),
     close: (tabId) =>
@@ -231,12 +245,16 @@ const pageOutcome = (outcome: typeof Result.Type) =>
     : ({ _tag: "Unknown" } as const);
 
 /** URL checks precede page reads; unrelated tab metadata never leaves the REPL program. */
-const readPage = (origin: string, variable = "page") => `
+const readPage = (
+  origin: string,
+  variable = "page",
+  unavailable: "Unavailable" | "Unknown" = "Unavailable",
+) => `
   const ${variable}Tabs = await cua.listTabs({ browser: osfoBrowser.browserId, emit: false });
   const ${variable}Tab = ${variable}Tabs.find((candidate) => candidate.id === tab.id);
-  if (!${variable}Tab?.url || new URL(${variable}Tab.url).origin !== ${jsString(origin)}) return { _tag: "Unavailable" };
+  if (!${variable}Tab?.url || new URL(${variable}Tab.url).origin !== ${jsString(origin)}) return { _tag: ${jsString(unavailable)} };
   const ${variable}Text = await tab.getAXState({ emit: false, disableDiffing: true });
-  if (${variable}Text.length === 0 || ${variable}Text.length > 48000) return { _tag: "Unavailable" };
+  if (${variable}Text.length === 0 || ${variable}Text.length > 48000) return { _tag: ${jsString(unavailable)} };
   const ${variable} = { url: ${variable}Tab.url, text: ${variable}Text };
 `;
 

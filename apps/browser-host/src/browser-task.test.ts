@@ -126,3 +126,59 @@ it.effect("refuses unprovisioned origins before opening any browser", () =>
     expect(yield* execute(request)).toEqual({ _tag: "Unavailable" });
   }),
 );
+
+it.effect(
+  "retains unresolved creation after restart instead of declaring orphan cleanup complete",
+  () =>
+    Effect.gen(function* () {
+      const db = yield* database;
+      let physicalCreates = 0;
+      const runtime: BrowserTask.Runtime = {
+        closeAll: Effect.succeed(true),
+        open: () =>
+          Effect.sync(() => {
+            physicalCreates += 1;
+          }).pipe(
+            Effect.andThen(
+              Effect.die(new Error("crash after physical create before tab identity retention")),
+            ),
+          ),
+        observe: () => Effect.die(new Error("unexpected observation")),
+        interact: () => Effect.die(new Error("unexpected interaction")),
+        close: () => Effect.die(new Error("no retained tab identity")),
+      };
+      yield* Effect.exit(
+        BrowserTask.make(db, runtime, ["https://portal.example.test"]).execute(request),
+      );
+      const restarted = BrowserTask.make(db, runtime, ["https://portal.example.test"]);
+      expect(yield* restarted.revoke).toBe(false);
+      expect(yield* restarted.execute(request)).toEqual({ _tag: "Unknown" });
+      expect(physicalCreates).toBe(1);
+      expect(db.prepare("SELECT tab_id FROM browser_tasks").all()).toHaveLength(1);
+      expect(db.prepare("SELECT response FROM browser_operations").all()).toHaveLength(1);
+    }),
+);
+
+it.effect("discharges a known pre-dispatch no-tab refusal without blocking cleanup", () =>
+  Effect.gen(function* () {
+    const db = yield* database;
+    let opens = 0;
+    const runtime: BrowserTask.Runtime = {
+      closeAll: Effect.succeed(true),
+      open: () =>
+        Effect.sync(() => {
+          opens += 1;
+          return { _tag: "Unavailable" } as const;
+        }),
+      observe: () => Effect.die(new Error("unexpected observation")),
+      interact: () => Effect.die(new Error("unexpected interaction")),
+      close: () => Effect.die(new Error("no tab exists")),
+    };
+    const tasks = BrowserTask.make(db, runtime, ["https://portal.example.test"]);
+    expect(yield* tasks.execute(request)).toEqual({ _tag: "Unavailable" });
+    expect(yield* tasks.execute(request)).toEqual({ _tag: "Unavailable" });
+    expect(opens).toBe(1);
+    expect(db.prepare("SELECT tab_id FROM browser_tasks").all()).toHaveLength(0);
+    expect(yield* tasks.revoke).toBe(true);
+  }),
+);
