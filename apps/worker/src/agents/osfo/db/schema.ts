@@ -510,6 +510,7 @@ export const webOperations = sqliteTable(
     kind: text({ enum: ["page", "search"] }).notNull(),
     operation_id: text().primaryKey(),
     owner_user_id: userId().notNull(),
+    paid_attempt_json: text(),
     reserved_pages: integer().notNull(),
     result_json: text(),
     status: text({ enum: ["pending", "completed"] }).notNull(),

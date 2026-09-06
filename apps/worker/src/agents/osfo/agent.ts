@@ -1989,7 +1989,7 @@ export class OsfoAgent extends Think<Env> {
                 redirects: 3n,
                 responseBytes: request.responseBytes,
                 results: 10n,
-                retries: 1n,
+                retries: request.requestVendorUsdMicros > 0n ? 0n : 1n,
                 searches: BigInt(request.searches),
               }
             : {
@@ -2001,7 +2001,10 @@ export class OsfoAgent extends Think<Env> {
                 responseBytes: request.responseBytes,
                 retries: 1n,
               };
-        const admitted = authorization.admit({ ...context, requestVendorUsdMicros: 0n }, operation);
+        const admitted = authorization.admit(
+          { ...context, requestVendorUsdMicros: request.requestVendorUsdMicros },
+          operation,
+        );
         return Predicate.isTagged(admitted, "Admitted")
           ? Effect.void
           : Effect.fail(
