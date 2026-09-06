@@ -189,6 +189,13 @@ const ResearchRequest = Schema.Struct({
 });
 type ResearchRequest = typeof ResearchRequest.Type;
 const ResearchRequestFromJson = Schema.fromJsonString(ResearchRequest);
+
+const ChatPdfFormMedia = Schema.fromJsonString(
+  Schema.Struct({
+    image: Schema.String.check(Schema.isMaxLength(4_000_000)),
+    template: Schema.String.check(Schema.isMaxLength(4_000_000)),
+  }),
+);
 const LocalIntegrationRequestFromJson = Schema.fromJsonString(
   Schema.StructWithRest(
     Schema.Struct({
@@ -242,6 +249,7 @@ const startProvider = (options: {
     const supermemoryLedger: Array<SupermemoryLedgerEntry> = [];
     let promptBoundarySequence = 0;
     const telegramLedger: Array<TelegramLedgerEntry> = [];
+    const chatPdfFormMedia = new Map<string, { bytes: Uint8Array; mediaType: string }>();
     const twilioLedger: Array<TwilioLedgerEntry> = [];
     const whatsAppLedger: Array<WhatsAppLedgerEntry> = [];
     const researchLedger: Array<ResearchLedgerEntry> = [];
@@ -266,6 +274,54 @@ const startProvider = (options: {
       const rawUrl = request.url ?? "/";
       const url = new URL(rawUrl.startsWith("//") ? rawUrl.slice(1) : rawUrl, "http://localhost");
       const pathname = url.pathname;
+      if (
+        options.verificationRunId !== undefined &&
+        request.method === "POST" &&
+        pathname === "/_test/chat-pdf-form/media"
+      ) {
+        readTextBody(request)
+          .then(Schema.decodeUnknownPromise(ChatPdfFormMedia))
+          .then((media) => {
+            if (chatPdfFormMedia.size !== 0)
+              throw new Error("Chat PDF fixture is already registered");
+            const entries = [
+              ["verification-evidence", media.image, "image/png"],
+              ["verification-template", media.template, "application/pdf"],
+            ] as const;
+            if (entries.some(([, value]) => !/^[A-Za-z0-9+/]+={0,2}$/u.test(value)))
+              throw new Error("Invalid synthetic media encoding");
+            for (const [name, value, mediaType] of entries)
+              chatPdfFormMedia.set(name, { bytes: Buffer.from(value, "base64"), mediaType });
+            respondJson(response, 201, { registered: true });
+          })
+          .catch((cause: unknown) => respondJson(response, 400, { error: String(cause) }));
+        return;
+      }
+      if (
+        options.verificationRunId !== undefined &&
+        request.method === "GET" &&
+        pathname.startsWith("/file/bot") &&
+        pathname.includes("/verification-")
+      ) {
+        const media = chatPdfFormMedia.get(pathname.slice(pathname.lastIndexOf("/") + 1));
+        if (media === undefined) {
+          respondJson(response, 404, { error: "Synthetic media not found" });
+          return;
+        }
+        telegramLedger.push({
+          method: "downloadFile",
+          body: JSON.stringify({
+            file_path: pathname,
+            byteLength: media.bytes.byteLength,
+            sha256: `sha256:${createHash("sha256").update(media.bytes).digest("hex")}`,
+          }),
+        });
+        response.statusCode = 200;
+        response.setHeader("content-type", media.mediaType);
+        response.setHeader("content-length", media.bytes.byteLength);
+        response.end(media.bytes);
+        return;
+      }
       if (request.method === "GET" && pathname === "/inbox") {
         if (url.searchParams.get("channel") === "whatsapp") {
           renderWhatsAppInbox(
@@ -645,7 +701,7 @@ const startProvider = (options: {
         return;
       }
       if (request.method === "POST" && /^\/bot[^/]+\/[A-Za-z]+$/u.test(pathname)) {
-        handleTelegram(request, response, pathname, telegramLedger);
+        handleTelegram(request, response, pathname, telegramLedger, chatPdfFormMedia);
         return;
       }
       if (request.method === "POST" && pathname.endsWith("/messages")) {
@@ -1863,12 +1919,33 @@ const handleTelegram = (
   response: ServerResponse,
   pathname: string,
   ledger: Array<TelegramLedgerEntry>,
+  media: ReadonlyMap<string, { bytes: Uint8Array; mediaType: string }>,
 ): void => {
   readTextBody(request)
     .then((body) => {
       const method = pathname.slice(pathname.lastIndexOf("/") + 1);
       const payload = telegramPayload(body);
       ledger.push({ body, method });
+      if (method === "getFile") {
+        const fileId = new URLSearchParams(body).get("file_id") ?? "";
+        const file = media.get(fileId);
+        respondJson(
+          response,
+          file === undefined ? 404 : 200,
+          file === undefined
+            ? { ok: false, description: "Synthetic media not found" }
+            : {
+                ok: true,
+                result: {
+                  file_id: fileId,
+                  file_unique_id: fileId,
+                  file_path: fileId,
+                  file_size: file.bytes.byteLength,
+                },
+              },
+        );
+        return;
+      }
       if (method === "getMe") {
         respondJson(response, 200, {
           ok: true,

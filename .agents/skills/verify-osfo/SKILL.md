@@ -1,6 +1,6 @@
 ---
 name: verify-osfo
-description: Verify Osfo registration, SMS phone authentication, Telegram or WhatsApp channel linking, ordinary conversation and Core Memory across Sessions, Research Reports, Document Build, immediate Gmail send, Scheduled Email, Reminder Approval and due delivery, billing, permanent account deletion, or retained deletion replay in Chrome with a disposable verified User, local provider boundaries, committed state, and durable evidence. Use after implementing or reviewing one of those browser paths.
+description: Verify Osfo registration, SMS phone authentication, Telegram or WhatsApp channel linking, ordinary conversation and Core Memory across Sessions, chat attachments and PDF forms, Research Reports, Document Build, immediate Gmail send, Scheduled Email, Reminder Approval and due delivery, billing, permanent account deletion, or retained deletion replay in Chrome with a disposable verified User, local provider boundaries, committed state, and durable evidence. Use after implementing or reviewing one of those browser paths.
 ---
 
 # Verify Osfo
@@ -61,6 +61,7 @@ Open the selected feature file for its only authoritative drive and completion c
 - [conversation and Core Memory](features/conversation-memory.md)
 - [Research Report](features/research-report.md)
 - [Document Build](features/document-build.md)
+- [chat attachments and interactive PDF forms](features/chat-pdf-form.md), preparation and byte checks remain draft pending the integrated drive
 - [Immediate Gmail send](features/immediate-gmail-send.md)
 - [Scheduled Email](features/scheduled-email.md)
 - [Free billing summary](features/billing.md)

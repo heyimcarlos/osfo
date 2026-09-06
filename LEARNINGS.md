@@ -3,6 +3,12 @@
 Record only current, reproducible environment facts that are not clear from
 repository configuration.
 
+- The desktop runtime's bundled `pdftoppm` can render standard Helvetica with
+  overlapping glyphs. The system `/usr/bin/pdftoppm` rendered the same synthetic
+  PDF correctly with system font discovery. Chat/PDF verification prefers that
+  system binary when present, records its path and version, and requires visual
+  inspection before using the raster as OCR evidence.
+
 - On a 32 GiB development machine, `apps/worker`'s PGlite Vitest configuration
   can exhaust memory at its default concurrency. Run it locally with
   `vitest run --config vitest.db.config.ts --maxWorkers=1`.
