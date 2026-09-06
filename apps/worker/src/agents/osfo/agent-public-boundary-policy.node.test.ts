@@ -20,6 +20,8 @@ type Protection =
   | "trackedThinkLifecycle";
 
 const publicBoundaryPolicy = {
+  acceptMessengerInput: ["ordinaryMutation", "fencedSessionExecution"],
+  followMessengerInput: ["read", "accountDeletionFence"],
   analyzeFile: ["ordinaryMutation", "accountDeletionFence"],
   approveExecution: ["deniedMutation", "none"],
   authorizeAction: ["read", "trackedThinkLifecycle"],
@@ -90,6 +92,10 @@ const publicBoundaryPolicy = {
 } as const satisfies Record<string, readonly [BoundaryClass, Protection]>;
 
 const directoryBoundaryPolicy = {
+  acceptMessengerInput: ["ordinaryMutation", "directoryGate"],
+  // Following the retained facet delegates to its tracked deletion fence and fresh link authority.
+  followMessengerInput: ["read", "accountDeletionFence"],
+  prepareMessengerInput: ["read", "directoryGate"],
   chatWithMessengerContext: ["ordinaryMutation", "directoryGate"],
   beginScheduledEmail: ["ordinaryMutation", "directoryGate"],
   configureChannels: ["initialization", "initializationLifecycle"],

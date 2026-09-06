@@ -52,6 +52,7 @@ export default defineConfig({
             RESEARCH_REPORT_PROVIDER_BASE_URL: context.providerOrigin,
             STRIPE_API_BASE_URL: context.providerOrigin,
             SUPERMEMORY_API_BASE_URL: context.providerOrigin,
+            TELEGRAM_API_BASE_URL: context.providerOrigin,
             TWILIO_VERIFY_API_BASE_URL: context.providerOrigin,
             WHATSAPP_API_BASE_URL: context.providerOrigin,
             WHATSAPP_WAKEUP_TEMPLATE_APPROVAL: "approved:whatsapp-wakeup-v1:osfo_update:en,es",

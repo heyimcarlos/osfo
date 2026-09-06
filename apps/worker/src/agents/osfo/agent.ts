@@ -163,6 +163,13 @@ import { AgentDirectory } from "../../services/agent-directory";
 import { ChannelLinks } from "../../services/channel-links";
 import { invalidOsfoEnvironment, makeOsfoAgentRuntime } from "../../layers";
 import { makeAgentDb } from "./db/client";
+import { committedTurns } from "./db/schema";
+import {
+  makeMessengerAdmissionStore,
+  MessengerAcceptanceReceipt,
+  MessengerAdmissionRoute,
+  MessengerAdmissionUnavailable,
+} from "./messenger-admission";
 
 type ChannelProvider = "telegram" | "whatsapp";
 import {
@@ -750,6 +757,7 @@ export class OsfoAgent extends Think<Env> {
   override observability = genericObservability;
 
   readonly #db = makeAgentDb(this.ctx.storage);
+  readonly #messengerAdmissions = makeMessengerAdmissionStore(this.#db);
   readonly #reminders = makeReminderAuthority({
     delivery: {
       authorize: (input) => this.#authorizeReminderDelivery(input),
@@ -1299,6 +1307,277 @@ export class OsfoAgent extends Think<Env> {
   /** Speak with the shared Osfo persona from the registered personal partition. */
   override getSystemPrompt() {
     return `${personalAgentSystemPrompt()}\n\nWhen osfoManageReminder is paused for approval, direct the User to ${new URL("/settings/reminders", publicWebBaseUrl(loadConfig(this.env).auth)).href} to review and approve or reject the exact Reminder. Do not ask them to approve in chat. Ask for clarification before calling osfoManageReminder if the date, time, or timezone is ambiguous; its firstDueAt must be an exact UTC ISO timestamp.`;
+  }
+
+  /** Accept a provider message into native Think before its webhook can succeed. */
+  override async acceptMessengerInput(
+    userMessage: string | UIMessage,
+    context: MessengerContext,
+    encodedRoute?: unknown,
+  ) {
+    await this.#migrationsReady;
+    const authorId = messengerAuthorId(context);
+    const message = context.message;
+    if (context.provider !== "whatsapp" || authorId === undefined || message === undefined) {
+      return { kind: "unavailable" as const };
+    }
+    // Session commands retain the existing serialized, completion-before-acknowledgement path.
+    if (message.text.trim() === "/new") return undefined;
+    const submissionId = await messengerSubmissionId(
+      context.provider,
+      context.thread.id,
+      message.providerMessageId,
+    );
+    const inputDigest = await messengerInputDigest(userMessage, context);
+    const operation = Effect.gen({ self: this }, function* () {
+      const route = yield* Schema.decodeUnknownEffect(MessengerAdmissionRoute)(encodedRoute);
+      if (route.agentId !== this.name) return { kind: "suppressed" as const };
+      const resolution = yield* Effect.promise(() =>
+        this.#resolveMessengerLink(context.messengerId, authorId),
+      );
+      if (resolution._tag === "Unavailable")
+        return yield* new MessengerAdmissionUnavailable({
+          cause: "link lookup unavailable",
+          message: "Messenger input could not be authorized",
+        });
+      const link = resolution.link;
+      if (
+        link === null ||
+        link.channelLinkId !== route.channelLinkId ||
+        link.userId !== route.userId
+      )
+        return { kind: "suppressed" as const };
+      const currentAuthorization = yield* this.#inspectCurrentChannelLinkAuthorization(link);
+      if (
+        Predicate.isTagged(
+          authorization.recheck(currentAuthorization, {
+            actionId: submissionId,
+            kind: "conversation.run",
+            modelSteps: 0n,
+          }),
+          "Denied",
+        )
+      )
+        return { kind: "suppressed" as const };
+      const retained = yield* this.#messengerAdmissions.read(submissionId, inputDigest);
+      if (
+        retained !== null &&
+        (retained.userId !== link.userId || retained.channelLinkId !== link.channelLinkId)
+      )
+        return { kind: "suppressed" as const };
+      const receipt = yield* Effect.gen({ self: this }, function* () {
+        if (retained !== null) return retained;
+        yield* IncidentControlsPostgres.check(this.env.DB, "newIngress");
+        const agent = yield* this.#store.inspect();
+        const admission = yield* admitManagedConversation(
+          {
+            authorization: currentAuthorization,
+            idempotencyKey: `whatsapp:${context.thread.id}:${message.providerMessageId}`,
+            message:
+              message.text.trim() ||
+              (message.attachments.length > 0 ? "Please inspect the attached files." : ""),
+            routeId: agent.routeId,
+            submissionId,
+          },
+          { currentSessionId: agent.currentSessionId, routeId: agent.routeId },
+        );
+        if (!Predicate.isTagged(admission, "ManagedConversationAdmitted")) return null;
+        const now = yield* DateTime.now;
+        return yield* this.#messengerAdmissions.record(
+          {
+            acceptedAt: Db.DbTimestamp.make(DateTime.formatIso(now)),
+            agentId: agent.agentId,
+            inputDigest,
+            allowancePeriodId: admission.metadata.allowancePeriodId,
+            channelLinkId: link.channelLinkId,
+            kind: "submission",
+            provider: "whatsapp",
+            providerMessageId: message.providerMessageId,
+            routeId: agent.routeId,
+            sessionId: admission.metadata.sessionId,
+            submissionId,
+            threadId: context.thread.id,
+            turnMetadata: admission.metadata,
+            userId: link.userId,
+            userMessageId: submissionId,
+          },
+          inputDigest,
+        );
+      });
+      if (receipt === null)
+        return {
+          kind: "policy" as const,
+          text: "Your current Osfo allowance does not permit this request.",
+        };
+      if (!(yield* this.#store.ownsSession(receipt.sessionId)))
+        return { kind: "policy" as const, text: "The session for this message has been deleted." };
+      const existing = yield* callThinkSubmission("inspectSubmission", () =>
+        this.inspectSubmission(submissionId),
+      );
+      if (existing !== null) {
+        if (existing.metadata?.messengerInputDigest !== inputDigest)
+          return yield* new MessengerAdmissionUnavailable({
+            cause: "native input mismatch",
+            message: "Native submission could not be recovered",
+          });
+        return receipt;
+      }
+      if (!(yield* Effect.promise(() => this.#consumeWhatsAppWakeUp(link))))
+        return yield* new MessengerAdmissionUnavailable({
+          cause: "wake-up consumption unavailable",
+          message: "Messenger input could not be durably accepted",
+        });
+      const metadata = receipt.turnMetadata;
+      if (
+        metadata.executionMode !== "exhaustedConversation" &&
+        !(yield* Effect.promise(() =>
+          this.#recordMessengerAcceptedMessage(
+            currentAuthorization,
+            "whatsapp",
+            message.providerMessageId,
+            receipt.allowancePeriodId,
+          ),
+        ))
+      )
+        return yield* new MessengerAdmissionUnavailable({
+          cause: "accounting unavailable",
+          message: "Messenger input could not be durably accepted",
+        });
+      const normalized = Predicate.isString(userMessage)
+        ? {
+            id: submissionId,
+            role: "user" as const,
+            parts: [{ type: "text" as const, text: userMessage }],
+          }
+        : userMessage;
+      yield* callThinkSubmission("runTurn", () =>
+        this.runTurn({
+          channel: context.messengerId,
+          idempotencyKey: `whatsapp:${context.thread.id}:${message.providerMessageId}`,
+          input: {
+            ...normalized,
+            id: submissionId,
+            metadata: { messenger: context, turnMetadata: metadata },
+          },
+          metadata: { ...metadata, messengerInputDigest: inputDigest },
+          mode: "submit",
+          submissionId,
+        }),
+      );
+      return receipt;
+    });
+    return Effect.runPromise(
+      this.#accountDeletionFencedSessionExecution
+        .run(
+          operation,
+          () =>
+            new MessengerAdmissionUnavailable({
+              cause: "account deletion fence",
+              message: "Messenger input could not be durably accepted",
+            }),
+        )
+        .pipe(Effect.orElseSucceed(() => ({ kind: "unavailable" as const }))),
+    );
+  }
+
+  /** Recover only the exact accepted result, with fresh authority before transport delivery. */
+  override async followMessengerInput(
+    encoded: unknown,
+    context: MessengerContext,
+  ): Promise<string | null | { readonly kind: "unavailable" }> {
+    await this.#migrationsReady;
+    const receipt = await Effect.runPromise(
+      Schema.decodeUnknownEffect(MessengerAcceptanceReceipt)(encoded),
+    );
+    const authorId = messengerAuthorId(context);
+    if (
+      receipt.agentId !== this.name ||
+      context.provider !== receipt.provider ||
+      context.thread.id !== receipt.threadId ||
+      context.message?.providerMessageId !== receipt.providerMessageId ||
+      authorId === undefined
+    )
+      return null;
+    const result = await Effect.runPromiseExit(
+      this.#accountDeletionFence
+        .runTracked(
+          (signal) =>
+            Effect.gen({ self: this }, function* () {
+              const retained = yield* this.#messengerAdmissions.read(
+                receipt.submissionId,
+                receipt.inputDigest,
+              );
+              if (retained === null || !sameMessengerReceipt(retained, receipt))
+                return yield* messengerReplyUnavailable("receipt mismatch");
+              if (!(yield* this.#store.ownsSession(receipt.sessionId))) return null;
+              const terminal = yield* Effect.tryPromise({
+                try: () => this.waitForSubmission(receipt.submissionId, { signal }),
+                catch: messengerReplyUnavailable,
+              });
+              if (signal.aborted) return null;
+              const resolution = yield* Effect.promise(() =>
+                this.#resolveMessengerLink(context.messengerId, authorId),
+              );
+              if (resolution._tag === "Unavailable")
+                return yield* messengerReplyUnavailable("current link lookup unavailable");
+              if (resolution.link === null) return null;
+              const link = resolution.link;
+              if (link.channelLinkId !== receipt.channelLinkId || link.userId !== receipt.userId)
+                return null;
+              const current = yield* this.#inspectCurrentChannelLinkAuthorization(link);
+              if (
+                signal.aborted ||
+                Predicate.isTagged(
+                  authorization.recheck(current, {
+                    actionId: receipt.submissionId,
+                    kind: "conversation.run",
+                    modelSteps: 0n,
+                  }),
+                  "Denied",
+                )
+              )
+                return null;
+              if (terminal.status !== "completed")
+                return "I could not complete that accepted request. Please try again.";
+              const committed = yield* Effect.try({
+                try: () =>
+                  this.#db
+                    .select()
+                    .from(committedTurns)
+                    .where(
+                      eq(
+                        committedTurns.think_request_id,
+                        ThinkRequestId.make(receipt.submissionId),
+                      ),
+                    )
+                    .get(),
+                catch: messengerReplyUnavailable,
+              });
+              if (committed === undefined || committed.session_id !== receipt.sessionId)
+                return yield* messengerReplyUnavailable("missing committed response");
+              const response = yield* readThinkMessage(
+                Session.create(this),
+                receipt.sessionId,
+                committed.assistant_message_id,
+              );
+              if (response === null)
+                return yield* messengerReplyUnavailable("missing retained message");
+              return (
+                response.parts
+                  .flatMap((part) =>
+                    part.type === "text" && Predicate.isString(part.text) ? [part.text] : [],
+                  )
+                  .join("") || "I could not produce a text response. Please try again."
+              );
+            }).pipe(
+              Effect.catch((cause) => (signal.aborted ? Effect.succeed(null) : Effect.fail(cause))),
+            ),
+          () => ({ _tag: "MessengerDeliverySuppressed" as const }),
+        )
+        .pipe(Effect.catchTag("MessengerDeliverySuppressed", () => Effect.succeed(null))),
+    );
+    if (Exit.isSuccess(result)) return result.value;
+    return { kind: "unavailable" as const };
   }
 
   /** Apply Osfo policy before a Think messenger turn starts on this user-owned facet. */
@@ -3552,11 +3831,11 @@ export class OsfoAgent extends Think<Env> {
       this.#accountDeletionFence.runTracked(
         () =>
           this.#store.readCommittedTurns.pipe(
-            Effect.flatMap((committedTurns) =>
+            Effect.flatMap((committedTurnReferences) =>
               ingestCompletedSkillLearningTurn({
                 authority: this.#personalSkillAuthority,
                 assistantMessageId,
-                committedTurns,
+                committedTurns: committedTurnReferences,
                 messages: this.messages,
               }),
             ),
@@ -3626,10 +3905,10 @@ export class OsfoAgent extends Think<Env> {
         Effect.andThen(
           this.#store.readCommittedTurnWindow(skillLearningReplayWindow(nowEpochMillis)),
         ),
-        Effect.flatMap((committedTurns) =>
+        Effect.flatMap((committedTurnReferences) =>
           replayCommittedSkillLearningTurns({
             authority: this.#personalSkillAuthority,
-            committedTurns,
+            committedTurns: committedTurnReferences,
             nowEpochMillis,
             readSessionHistory: (sessionId) => readThinkHistory(Session.create(this), sessionId),
           }),
@@ -8168,9 +8447,11 @@ export class OsfoAgent extends Think<Env> {
     currentAuthorization: AuthorizationContext,
     provider: ChannelProvider,
     providerMessageId: string,
+    acceptedAllowancePeriodId?: AllowancePeriodId,
   ): Promise<boolean> {
     if (currentAuthorization.allowance._tag !== "Metered") return false;
-    const allowancePeriodId = currentAuthorization.allowance.allowancePeriodId;
+    const allowancePeriodId =
+      acceptedAllowancePeriodId ?? currentAuthorization.allowance.allowancePeriodId;
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) return false;
     const result = await runtime.runPromiseExit(
@@ -8996,3 +9277,26 @@ const appendReminderThinkContext = (
     ...facts,
   ].join("\n\n");
 };
+
+const messengerInputDigest = async (userMessage: string | UIMessage, context: MessengerContext) => {
+  const bytes = new TextEncoder().encode(
+    JSON.stringify({
+      provider: context.provider,
+      threadId: context.thread.id,
+      providerMessageId: context.message?.providerMessageId,
+      text: context.message?.text,
+      attachments: context.message?.attachments,
+      parts: Predicate.isString(userMessage) ? userMessage : userMessage.parts,
+    }),
+  );
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("");
+};
+
+const sameMessengerReceipt = Schema.toEquivalence(MessengerAcceptanceReceipt);
+
+const messengerReplyUnavailable = (cause: unknown) =>
+  new MessengerAdmissionUnavailable({
+    cause,
+    message: "The accepted messenger response could not be recovered",
+  });

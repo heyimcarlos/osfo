@@ -364,17 +364,17 @@ it.effect(
     ),
 );
 
-it.effect("migrates a fresh Agent database to version 20 without the legacy table", () =>
+it.effect("migrates a fresh Agent database to version 21 without the legacy table", () =>
   withEmptyDatabase(({ database, storage }) =>
     Effect.gen(function* () {
       const first = yield* applyAgentMigrations(asDurableObjectStorage(storage));
       const second = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
       expect(first).toEqual({
-        appliedVersions: Array.from({ length: 20 }, (_, index) => index + 1),
-        currentVersion: 20,
+        appliedVersions: Array.from({ length: 21 }, (_, index) => index + 1),
+        currentVersion: 21,
       });
-      expect(second).toEqual({ appliedVersions: [], currentVersion: 20 });
+      expect(second).toEqual({ appliedVersions: [], currentVersion: 21 });
       expect(
         database
           .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
@@ -401,7 +401,7 @@ it.effect("drops seeded legacy receipts while upgrading a version-18 Agent datab
       const upgraded = yield* applyAgentMigrations(durableStorage);
       yield* makePersonalSkillAuthority(storage).deleteUserData(UserId.make("user-upgrade"));
 
-      expect(upgraded).toEqual({ appliedVersions: [19, 20], currentVersion: 20 });
+      expect(upgraded).toEqual({ appliedVersions: [19, 20, 21], currentVersion: 21 });
       expect(
         database
           .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
@@ -485,8 +485,8 @@ it.effect("activates an Agent that slept before the conversation processing migr
       const result = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
       expect(result).toEqual({
-        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
-        currentVersion: 20,
+        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+        currentVersion: 21,
       });
       expect(
         database

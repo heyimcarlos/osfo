@@ -128,6 +128,7 @@ export const makeWhatsAppChannel = (options: WhatsAppChannelOptions): ChannelDef
     chatSdkMessenger({
       adapter: makeThinkWhatsAppAdapter(options),
       adapterName: "whatsapp",
+      durableAcceptance: true,
       conversation: options.conversation,
       delivery: {
         errorResponseText: "I could not answer that right now. Please try again.",

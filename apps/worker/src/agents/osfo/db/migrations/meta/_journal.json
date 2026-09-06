@@ -141,6 +141,13 @@
       "when": 1788664756445,
       "tag": "0019_tiresome_solo",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1788676035072,
+      "tag": "0020_previous_mantis",
+      "breakpoints": true
     }
   ]
 }

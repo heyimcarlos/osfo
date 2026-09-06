@@ -1,0 +1,112 @@
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -2519,7 +2519,7 @@
+     `;
+ 		this._notifyManagedFiberTerminal(fiberId);
+ 	}
+-	_settleManagedFiberExecution(fiberId, outcome, signal) {
++	_settleManagedFiberExecution(fiberId, outcome, signal, retryOnError = false) {
+ 		const completedAt = Date.now();
+ 		if (outcome.ok) {
+ 			this.sql`
+@@ -2531,7 +2531,7 @@
+ 			return;
+ 		}
+ 		const message = this._fiberErrorMessage(outcome.error);
+-		const status = signal.aborted ? "aborted" : "error";
++		const status = signal.aborted ? "aborted" : retryOnError ? "pending" : "error";
+ 		this.sql`
+       UPDATE cf_agents_fibers
+       SET status = ${status},
+@@ -2809,7 +2809,10 @@
+ 		if (existingById && existingByKey && existingById.fiber_id !== existingByKey.fiber_id) throw new Error("fiberId and idempotencyKey refer to different fibers");
+ 		if (existingByKey && options?.fiberId && existingByKey.fiber_id !== fiberId) throw new Error("fiberId and idempotencyKey refer to different fibers");
+ 		const existing = existingById ?? existingByKey;
+-		if (existing) {
++		if (options?.resumeInterrupted && (options.fiberId === void 0 || !existing || existing.name !== name)) throw new Error("Resuming a fiber requires its existing explicit identity and name");
++		const resuming = options?.resumeInterrupted === true && existing?.status === "interrupted";
++		if (resuming && this._runFiberActiveFibers.has(fiberId)) throw new Error("Cannot resume an active fiber");
++		if (existing && !resuming) {
+ 			if (options?.waitForCompletion && !this._isTerminalFiberStatus(existing.status)) {
+ 				const waited = await this._waitForManagedFiber(existing.fiber_id);
+ 				if (waited) return {
+@@ -2824,18 +2827,21 @@
+ 			};
+ 		}
+ 		const now = Date.now();
+-		this.sql`
++		if (resuming) {
++			this.sql`UPDATE cf_agents_fibers SET status = 'pending', error_message = NULL, completed_at = NULL WHERE fiber_id = ${fiberId} AND status = 'interrupted'`;
++			this.sql`DELETE FROM cf_agents_runs WHERE id = ${fiberId}`;
++		} else this.sql`
+       INSERT INTO cf_agents_fibers
+         (fiber_id, idempotency_key, name, status, snapshot, metadata_json,
+          error_message, created_at, started_at, completed_at)
+       VALUES
+-        (${fiberId}, ${idempotencyKey ?? null}, ${name}, 'pending', NULL,
++        (${fiberId}, ${idempotencyKey ?? null}, ${name}, 'pending', ${this._stringifyFiberSnapshot(options?.initialSnapshot)},
+          ${options?.metadata ? JSON.stringify(options.metadata) : null}, NULL,
+          ${now}, NULL, NULL)
+     `;
+ 		const row = this._readFiber(fiberId);
+ 		if (!row) throw new Error(`Failed to create fiber ${fiberId}`);
+-		const execution = this._executeManagedFiber(fiberId, name, fn).catch((error) => {
++		const execution = this._executeManagedFiber(fiberId, name, fn, options).catch((error) => {
+ 			console.error(`[Agent] Managed fiber "${name}" (${fiberId}) failed:`, error);
+ 		}).finally(() => {
+ 			if (this._managedFiberExecutions.get(fiberId) === execution) this._managedFiberExecutions.delete(fiberId);
+@@ -2854,7 +2860,7 @@
+ 			accepted: true
+ 		};
+ 	}
+-	async _executeManagedFiber(fiberId, name, fn) {
++	async _executeManagedFiber(fiberId, name, fn, options) {
+ 		const row = this._readFiber(fiberId);
+ 		if (!row || row.status !== "pending") return;
+ 		const controller = new AbortController();
+@@ -2875,16 +2881,17 @@
+ 			await this._runFiberInternal(fiberId, name, fn, {
+ 				signal: controller.signal,
+ 				managed: true,
++				initialSnapshot: this._parseFiberSnapshot(row.snapshot),
+ 				beforeRunCleanup: (outcome) => {
+ 					settled = true;
+-					this._settleManagedFiberExecution(fiberId, outcome, controller.signal);
++					this._settleManagedFiberExecution(fiberId, outcome, controller.signal, options?.retryOnError);
+ 				}
+ 			});
+ 		} catch (error) {
+ 			if (!settled) this._settleManagedFiberExecution(fiberId, {
+ 				ok: false,
+ 				error
+-			}, controller.signal);
++			}, controller.signal, options?.retryOnError);
+ 		} finally {
+ 			this._managedFiberAbortControllers.delete(fiberId);
+ 		}
+@@ -2946,7 +2953,7 @@
+ 					id,
+ 					signal,
+ 					stash,
+-					snapshot: null
++					snapshot: options?.initialSnapshot ?? null
+ 				}));
+ 				options?.beforeRunCleanup?.({ ok: true });
+ 				this._emit("fiber:run:completed", {
+diff --git a/dist/agent-tool-types-BC-WFlsz.d.ts b/dist/agent-tool-types-BC-WFlsz.d.ts
+--- a/dist/agent-tool-types-BC-WFlsz.d.ts
++++ b/dist/agent-tool-types-BC-WFlsz.d.ts
+@@ -2873,6 +2873,12 @@
+   | "interrupted"
+   | "error";
+ type StartFiberOptions = {
++  /** Persist the first recovery checkpoint atomically with a newly accepted fiber. */
++  initialSnapshot?: unknown;
++  /** Return a failed execution to pending for native alarm recovery; cancellation remains terminal. */
++  retryOnError?: boolean;
++  /** Resume only the existing interrupted fiberId, preserving its identity and snapshot. */
++  resumeInterrupted?: boolean;
+   fiberId?: string;
+   idempotencyKey?: string;
+   metadata?: Record<string, unknown>;

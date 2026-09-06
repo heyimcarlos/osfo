@@ -79,3 +79,22 @@ Codex browser host. The initial inventory adapter supports same-machine local
 development only; no remote transport, shared profile pool, or host provisioning
 service exists. Keep preview and production disabled until this connection and
 its ownership lifecycle are implemented and verified.
+
+# Durable messenger acknowledgement and native reply recovery
+
+Date captured: 2026-09-06
+Horizon: upstream Think and Agents capability
+
+Think 0.15.1 acknowledges WhatsApp input before its debounced chat callback
+persists a submission. Its public messenger API cannot durably admit input and
+then follow that existing submission after a Worker restart. Agents 0.20.1 also
+cannot resume a retained interrupted managed fiber through `startFiber`, store
+its first checkpoint atomically with admission, or retain a failed delivery for
+native alarm recovery.
+
+Osfo carries version-pinned patches for these gaps. Recovery keeps the original
+submission, receipt, and fiber identity. It retries only before provider delivery
+starts; a restart after the streaming checkpoint retains an unknown delivery
+outcome rather than sending again. Replace the patches when upstream public APIs
+support these contracts, retaining the signed-webhook and process-restart
+regressions in issue #342.
