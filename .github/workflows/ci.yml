@@ -20,7 +20,7 @@ jobs:
   journeys:
     name: Worker journeys
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,6 +37,10 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Prepare renderer image
+        timeout-minutes: 10
+        run: bun run --cwd apps/worker test:renderer
 
       - name: Pull journey images
         run: |
@@ -64,6 +68,7 @@ jobs:
           done
 
       - name: Run network-isolated PostgreSQL controls and Worker journeys
+        timeout-minutes: 10
         shell: bash
         run: |
           docker run --rm \
@@ -103,6 +108,7 @@ jobs:
           fi
 
       - name: Start real-Wrangler edited-envelope environment
+        timeout-minutes: 10
         shell: bash
         run: |
           run_id="ci-envelope-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -110,6 +116,7 @@ jobs:
           ./.agents/skills/verify-osfo/helpers/control-osfo start "$run_id"
 
       - name: Run real-Wrangler edited-envelope journey
+        timeout-minutes: 10
         run: |
           ./.agents/skills/verify-osfo/helpers/control-osfo \
             account-deletion-envelope-journey "$OSFO_ENVELOPE_RUN_ID"
@@ -125,7 +132,7 @@ jobs:
   verify:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: ${{ matrix.name == 'Test' && 22 || 10 }}
     strategy:
       fail-fast: false
       matrix:
@@ -152,5 +159,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Prepare renderer image
+        if: matrix.name == 'Test'
+        timeout-minutes: 10
+        run: bun run --cwd apps/worker test:renderer
+
       - name: Run ${{ matrix.name }}
+        timeout-minutes: 10
         run: ${{ matrix.command }}
