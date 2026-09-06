@@ -6,6 +6,10 @@ short, specific, and actionable.
 - Link creation timestamps and IDs do not establish current routing authority.
   Prefer the unique active Channel Link, using history only for revoked fallback.
 
+- PDF button values must retain PDF name types after serialization. pypdf can
+  write parent values as text while widget appearances look correct; reopen and
+  check canonical value types as well as selected appearance states.
+
 - Cold renderer image downloads can consume test and Worker readiness budgets.
   Prepare the unchanged image in a separately bounded CI step, then reuse Docker
   layers while keeping test execution and readiness checks bounded.
