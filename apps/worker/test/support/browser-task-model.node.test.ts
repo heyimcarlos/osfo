@@ -147,3 +147,24 @@ it("refuses disabled or ambiguous targets in Chrome accessibility evidence", () 
     ).toMatchObject({ finish_reason: "stop" });
   }
 });
+
+it("reports a native pause as awaiting review without claiming a missing observation or effect", () => {
+  const response = respondBrowserTask({
+    messages: [
+      user,
+      {
+        role: "tool",
+        name: "executeBrowserEffect",
+        content: encode({
+          status: "paused",
+          action: "executeBrowserEffect",
+          executionId: "actpause_observed",
+        }),
+      },
+    ],
+    tools,
+  });
+  expect(response).toMatchObject({ finish_reason: "stop" });
+  expect(response?.response).toContain("waiting for your decision");
+  expect(response?.response).toContain("has not run");
+});

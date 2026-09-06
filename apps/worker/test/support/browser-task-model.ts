@@ -78,6 +78,23 @@ export const respondBrowserTask = (input: ResearchRequest) => {
       });
     return select("observeBrowserTask", { taskId: task.taskId });
   }
+  if (last.name === "executeBrowserEffect") {
+    const rejected = Schema.decodeUnknownOption(
+      Schema.Struct({ status: Schema.Literal("rejected"), executionId: Schema.String }),
+    )(value(last.content));
+    if (Option.isSome(rejected)) return stop("You rejected this browser action. It has not run.");
+    const paused = Schema.decodeUnknownOption(
+      Schema.Struct({
+        status: Schema.Literal("paused"),
+        action: Schema.Literal("executeBrowserEffect"),
+        executionId: Schema.String,
+      }),
+    )(value(last.content));
+    if (Option.isSome(paused))
+      return stop(
+        "The browser interaction is waiting for your decision on the browser review page. It has not run.",
+      );
+  }
   const decoded = Schema.decodeUnknownOption(Task)(value(last.content));
   if (Option.isNone(decoded))
     return stop(

@@ -22,7 +22,7 @@ export const BrowserEffectInput = Schema.Struct({
   expectedUrl: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
   targetDescription: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(2000)),
   interaction: BrowserInteraction,
-  consequence: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1000)),
+  consequence: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
 });
 export type BrowserEffectInput = typeof BrowserEffectInput.Type;
 

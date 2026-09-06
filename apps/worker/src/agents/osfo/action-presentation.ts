@@ -61,6 +61,11 @@ export const scheduledEmailApprovalSelection: ActionApprovalSelection = {
   select: (pending) => pending.descriptor.action === scheduledEmailStartActionName,
 };
 
+export const browserApprovalSelection: ActionApprovalSelection = {
+  maximum: 50,
+  select: (pending) => pending.descriptor.action === "executeBrowserEffect",
+};
+
 export const reminderApprovalSelection: ActionApprovalSelection = {
   maximum: 50,
   select: (pending) => pending.descriptor.action === reminderManageActionName,

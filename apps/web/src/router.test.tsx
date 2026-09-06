@@ -67,6 +67,13 @@ const renderAt = (path: string, authState: AuthState = signedOut) => {
 };
 
 describe("Osfo route tree", () => {
+  it("protects browser approvals behind the authenticated settings gate", async () => {
+    const { router } = renderAt("/settings/browser");
+    await waitFor(() => expect(screen.getByText("Continue by SMS")).toBeTruthy());
+    expect(screen.queryByText("Review browser actions")).toBeNull();
+    expect(router.state.location.pathname).toBe("/settings/browser");
+  });
+
   it("preserves the exact document link through SMS verification and later sign-out", async () => {
     const contentId = "document:toolCall:ordinary-form";
     const url = documentDownloadUrl(contentId, "https://osfo.test");

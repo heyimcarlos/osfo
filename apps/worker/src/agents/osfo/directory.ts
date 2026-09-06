@@ -431,7 +431,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
   async listActionPresentations(
     agentId: string,
     actor: unknown,
-    selection?: "immediate-gmail" | "scheduled-email" | "reminder",
+    selection?: "immediate-gmail" | "scheduled-email" | "reminder" | "browser",
   ) {
     if (!this.hasSubAgent(OsfoAgent, agentId)) return null;
     const agent = await this.subAgent(OsfoAgent, agentId);

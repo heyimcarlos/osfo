@@ -26,6 +26,7 @@ import {
   scheduledEmailStartActionName,
 } from "./action-presentation";
 import { ForgetKnowledgeInput } from "./deletion-actions";
+import { BrowserEffectInput } from "./browser-task";
 import { ReminderId } from "./reminders";
 
 it.effect("projects and fences every protected Research Report start fact", () =>
@@ -813,5 +814,36 @@ it.effect(
         { ...input, interaction: { ...input.interaction, target: "5" } },
       ])
         expect(hasExactBrowserInput(presentation, changed)).toBe(false);
+    }),
+);
+
+it.effect(
+  "accepts only browser consequences that fit the immutable presentation without truncation",
+  () =>
+    Effect.gen(function* () {
+      const input = {
+        taskId: "task",
+        observationId: "observation",
+        expectedUrl: "https://portal.example/book",
+        targetDescription: "9 button Submit",
+        interaction: { _tag: "Click", target: "9" } as const,
+        consequence: "c".repeat(500),
+      };
+      expect(Schema.is(BrowserEffectInput)(input)).toBe(true);
+      expect(Schema.is(BrowserEffectInput)({ ...input, consequence: "c".repeat(501) })).toBe(false);
+      const presentation = yield* presentOsfoAction({
+        descriptor: {
+          action: "executeBrowserEffect",
+          input,
+          kind: "durable-pause",
+          permissions: ["browser:interact"],
+          requestId: "request",
+          summary: "Submit",
+          toolCallId: "action",
+        },
+        executionId: ActionPresentationId.make("pause"),
+        source: "action",
+      });
+      expect(presentation.consequences).toContain(input.consequence);
     }),
 );

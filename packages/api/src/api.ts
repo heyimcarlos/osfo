@@ -10,6 +10,7 @@ import { FilesGroup } from "./groups/files";
 import { AccountGroup } from "./groups/account";
 import { SkillsGroup } from "./groups/skills";
 import { IntegrationsGroup } from "./groups/integrations";
+import { BrowserApprovalsGroup } from "./groups/browser-approvals";
 import { RemindersGroup } from "./groups/reminders";
 import { ScheduledEmailsGroup } from "./groups/scheduled-emails";
 
@@ -25,6 +26,7 @@ export const Api = HttpApi.make("osfo")
   .add(RegistrationGroup)
   .add(ResearchReportsGroup)
   .add(RemindersGroup)
+  .add(BrowserApprovalsGroup)
   .add(ScheduledEmailsGroup)
   .add(SkillsGroup)
   .annotateMerge(
@@ -173,3 +175,12 @@ export {
   ReminderApprovalDecision,
   ReminderApprovalDecisionAccepted,
 } from "./groups/reminders";
+
+export {
+  BrowserApprovalsGroup,
+  BrowserApprovalsUnavailable,
+  BrowserApproval,
+  BrowserApprovals,
+  BrowserApprovalDecision,
+  BrowserApprovalDecisionAccepted,
+} from "./groups/browser-approvals";

@@ -147,3 +147,7 @@ short, specific, and actionable.
   reports `button` roles, not the assumed `AXButton` spelling. Select the current
   synthetic instruction after provider context so a historical URL cannot turn a
   close request into another open request.
+
+- Qualify native Action pauses through the authenticated review page and the
+  originating chat. A retained pause needs a real decision route, a delivered
+  review link, and an observed native continuation before the user flow is ready.

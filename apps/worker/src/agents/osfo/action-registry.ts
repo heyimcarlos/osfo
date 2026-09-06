@@ -74,6 +74,7 @@ export {
   RetainedDocumentInput,
   scheduledEmailApprovalSelection,
   reminderApprovalSelection,
+  browserApprovalSelection,
   scheduledEmailStartActionName,
   ScheduledEmailIdentityInput,
   ScheduledEmailStartInput,
