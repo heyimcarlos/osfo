@@ -4,6 +4,7 @@ import { createContext, useContext, type ReactNode } from "react";
 export type AuthState = {
   readonly data: null | {
     readonly user: {
+      readonly id: string;
       readonly name: string;
       readonly phoneNumber?: string | null | undefined;
       readonly registrationCompletedAt?: Date | null | undefined;

@@ -13,6 +13,10 @@ import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
 import { DocumentBuildSourceUpload } from "./document-build-source-upload";
+import {
+  loadDocumentBuildSource,
+  rememberDocumentBuildSource,
+} from "./document-build-source-storage";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/new-promise -- Testing Library and the controlled upload boundary own browser Promises. */
 
@@ -22,16 +26,148 @@ const uploadTextFile =
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
+  sessionStorage.clear();
   inspectFileStatus.mockReset();
   uploadTextFile.mockReset();
 });
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
 describe("DocumentBuildSourceUpload", () => {
+  it("recovers an existing owned File ID without uploading it again", async () => {
+    const file = readyUpload("web:existing", "source.txt");
+    inspectFileStatus.mockResolvedValue(file);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<DocumentBuildSourceUpload inspect={inspectFileStatus} uploadFile={uploadTextFile} />);
+    const input = screen.getByRole("textbox", { name: "Existing File ID" });
+    await user.type(input, "web:existing");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText(file.fileId)).toBeDefined();
+    expect(document.activeElement).toBe(input);
+    expect(inspectFileStatus).toHaveBeenCalledExactlyOnceWith(file.fileId);
+    expect(uploadTextFile).not.toHaveBeenCalled();
+    expect(loadDocumentBuildSource()).toBe(file.fileId);
+    expect(sessionStorage.getItem(sessionStorage.key(0) ?? "")).toBe(file.fileId);
+  });
+
+  it("hides a previous account's source until inspection and clears a denied cached source", async () => {
+    const file = readyUpload("web:previous-account", "private-source.txt");
+    uploadTextFile.mockResolvedValue(file);
+    let rejectInspection: ((reason: FileUploadDenied) => void) | undefined;
+    inspectFileStatus.mockReturnValue(
+      new Promise<FileResult>((_, reject) => {
+        rejectInspection = reject;
+      }),
+    );
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const props = { inspect: inspectFileStatus, uploadFile: uploadTextFile };
+    const page = render(<DocumentBuildSourceUpload key="first-account" {...props} />);
+    await user.upload(
+      screen.getByLabelText("Choose text file"),
+      new File(["source"], file.fileName, { type: "text/plain" }),
+    );
+    await screen.findByText(file.fileId);
+    page.rerender(<DocumentBuildSourceUpload key="second-account" {...props} />);
+    expect(screen.getByRole("status").textContent).toBe("Checking source...");
+    expect(document.body.textContent).not.toContain(file.fileId);
+    expect(document.body.textContent).not.toContain(file.fileName);
+    await act(async () => {
+      rejectInspection?.(new FileUploadDenied({ message: "private authority detail" }));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("alert").textContent).toContain("not available to your account");
+    expect(document.body.textContent).not.toContain("private");
+    expect(loadDocumentBuildSource()).toBeNull();
+    page.unmount();
+    render(<DocumentBuildSourceUpload key="third-account" {...props} />);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(inspectFileStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains an unavailable recovery hint for retry without displaying cached source data", async () => {
+    rememberDocumentBuildSource("web:retained");
+    inspectFileStatus
+      .mockRejectedValueOnce(new FileUploadUnavailable({ message: "private failure" }))
+      .mockResolvedValueOnce(readyUpload("web:retained", "source.txt"));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<DocumentBuildSourceUpload inspect={inspectFileStatus} uploadFile={uploadTextFile} />);
+    await screen.findByRole("alert");
+    expect(document.body.textContent).not.toContain("web:retained");
+    expect(loadDocumentBuildSource()).toBe("web:retained");
+    await user.click(screen.getByRole("button", { name: "Retry source" }));
+    expect(await screen.findByText("web:retained")).toBeDefined();
+  });
+
+  it("continues uploading when browser storage is unavailable", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("storage denied");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("storage denied");
+    });
+    uploadTextFile.mockResolvedValue(readyUpload("web:unstored", "source.txt"));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<DocumentBuildSourceUpload inspect={inspectFileStatus} uploadFile={uploadTextFile} />);
+    await user.upload(
+      screen.getByLabelText("Choose text file"),
+      new File(["source"], "source.txt", { type: "text/plain" }),
+    );
+    expect(await screen.findByText("web:unstored")).toBeDefined();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("does not let stale recovery clear a newer uploaded source", async () => {
+    rememberDocumentBuildSource("web:previous");
+    let rejectInspection: ((reason: FileUploadDenied) => void) | undefined;
+    inspectFileStatus.mockReturnValue(
+      new Promise<FileResult>((_, reject) => {
+        rejectInspection = reject;
+      }),
+    );
+    uploadTextFile.mockResolvedValue(readyUpload("web:new", "new.txt"));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<DocumentBuildSourceUpload inspect={inspectFileStatus} uploadFile={uploadTextFile} />);
+    await user.upload(
+      screen.getByLabelText("Choose text file"),
+      new File(["new"], "new.txt", { type: "text/plain" }),
+    );
+    await screen.findByText("web:new");
+    await act(async () => {
+      rejectInspection?.(new FileUploadDenied({ message: "no longer owned" }));
+      await Promise.resolve();
+    });
+    expect(screen.getByText("web:new")).toBeDefined();
+    expect(loadDocumentBuildSource()).toBe("web:new");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("recovers the uploaded source after the panel remounts", async () => {
+    const uploaded = readyUpload("web:11111111-1111-4111-8111-111111111111", "source.txt");
+    uploadTextFile.mockResolvedValue(uploaded);
+    inspectFileStatus.mockResolvedValue(uploaded);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const props = {
+      inspect: inspectFileStatus,
+      makeUploadId: () => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      uploadFile: uploadTextFile,
+    };
+    const page = render(<DocumentBuildSourceUpload {...props} />);
+    await user.upload(
+      screen.getByLabelText("Choose text file"),
+      new File(["source"], "source.txt", { type: "text/plain" }),
+    );
+    await screen.findByText(uploaded.fileId);
+    page.unmount();
+    render(<DocumentBuildSourceUpload {...props} />);
+    expect(await screen.findByText(uploaded.fileId)).toBeDefined();
+    expect(inspectFileStatus).toHaveBeenCalledWith(uploaded.fileId);
+    expect(uploadTextFile).toHaveBeenCalledTimes(1);
+  });
+
   it("shows upload, processing, and ready states with the owning File ID", async () => {
     let completeUpload: ((result: UploadResult) => void) | undefined;
     uploadTextFile.mockReturnValue(

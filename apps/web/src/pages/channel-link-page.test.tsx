@@ -83,6 +83,7 @@ describe("Channel Link Invite page", () => {
         value={{
           data: {
             user: {
+              id: "test-user",
               name: "Registered User",
               registrationCompletedAt: DateTime.toDateUtc(
                 DateTime.makeUnsafe("2026-08-20T20:00:00.000Z"),
@@ -134,6 +135,7 @@ describe("Channel Link Invite page", () => {
         value={{
           data: {
             user: {
+              id: "test-user",
               name: "New User",
               registrationCompletedAt: null,
             },
