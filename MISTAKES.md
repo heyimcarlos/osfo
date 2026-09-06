@@ -3,6 +3,10 @@
 Record mistakes that can affect the current Osfo implementation. Keep each entry
 short, specific, and actionable.
 
+- Human browser handoff invalidates earlier page observations while their approvals
+  remain pending. Classify those presentations as stale and omit them from lists so
+  the current approval remains visible; keep ownership and storage failures fatal.
+
 - Link creation timestamps and IDs do not establish current routing authority.
   Prefer the unique active Channel Link, using history only for revoked fallback.
 

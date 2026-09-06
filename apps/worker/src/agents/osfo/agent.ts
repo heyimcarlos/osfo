@@ -291,6 +291,7 @@ import {
   type ActionPresentationFound,
   type ActionPresentationNotFound,
   ActionPresentationUnavailable,
+  ActionPresentationStale,
   ActionApprovalRequestInvalid,
   ApprovalActor,
   ApprovalActorAuthorizationUnavailable,
@@ -1138,6 +1139,16 @@ export class OsfoAgent extends Think<Env> {
     authorize: (request) => this.#authorizeBrowser(request),
   });
   readonly #browserTasks = BrowserTask.make({
+    activeTaskIds: (userId) =>
+      this.#hostedBrowser(this.#browserIdentity(userId))
+        .list()
+        .pipe(
+          Effect.map((items) => items.map((item) => item.taskId)),
+          Effect.mapError(
+            () =>
+              new Browser.BrowserUnavailable({ message: "Current browser tasks are unavailable." }),
+          ),
+        ),
     cleanup: (userId) =>
       this.#hostedBrowser(this.#browserIdentity(userId)).quiesce.pipe(
         Effect.mapError(
@@ -6253,6 +6264,7 @@ export class OsfoAgent extends Think<Env> {
     | ActionPresentationFound
     | ActionPresentationNotFound
     | ActionPresentationUnavailable
+    | ActionPresentationStale
     | ActionApprovalRequestInvalid
     | ApprovalActorAuthorizationUnavailable
     | ApprovalActorUnauthorized
@@ -6309,29 +6321,33 @@ export class OsfoAgent extends Think<Env> {
   #presentAction(
     pending: PendingThinkAction,
     userId: UserId,
-  ): Effect.Effect<ActionPresentation, ActionPresentationUnavailable> {
+  ): Effect.Effect<ActionPresentation, ActionPresentationUnavailable | ActionPresentationStale> {
     const projected = presentOsfoAction(pending, inspectCoreMemory(this.session), userId);
     if (pending.descriptor.action === "executeBrowserEffect") {
       const tasks = this.#browserTasks;
       return Effect.gen(function* () {
-        const input = yield* Schema.decodeUnknownEffect(BrowserEffectInput)(
-          pending.descriptor.input,
+        const taskAndInput = yield* Effect.gen(function* () {
+          const input = yield* Schema.decodeUnknownEffect(BrowserEffectInput)(
+            pending.descriptor.input,
+          );
+          const task = yield* tasks.read(input.taskId, userId);
+          return { task, input };
+        }).pipe(
+          Effect.mapError(
+            () =>
+              new ActionPresentationUnavailable({
+                action: pending.descriptor.action,
+                message: "The browser effect has no matching owned page evidence.",
+              }),
+          ),
         );
-        const task = yield* tasks.read(input.taskId, userId);
-        if (!matchesObservation(task, input))
-          return yield* new Browser.BrowserUnavailable({
-            message: "The browser target does not match retained page evidence.",
+        if (!matchesObservation(taskAndInput.task, taskAndInput.input))
+          return yield* new ActionPresentationStale({
+            action: pending.descriptor.action,
+            message: "The browser observation has changed or expired. Observe the page again.",
           });
         return yield* projected;
-      }).pipe(
-        Effect.mapError(
-          () =>
-            new ActionPresentationUnavailable({
-              action: pending.descriptor.action,
-              message: "The browser effect has no matching owned page evidence.",
-            }),
-        ),
-      );
+      });
     }
     if (pending.descriptor.action !== "gmailSendEmail") return projected;
     const immediateGmailSendStore = this.#immediateGmailSendStore;
@@ -6402,6 +6418,7 @@ export class OsfoAgent extends Think<Env> {
   ): Promise<
     | ActionPresentationNotFound
     | ActionPresentationUnavailable
+    | ActionPresentationStale
     | ActionApprovalRequestInvalid
     | ApprovalActorAuthorizationUnavailable
     | ApprovalActorUnauthorized

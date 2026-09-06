@@ -141,6 +141,12 @@ export class ActionPresentationUnavailable extends Schema.TaggedError<ActionPres
   { action: Schema.String, message: Schema.String },
 ) {}
 
+/** The evidence behind an exact Action presentation has been replaced or expired. */
+export class ActionPresentationStale extends Schema.TaggedError<ActionPresentationStale>()(
+  "ActionPresentationStale",
+  { action: Schema.String, message: Schema.String },
+) {}
+
 /** Classified failure from a Think Approval method. */
 export class ThinkApprovalUnavailable extends Schema.TaggedError<ThinkApprovalUnavailable>()(
   "ThinkApprovalUnavailable",

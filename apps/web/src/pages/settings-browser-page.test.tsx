@@ -104,7 +104,7 @@ describe("browser human control", () => {
       <SettingsBrowserPage
         dependencies={{
           ...taskDependencies,
-          inspect: Effect.succeed({ items: [] }),
+          inspect: Effect.sync(() => ({ items: opened.length === 0 ? [approval] : [] })),
           decide: () => Effect.die(new Error("Unexpected decision")),
           inspectTasks: Effect.sync(() => ({
             items: [{ taskId: "owned-task", url: "https://portal.example.test", state }],
@@ -125,12 +125,14 @@ describe("browser human control", () => {
         }}
       />,
     );
+    expect(await screen.findByRole("button", { name: "Approve" })).toBeDefined();
     const open = await screen.findByRole("button", { name: "Open browser" });
     await user.dblClick(open);
     expect(opened).toEqual(["owned-task"]);
     expect(screen.queryByRole("link", { name: "Open live browser" })).toBeNull();
     await Effect.runPromise(Deferred.succeed(gate, undefined));
     const link = await screen.findByRole("link", { name: "Open live browser" });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Approve" })).toBeNull());
     expect(link.getAttribute("href")).toBe("https://browser.example.test/view");
     expect(link.getAttribute("rel")).toBe("noopener noreferrer");
     expect(link.getAttribute("referrerpolicy")).toBe("no-referrer");

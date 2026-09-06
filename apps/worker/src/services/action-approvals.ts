@@ -1,4 +1,4 @@
-import { Effect, Predicate, Semaphore } from "effect";
+import { Effect, Option, Predicate, Semaphore } from "effect";
 
 import type { UserId } from "../domain";
 import {
@@ -10,6 +10,7 @@ import {
   type ActionPresentation,
   type ActionPresentationNotFound,
   type ActionPresentationUnavailable,
+  type ActionPresentationStale,
   type ApprovalActor,
   type ApprovalActorAuthorizationUnavailable,
   type ApprovalAlreadyResolved,
@@ -41,7 +42,7 @@ export interface ActionApprovalLifecycle {
 export type PresentAction = (
   pending: PendingThinkAction,
   userId: UserId,
-) => Effect.Effect<ActionPresentation, ActionPresentationUnavailable>;
+) => Effect.Effect<ActionPresentation, ActionPresentationUnavailable | ActionPresentationStale>;
 
 /** Durable first-write-wins storage for one immutable Action presentation. */
 export interface ActionPresentationPersistence {
@@ -114,18 +115,17 @@ export const makeActionApprovals = (options: {
           actor,
           pending[0]?.executionId ?? ActionPresentationId.make("pending-action-list"),
         );
-        const selected =
-          selection === undefined
-            ? pending
-            : pending.filter(selection.select).slice(0, selection.maximum);
-        const presentations = yield* Effect.forEach(
-          selected,
-          (candidate) =>
-            options
-              .present(candidate, actor.userId)
-              .pipe(Effect.flatMap(options.presentations.retain)),
-          { concurrency: 1 },
-        );
+        const selected = selection === undefined ? pending : pending.filter(selection.select);
+        const presentations: Array<ActionPresentation> = [];
+        for (const candidate of selected) {
+          if (selection !== undefined && presentations.length >= selection.maximum) break;
+          const presentation = yield* options.present(candidate, actor.userId).pipe(
+            Effect.map(Option.some),
+            Effect.catchTag("ActionPresentationStale", () => Effect.succeed(Option.none())),
+          );
+          if (Option.isNone(presentation)) continue;
+          presentations.push(yield* options.presentations.retain(presentation.value));
+        }
         return ActionPresentationsFound.make({ presentations });
       }),
     );

@@ -93,7 +93,7 @@ export function SettingsBrowserPage({
   };
   return (
     <>
-      <BrowserTasksPanel dependencies={dependencies} />
+      <BrowserTasksPanel dependencies={dependencies} onChange={refresh} />
       <GlassPanel className="p-5 sm:p-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -200,8 +200,10 @@ const describeInteraction = (value: string): string => {
 
 function BrowserTasksPanel({
   dependencies,
+  onChange,
 }: {
   readonly dependencies: SettingsBrowserDependencies;
+  readonly onChange: () => void;
 }) {
   const [tasks, setTasks] = useState<ReadonlyArray<BrowserTaskSummary> | null>(null);
   const [liveView, setLiveView] = useState<BrowserTaskLiveView | null>(null);
@@ -266,6 +268,7 @@ function BrowserTasksPanel({
           );
         }
         refresh();
+        onChange();
       },
       () => {
         inFlight.current = false;
