@@ -5,6 +5,7 @@ import { Data, Effect, Result } from "effect";
 import { AllowancePeriodId, UserId } from "../../domain";
 import { ContentId } from "../../domain/client-content";
 import { ArtifactIntentDigest } from "../../services/artifact-generation";
+import { IncidentControls } from "../../services/incident-controls";
 import {
   makeAttemptStore,
   makeWithPorts,
@@ -289,7 +290,14 @@ it.effect("replays a digest-verified completed output without another Sandbox ex
       return { exitCode: 0, stdout: "", success: true };
     },
   };
-  const compute = makeWithPorts(() => sandbox, attempts, { generate: async () => bytes }, 50_000n);
+  const compute = makeWithPorts(
+    () => sandbox,
+    attempts,
+    { generate: async () => bytes },
+    50_000n,
+    undefined,
+    Effect.succeed(false),
+  );
 
   return compute.generate(request).pipe(
     Effect.tap((result) =>
@@ -348,6 +356,74 @@ it.effect("fails closed when staged completed output no longer matches its diges
   );
 });
 
+it.effect.each(["paused", "unavailable"] as const)(
+  "preserves an expired incurred attempt when new dispatch is %s",
+  (controlState) =>
+    Effect.gen(function* () {
+      const objects = new Map<string, Partial<R2Object>>();
+      const store = makeAttemptStore(costBucketStub(objects));
+      const previousCost = incurredCost("artifact:expired-before-cost-sidecar");
+      const claimed = {
+        cost: { _tag: "ProvenNoUse" as const },
+        executionLeaseExpiresAt: -1,
+        intentDigest: request.intentDigest,
+        output: null,
+        status: "claimed" as const,
+        userId: request.userId,
+      };
+      yield* Effect.promise(() => store.claim(request.contentId, claimed));
+      yield* Effect.promise(() =>
+        store.start(request.contentId, { ...claimed, cost: previousCost, status: "started" }),
+      );
+      // Simulate interruption after start persisted and before its immutable cost sidecar was written.
+      const before = yield* Effect.promise(() => store.inspect(request.contentId));
+      let reclaims = 0;
+      let executions = 0;
+      const controls = IncidentControls.make(() =>
+        controlState === "paused"
+          ? Effect.succeed(true)
+          : Effect.fail(
+              new IncidentControls.Unavailable({ cause: new Error("Incident store unavailable") }),
+            ),
+      );
+      const compute = makeWithPorts(
+        () => ({
+          ...successfulSandbox(new Uint8Array([1])),
+          exec: async () => {
+            executions += 1;
+            return {
+              exitCode: 0,
+              stdout: '{"height":400,"kind":"visual","width":600}',
+              success: true,
+            };
+          },
+        }),
+        {
+          ...store,
+          reclaim: async (...args) => {
+            reclaims += 1;
+            return store.reclaim(...args);
+          },
+        },
+        { generate: async () => new Uint8Array([1]) },
+        50_000n,
+        undefined,
+        controls
+          .check("newCostlyWork")
+          .pipe(Effect.match({ onFailure: () => false, onSuccess: () => true })),
+      );
+      const result = yield* compute.generate(request);
+      expect(result).toMatchObject({ _tag: "Interrupted", cost: previousCost });
+      expect(yield* Effect.promise(() => store.inspect(request.contentId))).toEqual(before);
+      expect(yield* compute.inspect(request.contentId, request.intentDigest)).toMatchObject({
+        completed: false,
+        cost: previousCost,
+      });
+      expect(reclaims).toBe(0);
+      expect(executions).toBe(0);
+    }),
+);
+
 it.effect("atomically reclaims an expired started lease", () => {
   const bytes = new Uint8Array([1, 2, 3]);
   let retained: Parameters<AttemptStore["claim"]>[1] = {
@@ -365,7 +441,7 @@ it.effect("atomically reclaims an expired started lease", () => {
     userId: request.userId,
   };
   let executions = 0;
-  const recordedProviderOperations = ["artifact:expired"];
+  const recordedProviderOperations: Array<string> = [];
   const attempts: AttemptStore = {
     claim: async () => ({ _tag: "Existing", evidence: retained }),
     complete: async (_contentId, evidence) => {
@@ -377,6 +453,7 @@ it.effect("atomically reclaims an expired started lease", () => {
     },
     readCompleted: async () => bytes,
     reclaim: async (_contentId, current, proposed) => {
+      expect(recordedProviderOperations).toEqual(["artifact:expired"]);
       if (retained !== current) return false;
       retained = proposed;
       return true;

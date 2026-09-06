@@ -103,3 +103,7 @@ short, specific, and actionable.
   refusal reaches neither provider dispatch nor cost recording. Trace the installed
   streaming library before assuming an SDK error invokes its error hook; error
   frames and thrown transport failures can follow different paths.
+
+- Check dispatch admission before reclaiming an expired provider attempt. A pause
+  must return and retain its incurred evidence; an allowed retry must preserve
+  the old immutable cost record before replacing the attempt row.
