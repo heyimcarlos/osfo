@@ -31,6 +31,17 @@ it.effect(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
+        const context = inject("osfoJourney");
+        const readTelegramLedger = Effect.tryPromise(() =>
+          fetch(`${context.providerOrigin}/_test/telegram/ledger`).then((response) =>
+            response.json(),
+          ),
+        ).pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ method: Schema.String }))),
+          ),
+        );
+        const telegramBefore = yield* readTelegramLedger;
         const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
           Effect.promise(client.dispose),
         );
@@ -97,7 +108,6 @@ it.effect(
               "x-hub-signature-256": `sha256=${createHmac("sha256", "test-only-whatsapp-app-secret").update(input).digest("hex")}`,
             },
           });
-        const context = inject("osfoJourney");
         yield* Effect.addFinalizer(() =>
           Effect.promise(() =>
             fetch(`${context.providerOrigin}/_test/whatsapp/reset`, { method: "POST" }),
@@ -116,6 +126,10 @@ it.effect(
           ),
         );
         expect(invitation.status).toBe(200);
+        const telegramAfter = yield* readTelegramLedger;
+        expect(telegramAfter.filter((entry) => entry.method === "getMe")).toHaveLength(
+          telegramBefore.filter((entry) => entry.method === "getMe").length + 1,
+        );
         const invitationLedger = yield* Schema.decodeUnknownEffect(
           Schema.Array(Schema.Struct({ body: Schema.String })),
         )(yield* readLedger);
