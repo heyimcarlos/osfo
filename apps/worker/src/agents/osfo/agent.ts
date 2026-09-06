@@ -167,6 +167,7 @@ import { committedTurns } from "./db/schema";
 import {
   makeMessengerAdmissionStore,
   MessengerAcceptanceReceipt,
+  MessengerAdmissionRoute,
   MessengerAdmissionUnavailable,
 } from "./messenger-admission";
 
@@ -1309,7 +1310,11 @@ export class OsfoAgent extends Think<Env> {
   }
 
   /** Accept a provider message into native Think before its webhook can succeed. */
-  override async acceptMessengerInput(userMessage: string | UIMessage, context: MessengerContext) {
+  override async acceptMessengerInput(
+    userMessage: string | UIMessage,
+    context: MessengerContext,
+    encodedRoute?: unknown,
+  ) {
     await this.#migrationsReady;
     const authorId = messengerAuthorId(context);
     const message = context.message;
@@ -1325,6 +1330,8 @@ export class OsfoAgent extends Think<Env> {
     );
     const inputDigest = await messengerInputDigest(userMessage, context);
     const operation = Effect.gen({ self: this }, function* () {
+      const route = yield* Schema.decodeUnknownEffect(MessengerAdmissionRoute)(encodedRoute);
+      if (route.agentId !== this.name) return { kind: "suppressed" as const };
       const resolution = yield* Effect.promise(() =>
         this.#resolveMessengerLink(context.messengerId, authorId),
       );
@@ -1334,7 +1341,12 @@ export class OsfoAgent extends Think<Env> {
           message: "Messenger input could not be authorized",
         });
       const link = resolution.link;
-      if (link === null) return { kind: "suppressed" as const };
+      if (
+        link === null ||
+        link.channelLinkId !== route.channelLinkId ||
+        link.userId !== route.userId
+      )
+        return { kind: "suppressed" as const };
       const currentAuthorization = yield* this.#inspectCurrentChannelLinkAuthorization(link);
       if (
         Predicate.isTagged(

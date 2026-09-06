@@ -263,6 +263,92 @@ it.effect(
         yield* Effect.promise(() =>
           database.delete(whatsappWakeups).where(eq(whatsappWakeups.wakeup_id, "later-wakeup")),
         );
+        const unadmittedBody = body.replace(
+          "wamid.durable-acceptance",
+          "wamid.before-child-receipt",
+        );
+        const unadmittedSubmissionId = yield* Effect.promise(() =>
+          messengerSubmissionId("whatsapp", receipt.threadId, "wamid.before-child-receipt"),
+        );
+        yield* Effect.promise(() =>
+          runInDurableObject(directory, (host) => {
+            vi.spyOn(host, "acceptMessengerInput").mockResolvedValue({ kind: "unavailable" });
+            vi.spyOn(host, "alarm").mockResolvedValue(undefined);
+          }),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => vi.restoreAllMocks()));
+        expect((yield* Effect.promise(() => send(unadmittedBody))).status).toBe(503);
+        const unadmitted = yield* Effect.promise(() =>
+          runInDurableObject(directory, async (host) => {
+            const replies = await host.listFibers();
+            return replies.find(
+              (candidate) =>
+                parseMessengerReplySnapshot(candidate.snapshot)?.event.message
+                  ?.providerMessageId === "wamid.before-child-receipt",
+            );
+          }),
+        );
+        expect(unadmitted).toMatchObject({
+          snapshot: {
+            stage: "admitting",
+            acceptance: {
+              agentId: owner.agentId,
+              channelLinkId: receipt.channelLinkId,
+              userId: owner.userId,
+            },
+          },
+        });
+        expect(
+          (yield* Effect.promise(() =>
+            app.fetch(`/v1/channel-links/${receipt.channelLinkId}`, { method: "DELETE" }),
+          )).status,
+        ).toBe(200);
+        const sameOwnerInvite = yield* service.ensure(address);
+        if (sameOwnerInvite._tag !== "Invited")
+          return yield* Effect.die(new Error("Expected a replacement Channel Link"));
+        const sameOwnerToken = yield* Schema.decodeEffect(ChannelLinks.ChannelLinkInviteToken)(
+          sameOwnerInvite.verificationUrl.pathname.split("/").at(-1) ?? "",
+        );
+        yield* service.accept(Redacted.make(sameOwnerToken), UserId.make(owner.userId));
+        const currentLink = yield* service.resolveConversation(address);
+        if (currentLink._tag !== "Linked")
+          return yield* Effect.die(new Error("Expected the same User's new Channel Link"));
+        expect(currentLink.link.channelLinkId).not.toBe(receipt.channelLinkId);
+        yield* Effect.promise(() =>
+          runInDurableObject(directory, async (host) => {
+            vi.restoreAllMocks();
+            await host.alarm();
+          }),
+        );
+        yield* Effect.promise(() =>
+          vi.waitFor(async () => {
+            expect((await send(unadmittedBody)).status).toBe(200);
+          }),
+        );
+        const deniedAdmission = yield* Effect.promise(() =>
+          runInDurableObject(directory, async (host) => {
+            const checkpoint = parseMessengerReplySnapshot(unadmitted?.snapshot);
+            if (!checkpoint?.userMessage) throw new Error("Missing original provider input");
+            const agent = await host.subAgent(OsfoAgent, owner.agentId);
+            const outcome = await agent.acceptMessengerInput(
+              checkpoint.userMessage,
+              messengerContextFromEvent(checkpoint.event),
+              checkpoint.acceptance,
+            );
+            const submission = await agent.inspectSubmission(unadmittedSubmissionId);
+            return { outcome, submission };
+          }),
+        );
+        expect(deniedAdmission).toEqual({ outcome: { kind: "suppressed" }, submission: null });
+        expect(
+          yield* Effect.promise(() =>
+            database
+              .select()
+              .from(allowanceUsage)
+              .where(eq(allowanceUsage.source_id, "whatsapp:wamid.before-child-receipt")),
+          ),
+        ).toHaveLength(0);
+        expect(yield* readLedger).toEqual(ledger);
         const interruptedBody = body.replace(
           "wamid.durable-acceptance",
           "wamid.before-directory-ack",
@@ -302,7 +388,7 @@ it.effect(
         });
         expect(
           (yield* Effect.promise(() =>
-            app.fetch(`/v1/channel-links/${receipt.channelLinkId}`, { method: "DELETE" }),
+            app.fetch(`/v1/channel-links/${currentLink.link.channelLinkId}`, { method: "DELETE" }),
           )).status,
         ).toBe(200);
         const replacementInvite = yield* service.ensure(address);

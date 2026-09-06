@@ -18,7 +18,9 @@ import { messengerAcceptanceReceipts } from "./db/schema";
 /** Persist the original owner before an admission RPC can commit a native submission. */
 export const MessengerAdmissionRoute = Schema.Struct({
   agentId: AgentId,
+  channelLinkId: ChannelLinkId,
   kind: Schema.Literal("route"),
+  userId: UserId,
 });
 
 /** The immutable mapping returned only after the native submission is recoverable. */

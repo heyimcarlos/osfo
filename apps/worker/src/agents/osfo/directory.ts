@@ -24,7 +24,7 @@ import { ScheduledEmailFollowUp } from "../../services/scheduled-email-follow-up
 import { OsfoAgent } from "./agent";
 import { channelAddressOf, messengerAuthorId } from "./channel-address";
 import { streamTextReply } from "./messenger-stream";
-import { makeOsfoMessengerRouter, type MessengerAddressResolution } from "./messenger-routing";
+import { makeOsfoMessengerRouter } from "./messenger-routing";
 import { ThinkMessengerStateAgent } from "./messenger-state";
 import { MessengerReset } from "./messenger-reset";
 import { MessengerAcceptanceReceipt, MessengerAdmissionRoute } from "./messenger-admission";
@@ -95,7 +95,12 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
         this.#resolveMessengerAddress(channelAddressOf(context.messengerId, authorId)).pipe(
           Effect.map((resolution) =>
             resolution._tag === "Linked"
-              ? { kind: "route" as const, agentId: resolution.agentId }
+              ? {
+                  kind: "route" as const,
+                  agentId: resolution.agentId,
+                  channelLinkId: resolution.channelLinkId,
+                  userId: resolution.userId,
+                }
               : resolution._tag === "Unavailable"
                 ? { kind: "unavailable" as const }
                 : undefined,
@@ -124,11 +129,17 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
             channelAddressOf(context.messengerId, authorId),
           );
           if (current._tag === "Unavailable") return { kind: "unavailable" as const };
-          if (current._tag !== "Linked" || current.agentId !== route.agentId)
+          if (
+            current._tag !== "Linked" ||
+            current.agentId !== route.agentId ||
+            current.channelLinkId !== route.channelLinkId ||
+            current.userId !== route.userId
+          )
             return { kind: "suppressed" as const };
           return yield* Effect.tryPromise(async () => {
+            if (!this.hasSubAgent(OsfoAgent, route.agentId)) return { kind: "suppressed" as const };
             const agent = await this.subAgent(OsfoAgent, route.agentId);
-            return agent.acceptMessengerInput(userMessage, context);
+            return agent.acceptMessengerInput(userMessage, context, route);
           });
         }).pipe(
           Effect.provide(directoryMessengerLayer(this.env)),
@@ -647,7 +658,9 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
       return {
         _tag: "Linked" as const,
         agentId: route.value.agentId,
-      } satisfies MessengerAddressResolution;
+        channelLinkId: resolution.value.link.channelLinkId,
+        userId: resolution.value.link.userId,
+      };
     },
   );
 }
