@@ -1,14 +1,17 @@
 // @vitest-environment happy-dom
 
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
-import { afterEach, describe, expect, it } from "@effect/vitest";
+import { afterEach, describe, expect, it, vi } from "@effect/vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { documentDownloadUrl, documentExportUrl } from "@osfo/api/document-download";
 import { DateTime } from "effect";
 
 import { AuthStateProvider, type AuthState } from "./auth-state";
 import { parseBillingReturnSearch, parseBillingReturnSearchString } from "./lib/billing-return";
 import { saveAccountDeletionReplay } from "./lib/account-deletion-replay";
 import { createAppRouter } from "./router";
+import { defaultPhoneAuthDependencies } from "./components/phone-auth-form";
 
 /* oxlint-disable effecttsgo/async-function -- Router navigation and Testing Library own browser Promises. */
 
@@ -44,6 +47,7 @@ const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   if (localStorageDescriptor !== undefined) {
     Object.defineProperty(globalThis, "localStorage", localStorageDescriptor);
   }
@@ -63,6 +67,72 @@ const renderAt = (path: string, authState: AuthState = signedOut) => {
 };
 
 describe("Osfo route tree", () => {
+  it("preserves the exact document link through SMS verification and later sign-out", async () => {
+    const contentId = "document:toolCall:ordinary-form";
+    const url = documentDownloadUrl(contentId, "https://osfo.test");
+    const path = new URL(url).pathname + new URL(url).search;
+    const sendCode = vi
+      .spyOn(defaultPhoneAuthDependencies, "sendCode")
+      .mockResolvedValue({ error: null });
+    const verifyCode = vi
+      .spyOn(defaultPhoneAuthDependencies, "verifyCode")
+      .mockResolvedValue({ error: null });
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    globalThis.fetch = fetch;
+    const user = userEvent.setup();
+    const { router, view } = renderAt(path);
+    await waitFor(() => expect(screen.getByText("Continue by SMS")).toBeTruthy());
+    expect(screen.queryByRole("link", { name: "Download document" })).toBeNull();
+    expect(screen.queryByText(contentId)).toBeNull();
+    await user.type(screen.getByLabelText("Phone number"), "4165550101");
+    await user.click(screen.getByRole("button", { name: "Send code" }));
+    await user.type(await screen.findByLabelText("Verification code"), "424242");
+    await user.click(screen.getByRole("button", { name: "Verify and continue" }));
+    expect(sendCode).toHaveBeenCalledWith({ phoneNumber: "+14165550101" });
+    expect(verifyCode).toHaveBeenCalledWith({ code: "424242", phoneNumber: "+14165550101" });
+    expect(router.state.location.pathname).toBe("/documents/download");
+    expect(router.state.location.search).toEqual({ contentId });
+    view.rerender(
+      <AuthStateProvider value={signedIn}>
+        <RouterProvider router={router} />
+      </AuthStateProvider>,
+    );
+    const link = await screen.findByRole("link", { name: "Download document" });
+    expect(link.getAttribute("href")).toBe(documentExportUrl(contentId, "https://api.osfo.test"));
+    expect(fetch).not.toHaveBeenCalled();
+    view.rerender(
+      <AuthStateProvider value={signedOut}>
+        <RouterProvider router={router} />
+      </AuthStateProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("Continue by SMS")).toBeTruthy());
+    expect(screen.queryByRole("link", { name: "Download document" })).toBeNull();
+    expect(router.state.location.search).toEqual({ contentId });
+  });
+
+  it("shows an incomplete document link without making a byte request", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    globalThis.fetch = fetch;
+    renderAt("/documents/download", signedIn);
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      expect.stringContaining("incomplete"),
+    );
+    expect(screen.queryByRole("link", { name: "Download document" })).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps content identity in one encoded query parameter on both document routes", () => {
+    const contentId = "document:toolCall:request&next=https://untrusted.test";
+    for (const url of [
+      documentDownloadUrl(contentId, "https://osfo.test"),
+      documentExportUrl(contentId, "https://api.osfo.test"),
+    ]) {
+      expect(new URL(url).searchParams.get("contentId")).toBe(contentId);
+      expect([...new URL(url).searchParams.keys()]).toEqual(["contentId"]);
+    }
+  });
+
   it("opens email-password sign-in without offering credential sign-up", async () => {
     renderAt("/login");
 

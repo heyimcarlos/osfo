@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import type { DocumentBuildNotificationSummary } from "@osfo/api";
+import { documentExportUrl } from "@osfo/api/document-download";
 import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
@@ -16,7 +17,6 @@ import {
 import { OsfoAgentControlPanel } from "./osfo-agent-control-panel";
 import { ResearchReportNotificationCenterContent } from "./research-report-notification-center";
 import {
-  documentExportUrl,
   DocumentBuildNotificationCenterContent,
   DocumentBuildNotificationCenterWithLoader,
 } from "./document-build-notification-center";

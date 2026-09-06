@@ -8,6 +8,7 @@
     "./groups/health": "./src/groups/health.ts",
     "./groups/registration": "./src/groups/registration.ts",
     "./middleware/auth": "./src/middleware/auth.ts",
+    "./document-download": "./src/document-download.ts",
     "./browser-host": "./src/browser-host.ts"
   },
   "scripts": {
