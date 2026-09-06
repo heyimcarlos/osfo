@@ -11,6 +11,12 @@ import type {
 export const registeredToolNameValues = [
   "analyzeFile",
   "inspectBrowserInventory",
+  "openBrowserTask",
+  "observeBrowserTask",
+  "inspectBrowserOutcome",
+  "listBrowserTasks",
+  "closeBrowserTask",
+  "executeBrowserEffect",
   "calendarCreateEvent",
   "calendarDeleteEvent",
   "calendarFindAvailability",

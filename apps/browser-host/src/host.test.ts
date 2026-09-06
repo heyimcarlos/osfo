@@ -4,7 +4,11 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "@effect/vitest";
-import { decodeInventoryResponse } from "@osfo/api/browser-host";
+import {
+  decodeBrowserResponse,
+  decodeInventoryResponse,
+  encodeBrowserRequest,
+} from "@osfo/api/browser-host";
 import { Deferred, Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 
@@ -37,6 +41,50 @@ const open = (path: string, inspect: Effect.Effect<{ readonly _tag: "Unknown" }>
 afterEach(() => vi.restoreAllMocks());
 
 describe("browser host admission and replay", () => {
+  it.effect(
+    "authenticates before reading a body and refuses concurrent requests without queueing",
+    () =>
+      Effect.gen(function* () {
+        const path = yield* directory;
+        const host = yield* open(path, Effect.succeed({ _tag: "Unknown" }));
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        expect(
+          yield* host.handleRequest(
+            "inventory",
+            undefined,
+            Effect.die(new Error("unauthenticated body was read")),
+          ),
+        ).toEqual({ status: 401, body: "" });
+        const first = yield* host
+          .handleRequest(
+            "inventory",
+            `Bearer ${token}`,
+            Deferred.succeed(entered, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.as(JSON.stringify(request)),
+            ),
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(entered);
+        expect(
+          yield* host.handleRequest(
+            "inventory",
+            `Bearer ${token}`,
+            Effect.die(new Error("queued body was read")),
+          ),
+        ).toEqual({ status: 503, body: "" });
+        yield* Deferred.succeed(release, undefined);
+        expect((yield* Fiber.join(first)).status).toBe(200);
+        expect(
+          (yield* host.handleRequest(
+            "inventory",
+            `Bearer ${token}`,
+            Effect.succeed(JSON.stringify(request)),
+          )).status,
+        ).toBe(200);
+      }),
+  );
   it.effect(
     "rejects missing credentials, another owner/session, and arbitrary code without dispatch",
     () =>
@@ -223,3 +271,73 @@ describe("browser host admission and replay", () => {
     }),
   );
 });
+
+it.effect(
+  "keeps revocation closed to new work until all owned tabs are cleaned, then erases retained results",
+  () =>
+    Effect.gen(function* () {
+      const path = yield* directory;
+      let cleanupSucceeded = false;
+      const host = yield* Host.make(
+        {
+          databasePath: join(path, "host.sqlite"),
+          ownerUserId: request.ownerUserId,
+          hostSessionId: request.hostSessionId,
+          token,
+        },
+        Effect.succeed({ _tag: "Unknown" }),
+        {
+          allowedOrigins: ["https://portal.example"],
+          runtime: {
+            open: () =>
+              Effect.succeed({
+                _tag: "Opened",
+                tabId: "owned-tab",
+                page: { url: "https://portal.example/", text: "1 AXButton Submit" },
+              }),
+            observe: () => Effect.die(new Error("revoked browser was observed")),
+            interact: () => Effect.die(new Error("revoked browser was clicked")),
+            close: () => Effect.succeed(true),
+            closeAll: Effect.sync(() => cleanupSucceeded),
+          },
+        },
+      );
+      const owned = {
+        ownerUserId: request.ownerUserId,
+        hostSessionId: request.hostSessionId,
+        turnId: request.turnId,
+        operationId: "open-task",
+        taskId: "owned-task",
+      };
+      const opened = yield* host.handleBrowser(
+        `Bearer ${token}`,
+        encodeBrowserRequest({
+          ...owned,
+          command: { _tag: "Open", url: "https://portal.example/" },
+        }),
+      );
+      expect(decodeBrowserResponse(opened.body)?.outcome).toMatchObject({ _tag: "Observed" });
+      const revoke = encodeBrowserRequest({
+        ...owned,
+        operationId: "delete-account",
+        command: { _tag: "Revoke" },
+      });
+      expect(
+        decodeBrowserResponse((yield* host.handleBrowser(`Bearer ${token}`, revoke)).body)?.outcome,
+      ).toEqual({ _tag: "Unknown" });
+      const rejected = yield* host.handleBrowser(
+        `Bearer ${token}`,
+        encodeBrowserRequest({
+          ...owned,
+          operationId: "late-observe",
+          command: { _tag: "Observe" },
+        }),
+      );
+      expect(rejected.status).toBe(403);
+      cleanupSucceeded = true;
+      expect(
+        decodeBrowserResponse((yield* host.handleBrowser(`Bearer ${token}`, revoke)).body)?.outcome,
+      ).toEqual({ _tag: "Closed" });
+      expect((yield* host.handle(`Bearer ${token}`, JSON.stringify(request))).status).toBe(403);
+    }),
+);

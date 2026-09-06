@@ -327,6 +327,7 @@ import {
   approvedForgetKnowledgeCorrections,
   approvalPresentationFor,
   hasExactActionInput,
+  hasExactBrowserInput,
   hasExactForgetKnowledgeInput,
   hasExactIntegrationActionInput,
   hasExactPersonalSkillDeleteInput,
@@ -426,7 +427,9 @@ import {
   reconcileConversationUsages,
 } from "./conversation-usage";
 import { makeWebTools } from "./web-tools";
-import { makeBrowserTools } from "./browser-tools";
+import { makeBrowserTools, makeBrowserTaskTools } from "./browser-tools";
+import { BrowserTask, BrowserEffectInput, matchesObservation } from "./browser-task";
+import type { BrowserCommand } from "@osfo/api/browser-host";
 import { Browser } from "../../services/browser-host";
 import {
   makeReminderAuthority,
@@ -487,6 +490,7 @@ class SkillLearningModelUnavailable extends Data.TaggedError("SkillLearningModel
 
 const authorization = Authorization.make(retainedCatalog);
 const capabilityActionNames = [
+  "executeBrowserEffect",
   "analyzeFile",
   "deleteArtifact",
   "deleteDocument",
@@ -990,9 +994,51 @@ export class OsfoAgent extends Think<Env> {
       Browser.dispatch(request, binding).pipe(
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The Agent composes the private host HTTP client at its runtime entry point.
         Effect.provide(FetchHttpClient.layer),
-        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
       ),
     authorize: (request) => this.#authorizeBrowser(request),
+  });
+  readonly #browserTasks = BrowserTask.make({
+    revoke: (request, binding) =>
+      Browser.execute(request, binding).pipe(
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Account deletion owns this control-only host cleanup transport.
+        Effect.provide(FetchHttpClient.layer),
+        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
+      ),
+    storage: this.ctx.storage,
+    binding: this.#browserBinding,
+    authorize: (request, command) =>
+      this.#authorizeBrowser(request, command).pipe(
+        Effect.andThen(
+          command._tag === "Outcome" || command._tag === "Close"
+            ? Effect.void
+            : IncidentControlsPostgres.check(this.env.DB, "newCostlyWork"),
+        ),
+        Effect.mapError(
+          () =>
+            new Browser.BrowserUnavailable({
+              message: "Current browser authority or new dispatch admission is unavailable.",
+            }),
+        ),
+      ),
+    dispatch: (request, binding) =>
+      this.#accountDeletionFence.runTracked(
+        () =>
+          Browser.execute(request, binding).pipe(
+            // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Agent-owned browser dispatch composes its HTTP transport.
+            Effect.provide(FetchHttpClient.layer),
+            Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
+          ),
+        () =>
+          new Browser.BrowserUnavailable({
+            message: "Account deletion has stopped new browser work.",
+          }),
+      ),
+  });
+  readonly #browserTaskTools = makeBrowserTaskTools({
+    tasks: this.#browserTasks,
+    readActiveTurn: () => this.#activeCapabilityMetadata,
+    readRequestText: () => this.#activeRequestText,
   });
   readonly #browserTools = makeBrowserTools({
     browser: this.#browser,
@@ -1015,6 +1061,7 @@ export class OsfoAgent extends Think<Env> {
         | "artifact.delete"
         | "file.delete"
         | "integration.effect"
+        | "browser.effect"
         | "memory.clear"
         | "memory.forgetKnowledge"
         | "reminder.manage"
@@ -1214,6 +1261,7 @@ export class OsfoAgent extends Think<Env> {
     ...this.#sessionRecallTools,
     ...this.#webTools,
     ...this.#browserTools,
+    ...this.#browserTaskTools,
     cancelResearchReport: tool({
       description: "Cancel one owned nonterminal Research Report Workflow.",
       execute: (input) => this.#cancelResearchReport(input),
@@ -1792,6 +1840,19 @@ export class OsfoAgent extends Think<Env> {
   /** Register document and test actions in their owning stages. */
   override getActions() {
     const documentActions = {
+      executeBrowserEffect: action({
+        approval: true,
+        approvalRisk: "high",
+        approvalSummary: "Perform the exact interaction on the shown browser page",
+        description:
+          "Click, fill, or select one exact element from a fresh owned browser observation. Copy its full visible target line and URL into the input. Explain the actual consequence and any transmitted data. Submission and cancellation require exact approval; never treat a selected slot or returned click as booking confirmation.",
+        execute: (input, context) =>
+          this.#executeBrowserEffect(input, ActionId.make(context.toolCallId)),
+        idempotencyKey: ({ ctx }) => `browser-effect:${ctx.toolCallId}`,
+        inputSchema: effectToolSchema(BrowserEffectInput),
+        kind: "durable-pause",
+        permissions: ["browser:interact"],
+      }),
       [artifactDeleteActionName]: action({
         approval: true,
         approvalRisk: "high",
@@ -1996,6 +2057,11 @@ export class OsfoAgent extends Think<Env> {
       availableRequirements: [
         ...(Browser.isAvailable(this.#browserBinding, metadata.authorityIdentity.userId)
           ? (["browser-host"] as const)
+          : []),
+        ...(Browser.isAvailable(this.#browserBinding, metadata.authorityIdentity.userId) &&
+        this.#browserBinding !== null &&
+        this.#browserBinding.allowedOrigins.length > 0
+          ? (["browser-execution"] as const)
           : []),
         ...(Option.isSome(this.#integrations) ? (["composio"] as const) : []),
         "document-renderer",
@@ -2216,7 +2282,43 @@ export class OsfoAgent extends Think<Env> {
     };
   }
 
-  #authorizeBrowser(request: Browser.Inspection) {
+  async #executeBrowserEffect(input: BrowserEffectInput, actionId: ActionId) {
+    const active = this.#activeCapabilityMetadata;
+    const approved = this.#currentApprovedActions.get(actionId);
+    if (
+      active === undefined ||
+      approved?.operation !== "browser.effect" ||
+      !hasExactBrowserInput(approved.actionPresentation, input)
+    )
+      throw new Browser.BrowserUnavailable({
+        message: "The exact browser Action approval is unavailable.",
+      });
+    const tasks = this.#browserTasks;
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const task = yield* tasks.read(input.taskId, active.authorityIdentity.userId);
+        if (!matchesObservation(task, input))
+          return yield* new Browser.BrowserUnavailable({
+            message: "The browser page no longer matches the approved interaction.",
+          });
+        return yield* tasks.run(
+          {
+            operationId: actionId,
+            turnId: active.submissionId,
+            userId: active.authorityIdentity.userId,
+          },
+          input.taskId,
+          {
+            _tag: "Interact",
+            observationId: input.observationId,
+            interaction: input.interaction,
+          },
+        );
+      }),
+    );
+  }
+
+  #authorizeBrowser(request: Browser.Inspection, command?: BrowserCommand) {
     const active = this.#activeCapabilityMetadata;
     if (
       active === undefined ||
@@ -2241,15 +2343,38 @@ export class OsfoAgent extends Think<Env> {
             }),
           );
         }
+        const operation = {
+          actionId: request.operationId,
+          kind:
+            command === undefined
+              ? ("browser.inspect" as const)
+              : command._tag === "Interact"
+                ? ("browser.effect" as const)
+                : ("browser.read" as const),
+          deadlineMilliseconds: command === undefined ? 15_000n : 25_000n,
+          responseBytes: command === undefined ? 16_384n : 262_144n,
+          retries: 0n as const,
+        };
+        const approved =
+          command?._tag === "Interact"
+            ? this.#currentApprovedActions.get(ActionId.make(request.operationId))
+            : undefined;
+        if (command?._tag === "Interact" && approved?.operation !== "browser.effect")
+          return Effect.fail(
+            new Browser.BrowserUnavailable({
+              message: "The exact browser Action approval is unavailable.",
+            }),
+          );
         const admitted = authorization.admit(
-          { ...context, requestVendorUsdMicros: 0n },
           {
-            actionId: request.operationId,
-            kind: "browser.inspect",
-            deadlineMilliseconds: 15_000n,
-            responseBytes: 16_384n,
-            retries: 0n,
+            ...context,
+            requestVendorUsdMicros: 0n,
+            approval:
+              approved === undefined
+                ? null
+                : approvalFor(request.userId, operation, approved.presentation),
           },
+          operation,
         );
         return Predicate.isTagged(admitted, "Admitted")
           ? Effect.void
@@ -4195,6 +4320,7 @@ export class OsfoAgent extends Think<Env> {
       ),
     );
     requireAccountDeletionQuiescence(quiescence);
+    await Effect.runPromise(this.#browserTasks.quiesce(userId));
     const immediateGmailSends = Option.getOrUndefined(this.#immediateGmailSends);
     if (immediateGmailSends === undefined) {
       const retained = await Effect.runPromise(
@@ -5496,6 +5622,28 @@ export class OsfoAgent extends Think<Env> {
     userId: UserId,
   ): Effect.Effect<ActionPresentation, ActionPresentationUnavailable> {
     const projected = presentOsfoAction(pending, inspectCoreMemory(this.session), userId);
+    if (pending.descriptor.action === "executeBrowserEffect") {
+      const tasks = this.#browserTasks;
+      return Effect.gen(function* () {
+        const input = yield* Schema.decodeUnknownEffect(BrowserEffectInput)(
+          pending.descriptor.input,
+        );
+        const task = yield* tasks.read(input.taskId, userId);
+        if (!matchesObservation(task, input))
+          return yield* new Browser.BrowserUnavailable({
+            message: "The browser target does not match retained page evidence.",
+          });
+        return yield* projected;
+      }).pipe(
+        Effect.mapError(
+          () =>
+            new ActionPresentationUnavailable({
+              action: pending.descriptor.action,
+              message: "The browser effect has no matching owned page evidence.",
+            }),
+        ),
+      );
+    }
     if (pending.descriptor.action !== "gmailSendEmail") return projected;
     const immediateGmailSendStore = this.#immediateGmailSendStore;
     const configuredIntegrations = this.#integrations;
@@ -5646,6 +5794,7 @@ export class OsfoAgent extends Think<Env> {
                           found.presentation.operation === "reminder.manage" ||
                           found.presentation.operation === "skill.manage" ||
                           found.presentation.operation === "integration.effect" ||
+                          found.presentation.operation === "browser.effect" ||
                           found.presentation.operation === "workflow.manage")
                       ) {
                         currentApprovedActions.set(actionId, {

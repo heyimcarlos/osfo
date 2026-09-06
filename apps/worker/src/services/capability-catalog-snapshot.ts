@@ -276,6 +276,22 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
         toolRequirements: ["inspectBrowserInventory"],
       },
     ),
+    entry(
+      "browser-task",
+      "Use an owned browser task with exact approval for DOM interactions and retained page evidence.",
+      "browser.read",
+      {
+        availabilityRequirements: ["browser-execution", "personal-agent"],
+        toolRequirements: [
+          "openBrowserTask",
+          "observeBrowserTask",
+          "inspectBrowserOutcome",
+          "listBrowserTasks",
+          "closeBrowserTask",
+          "executeBrowserEffect",
+        ],
+      },
+    ),
     entry("page-read", "Read one bounded public web page.", "web.read", {
       availabilityRequirements: ["personal-agent"],
       resultBounds: {

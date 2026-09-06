@@ -35,6 +35,7 @@ export type SkillTaskKind = typeof SkillTaskKind.Type;
 export const SkillAvailabilityRequirement = Schema.Literals([
   "composio",
   "browser-host",
+  "browser-execution",
   "document-renderer",
   "file-storage",
   "native-memory",

@@ -18,6 +18,7 @@ it("enables browser inventory only for an explicit complete local owner binding"
   expect(loadConfig(configured).browserHost).toMatchObject({
     ownerUserId: "test-owner",
     hostSessionId: "test-extension-instance",
+    allowedOrigins: [],
   });
   expect(loadConfig({ ...configured, BROWSER_HOST_TOKEN: "" }).browserHost).toBeNull();
   expect(
@@ -25,6 +26,19 @@ it("enables browser inventory only for an explicit complete local owner binding"
       .browserHost,
   ).toBeNull();
   expect(loadConfig({ ...configured, OSFO_STAGE: "preview" }).browserHost).toBeNull();
+  expect(
+    loadConfig({ ...configured, BROWSER_HOST_ALLOWED_ORIGINS: '["https://portal.example"]' })
+      .browserHost?.allowedOrigins,
+  ).toEqual(["https://portal.example"]);
+  for (const origins of [
+    '["https://portal.example/path"]',
+    '["http://remote.example"]',
+    "invalid",
+  ]) {
+    expect(
+      loadConfig({ ...configured, BROWSER_HOST_ALLOWED_ORIGINS: origins }).browserHost,
+    ).toBeNull();
+  }
 });
 
 it("rejects a malformed nonempty Company Conversation daily limit", () => {

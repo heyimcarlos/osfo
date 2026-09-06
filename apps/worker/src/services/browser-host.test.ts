@@ -10,6 +10,7 @@ import { Capabilities } from "./capabilities";
 const userId = UserId.make("browser-owner");
 const turnId = ThinkSubmissionId.make("browser-turn");
 const binding: Browser.Binding = {
+  allowedOrigins: [],
   endpoint: "http://127.0.0.1:39270/inventory",
   hostSessionId: "extension-instance",
   ownerUserId: userId,

@@ -631,6 +631,13 @@ const exceedsOperationLimit = (
         operation.retries > 1n
       );
     }
+    case "browser.read":
+    case "browser.effect":
+      return (
+        operation.responseBytes > 262_144n ||
+        operation.deadlineMilliseconds > 25_000n ||
+        operation.retries !== 0n
+      );
     case "browser.inspect":
       return (
         operation.responseBytes > 16_384n ||
@@ -659,7 +666,7 @@ const hasExactApproval = (context: AuthorizationContext, operation: Authorizatio
   context.approval.actionId === operation.actionId &&
   context.approval.operationIdentity === approvalIdentity(operation, context.approval.presentation);
 
-const encodeAuthorizationOperation = Schema.encodeSync(AuthorizationOperation);
+const encodeAuthorizationOperation = Schema.encodeSync(Schema.toCodecJson(AuthorizationOperation));
 
 const operationIdentity = (operation: AuthorizationOperation): string =>
   JSON.stringify(encodeAuthorizationOperation(operation));

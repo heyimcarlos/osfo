@@ -1,93 +1,99 @@
-# Private browser inventory host
+# Private browser host
 
-This is the first connection between Osfo's governed capabilities and an existing
-Codex browser host. It supports inventory only. It cannot select, open, navigate,
-read, or operate a tab, and cannot complete a booking.
+This opt-in development host connects authenticated Osfo turns to one provisioned
+Chrome extension through Executor and Codex computer use. Inventory returns the
+matched browser's name, ID, and tab count. Browser tasks create their own tabs at
+explicitly provisioned origins, retain observations, and use existing Osfo Action
+approval for every click, fill, or selection.
 
-The Agent registers `inspectBrowserInventory` under `browser-inventory` and admits
-`browser.inspect` using its authenticated active User and turn. The model supplies
-neither JavaScript nor ownership information. The Worker checks the configured
-owner before sending an exact owner/session/turn/operation identity to this host.
+The model supplies no JavaScript, owner identity, extension ID, or arbitrary tab
+ID. Opening requires the exact URL in the current User request. The Worker retains
+the original request and latest evidence across Sessions. It checks current turn
+authority and the live incident control before new browser dispatch. Each read is
+an admission point; already-dispatched effects may finish. Outcome inspection and
+committed cleanup remain available during an incident pause.
 
-## Connection and provisioning
+## Provisioning
 
-The supported initial connection is a **local development Worker** calling
-`http://127.0.0.1:39270/inventory` on the same provisioned machine. The Node host
-always binds `127.0.0.1:39270`; it has no public listener or deployment command.
-It is excluded from ordinary `dev` startup. Preview and production Worker
-configuration always disable this capability.
+The supported connection is a local development Worker calling
+`http://127.0.0.1:39270/inventory` and `/browser`. The Node listener binds only
+`127.0.0.1:39270` and is excluded from ordinary development startup. Preview and
+production Worker configuration disable the host. A production Worker cannot
+reach desktop loopback. Remote TLS transport and production qualification remain
+separate work; this change provisions no network access.
 
-A remote Cloudflare Worker cannot use that loopback address to reach a desktop.
-No private remote transport is provisioned by this change. Remote operation still
-requires an authenticated private connection to the specific provisioned host.
-Do not expose this listener publicly or treat a developer's browser profile as a
-shared runtime.
+Use one explicitly provisioned owner and Chrome extension. A developer profile is
+not a shared browser runtime. Tab ownership does not isolate cookies or sessions
+within that profile. Codex CLI authentication alone does not provision the desktop
+browser broker. The installed app-server must already have the `cua_repl` plugin
+and connected Chrome extension. The session ID is its observed
+`metadata.extensionInstanceId`, never a caller-invented thread or focused tab.
 
-An operator must already have a supported, authenticated Codex app-server and the
-enabled `cua_repl` plugin with a connected browser extension. CLI authentication
-alone does not provision the desktop browser broker. A host binds to exactly one
-Osfo User and one browser extension instance. `HOST_SESSION_ID` below is the
-extension's observed `metadata.extensionInstanceId`, not a caller-invented Codex
-thread ID. No binding is inferred from the currently focused browser.
+| Node host variable                  | Worker variable                | Value                                                                                                                        |
+| ----------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `OSFO_BROWSER_HOST_ENABLED`         | none                           | Explicit `true`                                                                                                              |
+| `OSFO_BROWSER_HOST_OWNER_USER_ID`   | `BROWSER_HOST_OWNER_USER_ID`   | One authenticated Osfo User                                                                                                  |
+| `OSFO_BROWSER_HOST_SESSION_ID`      | `BROWSER_HOST_SESSION_ID`      | Provisioned Chrome extension instance                                                                                        |
+| `OSFO_BROWSER_HOST_TOKEN`           | `BROWSER_HOST_TOKEN`           | Same private bearer, 32 to 512 characters                                                                                    |
+| `OSFO_BROWSER_HOST_ALLOWED_ORIGINS` | `BROWSER_HOST_ALLOWED_ORIGINS` | JSON array of at most eight exact HTTPS origins, or loopback HTTP origins for verification; defaults to `[]`, inventory only |
+| none                                | `BROWSER_HOST_ENDPOINT`        | Exact inventory loopback URL above                                                                                           |
+| `OSFO_BROWSER_HOST_DATABASE_PATH`   | none                           | Absolute private SQLite path outside the checkout                                                                            |
+| `OSFO_BROWSER_HOST_CODEX_COMMAND`   | none                           | Absolute installed Codex binary path                                                                                         |
+| `OSFO_BROWSER_HOST_CODEX_HOME`      | none                           | Existing provisioned Codex configuration directory                                                                           |
 
-Supply these values through existing private configuration. This change creates
-no credentials and stores no Codex cookies or access tokens:
+Run `bun run --cwd apps/browser-host start` only with the intended owner's binding.
+Without explicit enablement it exits without a listener or child process. Node 24
+provides SQLite. The database cannot be reassigned to another owner or extension.
+No account credential, browser cookie, or profile storage API is exposed.
 
-| Node host variable                | Worker variable              | Value                                                         |
-| --------------------------------- | ---------------------------- | ------------------------------------------------------------- |
-| `OSFO_BROWSER_HOST_ENABLED`       | none                         | Explicit `true` to start the host                             |
-| `OSFO_BROWSER_HOST_OWNER_USER_ID` | `BROWSER_HOST_OWNER_USER_ID` | The single authenticated Osfo owner                           |
-| `OSFO_BROWSER_HOST_SESSION_ID`    | `BROWSER_HOST_SESSION_ID`    | The provisioned extension instance ID                         |
-| `OSFO_BROWSER_HOST_TOKEN`         | `BROWSER_HOST_TOKEN`         | The same existing private transport secret, 32–512 characters |
-| none                              | `BROWSER_HOST_ENDPOINT`      | Exact loopback URL above                                      |
-| `OSFO_BROWSER_HOST_DATABASE_PATH` | none                         | Absolute private SQLite file path outside the checkout        |
-| `OSFO_BROWSER_HOST_CODEX_COMMAND` | none                         | Absolute path to the installed Codex binary                   |
-| `OSFO_BROWSER_HOST_CODEX_HOME`    | none                         | The existing provisioned Codex configuration directory        |
+## Execution and retained outcomes
 
-Run `bun run --cwd apps/browser-host start` only after those bindings are explicitly
-provisioned for the intended owner. With no configuration, the command exits
-without a listener or child process. The runtime uses Node 24's SQLite API.
+The host authenticates before reading request bodies. One active HTTP request is
+admitted; concurrent requests are refused immediately without queueing. Request
+bodies, response sizes, execution time, active tasks, and ledger size are bounded.
+The Worker rejects HTTP redirects. Missing state, ambiguous extension selection,
+and storage failures fail closed.
 
-## Dispatch and outcomes
+The adapter uses captured CUA APIs to select the exact Chrome extension, create
+owned tabs, and compile fixed navigation, accessibility observation, interaction,
+and close programs. URL checks precede page reads. Only the task-owned tab is
+operated. A fresh accessibility observation must match the approved page and
+visible target before interaction. Page text is untrusted evidence. A click or
+selected slot is not confirmation of a reservation.
 
-Executor 1.6.8 runs the supported app-server transport. A small pinned dependency
-patch adds the same caller correlation metadata that upstream already supplies
-for its projected browser transport, using the real `thread/start` result and a
-fresh correlation UUID. Threads are ephemeral. The raw `cua_repl` transport
-allowlist contains only `js` and `js_reset`. Executor policy blocks every tool
-except `js`, and this adapter supplies only `await cua.getState();`. Reset is
-neither exposed nor called.
+Each operation is claimed in SQLite before browser I/O, without a transaction
+across that I/O. The same identity and payload returns its retained result or
+`Unknown`; changed payloads conflict. An ambiguous effect cannot be retried under
+a new operation after merely refreshing the page. Outcome inspection reads the
+prior ledger entry without another browser effect. The ledger is capped at 1,024
+operations per binding and four active tasks, with one-hour task admission expiry.
 
-The response contains only the matched browser's ID, name, and tab count. Tab
-titles, URLs, content, unrelated browsers, and broker diagnostics are discarded.
-An absent or ambiguous extension match returns `Unavailable`.
+Broker elicitation is canceled and returned as a human-required outcome. It does
+not grant Osfo approval. Every DOM interaction requires its own immutable Action
+presentation containing destination, observation, visible target, exact value,
+and consequence. Login, CAPTCHA, and unsupported browser controls require human
+handoff. A host restart does not reattach to unknown existing tab handles; retained
+results can still be inspected, but live continuation may require operator help.
 
-The host claims each request in SQLite before dispatch and does not retry it.
-Concurrent requests receive `Unavailable`. A repeated claimed identity returns
-its retained result or `Unknown`; a disconnect, interruption, or restart never
-causes a second dispatch. Result bodies expire on the next request after one
-minute, while identity tombstones remain. Storage is capped at 1,024 distinct
-operations per binding, then fails closed. A persisted database cannot be
-reassigned to another owner or extension instance.
+A timed-out CUA Promise may still be running. The runtime refuses subsequent
+interactions after that ambiguity and attempts cleanup only once the Promise has
+settled. Account deletion first revokes host admission, then closes owned tabs and
+erases task results. If cleanup cannot be proven, deletion retains its pending
+state for reconciliation. A process crash can require operator cleanup of an
+orphaned browser tab; it must not be treated as successful profile erasure.
 
-Broker elicitation is canceled and reported as `ApprovalRequired`. It does not
-grant an Osfo Action approval. Protected browser effects remain unsupported until
-they are connected to the existing exact Action approval and outcome owners.
+## Runtime and verification
 
-Executor pins Effect `4.0.0-beta.59`; this private runtime retains that version and
-its matching Node adapter. The Worker and API retain the workspace Effect version.
-Only plain JSON data and synchronous API codecs cross that version boundary.
+Executor 1.6.8 uses its app-server transport with the pinned caller-correlation
+patch, a real ephemeral thread, and an allowlist restricted to the fixed `js`
+adapter. Effect beta.59 stays inside this Node host; Worker/API use the workspace
+version. Only JSON and synchronous wire codecs cross that boundary.
 
-## Verification
-
-- Worker tests cover owner admission, exact response identity, Tool selection,
-  metadata-derived operation identity, and approval-required outcomes.
-- Real SQLite tests cover incorrect owners/sessions, malformed operation input,
-  ambiguous dispatch across restart and expiry, and persisted binding ownership.
-- A standalone fake app-server exercises the installed Executor connector and
-  the pinned patch, proving one fixed `js` dispatch, the returned thread identity,
-  ephemeral startup, and removal of other browsers and private tab fields.
-
-These tests do not provision or operate a real browser. Real inventory evidence
-must use the explicitly selected owner's provisioned host; a browser mismatch
-must be resolved before enabling the binding or testing later tab operations.
+Tests exercise real SQLite replay, changed payload refusal, auth-before-body,
+immediate concurrent refusal, revocation cleanup, and the installed Executor
+connector against a synthetic CUA fixture. Worker tests cover durable task intent,
+unknown effects across Sessions, current authority, and exact Action presentation.
+These tests do not establish authenticated live browser qualification. That proof
+requires a separately coordinated synthetic portal journey through an actual Osfo
+turn and Action approval. This slice does not claim OCR, arbitrary navigation,
+profile isolation, production reachability, or completion of a real booking.

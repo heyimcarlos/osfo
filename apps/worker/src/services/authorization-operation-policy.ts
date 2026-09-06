@@ -10,6 +10,7 @@ import { hasProtectedConsequence } from "../domain/capability-catalog";
 import type { AuthorizationContext } from "./authorization";
 
 const approvalOperations = new Set<AuthorizationOperationName>([
+  "browser.effect",
   "session.delete",
   "memory.clear",
   "memory.forgetKnowledge",
@@ -29,6 +30,8 @@ const sharedUnmeteredOperations = new Set<AuthorizationOperationName>([
   "memory.forgetKnowledge",
   "file.read",
   "browser.inspect",
+  "browser.read",
+  "browser.effect",
   "file.delete",
   "skill.inspect",
   "skill.manage",

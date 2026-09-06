@@ -6,6 +6,7 @@ import { HttpIncomingMessage, HttpRouter, HttpServerResponse } from "effect/unst
 
 import { inspect } from "./executor.ts";
 import { Host } from "./host.ts";
+import { BrowserRuntime } from "./browser-runtime.ts";
 
 const Configuration = Schema.Struct({
   databasePath: Schema.String.check(Schema.isPattern(/^\//)),
@@ -36,12 +37,39 @@ NodeRuntime.runMain(
       codexHome: Config.string("OSFO_BROWSER_HOST_CODEX_HOME"),
     });
     const configuration = yield* Schema.decodeEffect(Configuration)(raw);
+    const configuredOrigins = yield* Config.string("OSFO_BROWSER_HOST_ALLOWED_ORIGINS").pipe(
+      Config.withDefault("[]"),
+    );
+    const allowedOrigins = yield* Schema.decodeEffect(
+      Schema.fromJsonString(
+        Schema.Array(
+          Schema.String.check(
+            Schema.makeFilter(
+              (value) =>
+                URL.canParse(value) &&
+                new URL(value).origin === value &&
+                (value.startsWith("https://") || /^http:\/\/127\.0\.0\.1:\d+$/.test(value)),
+            ),
+          ),
+        ).check(Schema.isMaxLength(8)),
+      ),
+    )(configuredOrigins);
     process.umask(0o077);
-    const host = yield* Host.make({ ...configuration, token }, inspect(configuration));
+    const browser =
+      allowedOrigins.length === 0
+        ? undefined
+        : {
+            runtime: yield* BrowserRuntime.make(configuration),
+            allowedOrigins,
+          };
+    const host = yield* Host.make({ ...configuration, token }, inspect(configuration), browser);
     const route = HttpRouter.add("POST", "/inventory", (request) =>
       Effect.gen(function* () {
-        const body = yield* request.text;
-        const result = yield* host.handle(request.headers.authorization, body);
+        const result = yield* host.handleRequest(
+          "inventory",
+          request.headers.authorization,
+          request.text,
+        );
         return HttpServerResponse.text(result.body, {
           status: result.status,
           headers: { "cache-control": "no-store", "content-type": "application/json" },
@@ -54,8 +82,27 @@ NodeRuntime.runMain(
         ),
       ),
     );
+    const browserRoute = HttpRouter.add("POST", "/browser", (request) =>
+      Effect.gen(function* () {
+        const result = yield* host.handleRequest(
+          "browser",
+          request.headers.authorization,
+          request.text,
+        );
+        return HttpServerResponse.text(result.body, {
+          status: result.status,
+          headers: { "cache-control": "no-store", "content-type": "application/json" },
+        });
+      }).pipe(
+        Effect.provideService(HttpIncomingMessage.MaxBodySize, FileSystem.Size(16_384)),
+        Effect.timeout("25 seconds"),
+        Effect.orElseSucceed(() =>
+          HttpServerResponse.empty({ status: 500, headers: { "cache-control": "no-store" } }),
+        ),
+      ),
+    );
     // A fixed listener prevents two local runtimes from concurrently owning this host.
-    const server = HttpRouter.serve(route).pipe(
+    const server = HttpRouter.serve(Layer.mergeAll(route, browserRoute)).pipe(
       Layer.provide(
         NodeHttpServer.layer(
           () => createServer({ requestTimeout: 25_000, headersTimeout: 5_000 }),

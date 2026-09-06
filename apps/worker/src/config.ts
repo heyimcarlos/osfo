@@ -26,6 +26,7 @@ type RawConfigBinding =
   | "COMPANY_CONVERSATION_DAILY_TURN_LIMIT"
   | "COMPANY_CONVERSATION_MODEL"
   | "COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT"
+  | "BROWSER_HOST_ALLOWED_ORIGINS"
   | "BROWSER_HOST_ENDPOINT"
   | "BROWSER_HOST_OWNER_USER_ID"
   | "BROWSER_HOST_SESSION_ID"
@@ -73,6 +74,7 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly COMPANY_CONVERSATION_DAILY_TURN_LIMIT?: string;
   readonly COMPANY_CONVERSATION_MODEL?: string;
   readonly COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT?: string;
+  readonly BROWSER_HOST_ALLOWED_ORIGINS?: string;
   readonly BROWSER_HOST_ENDPOINT?: string;
   readonly BROWSER_HOST_OWNER_USER_ID?: string;
   readonly BROWSER_HOST_SESSION_ID?: string;
@@ -487,5 +489,26 @@ const parseBrowserHost = (stage: OsfoStage, env: CloudflareEnv): Browser.Binding
     token.length > 512
   )
     return null;
-  return { endpoint, ownerUserId, hostSessionId, token: Redacted.make(token) };
+  const allowedOrigins = Schema.decodeOption(Schema.fromJsonString(Schema.Array(Schema.String)))(
+    env.BROWSER_HOST_ALLOWED_ORIGINS ?? "[]",
+  );
+  if (
+    Option.isNone(allowedOrigins) ||
+    allowedOrigins.value.length > 8 ||
+    allowedOrigins.value.some(
+      (origin) =>
+        !URL.canParse(origin) ||
+        new URL(origin).origin !== origin ||
+        (new URL(origin).protocol !== "https:" &&
+          !(new URL(origin).protocol === "http:" && new URL(origin).hostname === "127.0.0.1")),
+    )
+  )
+    return null;
+  return {
+    endpoint,
+    ownerUserId,
+    hostSessionId,
+    token: Redacted.make(token),
+    allowedOrigins: allowedOrigins.value,
+  };
 };

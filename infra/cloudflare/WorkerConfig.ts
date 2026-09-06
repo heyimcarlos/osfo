@@ -22,6 +22,10 @@ export const composioApiKeyConfig = (stage: string) =>
 
 /** Only local development forwards an explicitly provisioned browser binding. */
 export const browserHostBindings = (stage: string) => ({
+  BROWSER_HOST_ALLOWED_ORIGINS:
+    stage === "development"
+      ? Config.string("BROWSER_HOST_ALLOWED_ORIGINS").pipe(Config.withDefault("[]"))
+      : Config.succeed("[]"),
   BROWSER_HOST_ENDPOINT:
     stage === "development"
       ? Config.string("BROWSER_HOST_ENDPOINT").pipe(Config.withDefault(""))
