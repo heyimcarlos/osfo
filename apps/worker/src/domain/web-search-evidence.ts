@@ -9,6 +9,7 @@ const quantity = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 /** Retained provider observations and independently reproducible search rating. */
 export const ManagedSearchEvidence = Schema.Struct({
   attemptId: boundedText(512),
+  cachedInputTokens: Schema.NullOr(quantity),
   executedSearches: Schema.Array(
     Schema.Struct({
       errorCode: Schema.NullOr(boundedText(512)),
@@ -25,7 +26,7 @@ export const ManagedSearchEvidence = Schema.Struct({
   providerRequestId: Schema.NullOr(boundedText(512)),
   ratedCostUsdMicros: Schema.NullOr(quantity),
   resourcePriceVersion: Schema.Literal("web-search-prices-2026-09-06"),
-  searchCountBasis: Schema.Literal("completed-web-search-call-blocks"),
+  searchCountBasis: Schema.Literal("terminal-web-search-call-blocks"),
   successfulSearches: Schema.NullOr(quantity),
 });
 
@@ -34,6 +35,7 @@ export type ManagedSearchEvidence = typeof ManagedSearchEvidence.Type;
 /** A dispatched attempt is an unknown cost until its provider usage is decoded. */
 export const initialManagedSearchEvidence = (attemptId: string): ManagedSearchEvidence => ({
   attemptId,
+  cachedInputTokens: null,
   executedSearches: [],
   inputTokens: null,
   model: managedSearchPrice.model,
@@ -43,6 +45,6 @@ export const initialManagedSearchEvidence = (attemptId: string): ManagedSearchEv
   providerRequestId: null,
   ratedCostUsdMicros: null,
   resourcePriceVersion: managedSearchPrice.resourcePriceVersion,
-  searchCountBasis: "completed-web-search-call-blocks",
+  searchCountBasis: "terminal-web-search-call-blocks",
   successfulSearches: null,
 });

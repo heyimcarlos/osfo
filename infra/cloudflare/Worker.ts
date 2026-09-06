@@ -39,7 +39,9 @@ const worker = Worker(
         COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT: Config.string(
           "COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT",
         ).pipe(Config.withDefault("")),
-        PUBLIC_WEB_SEARCH_GATEWAY_ID: Config.string("PUBLIC_WEB_SEARCH_GATEWAY_ID").pipe(Config.withDefault("")),
+        PUBLIC_WEB_SEARCH_GATEWAY_ID: Config.string("PUBLIC_WEB_SEARCH_GATEWAY_ID").pipe(
+          Config.withDefault(""),
+        ),
         DB: DatabaseHyperdrive,
         DOCUMENT_SANDBOX: Container("DocumentSandbox", {
           className: "Sandbox",

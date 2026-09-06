@@ -24,6 +24,7 @@ import { AuthSessionId } from "../domain/auth-session";
 import { currentCapabilityCatalog } from "../domain/capability-catalog";
 import { launchModelAccessPolicy } from "../domain/model-access-policy";
 import { currentResourcePriceVersion } from "../domain/usage";
+import type { ManagedSearchEvidence } from "../domain/web-search-evidence";
 import { ResearchCollector } from "./research-collector";
 import { ResearchReport } from "./research-report";
 import { ResearchReportPostgres } from "../integrations/postgres/research-report";
@@ -251,6 +252,50 @@ it.effect("persists rejected discovery acceptance as unknown without retry", () 
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
+it.effect("retains a paid dispatch before I/O and refuses another search after restart", () => {
+  const fixture = makeFixture({ managedSearch: true, ambiguousDiscoveryFailures: 1 });
+  const run = Effect.gen(function* () {
+    const collector = yield* ResearchCollector.Service;
+    return yield* Effect.result(collector.collect(report));
+  });
+  return Effect.gen(function* () {
+    const first = yield* run.pipe(Effect.provide(layer(fixture.port)));
+    expect(Result.isFailure(first)).toBe(true);
+    expect(fixture.operations.get(`${workflowId}:provider:0`)).toMatchObject({
+      state: "unknown",
+      result: {
+        _tag: "SearchAttempt",
+        managedSearch: { attemptId: `${workflowId}:provider:0`, ratedCostUsdMicros: null },
+      },
+    });
+    const restarted = yield* run.pipe(Effect.provide(layer(fixture.port)));
+    expect(Result.isFailure(restarted)).toBe(true);
+    expect(fixture.discoveryCalls).toBe(1);
+  });
+});
+
+it.effect("retains rated search usage when later page grounding fails", () => {
+  const fixture = makeFixture({ managedSearch: true, transientPageFailures: 2 });
+  return Effect.gen(function* () {
+    const collector = yield* ResearchCollector.Service;
+    const result = yield* Effect.result(collector.collect(report));
+    expect(Result.isFailure(result)).toBe(true);
+    expect(fixture.operations.get(`${workflowId}:provider:0`)).toMatchObject({
+      state: "completed",
+      result: {
+        _tag: "Search",
+        managedSearch: {
+          ratedCostUsdMicros: 13_562,
+          inputTokens: 8541,
+          outputTokens: 91,
+          successfulSearches: 1,
+        },
+      },
+    });
+    expect(fixture.discoveryCalls).toBe(1);
+  }).pipe(Effect.provide(layer(fixture.port)));
+});
+
 it.effect("allows only one concurrent execution to cross the provider-attempt CAS", () =>
   Effect.gen(function* () {
     const bothClaimed = yield* Deferred.make<void>();
@@ -420,6 +465,7 @@ it.effect("removes a late page write after the committed PostgreSQL deletion fen
 const makeFixture = (
   options: {
     readonly pendingAttemptCount?: number;
+    readonly managedSearch?: boolean;
     readonly pendingStartedAt?: Date;
     readonly pendingSequence?: number;
     readonly pendingState?: ResearchCollector.OperationState;
@@ -497,10 +543,14 @@ const makeFixture = (
             return completed;
           }),
         ),
-      finish: (operation, state, safeFailureCode) =>
+      finish: (operation, state, safeFailureCode, managedSearch) =>
         Effect.sync(() => {
           const retained = operations.get(operation.operationId) ?? operation;
-          operations.set(operation.operationId, { ...retained, state });
+          operations.set(operation.operationId, {
+            ...retained,
+            state,
+            result: managedSearch === undefined ? retained.result : { _tag: "SearchAttempt" as const, managedSearch },
+          });
           failureCodes.set(operation.operationId, safeFailureCode);
         }),
       expireAmbiguous: (operation, expiredBefore) =>
@@ -523,7 +573,7 @@ const makeFixture = (
           failureCodes.set(operation.operationId, "expired-ambiguous-provider-attempt");
           return true;
         }),
-      recordAttempt: (operationId, expectedAttemptCount) =>
+      recordAttempt: (operationId, expectedAttemptCount, managedSearch) =>
         Effect.sync(() => {
           const operation = operations.get(operationId);
           if (operation === undefined) {
@@ -536,21 +586,35 @@ const makeFixture = (
             ...operation,
             attemptCount: operation.attemptCount + 1,
             startedAt: providerAttemptStartedAt,
+            result: managedSearch === undefined ? operation.result : { _tag: "SearchAttempt" as const, managedSearch },
           };
           operations.set(operationId, started);
           return { _tag: "Started" as const, operation: started };
         }),
     },
     provider: {
-      discover: () =>
+      managedSearch: options.managedSearch ?? false,
+      discover: (_query, _limit, managedSearch) =>
         Effect.suspend(() => {
           discoveryCalls += 1;
+          if (managedSearch !== undefined) {
+            expect(operations.get(managedSearch.attemptId)?.result).toEqual({
+              _tag: "SearchAttempt",
+              managedSearch,
+            });
+          }
           if (ambiguousDiscoveryFailures > 0) {
             ambiguousDiscoveryFailures -= 1;
-            return Effect.fail({ retry: "ambiguous" as const });
+            if (managedSearch === undefined) return Effect.fail({ retry: "ambiguous" as const });
+            return Effect.fail({ retry: "ambiguous" as const, managedSearch });
           }
           return Effect.succeed({
-            evidence: { latencyMs: 1, requestId: "discovery-request" },
+            evidence: managedSearch === undefined
+              ? { latencyMs: 1, requestId: "discovery-request" }
+              : { latencyMs: 1, requestId: "discovery-request", managedSearch: {
+                ...managedSearch, cachedInputTokens: 0, inputTokens: 8541, outputTokens: 91,
+                providerRequestId: "response-1", ratedCostUsdMicros: 13_562, successfulSearches: 1,
+              } satisfies ManagedSearchEvidence },
             results: [
               ...(options.discoveryUrls ?? ["https://example.com/source"]).map((url) => ({
                 description: "DISCOVERY_ONLY_TEXT",

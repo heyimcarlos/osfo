@@ -928,6 +928,7 @@ export class OsfoAgent extends Think<Env> {
   readonly #researchReportProvider = loadConfig(this.env).researchReportProvider;
   readonly #webState = makeWebState(this.#db);
   readonly #web = Web.make({
+    searchPolicy: ResearchVerificationProvider.selectSearchPolicy(this.#researchReportProvider),
     authorize: (request) => this.#authorizeWeb(request),
     discover: ResearchVerificationProvider.selectDiscovery(
       this.#researchReportProvider,

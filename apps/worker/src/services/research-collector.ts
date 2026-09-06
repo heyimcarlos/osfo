@@ -171,7 +171,13 @@ export interface PortInterface {
       query: string,
       limit: number,
       managedSearch?: ManagedSearchEvidence,
-    ) => Effect.Effect<DiscoveryResult, { readonly retry: "ambiguous" | "never" | "transient"; readonly managedSearch?: ManagedSearchEvidence }>;
+    ) => Effect.Effect<
+      DiscoveryResult,
+      {
+        readonly retry: "ambiguous" | "never" | "transient";
+        readonly managedSearch?: ManagedSearchEvidence;
+      }
+    >;
     readonly fetchPage: (input: {
       readonly url: string;
     }) => Effect.Effect<PageFetch, { readonly retry: "ambiguous" | "never" | "transient" }>;
@@ -524,10 +530,15 @@ const runProvider = (
     const expectedAttemptCount = yield* Ref.make(operation.attemptCount);
     const provider = Effect.gen(function* () {
       const expected = yield* Ref.get(expectedAttemptCount);
-      const initial = ports.provider.managedSearch === true && operation.input._tag === "Search"
-        ? initialManagedSearchEvidence(operation.operationId)
-        : undefined;
-      const attempt = yield* ports.persistence.recordAttempt(operation.operationId, expected, initial);
+      const initial =
+        ports.provider.managedSearch === true && operation.input._tag === "Search"
+          ? initialManagedSearchEvidence(operation.operationId)
+          : undefined;
+      const attempt = yield* ports.persistence.recordAttempt(
+        operation.operationId,
+        expected,
+        initial,
+      );
       if (attempt._tag === "InFlight") {
         if (Predicate.isTagged(operation.input, "Page")) {
           const reconciled = yield* ports.sourceEvidence.reconcile(
@@ -585,12 +596,22 @@ const providerEffect = (
   operation: Operation,
 ): Effect.Effect<
   OperationResult,
-  Unavailable | { readonly retry: "ambiguous" | "never" | "transient"; readonly managedSearch?: ManagedSearchEvidence }
+  | Unavailable
+  | {
+      readonly retry: "ambiguous" | "never" | "transient";
+      readonly managedSearch?: ManagedSearchEvidence;
+    }
 > => {
   const input = operation.input;
   if (Predicate.isTagged(input, "Search")) {
     return ports.provider
-      .discover(input.query, input.limit, ports.provider.managedSearch === true ? initialManagedSearchEvidence(operation.operationId) : undefined)
+      .discover(
+        input.query,
+        input.limit,
+        ports.provider.managedSearch === true
+          ? initialManagedSearchEvidence(operation.operationId)
+          : undefined,
+      )
       .pipe(Effect.map((result) => searchResult(input, result)));
   }
   return ports.provider
@@ -603,15 +624,18 @@ const providerEffect = (
 const searchResult = (
   input: Extract<OperationInput, { readonly _tag: "Search" }>,
   result: DiscoveryResult,
-): OperationResult => ({
-  _tag: "Search",
-  ...(result.evidence.managedSearch === undefined ? {} : { managedSearch: result.evidence.managedSearch }),
-  query: input.query,
-  requestId: result.evidence.requestId,
-  results: result.results.flatMap((item) =>
-    isSafePublicUrl(item.url) ? [{ title: item.title, url: canonicalPublicUrl(item.url) }] : [],
-  ),
-});
+): OperationResult => {
+  const search = {
+    _tag: "Search" as const,
+    query: input.query,
+    requestId: result.evidence.requestId,
+    results: result.results.flatMap((item) =>
+      isSafePublicUrl(item.url) ? [{ title: item.title, url: canonicalPublicUrl(item.url) }] : [],
+    ),
+  };
+  if (result.evidence.managedSearch === undefined) return search;
+  return { ...search, managedSearch: result.evidence.managedSearch };
+};
 
 const pageResult = (
   ports: PortInterface,
