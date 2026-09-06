@@ -674,18 +674,15 @@ export const layer = (options: Options) =>
 /** Production Supermemory MemoryProvider Layer from parsed Worker configuration. */
 export const layerFromConfig = (
   config: SupermemoryConfig,
-  db?: Pick<Hyperdrive, "connectionString">,
+  db: Pick<Hyperdrive, "connectionString">,
 ) =>
   layer({
     apiBaseURL: config.apiBaseURL,
     apiKey: config.apiKey,
     rateCard: publicRateCard,
-    checkNewDispatch:
-      db === undefined
-        ? Effect.void
-        : IncidentControlsPostgres.check(db, "newCostlyWork").pipe(
-            Effect.mapError(() => providerUnavailable("saveConversation", "transport")),
-          ),
+    checkNewDispatch: IncidentControlsPostgres.check(db, "newCostlyWork").pipe(
+      Effect.mapError(() => providerUnavailable("saveConversation", "transport")),
+    ),
   });
 
 const belongsOnlyToUser = (containerTags: ReadonlyArray<string>, expectedUserTag: string) => {

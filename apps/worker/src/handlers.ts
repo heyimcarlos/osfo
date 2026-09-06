@@ -24,12 +24,12 @@ export const layer = (
     IntegrationHandlers.Bindings &
     ReminderHandlers.Bindings &
     ScheduledEmailHandlers.Bindings &
-    FilesHandlers.Bindings,
+    FilesHandlers.Bindings & { readonly DB: Pick<Hyperdrive, "connectionString"> },
 ) =>
   Layer.mergeAll(
     AccountHandlers.layer.pipe(
       Layer.provide(AccountDeletionComposition.layer(bindings)),
-      Layer.provide(SupermemoryMemoryProvider.layerFromConfig(config.supermemory)),
+      Layer.provide(SupermemoryMemoryProvider.layerFromConfig(config.supermemory, bindings.DB)),
     ),
     BillingHandlers.layer(config),
     ChannelLinksHandlers.layer,

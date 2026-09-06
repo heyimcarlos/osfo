@@ -98,3 +98,8 @@ short, specific, and actionable.
 - Executor SDK and plugin dependencies must resolve the same pinned Effect and
   Node-adapter peers. Pinning only the SDK and Effect allowed different SDK peer
   instances and incompatible plugin types; inspect the installed resolution.
+- Admission guards need explicit authority in focused runtime fixtures that have no
+  PostgreSQL application. Preserve the existing assertions and separately prove
+  refusal reaches neither provider dispatch nor cost recording. Trace the installed
+  streaming library before assuming an SDK error invokes its error hook; error
+  frames and thrown transport failures can follow different paths.

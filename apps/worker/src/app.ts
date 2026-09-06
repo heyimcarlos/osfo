@@ -78,7 +78,7 @@ export const reconcileAccountDeletions = (env: CloudflareEnv) => {
   const config = loadConfig(env);
   const base = Layer.merge(
     Db.layer({ db: env.DB }),
-    SupermemoryMemoryProvider.layerFromConfig(config.supermemory),
+    SupermemoryMemoryProvider.layerFromConfig(config.supermemory, env.DB),
   );
   const deletionLayer = AccountDeletionComposition.layer(adaptBindings(env, config)).pipe(
     Layer.provide(base),

@@ -20,6 +20,7 @@ type Protection =
   | "trackedThinkLifecycle";
 
 const publicBoundaryPolicy = {
+  constructor: ["initialization", "initializationLifecycle"],
   analyzeFile: ["ordinaryMutation", "accountDeletionFence"],
   approveExecution: ["deniedMutation", "none"],
   authorizeAction: ["read", "trackedThinkLifecycle"],

@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Context, Effect, Schema } from "effect";
 
 /** Incident controls apply only to admission and new provider dispatch. */
 export const Control = Schema.Literals(["newIngress", "newCostlyWork"]);
@@ -18,14 +18,16 @@ export interface Interface {
   readonly check: (control: Control) => Effect.Effect<void, Paused | Unavailable>;
 }
 
+/** Current incident authority selected by the runtime composition. */
+export class Service extends Context.Service<Service, Interface>()("@osfo/IncidentControls") {}
+
 /** Read on every invocation, including retries; never retain an admission decision. */
-export const make = (
-  read: (control: Control) => Effect.Effect<boolean, Unavailable>,
-): Interface => ({
-  check: Effect.fn("IncidentControls.check")(function* (control) {
-    if (yield* read(control)) return yield* new Paused({ control });
-    return undefined;
-  }),
-});
+export const make = (read: (control: Control) => Effect.Effect<boolean, Unavailable>): Interface =>
+  Service.of({
+    check: Effect.fn("IncidentControls.check")(function* (control) {
+      if (yield* read(control)) return yield* new Paused({ control });
+      return undefined;
+    }),
+  });
 
 export * as IncidentControls from "./incident-controls";

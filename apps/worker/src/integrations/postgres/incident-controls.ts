@@ -2,7 +2,7 @@
 import type { Database } from "@osfo/db";
 import { incidentControls } from "@osfo/db/schema/incident-controls";
 import { eq, sql } from "drizzle-orm";
-import { Effect, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 
 import { Db } from "../../db";
 import { IncidentControls } from "../../services/incident-controls";
@@ -80,13 +80,19 @@ export const makeFromDatabase = (database: Database) => {
 
 export const make = Db.database.pipe(Effect.map(makeFromDatabase));
 
-/** Admission point for new work; already dispatched effects keep their reconciliation path. */
+/** Current PostgreSQL authority; its database lifetime remains a Layer requirement. */
+export const layer = Layer.effect(IncidentControls.Service, make);
+
+/** Admission point for a host dispatch that owns one short database scope. */
 export const check = (
   db: Pick<Hyperdrive, "connectionString">,
   control: IncidentControls.Control,
 ) =>
-  Effect.scoped(make.pipe(Effect.flatMap((controls) => controls.check(control)))).pipe(
-    Effect.provide(Db.layer({ db })),
-  );
+  Effect.scoped(
+    Effect.gen(function* () {
+      const controls = yield* IncidentControls.Service;
+      yield* controls.check(control);
+    }),
+  ).pipe(Effect.provide(layer.pipe(Layer.provide(Db.layer({ db })))));
 
 export * as IncidentControlsPostgres from "./incident-controls";

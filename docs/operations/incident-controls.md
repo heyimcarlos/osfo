@@ -9,7 +9,9 @@ reads current state without retaining it in an Agent or Workflow snapshot.
   Both HTTP ingress and managed Agent message admission are checked, including
   messages arriving over an existing connection.
 - `newCostlyWork` stops new model, search, integration, artifact, document, file,
-  memory and proactive WhatsApp provider dispatch at their admission points.
+  memory and proactive WhatsApp provider dispatch, plus new Workflow creation and
+  restart, at their admission points. Existing Workflow status and termination
+  remain available.
 
 Health, account deletion, cancellation, previously dispatched provider evidence
 reconciliation, accounting and committed cleanup remain reachable. Existing

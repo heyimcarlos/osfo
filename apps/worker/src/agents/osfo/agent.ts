@@ -25,6 +25,7 @@ import type { MessengerContext } from "@cloudflare/think/messengers";
 import { generateText, Output, tool, type ToolSet, type UIMessage } from "ai";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { genericObservability } from "agents/observability";
+import { CHAT_MESSAGE_TYPES, parseProtocolMessage } from "agents/chat";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import {
   Cause,
@@ -706,6 +707,33 @@ export class OsfoAgent extends Think<Env> {
   /** Do not expose connected MCP catalogs until Osfo registers a typed tool boundary. */
   override includeMcpTools = false;
 
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // Think installs its protocol dispatcher in super(); wrap that installed handler before persistence.
+    const handleMessage = this.onMessage.bind(this);
+    this.onMessage = async (connection, message) => {
+      const event = Predicate.isString(message) ? parseProtocolMessage(message) : null;
+      if (event?.type === "chat-request" && event.init?.method === "POST") {
+        const admission = await Effect.runPromise(
+          IncidentControlsPostgres.check(this.env.DB, "newIngress").pipe(Effect.result),
+        );
+        if (Result.isFailure(admission)) {
+          connection.send(
+            JSON.stringify({
+              type: CHAT_MESSAGE_TYPES.USE_CHAT_RESPONSE,
+              id: event.id,
+              body: "New messages are temporarily unavailable. Please try again later.",
+              done: true,
+              error: true,
+            }),
+          );
+          return;
+        }
+      }
+      await handleMessage(connection, message);
+    };
+  }
+
   /** Do not attach prompts or responses to telemetry spans. */
   override storeMessages = false;
 
@@ -975,7 +1003,7 @@ export class OsfoAgent extends Think<Env> {
     web: this.#web,
   });
   readonly #capabilityStateSemaphore = Semaphore.makeUnsafe(1);
-  #activeModelStepNumber = ModelStepNumber.make(1);
+  #activeModelStepNumber: ModelStepNumber | undefined = ModelStepNumber.make(1);
   readonly #completedModelSteps = new Set<number>();
   readonly #currentApprovedActions = new Map<
     ActionId,
@@ -1882,7 +1910,14 @@ export class OsfoAgent extends Think<Env> {
 
   /** Publish newly loaded Skill bodies and schemas on the next model step. */
   override async beforeStep(context: PrepareStepContext): Promise<CapabilityStepConfig | void> {
-    await Effect.runPromise(IncidentControlsPostgres.check(this.env.DB, "newCostlyWork"));
+    const admission = await Effect.runPromise(
+      IncidentControlsPostgres.check(this.env.DB, "newCostlyWork").pipe(Effect.result),
+    );
+    if (Result.isFailure(admission)) {
+      // A refused step never reached the provider; retain already-recorded steps but add no cost for this one.
+      this.#activeModelStepNumber = undefined;
+      throw admission.failure;
+    }
     this.#activeModelStepNumber = ModelStepNumber.make(context.stepNumber + 1);
     const activeTurn = this.#activeCapabilityTurn;
     if (activeTurn === undefined) return;
@@ -2015,7 +2050,10 @@ export class OsfoAgent extends Think<Env> {
   // oxlint-disable-next-line osfo/no-unknown-parameters, osfo/no-unknown-returns -- Think owns the error hook's unknown protocol contract.
   override onChatError(error: unknown, context?: ChatErrorContext): unknown {
     if (context?.stage === "turn" || context?.stage === "stream" || context?.stage === "recovery") {
-      if (!this.#completedModelSteps.has(this.#activeModelStepNumber)) {
+      if (
+        this.#activeModelStepNumber !== undefined &&
+        !this.#completedModelSteps.has(this.#activeModelStepNumber)
+      ) {
         this.ctx.waitUntil(this.#recordCurrentModelUsage(this.#activeModelStepNumber));
       }
     }

@@ -34,6 +34,7 @@ export type Bindings = AccountDeletionComposition.Bindings &
   ScheduledEmailHandlers.Bindings &
   FilesHandlers.Bindings &
   WebhookHandlers.Bindings & {
+    readonly DB: Pick<Hyperdrive, "connectionString">;
     readonly ARTIFACTS?: R2Bucket;
     readonly routeOsfoAgentRequest: (
       request: Request,
