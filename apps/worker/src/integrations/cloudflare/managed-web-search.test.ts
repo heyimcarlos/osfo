@@ -109,6 +109,22 @@ describe("managed public search", () => {
         expect(result.failure.managedSearch?.ratedCostUsdMicros).toBeNull();
     }),
   );
+  it.effect("retains the published charge for a terminal failed search call", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        decodeResponse({ ...response, output: [{ ...call, status: "failed" }] }, initial),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure.managedSearch).toMatchObject({
+          ratedCostUsdMicros: 13_562,
+          successfulSearches: 0,
+          searchCountBasis: "terminal-web-search-call-blocks",
+          executedSearches: [{ outcome: "failed" }],
+        });
+      }
+    }),
+  );
   it.effect("never retries an ambiguous paid request", () =>
     Effect.gen(function* () {
       const requests: Array<unknown> = [];

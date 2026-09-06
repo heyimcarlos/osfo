@@ -619,7 +619,10 @@ const runProvider = (
         if (Predicate.isTagged(failure, "ResearchCollectorUnavailable")) {
           return Effect.fail(failure);
         }
-        const ambiguous = failure.retry === "ambiguous";
+        const ambiguous =
+          failure.retry === "ambiguous" &&
+          (failure.managedSearch === undefined ||
+            failure.managedSearch.ratedCostUsdMicros === null);
         return Ref.get(retainedAttempt).pipe(
           Effect.flatMap((retained) =>
             ports.persistence
