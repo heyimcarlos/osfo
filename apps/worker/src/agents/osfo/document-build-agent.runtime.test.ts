@@ -113,7 +113,11 @@ it("publishes loadSkill for the verifier's natural Document Build request", asyn
   });
 });
 
-it("retains PDF inspection through the actual Agent tool allowlist and capability selection", async () => {
+it.each([
+  "Fill this PDF from File ID web:00000000-0000-4000-8000-000000000289.",
+  "Fill this application using my details.",
+  "Use unit 12 and leave the signature blank.",
+])("retains PDF inspection for ordinary requests and follow-ups: %s", async (request) => {
   // SAFETY: wrangler.runtime.jsonc owns this test-only direct binding to OsfoAgent.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The checked runtime config declares the binding that generated production Env types omit.
   const runtimeEnv = env as typeof env & {
@@ -134,7 +138,6 @@ it("retains PDF inspection through the actual Agent tool allowlist and capabilit
     });
     await agent.onStart();
     const metadata = documentBuildTurnMetadata();
-    const request = "Fill this PDF from File ID web:00000000-0000-4000-8000-000000000289.";
     const userMessage: UIMessage = {
       id: "document-build-runtime-message",
       metadata: { turnMetadata: metadata },
