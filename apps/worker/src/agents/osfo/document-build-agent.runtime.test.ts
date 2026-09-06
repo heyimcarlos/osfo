@@ -107,7 +107,12 @@ it("publishes loadSkill for the verifier's natural Document Build request", asyn
       tools: documentBuildTools(agent),
     });
 
-    expect(turn.activeTools).toEqual(["loadSkill"]);
+    expect(turn.activeTools).toEqual([
+      "loadSkill",
+      "readFile",
+      "readWebPage",
+      "validateFileFields",
+    ]);
     expect(turn.instructions).toContain("document-build@system-document-build-v1");
     expect(turn.tools?.loadSkill).toBe(agent.getTools().loadSkill);
   });
@@ -166,7 +171,12 @@ it.each([
       },
     });
 
-    expect(turn.activeTools).toEqual(["loadSkill"]);
+    expect(turn.activeTools).toEqual([
+      "loadSkill",
+      "readFile",
+      "readWebPage",
+      "validateFileFields",
+    ]);
     expect(turn.instructions).toContain("document-production@system-document-production-v1");
     expect(turn.tools?.inspectPdfForm).toBeDefined();
     expect(agent.getActions().inspectPdfForm.config.description).toContain("PDF");
@@ -212,7 +222,12 @@ it("publishes loadSkill for the verifier's exact Document Build status request",
       tools: documentBuildTools(agent),
     });
 
-    expect(turn.activeTools).toEqual(["loadSkill"]);
+    expect(turn.activeTools).toEqual([
+      "loadSkill",
+      "readFile",
+      "readWebPage",
+      "validateFileFields",
+    ]);
     expect(turn.instructions).toContain("document-build@system-document-build-v1");
     expect(turn.tools?.loadSkill).toBe(agent.getTools().loadSkill);
   });
