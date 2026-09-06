@@ -1,3 +1,4 @@
+import { IncidentControlsPostgres } from "./integrations/postgres/incident-controls";
 import { Effect, Result } from "effect";
 
 import { DocumentBuildComposition } from "./composition/document-build";
@@ -77,6 +78,7 @@ export const run = (env: DocumentBuildComposition.Bindings) =>
                 DocumentBuildComposition.makeWorkflowPort(
                   env.DOCUMENT_BUILD_WORKFLOW,
                   env.DOCUMENT_BUILD_TIMER_WORKFLOW,
+                  IncidentControlsPostgres.makeFromDatabase(database).check("newCostlyWork"),
                 ),
                 (candidate) =>
                   DocumentBuildPostgres.hostRecoveryDisposition(

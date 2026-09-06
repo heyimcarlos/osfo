@@ -55,6 +55,7 @@ describe("Postgres migrations", () => {
             "deletion_cases",
             "document_build_notifications",
             "document_builds",
+            "incident_controls",
             "migrations",
             "rate_limits",
             "research_report_notifications",

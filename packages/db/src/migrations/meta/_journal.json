@@ -211,6 +211,13 @@
       "when": 1787998738148,
       "tag": "0029_modern_gamora",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1788668603300,
+      "tag": "0030_funny_cassandra_nova",
+      "breakpoints": true
     }
   ]
 }

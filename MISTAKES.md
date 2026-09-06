@@ -101,3 +101,17 @@ short, specific, and actionable.
 - Executor SDK and plugin dependencies must resolve the same pinned Effect and
   Node-adapter peers. Pinning only the SDK and Effect allowed different SDK peer
   instances and incompatible plugin types; inspect the installed resolution.
+- Admission guards need explicit authority in focused runtime fixtures that have no
+  PostgreSQL application. Preserve the existing assertions and separately prove
+  refusal reaches neither provider dispatch nor cost recording. Trace the installed
+  streaming library before assuming an SDK error invokes its error hook; error
+  frames and thrown transport failures can follow different paths.
+
+- Check dispatch admission before reclaiming an expired provider attempt. A pause
+  must return and retain its incurred evidence; an allowed retry must preserve
+  the old immutable cost record before replacing the attempt row.
+
+- Verify framework handler installation timing through a real connected transport.
+  Think installs its chat dispatcher during asynchronous startup after the
+  constructor; a constructor wrapper can be bypassed. Install message admission
+  in the post-setup startup hook and prove pause, resume and cancellation together.

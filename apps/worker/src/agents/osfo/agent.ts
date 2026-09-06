@@ -1,5 +1,6 @@
 import { documentDownloadUrl } from "@osfo/api/document-download";
 import { PdfForm } from "../../integrations/pdf/pdf-form";
+import { IncidentControlsPostgres } from "../../integrations/postgres/incident-controls";
 import {
   action,
   defaultContextOverflowClassifier,
@@ -25,6 +26,7 @@ import type { MessengerContext } from "@cloudflare/think/messengers";
 import { generateText, Output, tool, type ToolSet, type UIMessage } from "ai";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { genericObservability } from "agents/observability";
+import { CHAT_MESSAGE_TYPES, parseProtocolMessage } from "agents/chat";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import {
   Cause,
@@ -692,7 +694,12 @@ export type SessionHistoryRead = SessionHistoryFound | SessionHistoryNotFound;
 export class OsfoAgent extends Think<Env> {
   /** Construct the optional provider boundary at this Agent-owned storage partition. */
   protected makeIntegrations(): Option.Option<Integrations.Interface> {
-    return IntegrationComposition.make(loadConfig(this.env), this.ctx.storage, this.env.ARTIFACTS);
+    return IntegrationComposition.make(
+      loadConfig(this.env),
+      this.ctx.storage,
+      this.env.DB,
+      this.env.ARTIFACTS,
+    );
   }
 
   /** Keep shell execution unavailable until a concrete Osfo tool contract enables it. */
@@ -837,7 +844,7 @@ export class OsfoAgent extends Think<Env> {
     },
     authorization: Authorization.make(retainedCatalog),
     catalog: retainedCatalog,
-    compute: makeCloudflareFileCompute(this.env.DOCUMENT_SANDBOX),
+    compute: makeCloudflareFileCompute(this.env.DOCUMENT_SANDBOX, this.env.DB),
     currentAuthorizationContext: (context) => this.#currentFileAuthorizationContext(context),
     now: DateTime.now.pipe(
       Effect.map((time) => Db.DbTimestamp.make(DateTime.toDateUtc(time).toISOString())),
@@ -970,7 +977,7 @@ export class OsfoAgent extends Think<Env> {
     web: this.#web,
   });
   readonly #capabilityStateSemaphore = Semaphore.makeUnsafe(1);
-  #activeModelStepNumber = ModelStepNumber.make(1);
+  #activeModelStepNumber: ModelStepNumber | undefined = ModelStepNumber.make(1);
   readonly #completedModelSteps = new Set<number>();
   readonly #currentApprovedActions = new Map<
     ActionId,
@@ -1286,6 +1293,10 @@ export class OsfoAgent extends Think<Env> {
     context: MessengerContext,
   ): Promise<void> {
     await this.#migrationsReady;
+    const ingress = await Effect.runPromise(
+      IncidentControlsPostgres.check(this.env.DB, "newIngress").pipe(Effect.result),
+    );
+    if (Result.isFailure(ingress)) return;
     const authorId = messengerAuthorId(context);
     const message = context.message;
     const provider = context.provider;
@@ -1872,7 +1883,15 @@ export class OsfoAgent extends Think<Env> {
   }
 
   /** Publish newly loaded Skill bodies and schemas on the next model step. */
-  override beforeStep(context: PrepareStepContext): CapabilityStepConfig | void {
+  override async beforeStep(context: PrepareStepContext): Promise<CapabilityStepConfig | void> {
+    const admission = await Effect.runPromise(
+      IncidentControlsPostgres.check(this.env.DB, "newCostlyWork").pipe(Effect.result),
+    );
+    if (Result.isFailure(admission)) {
+      // A refused step never reached the provider; retain already-recorded steps but add no cost for this one.
+      this.#activeModelStepNumber = undefined;
+      throw admission.failure;
+    }
     this.#activeModelStepNumber = ModelStepNumber.make(context.stepNumber + 1);
     const activeTurn = this.#activeCapabilityTurn;
     if (activeTurn === undefined) return;
@@ -2005,7 +2024,10 @@ export class OsfoAgent extends Think<Env> {
   // oxlint-disable-next-line osfo/no-unknown-parameters, osfo/no-unknown-returns -- Think owns the error hook's unknown protocol contract.
   override onChatError(error: unknown, context?: ChatErrorContext): unknown {
     if (context?.stage === "turn" || context?.stage === "stream" || context?.stage === "recovery") {
-      if (!this.#completedModelSteps.has(this.#activeModelStepNumber)) {
+      if (
+        this.#activeModelStepNumber !== undefined &&
+        !this.#completedModelSteps.has(this.#activeModelStepNumber)
+      ) {
         this.ctx.waitUntil(this.#recordCurrentModelUsage(this.#activeModelStepNumber));
       }
     }
@@ -2238,7 +2260,7 @@ export class OsfoAgent extends Think<Env> {
         });
       }).pipe(
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Think's beforeTurn hook is the application entry point for this request Layer.
-        Effect.provide(SupermemoryMemoryProvider.layerFromConfig(config.supermemory)),
+        Effect.provide(SupermemoryMemoryProvider.layerFromConfig(config.supermemory, this.env.DB)),
       ),
     );
   }
@@ -3205,6 +3227,30 @@ export class OsfoAgent extends Think<Env> {
 
   /** Recover activation-safe durable work without reading unbounded Think Session history. */
   override async onStart(): Promise<void> {
+    // Think installs its protocol dispatcher immediately before calling this startup hook.
+    const handleMessage = this.onMessage.bind(this);
+    this.onMessage = async (connection, message) => {
+      const event = Predicate.isString(message) ? parseProtocolMessage(message) : null;
+      if (event?.type === "chat-request" && event.init?.method === "POST") {
+        const admission = await Effect.runPromise(
+          IncidentControlsPostgres.check(this.env.DB, "newIngress").pipe(Effect.result),
+        );
+        if (Result.isFailure(admission)) {
+          connection.send(
+            JSON.stringify({
+              type: CHAT_MESSAGE_TYPES.USE_CHAT_RESPONSE,
+              id: event.id,
+              body: "New messages are temporarily unavailable. Please try again later.",
+              done: true,
+              error: true,
+            }),
+          );
+          return;
+        }
+      }
+      await handleMessage(connection, message);
+    };
+
     await this.#migrationsReady;
     if (!(await Effect.runPromise(this.#accountResetFence.isFenced))) {
       await Effect.runPromise(this.#reminders.reconcileSchedules());
@@ -3522,6 +3568,7 @@ export class OsfoAgent extends Think<Env> {
     const authority = this.#personalSkillAuthority;
     const readGatewayVendorCost = (logId: string) => this.#readGatewayVendorCost(logId);
     const resolveModel = () => this.resolveModel(launchModelAccessPolicy.plans.free.route);
+    const checkNewDispatch = IncidentControlsPostgres.check(this.env.DB, "newCostlyWork");
     return Effect.gen(function* () {
       const prompt = encodeSkillLearningPrompt({
         corrections: input.candidate.corrections,
@@ -3529,6 +3576,15 @@ export class OsfoAgent extends Think<Env> {
         priorSkill: input.priorVersion,
         taskDescription: input.candidate.taskDescription,
       });
+      yield* checkNewDispatch.pipe(
+        Effect.mapError(
+          (cause) =>
+            new SkillLearningModelUnavailable({
+              cause,
+              message: "New Skill Learning model work is temporarily unavailable",
+            }),
+        ),
+      );
       const generated = yield* Effect.exit(
         Effect.tryPromise({
           try: () =>
@@ -4667,6 +4723,15 @@ export class OsfoAgent extends Think<Env> {
     | ThinkSubmissionUnavailable
   > {
     await this.#migrationsReady;
+    const ingress = await Effect.runPromise(
+      IncidentControlsPostgres.check(this.env.DB, "newIngress").pipe(Effect.result),
+    );
+    if (Result.isFailure(ingress))
+      return new ThinkSubmissionUnavailable({
+        cause: ingress.failure,
+        message: "New messages are temporarily unavailable",
+        operation: "submitManagedConversation",
+      });
     const decoded = Schema.decodeResult(SubmitManagedConversationInput)(input);
     if (Result.isFailure(decoded)) return invalidRequest("submitManagedConversation");
     const lifecycle = this.#agentSessionLifecycle;

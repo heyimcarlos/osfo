@@ -1,8 +1,10 @@
-import { Redacted, Schema } from "effect";
+import { Effect, Redacted, Schema } from "effect";
 import { getAgentByName } from "agents";
 import { ContainerProxy, Sandbox } from "@cloudflare/sandbox";
 
 import { App } from "./app";
+import { isNewIngress } from "./incident-ingress";
+import { IncidentControlsPostgres } from "./integrations/postgres/incident-controls";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/directory";
 import { loadConfig, WorkerConfigurationError, type CloudflareEnv } from "./config";
 import { DocumentCostReconciliation } from "./document-cost-reconciliation";
@@ -35,6 +37,18 @@ export { ArtifactSandbox as Sandbox, ContainerProxy };
 const worker = {
   async fetch(request: Request, env: CloudflareEnv): Promise<Response> {
     const path = new URL(request.url).pathname;
+    if (isNewIngress(request.method, path)) {
+      const admitted = await Effect.runPromise(
+        IncidentControlsPostgres.check(env.DB, "newIngress").pipe(
+          Effect.match({ onFailure: () => false, onSuccess: () => true }),
+        ),
+      );
+      if (!admitted)
+        return Response.json(
+          { error: "New requests are temporarily unavailable" },
+          { status: 503, headers: { "Retry-After": "60" } },
+        );
+    }
     if (path === "/webhooks/telegram") {
       const directory = await getAgentByName(env.OSFO_DIRECTORY, OSFO_DIRECTORY_NAME);
       return directory.fetch(request);

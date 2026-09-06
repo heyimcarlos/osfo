@@ -1,3 +1,4 @@
+import { IncidentControlsPostgres } from "../integrations/postgres/incident-controls";
 import { Effect, Option, Predicate } from "effect";
 
 import type { CloudflareConfig } from "../config";
@@ -14,6 +15,7 @@ import { Integrations } from "../services/integrations";
 export const make = (
   config: Pick<CloudflareConfig, "integrationProvider">,
   storage: DurableObjectStorage,
+  db: Pick<Hyperdrive, "connectionString">,
   artifacts?: R2Bucket,
 ): Option.Option<Integrations.Interface> => {
   const selected = config.integrationProvider;
@@ -22,12 +24,16 @@ export const make = (
     selected._tag === "LocalVerification"
       ? LocalVerificationIntegrationProvider.make(selected.baseURL)
       : ComposioProvider.make(composioConfig(selected).apiKey);
+  const dispatchAllowed = IncidentControlsPostgres.check(db, "newCostlyWork").pipe(
+    Effect.match({ onFailure: () => false, onSuccess: () => true }),
+  );
   return Option.some(
     artifacts === undefined
-      ? Integrations.make({ ...ComposioPersistence.make(storage), ...provider })
+      ? Integrations.make({ ...ComposioPersistence.make(storage), ...provider, dispatchAllowed })
       : Integrations.make({
           ...ComposioPersistence.make(storage),
           ...provider,
+          dispatchAllowed,
           ...artifactAccess(artifacts),
         }),
   );

@@ -2,6 +2,7 @@ import { FileNormalizationProvenance } from "../services/files";
 import type { Interface as Files } from "../services/files";
 import { fill } from "../integrations/pdf/pdf-form";
 import { DocumentArtifact } from "../domain/document-artifact";
+import { IncidentControlsPostgres } from "../integrations/postgres/incident-controls";
 import { DateTime, Effect, Predicate, Schema } from "effect";
 
 import type { Database } from "../db";
@@ -113,6 +114,17 @@ export const make = (
       bindings.DOCUMENT_SANDBOX,
       bindings.ARTIFACTS,
       conservativeDocumentSandboxUsdMicros,
+      IncidentControlsPostgres.makeFromDatabase(database)
+        .check("newCostlyWork")
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new DocumentGeneration.DocumentAuthorizationUnavailable({
+                cause,
+                message: "New document rendering is temporarily unavailable",
+              }),
+          ),
+        ),
     ),
     currentAuthorization,
     maximumComputeInputBytes: Number(currentCapabilityCatalog.operationLimits.computeInputBytes),

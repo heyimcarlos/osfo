@@ -1,3 +1,4 @@
+import { IncidentControlsPostgres } from "../postgres/incident-controls";
 import { BrowserCrypto } from "@effect/platform-browser";
 import Supermemory, { APIError } from "supermemory";
 import { Crypto, Effect, Encoding, Layer, Redacted, Schema } from "effect";
@@ -144,6 +145,7 @@ export const publicRateCard: RateCard = {
 
 /** Runtime configuration for the Supermemory MemoryProvider adapter. */
 export interface Options {
+  readonly checkNewDispatch?: Effect.Effect<void, MemoryProvider.MemoryProviderUnavailable>;
   readonly apiBaseURL?: string | undefined;
   readonly apiKey: Redacted.Redacted;
   readonly rateCard: RateCard;
@@ -256,6 +258,7 @@ const make = (options: Options) =>
     const recall = Effect.fn("SupermemoryMemoryProvider.recall")(function* (
       input: MemoryProvider.RecallInput,
     ) {
+      yield* options.checkNewDispatch ?? Effect.void;
       const containerTag = yield* providerIdentity(crypto, "u", input.userId, "recall");
       const profileResponse = yield* sdk.use("recall", (client, signal) =>
         client.profile(
@@ -342,6 +345,7 @@ const make = (options: Options) =>
     const saveConversation = Effect.fn("SupermemoryMemoryProvider.saveConversation")(function* (
       input: MemoryProvider.SaveConversationInput,
     ) {
+      yield* options.checkNewDispatch ?? Effect.void;
       const [containerTag, conversationId] = yield* Effect.all([
         providerIdentity(crypto, "u", input.userId, "saveConversation"),
         providerIdentity(crypto, "s", input.sessionId, "saveConversation"),
@@ -668,11 +672,17 @@ export const layer = (options: Options) =>
   );
 
 /** Production Supermemory MemoryProvider Layer from parsed Worker configuration. */
-export const layerFromConfig = (config: SupermemoryConfig) =>
+export const layerFromConfig = (
+  config: SupermemoryConfig,
+  db: Pick<Hyperdrive, "connectionString">,
+) =>
   layer({
     apiBaseURL: config.apiBaseURL,
     apiKey: config.apiKey,
     rateCard: publicRateCard,
+    checkNewDispatch: IncidentControlsPostgres.check(db, "newCostlyWork").pipe(
+      Effect.mapError(() => providerUnavailable("saveConversation", "transport")),
+    ),
   });
 
 const belongsOnlyToUser = (containerTags: ReadonlyArray<string>, expectedUserTag: string) => {

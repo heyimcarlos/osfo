@@ -1,8 +1,9 @@
+import { IncidentControlsPostgres } from "../../integrations/postgres/incident-controls";
 import { BrowserCrypto } from "@effect/platform-browser";
 import { Think, type StreamCallback, type TurnConfig, type TurnContext } from "@cloudflare/think";
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import { tool, type ToolSet, type UIMessage } from "ai";
-import { DateTime, Effect, Layer, Option, Schema } from "effect";
+import { DateTime, Effect, Result, Layer, Option, Schema } from "effect";
 
 import { loadConfig } from "../../config";
 import { Db } from "../../db";
@@ -126,6 +127,10 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
   #heldInvite: HeldInvite | null = null;
   readonly #discoverPublicWeb = makeDiscovery(this.env.WEBSEARCH);
 
+  override async beforeStep() {
+    await Effect.runPromise(IncidentControlsPostgres.check(this.env.DB, "newCostlyWork"));
+  }
+
   /** Serve the fixed company route; configuration may pin an alternate Workers AI slug. */
   override getModel() {
     return loadConfig(this.env).companyConversation.modelRoute;
@@ -222,6 +227,10 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
       CompanyConversationUnavailable | MessengerDeliveryUnavailable,
       ChannelLinks.Service
     > {
+      const ingress = yield* IncidentControlsPostgres.check(this.env.DB, "newIngress").pipe(
+        Effect.result,
+      );
+      if (Result.isFailure(ingress)) return;
       const authorId = messengerAuthorId(context);
       const message = context.message;
       if (authorId === undefined || message === undefined) {
@@ -375,7 +384,8 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
       return Promise.resolve(SEARCH_UNAVAILABLE);
     }
     return Effect.runPromise(
-      this.#admitDailySearch(limit).pipe(
+      IncidentControlsPostgres.check(this.env.DB, "newCostlyWork").pipe(
+        Effect.andThen(this.#admitDailySearch(limit)),
         Effect.flatMap((admitted) =>
           admitted
             ? boundedCompanyPublicSearch(

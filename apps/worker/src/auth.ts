@@ -1,3 +1,4 @@
+import { IncidentAuthentication } from "./composition/incident-authentication";
 import { createAuth, type DashboardOptions } from "@osfo/auth";
 import { APIError } from "better-auth/api";
 import { Effect, Layer, Option, Redacted, Schema } from "effect";
@@ -85,7 +86,8 @@ export const make = (config: AuthRouteConfig, canAccess: AccountAccess.Check) =>
       database,
       dashboard: dashboardOptions(config.dashboard),
       secret: Redacted.value(config.secret),
-      sendOTP: ({ phoneNumber }) => runPromise(twilio.sendCode(phoneNumber)),
+      sendOTP: ({ phoneNumber }) =>
+        runPromise(IncidentAuthentication.sendCode(database, twilio.sendCode)(phoneNumber)),
       trustedOrigins: config.trustedOrigins,
       verifyOTP: ({ code, phoneNumber }) =>
         runPromise(twilio.verifyCode(phoneNumber, Redacted.make(code))),

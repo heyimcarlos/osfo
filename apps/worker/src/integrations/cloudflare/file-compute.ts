@@ -1,4 +1,5 @@
 import { PdfFormInspection } from "../../domain/pdf-form";
+import { IncidentControlsPostgres } from "../postgres/incident-controls";
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -68,10 +69,31 @@ interface NormalizationTaskInput {
 }
 
 /** Create disposable, bounded Python file compute from the Cloudflare Sandbox binding. */
-export const makeCloudflareFileCompute = (binding: DurableObjectNamespace<Sandbox>): FileCompute =>
-  makeFileCompute((taskId) =>
+export const makeCloudflareFileCompute = (
+  binding: DurableObjectNamespace<Sandbox>,
+  db: Pick<Hyperdrive, "connectionString">,
+): FileCompute => {
+  const compute = makeFileCompute((taskId) =>
     getSandbox(binding, sandboxIdFor(taskId), { enableDefaultSession: false, sleepAfter: "1m" }),
   );
+  const check = IncidentControlsPostgres.check(db, "newCostlyWork").pipe(
+    Effect.mapError(
+      () =>
+        new FileComputeFailed({
+          basis: null,
+          kind: "dependency_unavailable",
+          message: "New file compute is temporarily unavailable",
+          reason: "parser_failure",
+          vendorUsdMicros: 0n,
+        }),
+    ),
+  );
+  return {
+    ...compute,
+    analyze: (input) => check.pipe(Effect.andThen(compute.analyze(input))),
+    normalize: (input) => check.pipe(Effect.andThen(compute.normalize(input))),
+  };
+};
 
 /** Bound one durable logical File operation to Cloudflare's Sandbox identifier contract. */
 export const sandboxIdFor = (taskScope: string) =>

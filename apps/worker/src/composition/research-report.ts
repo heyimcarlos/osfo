@@ -1,3 +1,5 @@
+import { DocumentAuthorizationUnavailable } from "../services/document-generation";
+import { IncidentControlsPostgres } from "../integrations/postgres/incident-controls";
 import { DateTime, Effect, Layer } from "effect";
 
 import type { Database } from "@osfo/db";
@@ -19,6 +21,7 @@ import { ResearchReportFollowUpPostgres } from "../integrations/postgres/researc
 import { ResearchReportPublicationPostgres } from "../integrations/postgres/research-report-publication";
 import { ResearchSynthesisPostgres } from "../integrations/postgres/research-synthesis";
 import { ResearchCollector } from "../services/research-collector";
+import type { IncidentControls } from "../services/incident-controls";
 import { Allowances } from "../services/allowances";
 import { ResearchReportDocument } from "../services/research-report-document";
 import { ResearchReport } from "../services/research-report";
@@ -58,13 +61,19 @@ export interface Bindings {
 /** Cloudflare instance adapter that reconciles a lost create acknowledgement by stable ID. */
 export const makeWorkflowPort = (
   binding: WorkflowBinding,
+  checkNewCreation: Effect.Effect<void, IncidentControls.Paused | IncidentControls.Unavailable>,
   timerBinding: WorkflowBinding = binding,
 ): ResearchReport.PortInterface["workflow"] => ({
   create: (instanceId, payload) =>
     Effect.all(
       [
-        createWorkflowInstance(binding, instanceId, payload),
-        createWorkflowInstance(timerBinding, timerInstanceId(instanceId), payload),
+        createWorkflowInstance(binding, instanceId, payload, checkNewCreation),
+        createWorkflowInstance(
+          timerBinding,
+          timerInstanceId(instanceId),
+          payload,
+          checkNewCreation,
+        ),
       ],
       { concurrency: 2, discard: true },
     ),
@@ -82,16 +91,28 @@ const createWorkflowInstance = (
   binding: WorkflowBinding,
   instanceId: string,
   payload: ResearchReport.WorkflowPayload,
+  checkNewCreation: Effect.Effect<void, IncidentControls.Paused | IncidentControls.Unavailable>,
 ) =>
-  Effect.tryPromise({
-    try: () => binding.create({ id: instanceId, params: payload }).then(() => undefined),
-    catch: (cause) =>
-      new ResearchReport.Unavailable({
-        cause,
-        message: "Cloudflare did not acknowledge the Research Report Workflow instance",
-        operation: "workflow.create",
+  checkNewCreation.pipe(
+    Effect.mapError(
+      (cause) =>
+        new ResearchReport.Unavailable({
+          cause,
+          message: "Research Report Workflow creation is unavailable",
+          operation: "workflow.create",
+        }),
+    ),
+    Effect.andThen(
+      Effect.tryPromise({
+        try: () => binding.create({ id: instanceId, params: payload }).then(() => undefined),
+        catch: (cause) =>
+          new ResearchReport.Unavailable({
+            cause,
+            message: "Cloudflare did not acknowledge the Research Report Workflow instance",
+            operation: "workflow.create",
+          }),
       }),
-  }).pipe(
+    ),
     Effect.catchTag("ResearchReportUnavailable", (failure) =>
       Effect.tryPromise({
         try: async () => {
@@ -156,7 +177,11 @@ export const serviceLayer = (
           persistence: ResearchReportPostgres.make(database),
           providerAvailable: Effect.succeed(providerAvailable),
           recordWorkflowStart: makeWorkflowStartRecorder(database),
-          workflow: makeWorkflowPort(binding, timerBinding),
+          workflow: makeWorkflowPort(
+            binding,
+            IncidentControlsPostgres.makeFromDatabase(database).check("newCostlyWork"),
+            timerBinding,
+          ),
         }),
       ),
     ),
@@ -195,6 +220,18 @@ export const executionEffect = <Value>(
     return yield* Effect.gen(function* () {
       const reports = yield* ResearchReport.Service;
       const collectorPort = ResearchCollector.Port.of({
+        checkNewDispatch: IncidentControlsPostgres.makeFromDatabase(database)
+          .check("newCostlyWork")
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ResearchCollector.Unavailable({
+                  cause,
+                  message: "New provider work is temporarily unavailable",
+                  reason: "authorizationDenied",
+                }),
+            ),
+          ),
         authorize: (report) =>
           reports.authorizeExecution(
             ResearchReport.WorkflowPayload.make({
@@ -216,6 +253,18 @@ export const executionEffect = <Value>(
         Layer.provide(Layer.succeed(ResearchCollector.Port, collectorPort)),
       );
       const synthesisPort = ResearchSynthesis.Port.of({
+        checkNewDispatch: IncidentControlsPostgres.makeFromDatabase(database)
+          .check("newCostlyWork")
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ResearchSynthesis.Unavailable({
+                  cause,
+                  message: "New provider work is temporarily unavailable",
+                  reason: "authorizationDenied",
+                }),
+            ),
+          ),
         authorize: collectorPort.authorize,
         evidence: ResearchSynthesisEvidence.make(env.FILES),
         persistence: ResearchSynthesisPostgres.make(database),
@@ -240,6 +289,17 @@ export const executionEffect = <Value>(
           env.DOCUMENT_SANDBOX,
           env.ARTIFACTS,
           researchReportDocumentSandboxUsdMicros,
+          IncidentControlsPostgres.makeFromDatabase(database)
+            .check("newCostlyWork")
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new DocumentAuthorizationUnavailable({
+                    cause,
+                    message: "New document rendering is temporarily unavailable",
+                  }),
+              ),
+            ),
         ),
         maximumComputeUsdMicros: researchReportDocumentSandboxUsdMicros,
         recordRenderCost: makeRenderCostRecorder(database),

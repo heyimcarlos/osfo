@@ -121,6 +121,7 @@ export class Unavailable extends Schema.TaggedError<Unavailable>()("ResearchColl
 }) {}
 
 export interface PortInterface {
+  readonly checkNewDispatch: Effect.Effect<void, Unavailable>;
   readonly authorize: (
     report: ResearchReport.Record,
   ) => Effect.Effect<
@@ -514,6 +515,7 @@ const runProvider = (
   Effect.gen(function* () {
     const expectedAttemptCount = yield* Ref.make(operation.attemptCount);
     const provider = Effect.gen(function* () {
+      yield* ports.checkNewDispatch;
       const expected = yield* Ref.get(expectedAttemptCount);
       const attempt = yield* ports.persistence.recordAttempt(operation.operationId, expected);
       if (attempt._tag === "InFlight") {

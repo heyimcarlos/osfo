@@ -120,6 +120,7 @@ export const make = (
   binding: DurableObjectNamespace<Sandbox>,
   bucket: R2Bucket,
   conservativeVendorUsdMicros: bigint,
+  checkNewDispatch: Effect.Effect<void, DocumentAuthorizationUnavailable>,
 ): DisposableCompute =>
   makeWithSandbox(
     (contentId) =>
@@ -134,6 +135,8 @@ export const make = (
       ),
     makeAttemptEvidenceStore(bucket),
     conservativeVendorUsdMicros,
+    defaultDeadlines,
+    checkNewDispatch,
   );
 
 /** Derive one collision-resistant identity within the Sandbox SDK's 63-character limit. */
@@ -146,6 +149,7 @@ export const makeWithSandbox = (
   attempts: AttemptEvidenceStore,
   conservativeVendorUsdMicros: bigint,
   deadlines: Deadlines = defaultDeadlines,
+  checkNewDispatch: Effect.Effect<void, DocumentAuthorizationUnavailable> = Effect.void,
 ): DisposableCompute => ({
   dispose: (contentId) =>
     Effect.tryPromise({
@@ -178,6 +182,12 @@ export const makeWithSandbox = (
           `cloudflare-sandbox:${input.contentId}:${high.toString(16)}${low.toString(16)}`,
           () => clock.currentTimeMillisUnsafe(),
           deadlines,
+          () =>
+            runPromise(
+              checkNewDispatch.pipe(
+                Effect.match({ onFailure: (failure) => failure, onSuccess: () => null }),
+              ),
+            ),
         ),
       );
     }),
@@ -228,6 +238,7 @@ const render = async (
   attemptOperationId: string,
   currentTimeMillis: () => number,
   deadlines: Deadlines,
+  checkNewDispatch: () => Promise<DocumentAuthorizationUnavailable | null>,
 ): Promise<ComputeResult> => {
   const outputPath = `/workspace/document-${input.intentDigest}.${input.format}`;
   const sourcePath = `/workspace/source-${input.intentDigest}.json`;
@@ -331,7 +342,7 @@ const render = async (
 
     if (evidence.status === "claimed" || evidence.status === "recovery") {
       const recoveringIncurredAttempt = evidence.status === "recovery";
-      const startAuthorizationFailure = await authorizeWrite();
+      const startAuthorizationFailure = (await checkNewDispatch()) ?? (await authorizeWrite());
       if (startAuthorizationFailure !== null) {
         return {
           _tag: "AuthorizationFailure",

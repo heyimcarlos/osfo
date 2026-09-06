@@ -2,10 +2,14 @@
 import { env } from "cloudflare:workers";
 import { action } from "@cloudflare/think";
 import { expect, it } from "@effect/vitest";
+import { beforeEach, afterEach, vi } from "vitest";
+import { IncidentControlsPostgres } from "../../integrations/postgres/incident-controls";
+import { IncidentControls } from "../../services/incident-controls";
+import { Db } from "../../db";
 import { runInDurableObject } from "cloudflare:test";
 import { simulateReadableStream, tool, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
-import { Effect, Schema } from "effect";
+import { Deferred, Effect, Layer, Schema } from "effect";
 
 import { AgentId, ChannelLinkId, ThinkSubmissionId, UserId } from "../../domain";
 import { ChannelAddress, ChannelAuthorId, ChannelId } from "../../domain/channel-link";
@@ -14,6 +18,12 @@ import { OsfoAgent } from "./agent";
 import { documentBuildStartActionName } from "./action-presentation";
 import { runDocumentBuildStartAction } from "./document-build-action";
 import { effectToolSchema } from "./effect-tool-schema";
+
+// This focused runtime has no PostgreSQL server; the authority adapter is supplied explicitly.
+beforeEach(() => {
+  vi.spyOn(IncidentControlsPostgres, "check").mockReturnValue(Effect.void);
+});
+afterEach(() => vi.restoreAllMocks());
 
 const deniedActionIds: Array<string> = [];
 
@@ -320,6 +330,84 @@ it("executes a launch-v1 Free Document Build Action without pausing for Approval
     });
   });
 });
+
+it.each(["paused", "unavailable", "provider-error"] as const)(
+  "preserves model admission evidence when client streaming fails: %s",
+  async (outcome) => {
+    // SAFETY: the runtime config declares this direct test binding.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The checked runtime config declares this test-only binding.
+    const runtimeEnv = env as typeof env & {
+      readonly OSFO_AGENT_TEST: DurableObjectNamespace<OsfoAgent>;
+    };
+    const stub = runtimeEnv.OSFO_AGENT_TEST.get(
+      runtimeEnv.OSFO_AGENT_TEST.idFromName(`incident-model-${outcome}`),
+    );
+    await runInDurableObject(stub, async (_boundAgent, state) => {
+      const admissionObserved = Deferred.makeUnsafe<void>();
+      const dispatch = vi.fn<() => Promise<never>>(async () => {
+        await Effect.runPromise(Deferred.succeed(admissionObserved, undefined));
+        throw new Error("Provider failed after dispatch");
+      });
+      const model = new MockLanguageModelV4({ doStream: dispatch });
+      class IncidentModelAgent extends OsfoAgent {
+        override resolveModel() {
+          return model;
+        }
+        override async onChatResponse() {
+          return;
+        }
+      }
+      // Retain real SQLite billing evidence without opening a PostgreSQL connection in this focused runtime.
+      vi.spyOn(Db, "layer").mockReturnValue(
+        Layer.succeed(Db.Service, {
+          database: Effect.die(new Error("Runtime fixture PostgreSQL dispatch is unavailable")),
+        }),
+      );
+      const agent = new IncidentModelAgent(state, runtimeEnv);
+      await agent.initialize({
+        agentId: AgentId.make("document-build-action-boundary-agent"),
+        initializationId: `incident-model-${outcome}`,
+        initializedAt: "2026-08-29T12:00:00.000Z",
+        routeId: "document-build-action-boundary-route",
+        sessionId: "document-build-action-boundary-session",
+      });
+      await agent.onStart();
+      const errorHook = vi.spyOn(agent, "onChatError");
+      vi.mocked(IncidentControlsPostgres.check).mockReturnValue(
+        outcome === "paused"
+          ? Effect.fail(new IncidentControls.Paused({ control: "newCostlyWork" })).pipe(
+              Effect.ensuring(Deferred.succeed(admissionObserved, undefined)),
+            )
+          : outcome === "unavailable"
+            ? Effect.fail(
+                new IncidentControls.Unavailable({
+                  cause: new Error("Control database unavailable"),
+                }),
+              ).pipe(Effect.ensuring(Deferred.succeed(admissionObserved, undefined)))
+            : Effect.void,
+      );
+      await agent.chat(
+        "Build a PDF from my uploaded file.",
+        {
+          onStart: () => undefined,
+          onEvent: async () => {
+            await Effect.runPromise(Deferred.await(admissionObserved));
+            throw new Error("Client stream delivery failed");
+          },
+          onDone: () => undefined,
+          onError: () => undefined,
+        },
+        { metadata: { ...documentBuildTurnMetadata() } },
+      );
+      expect(errorHook).toHaveBeenCalled();
+      expect(dispatch).toHaveBeenCalledTimes(outcome === "provider-error" ? 1 : 0);
+      const evidence = state.storage.sql
+        .exec("SELECT * FROM osfo_model_call_usage_evidence")
+        .toArray();
+      expect(evidence).toHaveLength(outcome === "provider-error" ? 1 : 0);
+    });
+  },
+);
 
 const documentBuildTools = (agent: OsfoAgent): ToolSet => ({
   ...agent.getTools(),

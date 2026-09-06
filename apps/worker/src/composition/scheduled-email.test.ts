@@ -1,7 +1,8 @@
 /* oxlint-disable effecttsgo/global-date, vitest/no-standalone-expect -- Fixed Workflow boundary fixtures execute inside Effects. */
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Result, Schema } from "effect";
 
+import { IncidentControls } from "../services/incident-controls";
 import { AgentId } from "../domain";
 import { IntegrationExecutionRejected } from "../services/integrations";
 import { ScheduledEmail } from "../services/scheduled-email";
@@ -27,7 +28,7 @@ it.effect("encodes ISO Workflow params at the Cloudflare JSON boundary", () => {
     get: () => Promise.resolve(handle("unknown")),
   };
   return Effect.gen(function* () {
-    yield* makeWorkflowPort(binding).create(instanceId, payload);
+    yield* makeWorkflowPort(binding, Effect.void).create(instanceId, payload);
     expect(retained).toEqual({ ...payload, dueAt: payload.dueAt.toISOString() });
   });
 });
@@ -47,8 +48,8 @@ it.effect("restarts errored or terminated instances instead of accepting dead ho
       }),
   });
   return Effect.gen(function* () {
-    yield* makeWorkflowPort(binding("errored")).create(instanceId, payload);
-    yield* makeWorkflowPort(binding("terminated")).create(instanceId, payload);
+    yield* makeWorkflowPort(binding("errored"), Effect.void).create(instanceId, payload);
+    yield* makeWorkflowPort(binding("terminated"), Effect.void).create(instanceId, payload);
     expect(restarted).toEqual(["errored", "terminated"]);
   });
 });
@@ -83,3 +84,124 @@ const handle = (status: "queued" | "unknown") => ({
   status: () => Promise.resolve({ status }),
   terminate: () => Promise.resolve(),
 });
+
+for (const failure of [
+  new IncidentControls.Paused({ control: "newCostlyWork" }),
+  new IncidentControls.Unavailable({ cause: new Error("control read failed") }),
+]) {
+  for (const status of [
+    "queued",
+    "running",
+    "complete",
+    "errored",
+    "terminated",
+    "unknown",
+    "missing",
+    "unreadable",
+  ] as const) {
+    it.effect(
+      `reconciles ${status} without new work when ${Schema.is(IncidentControls.Paused)(failure) ? "paused" : "unavailable"}`,
+      () => {
+        const calls = new Array<string>();
+        const guard = Effect.fail(failure);
+        const binding: WorkflowBinding = {
+          create: () => {
+            calls.push("create");
+            return Promise.reject(new Error("unexpected create"));
+          },
+          get: () => {
+            calls.push("get");
+            if (status === "missing") return Promise.reject(new Error("missing instance"));
+            return Promise.resolve({
+              restart: () => {
+                calls.push("restart");
+                return Promise.resolve();
+              },
+              status: () =>
+                status === "unreadable"
+                  ? Promise.reject(new Error("status unavailable"))
+                  : Promise.resolve({ status }),
+              terminate: () => {
+                calls.push("terminate");
+                return Promise.resolve();
+              },
+            });
+          },
+        };
+        return Effect.gen(function* () {
+          const result = yield* makeWorkflowPort(binding, guard)
+            .create(instanceId, payload)
+            .pipe(Effect.result);
+          if (status === "unknown" || status === "missing" || status === "unreadable") {
+            expect(Result.isFailure(result)).toBe(true);
+            if (Result.isFailure(result))
+              expect(result.failure).toMatchObject({ _tag: "ScheduledEmailUnavailable" });
+          } else {
+            expect(Result.isSuccess(result)).toBe(true);
+            expect(calls.filter((call) => call === "get")).toHaveLength(1);
+          }
+          expect(calls.filter((call) => call !== "get")).toEqual([]);
+        });
+      },
+    );
+  }
+}
+
+it.effect("allows termination without evaluating the creation guard", () => {
+  const calls = new Array<string>();
+  const guard = Effect.suspend(() => {
+    calls.push("guard");
+    return Effect.fail(new IncidentControls.Paused({ control: "newCostlyWork" }));
+  });
+  const binding: WorkflowBinding = {
+    create: () => Promise.reject(new Error("unexpected create")),
+    get: () =>
+      Promise.resolve({
+        restart: () => {
+          calls.push("restart");
+          return Promise.resolve();
+        },
+        status: () => Promise.resolve({ status: "running" as const }),
+        terminate: () => {
+          calls.push("terminate");
+          return Promise.resolve();
+        },
+      }),
+  };
+  return Effect.gen(function* () {
+    yield* makeWorkflowPort(binding, guard).terminate(instanceId);
+    expect(calls).toEqual(["terminate"]);
+  });
+});
+
+it.effect(
+  "reads the creation control again before restarting an existing terminal instance",
+  () => {
+    const calls = new Array<string>();
+    const guard = Effect.suspend(() => {
+      calls.push("guard");
+      return calls.length === 1
+        ? Effect.void
+        : Effect.fail(new IncidentControls.Paused({ control: "newCostlyWork" }));
+    });
+    const binding: WorkflowBinding = {
+      create: () => {
+        calls.push("create");
+        return Promise.reject(new Error("acknowledgement lost"));
+      },
+      get: () =>
+        Promise.resolve({
+          restart: () => {
+            calls.push("restart");
+            return Promise.resolve();
+          },
+          status: () => Promise.resolve({ status: "terminated" as const }),
+          terminate: () => Promise.resolve(),
+        }),
+    };
+    return Effect.gen(function* () {
+      yield* makeWorkflowPort(binding, guard).create(instanceId, payload);
+      expect(calls).toEqual(["guard", "create", "guard"]);
+    });
+  },
+);

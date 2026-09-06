@@ -106,6 +106,7 @@ export const makeWithPorts = (
   images: ImageProvider,
   conservativeVendorUsdMicros: bigint,
   deadlines: Deadlines = defaultDeadlines,
+  dispatchAllowed: Effect.Effect<boolean> = Effect.succeed(true),
 ): DisposableCompute => ({
   dispose: (contentId) =>
     Effect.tryPromise({
@@ -120,6 +121,8 @@ export const makeWithPorts = (
   generate: (input) =>
     Effect.gen(function* () {
       const clock = yield* Clock.Clock;
+      const context = yield* Effect.context();
+      const runPromise = Effect.runPromiseWith(context);
       const [high, low] = yield* Effect.all([Random.next, Random.next]);
       return yield* Effect.promise(() =>
         render(
@@ -131,6 +134,7 @@ export const makeWithPorts = (
           `artifact:${input.contentId}:${high.toString(16)}${low.toString(16)}`,
           () => clock.currentTimeMillisUnsafe(),
           deadlines,
+          () => runPromise(dispatchAllowed),
         ),
       );
     }),
@@ -186,6 +190,7 @@ const render = async (
   providerOperationId: string,
   currentTimeMillis: () => number,
   deadlines: Deadlines,
+  dispatchAllowed: () => Promise<boolean>,
 ): Promise<ComputeResult> => {
   const cost = incurred(input.allowancePeriodId, providerOperationId, conservativeVendorUsdMicros);
   const proposed: AttemptEvidence = {
@@ -196,8 +201,10 @@ const render = async (
     status: "claimed",
     userId: input.userId,
   };
+  let retainedCost: CostEvidence = { _tag: "ProvenNoUse" };
   try {
     const claimed = await withDeadline(attempts.claim(input.contentId, proposed), deadlines.rpcMs);
+    retainedCost = claimed.evidence.cost;
     if (
       claimed.evidence.intentDigest !== input.intentDigest ||
       claimed.evidence.userId !== input.userId
@@ -227,28 +234,38 @@ const render = async (
           evidence: "Another caller owns the live artifact execution lease",
         };
       }
-      if (claimed.evidence.status === "started") {
-        const reclaimed = await withDeadline(
-          attempts.reclaim(input.contentId, claimed.evidence, proposed),
-          deadlines.rpcMs,
-        );
-        if (!reclaimed) {
-          return {
-            _tag: "AttemptPending",
-            cost: claimed.evidence.cost,
-            evidence: "Another caller reclaimed the expired artifact execution lease",
-          };
-        }
-      }
     }
 
     const inputBytes =
       (input.sourceArtifact?.byteLength ?? 0) +
       input.supportingVisuals.reduce((total, visual) => total + visual.bytes.byteLength, 0);
     if (inputBytes > maximumComputeInputBytes) {
-      return interrupted({ _tag: "ProvenNoUse" }, "Immutable artifact inputs exceed 25 MB");
+      return interrupted(retainedCost, "Immutable artifact inputs exceed 25 MB");
     }
 
+    if (!(await dispatchAllowed()))
+      return interrupted(retainedCost, "New artifact compute is temporarily unavailable");
+    if (claimed._tag === "Existing" && claimed.evidence.status === "started") {
+      // Preserve the prior attempt even if its caller stopped before writing the immutable cost record.
+      if (claimed.evidence.cost._tag === "Incurred") {
+        await withDeadline(
+          attempts.recordCost(input.contentId, claimed.evidence.cost, claimed.evidence.userId),
+          deadlines.rpcMs,
+        );
+      }
+      const reclaimed = await withDeadline(
+        attempts.reclaim(input.contentId, claimed.evidence, proposed),
+        deadlines.rpcMs,
+      );
+      if (!reclaimed) {
+        return {
+          _tag: "AttemptPending",
+          cost: claimed.evidence.cost,
+          evidence: "Another caller reclaimed the expired artifact execution lease",
+        };
+      }
+    }
+    retainedCost = cost;
     const started = await withDeadline(
       attempts.start(input.contentId, {
         ...proposed,
@@ -332,7 +349,7 @@ const render = async (
     return { _tag: "Completed", bytes, cost, inspection };
   } catch {
     return interrupted(
-      cost,
+      retainedCost,
       "Disposable artifact compute stopped before verified output was available",
     );
   }
