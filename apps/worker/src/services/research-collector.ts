@@ -1,6 +1,7 @@
 import { Context, DateTime, Effect, Layer, Predicate, Ref, Schedule, Schema } from "effect";
 
 import { currentCapabilityCatalog } from "../domain/capability-catalog";
+import { initialManagedSearchEvidence, ManagedSearchEvidence } from "../domain/web-search-evidence";
 import type { Denied } from "./authorization";
 import { ResearchReport } from "./research-report";
 import type { DiscoveryResult, PageFetch } from "./web";
@@ -30,7 +31,11 @@ const SearchItem = Schema.Struct({
 });
 
 export const OperationResult = Schema.Union([
+  Schema.TaggedStruct("SearchAttempt", {
+    managedSearch: ManagedSearchEvidence,
+  }),
   Schema.TaggedStruct("Search", {
+    managedSearch: Schema.optionalKey(ManagedSearchEvidence),
     query: boundedText(500),
     requestId: boundedText(512),
     results: Schema.Array(SearchItem).check(Schema.isMaxLength(10)),
@@ -145,6 +150,7 @@ export interface PortInterface {
       operation: Operation,
       state: "canceled" | "failed" | "unknown",
       safeFailureCode: string,
+      managedSearch?: ManagedSearchEvidence,
     ) => Effect.Effect<void, Unavailable>;
     readonly expireAmbiguous: (
       operation: Operation,
@@ -153,6 +159,7 @@ export interface PortInterface {
     readonly recordAttempt: (
       operationId: OperationId,
       expectedAttemptCount: number,
+      managedSearch?: ManagedSearchEvidence,
     ) => Effect.Effect<
       | { readonly _tag: "InFlight"; readonly operation: Operation }
       | { readonly _tag: "Started"; readonly operation: Operation },
@@ -160,10 +167,12 @@ export interface PortInterface {
     >;
   };
   readonly provider: {
+    readonly managedSearch?: boolean;
     readonly discover: (
       query: string,
       limit: number,
-    ) => Effect.Effect<DiscoveryResult, { readonly retry: "ambiguous" | "never" | "transient" }>;
+      managedSearch?: ManagedSearchEvidence,
+    ) => Effect.Effect<DiscoveryResult, { readonly retry: "ambiguous" | "never" | "transient"; readonly managedSearch?: ManagedSearchEvidence }>;
     readonly fetchPage: (input: {
       readonly url: string;
     }) => Effect.Effect<PageFetch, { readonly retry: "ambiguous" | "never" | "transient" }>;
@@ -517,7 +526,10 @@ const runProvider = (
     const provider = Effect.gen(function* () {
       yield* ports.checkNewDispatch;
       const expected = yield* Ref.get(expectedAttemptCount);
-      const attempt = yield* ports.persistence.recordAttempt(operation.operationId, expected);
+      const initial = ports.provider.managedSearch === true && operation.input._tag === "Search"
+        ? initialManagedSearchEvidence(operation.operationId)
+        : undefined;
+      const attempt = yield* ports.persistence.recordAttempt(operation.operationId, expected, initial);
       if (attempt._tag === "InFlight") {
         if (Predicate.isTagged(operation.input, "Page")) {
           const reconciled = yield* ports.sourceEvidence.reconcile(
@@ -550,6 +562,7 @@ const runProvider = (
             operation,
             ambiguous ? "unknown" : "failed",
             ambiguous ? "ambiguous-provider-acceptance-company-cost" : "provider-unavailable",
+            failure.managedSearch,
           )
           .pipe(
             Effect.andThen(
@@ -574,12 +587,12 @@ const providerEffect = (
   operation: Operation,
 ): Effect.Effect<
   OperationResult,
-  Unavailable | { readonly retry: "ambiguous" | "never" | "transient" }
+  Unavailable | { readonly retry: "ambiguous" | "never" | "transient"; readonly managedSearch?: ManagedSearchEvidence }
 > => {
   const input = operation.input;
   if (Predicate.isTagged(input, "Search")) {
     return ports.provider
-      .discover(input.query, input.limit)
+      .discover(input.query, input.limit, ports.provider.managedSearch === true ? initialManagedSearchEvidence(operation.operationId) : undefined)
       .pipe(Effect.map((result) => searchResult(input, result)));
   }
   return ports.provider
@@ -594,6 +607,7 @@ const searchResult = (
   result: DiscoveryResult,
 ): OperationResult => ({
   _tag: "Search",
+  ...(result.evidence.managedSearch === undefined ? {} : { managedSearch: result.evidence.managedSearch }),
   query: input.query,
   requestId: result.evidence.requestId,
   results: result.results.flatMap((item) =>

@@ -33,6 +33,7 @@ type RawConfigBinding =
   | "COMPOSIO_API_KEY"
   | "INTEGRATION_PROVIDER_BASE_URL"
   | "OSFO_STAGE"
+  | "PUBLIC_WEB_SEARCH_GATEWAY_ID"
   | "RESEARCH_REPORT_PROVIDER_BASE_URL"
   | "STRIPE_ADVENTURER_PRICE_ID"
   | "STRIPE_ADVENTURER_PRODUCT_ID"
@@ -80,6 +81,7 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly INTEGRATION_PROVIDER_BASE_URL?: string;
   readonly OSFO_STAGE?: string;
   readonly RESEARCH_REPORT_PROVIDER_BASE_URL?: string;
+  readonly PUBLIC_WEB_SEARCH_GATEWAY_ID?: string;
   readonly STRIPE_ADVENTURER_PRICE_ID?: string;
   readonly STRIPE_ADVENTURER_PRODUCT_ID?: string;
   readonly STRIPE_API_BASE_URL?: string;
@@ -198,6 +200,7 @@ export interface ComposioConfig {
 /** Dedicated provider selection for bounded Research Report execution. */
 export type ResearchReportProviderConfig =
   | { readonly _tag: "Cloudflare" }
+  | { readonly _tag: "ManagedWebSearch"; readonly gatewayId: string }
   | { readonly _tag: "LocalVerification"; readonly baseURL: string };
 
 /** Provider selection for approved direct integrations. */
@@ -389,7 +392,14 @@ const parseResearchReportProvider = (
   env: CloudflareEnv,
 ): ResearchReportProviderConfig => {
   const value = env.RESEARCH_REPORT_PROVIDER_BASE_URL?.trim();
-  if (value === undefined || value.length === 0) return { _tag: "Cloudflare" };
+  if (value === undefined || value.length === 0) {
+    const gatewayId = env.PUBLIC_WEB_SEARCH_GATEWAY_ID?.trim();
+    if (gatewayId === undefined || gatewayId.length === 0) return { _tag: "Cloudflare" };
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/u.test(gatewayId)) {
+      return invalid("PUBLIC_WEB_SEARCH_GATEWAY_ID must name an existing AI Gateway");
+    }
+    return { _tag: "ManagedWebSearch", gatewayId };
+  }
   if (stage !== "development" && stage !== "test") {
     return invalid("RESEARCH_REPORT_PROVIDER_BASE_URL is restricted to local verification");
   }

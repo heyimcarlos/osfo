@@ -1,5 +1,7 @@
 import { Effect, Schema } from "effect";
 
+import { ManagedSearchEvidence } from "../../domain/web-search-evidence";
+
 import {
   canonicalPublicUrl,
   isSafePublicUrl,
@@ -44,6 +46,7 @@ export const hasRecognizedWebSearchPrice = false;
 export class WebProviderUnavailable extends Schema.TaggedError<WebProviderUnavailable>()(
   "WebProviderUnavailable",
   {
+    managedSearch: Schema.optionalKey(ManagedSearchEvidence),
     message: Schema.String,
     operation: Schema.Literals(["discover", "fetch", "readBody", "redirect"]),
     retry: Schema.Literals(["ambiguous", "never", "transient"]),
