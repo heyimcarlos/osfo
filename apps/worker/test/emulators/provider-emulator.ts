@@ -3,6 +3,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
 import { Effect, Option, Schema } from "effect";
+import { respondBrowserTask } from "../support/browser-task-model";
 import { respond } from "../support/chat-pdf-form-model";
 import { inspectFileContent } from "../../src/domain/file-content";
 
@@ -1195,6 +1196,28 @@ const handleResearch = (
             ? agentEntry
             : { ...agentEntry, recallRequest: recallContext.evidence, sequence },
         );
+        const browserTask = respondBrowserTask(input);
+        if (browserTask !== null) {
+          const last = input.messages?.at(-1);
+          if (last?.role === "tool")
+            ledger.push({
+              kind: "agent",
+              operationId: last.tool_call_id ?? null,
+              subject: `browser-task:${last.name ?? "unknown"}:actual-result`,
+              arguments: { actualToolResult: lastMessageContent(input) },
+            });
+          if (browserTask.finish_reason === "tool_calls")
+            for (const call of browserTask.tool_calls)
+              ledger.push({
+                kind: "tool-selection",
+                operationId: call.id,
+                selectedTool: call.name,
+                subject: "browser-task",
+                arguments: call.arguments,
+              });
+          respondJson(response, 200, browserTask);
+          return;
+        }
         const chatPdfForm = chatPdfFormEnabled ? respond(input) : null;
         if (chatPdfForm !== null) {
           const last = input.messages?.at(-1);
