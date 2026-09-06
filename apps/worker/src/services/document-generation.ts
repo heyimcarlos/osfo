@@ -13,6 +13,7 @@ import type {
   Recorded,
   UsageConflict,
 } from "../domain/allowance";
+import { PdfFormSource } from "../domain/pdf-form";
 import { DocumentArtifact } from "../domain/document-artifact";
 import type { PlanPolicyNotFound } from "../domain/plan-policy";
 import type { AuthorizationContext, Denied, Interface as Authorization } from "./authorization";
@@ -51,6 +52,12 @@ export const DocumentSource = Schema.Struct({
 
 /** Parsed, explicitly paginated source for one generated document. */
 export type DocumentSource = typeof DocumentSource.Type;
+
+export const GenerationSource = Schema.Union([
+  Schema.Struct({ ...DocumentSource.fields, templateFileId: Schema.optionalKey(Schema.Never) }),
+  Schema.Struct({ ...PdfFormSource.fields, pages: Schema.optionalKey(Schema.Never) }),
+]);
+export type GenerationSource = typeof GenerationSource.Type;
 
 /** Provider cost evidence returned by disposable compute. */
 export type CostEvidence =
@@ -110,7 +117,7 @@ export interface GenerateRequest {
   readonly authorization: AuthorizationContext;
   readonly format: DocumentArtifact.DocumentFormat;
   readonly owner: DocumentArtifact.DocumentOwner;
-  readonly source: DocumentSource;
+  readonly source: GenerationSource;
 }
 
 /** One authorized request to export or delete a retained document. */
@@ -287,6 +294,17 @@ export interface Allowances {
 
 /** Concrete dependencies for bounded document generation. */
 export interface MakeOptions {
+  readonly pdfForms?: {
+    readonly fill: (
+      contentId: ContentId,
+      source: PdfFormSource,
+      authorization: AuthorizationContext,
+      actionId: ActionId,
+    ) => Effect.Effect<
+      { readonly bytes: Uint8Array; readonly renderedPageCount: number },
+      DocumentArtifact.InvalidGeneratedArtifact
+    >;
+  };
   readonly allowances: Allowances;
   readonly artifactValidator: ArtifactValidator;
   readonly artifacts: ArtifactStore;
@@ -382,13 +400,23 @@ export const make = (options: MakeOptions): Interface => ({
           resetAt: null,
         } satisfies Denied);
       }
+      const isForm = request.source.templateFileId !== undefined;
+      const expectedPageCount =
+        request.source.pages !== undefined ? request.source.pages.length : request.source.pageCount;
+      if (isForm && (request.format !== "pdf" || options.pdfForms === undefined)) {
+        return yield* DocumentArtifact.invalid(
+          contentId,
+          "invalidDocument",
+          "Existing PDF form filling is unavailable for this request",
+        );
+      }
       const intentDigest = yield* digestIntent(request.format, request.source);
       const operation = {
         actionId: request.actionId,
         artifactKind: "document" as const,
         bytes: BigInt(DocumentArtifact.maximumDocumentBytes),
         kind: "document.generate" as const,
-        pages: BigInt(request.source.pages.length),
+        pages: BigInt(expectedPageCount),
         researchSearches: 0n,
       };
       const authorizeWrite = Effect.gen(function* () {
@@ -415,11 +443,11 @@ export const make = (options: MakeOptions): Interface => ({
         yield* recordEvidence(options.allowances, existing);
         yield* authorizeWrite;
         yield* options.artifacts.account(contentId);
-        yield* options.compute.dispose(contentId);
+        if (!isForm) yield* options.compute.dispose(contentId);
         return existing.artifact;
       }
 
-      const recovery = yield* options.compute.inspect(contentId, intentDigest);
+      const recovery = isForm ? null : yield* options.compute.inspect(contentId, intentDigest);
       let admittedAllowancePeriodId: AllowancePeriodId;
       if (recovery === null) {
         const admission = options.authorization.admit(request.authorization, operation);
@@ -447,18 +475,39 @@ export const make = (options: MakeOptions): Interface => ({
       }
 
       yield* authorizeWrite;
-      const supportingVisuals = yield* readSupportingVisuals(options, request.source, userId);
+      const supportingVisuals =
+        request.source.pages !== undefined
+          ? yield* readSupportingVisuals(options, request.source, userId)
+          : [];
       let cleanupRequired = true;
       return yield* Effect.gen(function* () {
-        const computed = yield* options.compute.generate({
-          allowancePeriodId: admittedAllowancePeriodId,
-          authorizeWrite,
-          contentId,
-          format: request.format,
-          intentDigest,
-          source: request.source,
-          supportingVisuals,
-          userId,
+        const computed: ComputeResult = yield* Effect.gen(function* () {
+          if (request.source.templateFileId !== undefined) {
+            const pdfForms = options.pdfForms;
+            if (pdfForms === undefined)
+              return yield* DocumentArtifact.invalid(
+                contentId,
+                "invalidDocument",
+                "PDF form filling is unavailable",
+              );
+            const filled = yield* pdfForms.fill(
+              contentId,
+              request.source,
+              request.authorization,
+              request.actionId,
+            );
+            return { ...filled, _tag: "Completed", cost: { _tag: "ProvenNoUse" } } as const;
+          }
+          return yield* options.compute.generate({
+            allowancePeriodId: admittedAllowancePeriodId,
+            authorizeWrite,
+            contentId,
+            format: request.format,
+            intentDigest,
+            source: request.source,
+            supportingVisuals,
+            userId,
+          });
         });
         const recordComputedCost = recordCost(options.allowances, computed.cost);
         if (Predicate.isTagged(computed, "AuthorizationFailure")) {
@@ -516,7 +565,7 @@ export const make = (options: MakeOptions): Interface => ({
             reason: "byteLimit",
           });
         }
-        if (computed.renderedPageCount !== request.source.pages.length) {
+        if (computed.renderedPageCount !== expectedPageCount) {
           yield* recordComputedCost;
           return yield* new DocumentArtifact.InvalidGeneratedArtifact({
             contentId,
@@ -550,7 +599,9 @@ export const make = (options: MakeOptions): Interface => ({
         yield* options.artifacts.account(contentId);
         return artifact;
       }).pipe(
-        Effect.onExit(() => (cleanupRequired ? options.compute.dispose(contentId) : Effect.void)),
+        Effect.onExit(() =>
+          cleanupRequired && !isForm ? options.compute.dispose(contentId) : Effect.void,
+        ),
       );
     }),
 });
@@ -588,7 +639,7 @@ const contentIdFor = (owner: DocumentArtifact.DocumentOwner): ContentId =>
       : `document:workflow:${owner.workflowId}`,
   );
 
-const digestIntent = (format: DocumentArtifact.DocumentFormat, source: DocumentSource) =>
+const digestIntent = (format: DocumentArtifact.DocumentFormat, source: GenerationSource) =>
   Schema.encodeEffect(IntentEncoding)({ format, source }).pipe(
     Effect.orDie,
     Effect.flatMap((encoded) =>
@@ -604,7 +655,7 @@ const digestIntent = (format: DocumentArtifact.DocumentFormat, source: DocumentS
 const IntentEncoding = Schema.fromJsonString(
   Schema.Struct({
     format: DocumentArtifact.DocumentFormat,
-    source: DocumentSource,
+    source: GenerationSource,
   }),
 );
 

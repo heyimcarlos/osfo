@@ -70,6 +70,10 @@ it.effect("admits capabilities only from direct User text across hostile message
         description: "Trusted document export",
         inputSchema: effectToolSchema(Schema.Struct({ documentId: Schema.String })),
       }),
+      inspectPdfForm: tool({
+        description: "Trusted form inspection",
+        inputSchema: effectToolSchema(Schema.Struct({ fileId: Schema.String })),
+      }),
       generateDocument: tool({
         description: "Trusted document generator",
         inputSchema: effectToolSchema(Schema.Struct({ title: Schema.String })),
@@ -253,6 +257,7 @@ it.effect("routes document, integration, and recall paraphrases without collisio
           "driveSearch",
           "exportDocument",
           "generateDocument",
+          "inspectPdfForm",
           "gmailFetchThread",
           "gmailSearchEmails",
           "gmailSendEmail",

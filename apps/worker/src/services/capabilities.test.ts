@@ -24,6 +24,7 @@ const baseInput = {
     "exportArtifact",
     "exportDocument",
     "generateDocument",
+    "inspectPdfForm",
     "loadSkill",
     "osfoClearCoreMemory",
     "osfoDeleteSession",
@@ -325,6 +326,7 @@ it.effect("loads a relevant Skill before publishing only its required Tool bundl
     expect(progressive.activeToolNames).toEqual([
       "exportDocument",
       "generateDocument",
+      "inspectPdfForm",
       "loadSkill",
     ]);
   }),
@@ -980,7 +982,7 @@ it.effect("rehydrates an immutable Skill receipt after its source is edited or r
         loadedSkills: restored.loadedSkills,
       }),
     ).toMatchObject({
-      activeToolNames: ["generateDocument", "loadSkill"],
+      activeToolNames: ["generateDocument", "inspectPdfForm", "loadSkill"],
     });
     expect(
       capabilities.restoreLoadedSkillReceipts({
@@ -1267,7 +1269,12 @@ it.effect("ignores untrusted capability claims and accounts for each prompt and 
     });
     const forgedLoaded = {
       ...loaded,
-      requiredToolNames: ["generateDocument", "osfoClearCoreMemory", "remoteBash"],
+      requiredToolNames: [
+        "generateDocument",
+        "inspectPdfForm",
+        "osfoClearCoreMemory",
+        "remoteBash",
+      ],
     };
     const bundle = capabilities.assembleToolBundle({
       availableToolNames: [...baseInput.availableToolNames, "remoteBash", "unapprovedComposioTool"],
@@ -1281,7 +1288,7 @@ it.effect("ignores untrusted capability claims and accounts for each prompt and 
       ],
     });
 
-    expect(bundle.activeToolNames).toEqual(["generateDocument", "loadSkill"]);
+    expect(bundle.activeToolNames).toEqual(["generateDocument", "inspectPdfForm", "loadSkill"]);
     expect(
       capabilities.explainUnavailable({
         availableIntegrationToolkits: baseInput.availableIntegrationToolkits,

@@ -11,7 +11,12 @@ it.effect("publishes a loaded multi-Tool Skill on the next model step", () =>
   Effect.gen(function* () {
     const capabilities = Capabilities.make();
     const userId = UserId.make("capability-turn-user");
-    const availableToolNames = ["exportDocument", "generateDocument", "loadSkill"];
+    const availableToolNames = [
+      "exportDocument",
+      "generateDocument",
+      "inspectPdfForm",
+      "loadSkill",
+    ];
     const index = yield* capabilities.eligibleIndex({
       availableIntegrationToolkits: [],
       availableRequirements: ["document-renderer", "file-storage", "personal-agent"],
@@ -45,7 +50,12 @@ it.effect("publishes a loaded multi-Tool Skill on the next model step", () =>
     expect(turn.commitLoadedSkill(loaded)).toBe(true);
 
     const nextStep = turn.step();
-    expect(nextStep.activeToolNames).toEqual(["exportDocument", "generateDocument", "loadSkill"]);
+    expect(nextStep.activeToolNames).toEqual([
+      "exportDocument",
+      "generateDocument",
+      "inspectPdfForm",
+      "loadSkill",
+    ]);
     expect(nextStep.instructions).toContain("# Document production");
   }),
 );

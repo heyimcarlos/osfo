@@ -28,6 +28,7 @@ export const registeredToolNameValues = [
   "driveSearch",
   "generateDiagram",
   "generateDocument",
+  "inspectPdfForm",
   "generateImage",
   "generatePresentation",
   "inspectResearchReport",

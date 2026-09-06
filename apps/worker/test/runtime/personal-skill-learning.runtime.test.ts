@@ -280,9 +280,15 @@ const turnContext = (text: string, tools: ToolSet, model: LanguageModel) => ({
   tools,
 });
 
-/** Mirror Think's action compilation for the one action needed by document Skill selection. */
+/** Mirror Think's action compilation for document Skill selection. */
 const compiledAgentTools = (agent: OsfoAgent): ToolSet => ({
   ...agent.getTools(),
+  inspectPdfForm: tool({
+    description: "Inspect an owned PDF form.",
+    execute: async () => ({}),
+    inputSchema: effectToolSchema(Schema.Struct({})),
+    metadata: { cfThinkAction: true },
+  }),
   generateDocument: tool({
     description: "Generate a retained document.",
     execute: async () => ({}),

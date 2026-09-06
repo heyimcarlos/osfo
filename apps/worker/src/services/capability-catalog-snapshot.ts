@@ -192,7 +192,7 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
         maximumSlides: null,
       },
       skillCandidates: ["document-production"],
-      toolRequirements: ["generateDocument"],
+      toolRequirements: ["generateDocument", "inspectPdfForm"],
     }),
     entry(
       "document-build",
