@@ -1,3 +1,6 @@
+import type { Interface as Files } from "../services/files";
+import { fill } from "../integrations/pdf/pdf-form";
+import { DocumentArtifact } from "../domain/document-artifact";
 import { DateTime, Effect, Predicate } from "effect";
 
 import type { Database } from "../db";
@@ -29,9 +32,52 @@ export const make = (
   currentAuthorization: (
     admitted: AuthorizationContext,
   ) => Effect.Effect<AuthorizationContext, DocumentGeneration.DocumentAuthorizationUnavailable>,
+  readTemplate?: (
+    input: Parameters<Files["read"]>[0],
+  ) => Effect.Effect<
+    Effect.Success<ReturnType<Files["read"]>>,
+    DocumentGeneration.DocumentAuthorizationUnavailable
+  >,
 ): DocumentGeneration.Interface => {
   const visualArtifacts = ArtifactStore.make(bindings.ARTIFACTS);
   return DocumentGeneration.make({
+    pdfForms: {
+      fill: (contentId, source, authorization, actionId) =>
+        Effect.gen(function* () {
+          if (readTemplate === undefined)
+            return yield* DocumentArtifact.invalid(
+              contentId,
+              "invalidDocument",
+              "Owned PDF template reading is unavailable",
+            );
+          const template = yield* readTemplate({
+            fileId: source.templateFileId,
+            context: authorization,
+            actionId,
+          }).pipe(
+            Effect.mapError(
+              () =>
+                new DocumentArtifact.InvalidGeneratedArtifact({
+                  contentId,
+                  reason: "invalidDocument",
+                  message: "The owned PDF template is unavailable",
+                }),
+            ),
+          );
+          if (
+            !Predicate.isTagged(template, "FileRead") ||
+            template.file.state !== "ready" ||
+            template.file.mediaType !== "application/pdf" ||
+            template.file.sha256 !== source.templateDigest
+          )
+            return yield* DocumentArtifact.invalid(
+              contentId,
+              "invalidDocument",
+              "The owned ready PDF template does not match the requested digest",
+            );
+          return yield* fill(contentId, template.bytes, source);
+        }),
+    },
     allowances: Allowances.make({
       billing: BillingDb.make(database),
       catalog: retainedCatalog,
