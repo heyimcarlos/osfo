@@ -22,8 +22,13 @@ export const StoredAllowanceAdmission = Schema.Struct({
 /** Current recorded use supplied to Authorization admission. */
 export type StoredAllowanceAdmission = typeof StoredAllowanceAdmission.Type;
 
-/** Read the active period and every recorded kind in one admission transaction. */
-export const admit = (database: BillingDatabase, userId: UserId, now: Date) =>
+/** Read active owned period use, optionally requiring the exact period retained by a Workflow. */
+export const admit = (
+  database: BillingDatabase,
+  userId: UserId,
+  now: Date,
+  retainedPeriodId?: AllowancePeriodId,
+) =>
   Effect.gen(function* () {
     const { period: selectedPeriod, usage: aggregatedUsage } = yield* runBillingTransaction(
       "admitAllowance",
@@ -43,6 +48,9 @@ export const admit = (database: BillingDatabase, userId: UserId, now: Date) =>
             .where(
               and(
                 eq(allowancePeriods.user_id, userId),
+                retainedPeriodId === undefined
+                  ? undefined
+                  : eq(allowancePeriods.allowance_period_id, retainedPeriodId),
                 lte(allowancePeriods.starts_at, now),
                 gt(allowancePeriods.ends_at, now),
               ),
@@ -64,7 +72,10 @@ export const admit = (database: BillingDatabase, userId: UserId, now: Date) =>
     );
     if (selectedPeriod === null) {
       return yield* new AllowancePeriodNotFound({
-        lookup: { _tag: "ActivePeriodForUser", userId },
+        lookup:
+          retainedPeriodId === undefined
+            ? { _tag: "ActivePeriodForUser", userId }
+            : { _tag: "AllowancePeriod", allowancePeriodId: retainedPeriodId },
         message: "No active allowance period exists for the User",
       });
     }

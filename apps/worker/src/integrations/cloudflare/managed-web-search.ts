@@ -8,6 +8,9 @@ import { managedSearchPrice, rateManagedSearch } from "../../domain/web-search-p
 import { limits, type DiscoveryResult } from "../../services/web";
 import { WebProviderUnavailable } from "./web";
 
+/** Maximum decoded native-search response admitted before dispatch. */
+export const responseBytes = 256_000n;
+
 const text = (maximum: number) =>
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(maximum));
 const tokenCount = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 20_000_000 }));
@@ -36,10 +39,13 @@ const Output = Schema.Array(
   Schema.Union([
     Schema.Struct({
       action: Schema.Struct({
-        query: text(2_000),
-        sources: Schema.Array(
-          Schema.Struct({ type: Schema.Literal("url"), url: text(4_096) }),
-        ).check(Schema.isMaxLength(100)),
+        query: Schema.optionalKey(text(2_000)),
+        queries: Schema.optionalKey(Schema.Array(text(2_000)).check(Schema.isMaxLength(100))),
+        sources: Schema.optionalKey(
+          Schema.Array(Schema.Struct({ type: Schema.Literal("url"), url: text(4_096) })).check(
+            Schema.isMaxLength(100),
+          ),
+        ),
         type: Schema.Literal("search"),
       }),
       id: text(512),
@@ -157,7 +163,8 @@ export const decodeResponse = (response: unknown, initial: ManagedSearchEvidence
     const executedSearches = calls.map((call) => ({
       errorCode: call.status === "failed" ? "web-search-call-failed" : null,
       outcome: call.status === "completed" ? ("succeeded" as const) : ("failed" as const),
-      query: call.action.query,
+      query: call.action.query ?? null,
+      queries: call.action.queries ?? null,
       toolCallId: call.id,
     }));
     const successfulSearches = executedSearches.filter(
@@ -177,13 +184,22 @@ export const decodeResponse = (response: unknown, initial: ManagedSearchEvidence
     if (envelope.status !== "completed" || successfulSearches !== 1) {
       return yield* unavailable(evidence, "Managed search did not complete one successful search.");
     }
+    const json = yield* Schema.decodeUnknownEffect(Schema.Json)(response).pipe(
+      Effect.flatMap(Schema.encodeEffect(Schema.fromJsonString(Schema.Json))),
+      Effect.mapError(() =>
+        unavailable(evidence, "Managed search returned an invalid JSON response."),
+      ),
+    );
+    if (BigInt(new TextEncoder().encode(json).byteLength) > responseBytes) {
+      return yield* unavailable(evidence, "Managed search exceeded its response byte bound.");
+    }
     const citations = output.flatMap((item) =>
       item.type === "message" ? item.content.flatMap((content) => content.annotations) : [],
     );
     return {
       evidence,
       results: calls.flatMap((call) =>
-        call.action.sources.map((source) => ({
+        (call.action.sources ?? []).map((source) => ({
           title:
             citations.find((citation) => citation.url === source.url)?.title ??
             source.url.slice(0, 2_000),

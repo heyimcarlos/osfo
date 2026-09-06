@@ -7,7 +7,8 @@
 /* oxlint-disable unicorn/consistent-function-scoping -- Each deferred resolver belongs to one isolated database race. */
 import { expect, it } from "@effect/vitest";
 import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
-import { users } from "@osfo/db/schema/auth";
+import { agents } from "@osfo/db/schema/agents";
+import { sessions, users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import {
   researchReportNotifications,
@@ -31,6 +32,9 @@ import {
   SessionId,
   UserId,
 } from "../../domain";
+import { TestClock } from "effect/testing";
+import { makeSearchAdmission } from "../../composition/research-report";
+import { ResearchCollector } from "../../services/research-collector";
 import { ActionId } from "../../domain/action-execution";
 import { AuthSessionId } from "../../domain/auth-session";
 import { ManagedModelRoute } from "../../domain/model-access-policy";
@@ -648,6 +652,169 @@ it.effect("fences admission, terminalizes every private Workflow, and cascades c
     expect(privateRows.every((rows) => rows.length === 0)).toBe(true);
   }).pipe(Effect.scoped),
 );
+
+it.effect("admits Free and Adventurer Research with actual recorded allowance limits", () =>
+  Effect.gen(function* () {
+    const { fixture, report, admit, operation } = yield* paidAdmissionFixture;
+    for (const plan of ["free", "adventurer"] as const) {
+      yield* Effect.promise(() =>
+        fixture.database
+          .update(billingSubscriptions)
+          .set({
+            plan,
+            stripe_subscription_id: "sub_research",
+            stripe_product_id: "prod_research",
+            stripe_price_id: "price_research",
+            stripe_status: "active",
+            stripe_current_period_start: admittedAt,
+            stripe_current_period_end: periodEndsAt,
+            stripe_latest_invoice_id: "in_research",
+          })
+          .where(eq(billingSubscriptions.user_id, userId)),
+      );
+      yield* Effect.promise(() =>
+        fixture.database
+          .update(allowancePeriods)
+          .set({ plan })
+          .where(eq(allowancePeriods.allowance_period_id, allowancePeriodId)),
+      );
+      expect(yield* admit(report, operation)).toMatchObject({
+        admittedVendorUsdMicros: 25_000n,
+        admission: {
+          allowancePeriodId,
+          planPolicyVersion: "launch-v1",
+          originatingAuthority: report.originatingAuthority,
+        },
+      });
+    }
+    yield* Effect.promise(() =>
+      fixture.database.insert(allowanceUsage).values({
+        allowance_period_id: allowancePeriodId,
+        allowance_kind: "vendorUsdMicros",
+        basis: "observed",
+        quantity: 1_000_000_000n,
+        user_id: userId,
+        source_id: "exhausted",
+        source_type: "test",
+      }),
+    );
+    expect(yield* admit(report, operation).pipe(Effect.result)).toMatchObject({
+      _tag: "Failure",
+      failure: { reason: "authorizationDenied" },
+    });
+  }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "refuses paid Research when the original authority was revoked after report admission",
+  () =>
+    Effect.gen(function* () {
+      const { fixture, report, admit, operation } = yield* paidAdmissionFixture;
+      yield* Effect.promise(() =>
+        fixture.database.delete(sessions).where(eq(sessions.id, "concurrent-research-session")),
+      );
+      expect(yield* admit(report, operation).pipe(Effect.result)).toMatchObject({
+        _tag: "Failure",
+        failure: { reason: "authorizationDenied" },
+      });
+      expect(
+        yield* Effect.promise(() =>
+          fixture.database.select().from(researchReportProviderOperations),
+        ),
+      ).toEqual([]);
+    }).pipe(Effect.scoped),
+);
+
+it.effect("does not borrow a new period for a report's paid search after rollover", () =>
+  Effect.gen(function* () {
+    const { fixture, report, admit, operation } = yield* paidAdmissionFixture;
+    yield* Effect.promise(() =>
+      fixture.database
+        .update(allowancePeriods)
+        .set({ ends_at: executionStartedAt })
+        .where(eq(allowancePeriods.allowance_period_id, allowancePeriodId)),
+    );
+    yield* Effect.promise(() =>
+      fixture.database.insert(allowancePeriods).values({
+        allowance_period_id: "next-research-period",
+        billing_subscription_id: "concurrent-research-subscription",
+        user_id: userId,
+        starts_at: executionStartedAt,
+        ends_at: periodEndsAt,
+        plan: "free",
+        plan_policy_version: "launch-v1",
+      }),
+    );
+    expect(yield* admit(report, operation).pipe(Effect.result)).toMatchObject({
+      _tag: "Failure",
+      failure: { reason: "authorizationDenied" },
+    });
+    expect(
+      yield* ResearchReportPostgres.make(fixture.database).inspect(report.workflowId),
+    ).toMatchObject({ allowancePeriodId });
+    expect(
+      yield* Effect.promise(() => fixture.database.select().from(researchReportProviderOperations)),
+    ).toEqual([]);
+  }).pipe(Effect.scoped),
+);
+
+const paidAdmissionFixture = Effect.gen(function* () {
+  const fixture = yield* makeTestDatabase;
+  yield* Effect.addFinalizer(() => closeTestDatabase(fixture));
+  yield* applyMigrations(fixture.client);
+  yield* seedUser(fixture.database);
+  yield* TestClock.setTime(executionStartedAt.getTime());
+  const retained = record("paid-admission");
+  yield* Effect.promise(() =>
+    fixture.database.insert(agents).values({
+      agent_id: retained.agentId,
+      user_id: userId,
+      created_at: admittedAt.toISOString(),
+    }),
+  );
+  yield* Effect.promise(() =>
+    fixture.database.insert(sessions).values({
+      id: "concurrent-research-session",
+      userId,
+      expiresAt: periodEndsAt,
+      token: "research-session-token",
+      updatedAt: admittedAt,
+    }),
+  );
+  const persistence = ResearchReportPostgres.make(fixture.database);
+  const started = yield* persistence.admit(
+    {
+      ...retained,
+      cloudflareInstanceId: yield* ResearchReport.cloudflareInstanceIdFor(retained.workflowId),
+    },
+    10n,
+  );
+  const report = started.report;
+  const reports = yield* ResearchReport.make.pipe(
+    Effect.provideService(ResearchReport.Port, {
+      currentAuthorization: ResearchReportPostgres.makeCurrentAuthorization(fixture.database),
+      persistence,
+      providerAvailable: Effect.succeed(true),
+      recordWorkflowStart: () => Effect.void,
+      discardPendingArtifact: () => Effect.void,
+      commitTerminalFollowUp: () => Effect.void,
+      workflow: { create: () => Effect.void, terminate: () => Effect.void },
+    }),
+  );
+  const admit = makeSearchAdmission(fixture.database, reports);
+  const operation: ResearchCollector.Operation = {
+    operationId: ResearchCollector.OperationId.make(`${report.workflowId}:provider:0`),
+    workflowId: report.workflowId,
+    sequence: 0,
+    input: { _tag: "Search", query: "official source", limit: 10 },
+    inputDigest: report.inputDigest,
+    attemptCount: 0,
+    state: "pending",
+    result: null,
+    startedAt: null,
+  };
+  return { fixture, report, admit, operation };
+});
 
 const seedUser = (database: Parameters<typeof ResearchReportPostgres.make>[0]) =>
   Effect.gen(function* () {

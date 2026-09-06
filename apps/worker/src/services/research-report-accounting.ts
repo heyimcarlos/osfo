@@ -7,6 +7,7 @@ import { retainedCatalog } from "../domain/plan-policy";
 import { managedModelRoutinePrice, rate } from "../domain/usage";
 import type { UsageEvent } from "../domain/usage-event";
 import type { CostEvidence } from "./document-generation";
+import { OriginatingAuthority } from "./authorization";
 import type { ResearchCollector } from "./research-collector";
 import type { ResearchReport } from "./research-report";
 import type { ResearchSynthesis } from "./research-synthesis";
@@ -118,8 +119,10 @@ export const usefulReportAccountingFor = (
       admission.allowancePeriodId !== report.allowancePeriodId ||
       admission.planPolicyVersion !== report.planPolicyVersion ||
       admission.capabilityCatalogVersion !== report.capabilityCatalogVersion ||
-      admission.originatingAuthority._tag !== "DurableTrigger" ||
-      admission.originatingAuthority.triggerId !== report.workflowId ||
+      !Schema.toEquivalence(OriginatingAuthority)(
+        admission.originatingAuthority,
+        report.originatingAuthority,
+      ) ||
       cost === null ||
       cost <= 0 ||
       search.managedSearch.successfulSearches !== 1

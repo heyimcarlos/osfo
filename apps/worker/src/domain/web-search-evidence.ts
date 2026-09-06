@@ -14,7 +14,8 @@ export const ManagedSearchEvidence = Schema.Struct({
     Schema.Struct({
       errorCode: Schema.NullOr(boundedText(512)),
       outcome: Schema.Literals(["succeeded", "failed"]),
-      query: boundedText(2_000),
+      query: Schema.NullOr(boundedText(2_000)),
+      queries: Schema.NullOr(Schema.Array(boundedText(2_000)).check(Schema.isMaxLength(100))),
       toolCallId: boundedText(512),
     }),
   ).check(Schema.isMaxLength(20)),

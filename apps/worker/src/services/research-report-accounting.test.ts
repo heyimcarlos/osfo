@@ -218,17 +218,13 @@ const completedSearch = (report: ResearchReport.Record): ResearchCollector.Compl
       successfulSearches: 1,
     },
     searchAdmission: {
-      admittedVendorUsdMicros: 50_000n,
+      admittedVendorUsdMicros: 25_000n,
       admission: {
         allowancePeriodId: report.allowancePeriodId,
         authorizedAt: report.admittedAt.toISOString(),
         capabilityCatalogVersion: report.capabilityCatalogVersion,
         planPolicyVersion: report.planPolicyVersion,
-        originatingAuthority: {
-          _tag: "DurableTrigger",
-          triggerId: report.workflowId,
-          triggerType: "workflow",
-        },
+        originatingAuthority: report.originatingAuthority,
       },
     },
   };

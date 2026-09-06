@@ -266,7 +266,7 @@ it.effect("retains a paid dispatch before I/O and refuses another search after r
       result: {
         _tag: "SearchAttempt",
         searchAdmission: {
-          admittedVendorUsdMicros: 50_000n,
+          admittedVendorUsdMicros: 25_000n,
           admission: { allowancePeriodId: report.allowancePeriodId },
         },
         managedSearch: { attemptId: `${workflowId}:provider:0`, ratedCostUsdMicros: null },
@@ -528,7 +528,7 @@ const makeFixture = (
       Effect.sync(() => {
         searchAdmissionCalls += 1;
         return {
-          admittedVendorUsdMicros: 50_000n,
+          admittedVendorUsdMicros: 25_000n,
           admission: {
             allowancePeriodId: current.allowancePeriodId,
             authorizedAt: providerAttemptStartedAt.toISOString(),

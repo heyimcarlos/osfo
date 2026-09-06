@@ -21,7 +21,11 @@ export type { BillingDatabase } from "./database";
 /** Small public PostgreSQL interface for allowance transactions. */
 export interface Interface {
   readonly apply: ReturnType<typeof makeApply>;
-  readonly admit: (userId: UserId, now: Date) => ReturnType<typeof admit>;
+  readonly admit: (
+    userId: UserId,
+    now: Date,
+    retainedPeriodId?: AllowancePeriodId,
+  ) => ReturnType<typeof admit>;
   readonly inspect: (userId: UserId, now: Date) => ReturnType<typeof inspect>;
   readonly recordUsage: (
     allowancePeriodId: AllowancePeriodId,
@@ -47,7 +51,7 @@ const makeApply =
 /** Construct the PostgreSQL billing transaction interface. */
 export const make = (database: BillingDatabase): Interface => ({
   apply: makeApply(database),
-  admit: (userId, now) => admit(database, userId, now),
+  admit: (userId, now, retainedPeriodId) => admit(database, userId, now, retainedPeriodId),
   inspect: (userId, now) => inspect(database, userId, now),
   load: (userId) => loadSubscription(database, userId),
   recordUsage: (allowancePeriodId, source, items) =>

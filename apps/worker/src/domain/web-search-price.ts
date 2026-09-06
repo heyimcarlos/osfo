@@ -30,5 +30,5 @@ export const rateManagedSearch = (input: {
       BigInt(input.searches) * managedSearchPrice.searchUsdMicros,
   );
 
-/** Conservative admission allowance, as for managed conversation; not a provider spending cap. */
-export const managedSearchAdmissionUsdMicros = 50_000n;
+/** Conservative admission estimate, as for managed conversation; not a provider spending cap. */
+export const managedSearchAdmissionUsdMicros = 25_000n;

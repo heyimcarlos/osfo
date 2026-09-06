@@ -39,8 +39,55 @@ const response = {
 
 describe("managed public search", () => {
   it("keeps the conservative admission allowance separate from rated provider cost", () => {
-    expect(managedSearchAdmissionUsdMicros).toBe(50_000n);
+    expect(managedSearchAdmissionUsdMicros).toBe(25_000n);
   });
+  it.effect("accepts current queries metadata without inventing a legacy query", () =>
+    Effect.gen(function* () {
+      const decoded = yield* decodeResponse(
+        {
+          ...response,
+          output: [
+            {
+              ...call,
+              action: {
+                type: "search",
+                queries: ["first query", "second query"],
+                sources: call.action.sources,
+              },
+            },
+          ],
+        },
+        initial,
+      );
+      expect(decoded.evidence.executedSearches).toMatchObject([
+        { query: null, queries: ["first query", "second query"] },
+      ]);
+      expect(decoded.evidence.ratedCostUsdMicros).toBe(13_562);
+      expect(decoded.results).toHaveLength(1);
+    }),
+  );
+  it.effect("keeps known search cost when optional query and source metadata are absent", () =>
+    Effect.gen(function* () {
+      const decoded = yield* decodeResponse(
+        { ...response, output: [{ ...call, action: { type: "search" } }] },
+        initial,
+      );
+      expect(decoded.evidence.executedSearches).toMatchObject([{ query: null, queries: null }]);
+      expect(decoded.evidence.ratedCostUsdMicros).toBe(13_562);
+      expect(decoded.results).toEqual([]);
+    }),
+  );
+  it.effect("retains known cost when the provider response exceeds admitted bytes", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        decodeResponse({ ...response, padding: "x".repeat(256_001) }, initial),
+      );
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { managedSearch: { ratedCostUsdMicros: 13_562 } },
+      });
+    }),
+  );
   it.effect("rates provider prompt-cache hits at the pinned cached-input price", () =>
     Effect.gen(function* () {
       const decoded = yield* decodeResponse(
@@ -77,7 +124,13 @@ describe("managed public search", () => {
       expect(decoded.evidence.ratedCostUsdMicros).toBe(13_562);
       expect(decoded.evidence.successfulSearches).toBe(1);
       expect(decoded.evidence.executedSearches).toEqual([
-        { errorCode: null, outcome: "succeeded", query: "example query", toolCallId: "search-1" },
+        {
+          errorCode: null,
+          outcome: "succeeded",
+          query: "example query",
+          queries: null,
+          toolCallId: "search-1",
+        },
       ]);
     }),
   );
