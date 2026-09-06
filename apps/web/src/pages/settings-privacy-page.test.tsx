@@ -52,6 +52,7 @@ it("renders account deletion as an unpresented privacy action", () => {
       value={{
         data: {
           user: {
+            id: "test-user",
             name: "Osfo User",
             phoneNumber: "+14165550101",
             registrationCompletedAt: DateTime.toDateUtc(

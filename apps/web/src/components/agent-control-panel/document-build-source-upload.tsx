@@ -1,4 +1,5 @@
 import {
+  BrowserFileId,
   FileUploadConflict,
   FileUploadDenied,
   FileUploadLimitExceeded,
@@ -8,14 +9,21 @@ import {
 } from "@osfo/api";
 import { Effect, Option, Schema } from "effect";
 import { FileUp } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { inspectFileStatus, uploadTextFile } from "../../lib/api-client";
+import {
+  forgetDocumentBuildSource,
+  loadDocumentBuildSource,
+  rememberDocumentBuildSource,
+} from "./document-build-source-storage";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/global-timers, effecttsgo/crypto-random-uuid -- React state discriminators and browser scheduling are owned by this UI boundary. */
 
 type UploadState =
   | { readonly _tag: "Idle" }
+  | { readonly _tag: "CheckingSource" }
+  | { readonly _tag: "RecoveryUnavailable"; readonly fileId: string }
   | { readonly _tag: "Uploading"; readonly fileName: string }
   | { readonly _tag: "Uploaded"; readonly result: FileUploadResponse }
   | { readonly _tag: "StatusUnavailable"; readonly result: FileUploadResponse }
@@ -41,7 +49,48 @@ export function DocumentBuildSourceUpload({
   uploadFile = uploadSourceFile,
 }: DocumentBuildSourceUploadProps = {}) {
   const [state, setState] = useState<UploadState>({ _tag: "Idle" });
+  const [existingFileId, setExistingFileId] = useState("");
   const requestGeneration = useRef(0);
+  const recover = useCallback(
+    (fileId: string) => {
+      const generation = requestGeneration.current + 1;
+      requestGeneration.current = generation;
+      setState({ _tag: "CheckingSource" });
+      void inspect(fileId).then(
+        (result) => {
+          if (requestGeneration.current !== generation) return;
+          if (result.state === "failed") {
+            forgetDocumentBuildSource();
+            setState({
+              _tag: "Failed",
+              message: "The source file could not be processed. Choose it again.",
+            });
+            return;
+          }
+          rememberDocumentBuildSource(result.fileId);
+          setState({ _tag: "Uploaded", result: { ...result, state: result.state } });
+        },
+        (failure) => {
+          if (requestGeneration.current !== generation) return;
+          if (Schema.is(FileUploadDenied)(failure)) {
+            forgetDocumentBuildSource();
+            setState({
+              _tag: "Failed",
+              message:
+                "This source is not available to your account. Upload it again or use another File ID.",
+            });
+            return;
+          }
+          setState({ _tag: "RecoveryUnavailable", fileId });
+        },
+      );
+    },
+    [inspect],
+  );
+  useEffect(() => {
+    const fileId = loadDocumentBuildSource();
+    if (fileId !== null) recover(fileId);
+  }, [recover]);
   useEffect(
     () => () => {
       requestGeneration.current += 1;
@@ -82,7 +131,10 @@ export function DocumentBuildSourceUpload({
     setState({ _tag: "Uploading", fileName: pending.fileName });
     return void uploadFile(pending.bytes, pending.fileName, pending.uploadId).then(
       (result) => {
-        if (requestGeneration.current === generation) setState({ _tag: "Uploaded", result });
+        if (requestGeneration.current === generation) {
+          rememberDocumentBuildSource(result.fileId);
+          setState({ _tag: "Uploaded", result });
+        }
       },
       (failure) => {
         if (requestGeneration.current === generation) {
@@ -144,7 +196,49 @@ export function DocumentBuildSourceUpload({
           />
         </label>
       </div>
-      {state._tag === "Uploading" ? (
+      <form
+        className="mt-3 flex flex-wrap items-end gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const fileId = existingFileId.trim();
+          if (!Schema.is(BrowserFileId)(fileId)) return;
+          setExistingFileId("");
+          recover(fileId);
+        }}
+      >
+        <label className="grid gap-1 text-xs text-[#687896]">
+          Existing File ID
+          <input
+            className="min-h-10 rounded-lg border border-[#c6d4e9] bg-white px-3 text-sm text-[#101936]"
+            maxLength={160}
+            required
+            value={existingFileId}
+            onChange={(event) => setExistingFileId(event.currentTarget.value)}
+          />
+        </label>
+        <button
+          className="min-h-10 rounded-lg px-3 text-sm font-semibold text-[#2568ca] hover:bg-[#edf4ff]"
+          type="submit"
+        >
+          Use existing source
+        </button>
+      </form>
+      {state._tag === "CheckingSource" ? (
+        <p className="mt-3 text-xs text-[#687896]" role="status">
+          Checking source...
+        </p>
+      ) : state._tag === "RecoveryUnavailable" ? (
+        <div className="mt-3 text-xs text-[#8a6a21]" role="alert">
+          <p>The source could not be checked. Try again.</p>
+          <button
+            className="mt-2 font-semibold text-[#2568ca] hover:underline"
+            type="button"
+            onClick={() => recover(state.fileId)}
+          >
+            Retry source
+          </button>
+        </div>
+      ) : state._tag === "Uploading" ? (
         <p className="mt-3 text-xs text-[#687896]" role="status">
           Uploading {state.fileName}…
         </p>

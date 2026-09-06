@@ -72,3 +72,6 @@ short, specific, and actionable.
   even with a larger z-index. Use the shared portal and modal primitives, and
   verify that header controls outside the page cannot receive interaction while
   the confirmation is open.
+- A completed source upload outlives the React component that presented it.
+  Retain its opaque File ID across page lifecycles and recheck ownership before
+  restoring the display. Reset the panel when the authenticated User changes.

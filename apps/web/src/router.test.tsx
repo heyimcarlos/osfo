@@ -18,6 +18,7 @@ const pending: AuthState = { data: null, isPending: true, refreshFromAuthority }
 const signedIn: AuthState = {
   data: {
     user: {
+      id: "test-user",
       name: "Osfo User",
       phoneNumber: "+14165550101",
       registrationCompletedAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-18T12:00:00.000Z")),
@@ -29,6 +30,7 @@ const signedIn: AuthState = {
 const registrationIncomplete: AuthState = {
   data: {
     user: {
+      id: "test-user",
       name: "Osfo User",
       phoneNumber: "+14165550102",
       registrationCompletedAt: null,

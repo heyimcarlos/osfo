@@ -149,6 +149,7 @@ const signedOut: AuthState = {
 const signedInIncomplete: AuthState = {
   data: {
     user: {
+      id: "test-user",
       name: "Osfo User",
       phoneNumber: "+14165550186",
       registrationCompletedAt: null,
