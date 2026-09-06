@@ -699,7 +699,7 @@ const normalizeOptional = (value: string | undefined): string | null => {
 
 const boundedText = (value: string, maximum: number) => value.trim().slice(0, maximum);
 
-const operationFingerprint = (kind: string, value: string) => `${kind}\0${value}`;
+const operationFingerprint = (kind: string, value: string) => JSON.stringify([kind, value]);
 
 const privateIdentifierPattern =
   /(?:\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b)|(?:\+?\d[\d .()-]{7,}\d)|(?:\b(?:api[_ -]?key|password|secret|token)\b)/giu;
