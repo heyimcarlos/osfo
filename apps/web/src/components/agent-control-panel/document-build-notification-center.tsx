@@ -1,3 +1,4 @@
+import { documentExportUrl } from "@osfo/api/document-download";
 import type { DocumentBuildNotificationSummary } from "@osfo/api";
 import { Effect } from "effect";
 import { FileCheck2, FileClock, FileX2, Hammer, X } from "lucide-react";
@@ -146,7 +147,7 @@ function NotificationItem({ item }: { readonly item: DocumentBuildNotificationSu
           item.artifactContentId !== null ? (
             <a
               className="mt-2 inline-flex text-xs font-semibold text-[#2568ca] hover:underline"
-              href={documentExportUrl(item.artifactContentId)}
+              href={documentExportUrl(item.artifactContentId, apiBaseURL)}
             >
               Download {item.format.toUpperCase()}
             </a>
@@ -156,12 +157,6 @@ function NotificationItem({ item }: { readonly item: DocumentBuildNotificationSu
     </li>
   );
 }
-
-export const documentExportUrl = (contentId: string, baseUrl = apiBaseURL) =>
-  new URL(
-    `/documents/export?contentId=${encodeURIComponent(contentId)}`,
-    `${baseUrl.replace(/\/$/u, "")}/`,
-  ).href;
 
 const notificationPresentation = (item: DocumentBuildNotificationSummary) => {
   if (item.kind === "previewReady")

@@ -1,3 +1,4 @@
+import { documentDownloadUrl } from "@osfo/api/document-download";
 import { PdfForm } from "../../integrations/pdf/pdf-form";
 import {
   action,
@@ -7116,7 +7117,7 @@ export class OsfoAgent extends Think<Env> {
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) throw invalidOsfoEnvironment;
     const env = this.env;
-    return runtime.runPromise(
+    const artifact = await runtime.runPromise(
       this.#accountDeletionFence.run(
         Effect.scoped(
           Effect.gen(function* () {
@@ -7143,6 +7144,13 @@ export class OsfoAgent extends Think<Env> {
           }),
       ),
     );
+    return {
+      ...artifact,
+      downloadUrl: documentDownloadUrl(
+        artifact.content.contentId,
+        publicWebBaseUrl(loadConfig(this.env).auth),
+      ),
+    };
   }
 
   async #exportDocument(input: RetainedDocumentInput, toolCallId: string) {
@@ -7168,9 +7176,16 @@ export class OsfoAgent extends Think<Env> {
         }),
       ),
     );
-    // The model receives only the immutable reference. An authenticated HTTP boundary
-    // delivers the bytes after it checks the current User and session again.
-    return { artifact, delivery: "authenticated-retained-content" } as const;
+    // The model receives a retained reference and sign-in link. The HTTP boundary
+    // delivers bytes after checking the current User and session again.
+    return {
+      artifact,
+      delivery: "authenticated-retained-content",
+      downloadUrl: documentDownloadUrl(
+        artifact.content.contentId,
+        publicWebBaseUrl(loadConfig(this.env).auth),
+      ),
+    } as const;
   }
 
   async #deleteDocument(input: RetainedDocumentInput, toolCallId: string) {

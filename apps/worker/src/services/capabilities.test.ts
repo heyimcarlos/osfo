@@ -317,6 +317,7 @@ it.effect("loads a relevant Skill before publishing only its required Tool bundl
       userId: baseInput.userId,
     });
     expect(loaded.instructions).toContain("generateDocument");
+    expect(loaded.instructions).toContain("exact returned downloadUrl");
 
     const progressive = capabilities.assembleToolBundle({
       availableToolNames: [...baseInput.availableToolNames, "remoteBash", "unapprovedComposioTool"],

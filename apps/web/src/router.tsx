@@ -1,3 +1,5 @@
+import { documentDownloadPath } from "@osfo/api/document-download";
+import { Option, Schema } from "effect";
 import {
   createRootRouteWithContext,
   createRoute,
@@ -91,6 +93,21 @@ const authenticatedRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: "authenticated",
   component: AuthenticatedGate,
+});
+const documentDownloadRoute = createRoute({
+  getParentRoute: () => authenticatedRoute,
+  path: documentDownloadPath,
+  validateSearch: (search: { readonly contentId?: unknown }) => ({
+    contentId: Option.getOrUndefined(
+      Schema.decodeUnknownOption(
+        Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(240)),
+      )(search.contentId),
+    ),
+  }),
+  component: lazyRouteComponent(
+    () => import("./pages/document-download-page"),
+    "DocumentDownloadPage",
+  ),
 });
 const settingsRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
@@ -200,6 +217,7 @@ const routeTree = rootRoute.addChildren([
   privacyRoute,
   plansRoute,
   authenticatedRoute.addChildren([
+    documentDownloadRoute,
     settingsOverviewRoute,
     settingsRoute.addChildren([
       settingsGeneralRoute,
