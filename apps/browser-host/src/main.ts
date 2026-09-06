@@ -37,10 +37,7 @@ NodeRuntime.runMain(
     });
     const configuration = yield* Schema.decodeEffect(Configuration)(raw);
     process.umask(0o077);
-    const host = yield* Effect.acquireRelease(
-      Effect.sync(() => Host.make({ ...configuration, token }, inspect(configuration))),
-      (resource) => Effect.sync(resource.close),
-    );
+    const host = yield* Host.make({ ...configuration, token }, inspect(configuration));
     const route = HttpRouter.add("POST", "/inventory", (request) =>
       Effect.gen(function* () {
         const body = yield* request.text;
