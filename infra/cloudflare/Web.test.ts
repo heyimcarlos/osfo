@@ -3,7 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { productionWebOrigin, webOptionsForStage } from "./Web";
 
 describe("webOptionsForStage", () => {
-  it("routes the production apex through its Worker", () => {
+  it("makes the production Worker the apex origin", () => {
     const options = webOptionsForStage("production", "https://api.osfo.ai");
 
     expect(productionWebOrigin).toBe("https://osfo.ai");
@@ -12,9 +12,9 @@ describe("webOptionsForStage", () => {
         VITE_API_URL: "https://api.osfo.ai",
         VITE_OSFO_STAGE: "production",
       },
-      routes: [{ pattern: "osfo.ai/*", zoneName: "osfo.ai" }],
+      domain: "osfo.ai",
     });
-    expect(options).not.toHaveProperty("domain");
+    expect(options).not.toHaveProperty("routes");
   });
 
   it("keeps preview traffic and browser configuration on the preview stage", () => {
