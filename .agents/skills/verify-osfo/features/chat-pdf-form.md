@@ -17,13 +17,18 @@ complete any of those steps.
    in the run's authenticated Chrome profile. Keep the same User and Channel Link.
    Run `doctor` at the exact launch commit.
 2. Run `control-osfo chat-pdf-form-prepare <run-id>`. It creates a synthetic facts
-   PDF, rasterizes its first page to a PNG, and creates an interactive template.
-   It registers those PNG/PDF bytes only with the existing loopback provider.
+   PDF, rasterizes its first page to a JPEG, and creates an interactive template.
+   It registers those JPEG/PDF bytes only with the existing loopback provider.
    It does not upload a File or seed an Agent record. Registration enables the
    bounded local model fixture for these two exact requests. It selects tools
    from actual ready File references and uses returned quotes, field outcomes,
    template exports and download URLs. Missing evidence stops the fixture.
    Inspect the fixture render and save it with the run evidence before delivery.
+
+Telegram photo envelopes normalize to `image/jpeg` in the installed adapter.
+The helper therefore sends actual `evidence.jpg` bytes and records that file's
+digest and MIME type. The emulator rejects a mismatched fixture during preparation;
+File MIME validation remains unchanged.
 
 The fixture manifest retains source digests and expected edits. The source says
 `Applicant name: Example Applicant` and `Document date: 03/04/2026`. Date order

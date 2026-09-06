@@ -115,3 +115,9 @@ short, specific, and actionable.
   Think installs its chat dispatcher during asynchronous startup after the
   constructor; a constructor wrapper can be bypassed. Install message admission
   in the post-setup startup hook and prove pause, resume and cancellation together.
+
+- Match verification media bytes to the provider adapter's normalized metadata.
+  Sending a PNG as a Telegram photo made the adapter declare JPEG, so File
+  admission correctly rejected it. Render actual JPEG photo bytes and validate
+  fixture registration through the production file inspector; retain a regression
+  covering the installed adapter, downloaded bytes, and mismatched PNG rejection.

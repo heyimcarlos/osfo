@@ -890,16 +890,17 @@ channel_invite() {
 }
 
 render_verification_pdf() {
-  local input prefix renderer
+  local input prefix format renderer
   input="$1"
   prefix="$2"
-  shift 2
+  format="$3"
+  shift 3
   renderer="$(command -v pdftoppm)"
   # The bundled Poppler can resolve incompatible substitute fonts; prefer system font discovery.
   if [[ -x /usr/bin/pdftoppm ]]; then renderer=/usr/bin/pdftoppm; fi
   printf 'renderer=%s\n' "$renderer" >"$prefix-renderer.txt"
   "$renderer" -v >>"$prefix-renderer.txt" 2>&1
-  "$renderer" -f 1 -singlefile "$@" -png "$input" "$prefix" >"$prefix-render.log" 2>&1
+  "$renderer" -f 1 -singlefile "$@" "-$format" "$input" "$prefix" >"$prefix-render.log" 2>&1
 }
 
 # These preparation commands retain draft evidence. The feature file owns the remaining UI drive.
@@ -915,12 +916,12 @@ chat_pdf_form_prepare() {
   command -v pdftoppm >/dev/null
   provider_origin="$(state_value "$run_id" provider-origin)"
   bun "$repo_root/apps/worker/test/support/chat-pdf-form-fixture.ts" prepare "$feature_dir"
-  render_verification_pdf "$feature_dir/evidence.pdf" "$feature_dir/evidence" \
+  render_verification_pdf "$feature_dir/evidence.pdf" "$feature_dir/evidence" jpeg \
     -scale-to-x 1200 -scale-to-y 1300
-  manifest="$(jq --arg imageSha256 "sha256:$(sha256sum "$feature_dir/evidence.png" | cut -d ' ' -f 1)" \
-    '. + {imageSha256: $imageSha256}' "$feature_dir/fixture.json")"
+  manifest="$(jq --arg imageSha256 "sha256:$(sha256sum "$feature_dir/evidence.jpg" | cut -d ' ' -f 1)" \
+    '. + {imageSha256: $imageSha256, imageMediaType: "image/jpeg"}' "$feature_dir/fixture.json")"
   printf '%s\n' "$manifest" >"$feature_dir/fixture.json"
-  jq --null-input --rawfile image <(base64 -w 0 "$feature_dir/evidence.png") \
+  jq --null-input --rawfile image <(base64 -w 0 "$feature_dir/evidence.jpg") \
     --rawfile template <(base64 -w 0 "$feature_dir/template.pdf") \
     '{image: $image, template: $template}' \
     | curl --fail --silent --show-error --header 'content-type: application/json' \
@@ -957,7 +958,7 @@ chat_pdf_form_send() {
   provider_origin="$(state_value "$run_id" provider-origin)"
   worker_origin="$(state_value "$run_id" worker-origin)"
   author="$(state_value "$run_id" telegram-author)"
-  if [[ "$kind" == image ]]; then size="$(wc -c <"$feature_dir/evidence.png")";
+  if [[ "$kind" == image ]]; then size="$(wc -c <"$feature_dir/evidence.jpg")";
   else size="$(wc -c <"$feature_dir/template.pdf")"; fi
   payload="$(jq --null-input --arg kind "$kind" --arg fileId "$file_id" \
     --arg caption "$caption" --argjson size "$size" --argjson author "$author" \
@@ -1013,7 +1014,7 @@ chat_pdf_form_inspect() {
   feature_dir="$(feature_artifact_dir_for "$run_id" chat-pdf-form)"
   test -s "$feature_dir/preparation.txt"
   bun "$repo_root/apps/worker/test/support/chat-pdf-form-fixture.ts" inspect "$feature_dir" "$2" "$3" "$(state_value "$run_id" web-origin)"
-  render_verification_pdf "$2" "$feature_dir/downloaded-page" -scale-to 1600
+  render_verification_pdf "$2" "$feature_dir/downloaded-page" png -scale-to 1600
   printf 'artifact_bytes_checked=%s/download-inspection.json render=%s/downloaded-page.png result=draft\n' \
     "$feature_dir" "$feature_dir"
 }
