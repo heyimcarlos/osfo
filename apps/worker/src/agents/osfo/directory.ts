@@ -451,8 +451,12 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     return this.listSubAgents(OsfoAgent).map(({ className, name }) => ({ className, name }));
   }
 
-  /** Delete one user-owned facet and its SQLite state. */
-  async deleteAgent(agentId: string): Promise<void> {
+  /** Verify erasure before removing the deleting owner's facet registration. */
+  async deleteAgent(agentId: string, userId: string): Promise<void> {
+    // SDK deletion may forget a facet whose native storage deletion failed.
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    await agent.eraseAccountDeletion(userId);
+    this.abortSubAgent(OsfoAgent, agentId, "Account deletion storage erased");
     await this.deleteSubAgent(OsfoAgent, agentId);
   }
 
@@ -524,7 +528,6 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
 
   /** Fence new provider appends and wait for already-started provider work. */
   async quiesceAgentAccountDeletion(agentId: string, userId: string): Promise<void> {
-    if (!this.hasSubAgent(OsfoAgent, agentId)) return;
     const agent = await this.subAgent(OsfoAgent, agentId);
     await agent.quiesceAccountDeletion(userId);
   }

@@ -23,7 +23,7 @@ import { ScheduledEmailPostgres } from "../integrations/postgres/scheduled-email
 /* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Closed capability variants use the canonical _tag discriminator, and the deletion preflight adapts one Promise transaction at its Effect boundary. */
 
 interface DirectoryDeletionStub {
-  readonly deleteAgent: (agentId: string) => Promise<void>;
+  readonly deleteAgent: (agentId: string, userId: string) => Promise<void>;
   readonly quiesceAgentAccountDeletion: (agentId: string, userId: string) => Promise<void>;
 }
 
@@ -196,9 +196,10 @@ const makePort = (bindings: Bindings) =>
                 }),
             });
           }),
-        remove: (agentId: AgentId) =>
+        remove: (agentId: AgentId, userId) =>
           Effect.tryPromise({
-            try: () => bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).deleteAgent(agentId),
+            try: () =>
+              bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).deleteAgent(agentId, userId),
             catch: (cause) =>
               new AccountDeletion.AccountDeletionUnavailable({
                 cause,

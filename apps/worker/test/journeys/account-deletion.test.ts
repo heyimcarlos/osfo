@@ -1,3 +1,5 @@
+/* oxlint-disable effecttsgo/strict-effect-provide -- The journey owns each PostgreSQL authority probe and its database scope. */
+/* oxlint-disable effecttsgo/async-function -- Native Durable Object callbacks expose Promise boundaries for storage inspection. */
 /* oxlint-disable effecttsgo/global-date-in-effect, vitest/no-standalone-expect -- This boundary fixture needs one fixed wire Date; assertions execute inside the Effect returned directly to it.effect. */
 import { env } from "cloudflare:workers";
 import { expect, it } from "@effect/vitest";
@@ -5,9 +7,14 @@ import {
   createExecutionContext,
   createScheduledController,
   waitOnExecutionContext,
+  runInDurableObject,
 } from "cloudflare:test";
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 
+import { OsfoAgent } from "../../src/agents/osfo/agent";
+import { AccountDeletionAgent } from "../../src/composition/account-deletion-agent";
+import { Db } from "../../src/db";
+import { AgentId, UserId } from "../../src/domain";
 import { OSFO_DIRECTORY_NAME } from "../../src/agents/osfo/identity";
 import { hourlyMaintenanceCron } from "../../src/scheduled-lifecycle";
 import worker from "../../src/worker";
@@ -55,6 +62,31 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
     yield* Effect.promise(() => env.FILES.put(targetR2Key, "target"));
     yield* Effect.promise(() => env.FILES.put(unrelatedR2Key, "unrelated"));
     const directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
+    expect(yield* Effect.promise(() => directory.inspectAgent(identity.agentId))).not.toBeNull();
+    yield* Effect.promise(() =>
+      runInDurableObject(directory, async (owner) => {
+        const agent = await owner.subAgent(OsfoAgent, identity.agentId);
+        await agent.addMessages([
+          {
+            id: "account-erasure-message",
+            role: "user",
+            parts: [{ type: "text", text: "Account erasure sentinel" }],
+          },
+        ]);
+      }),
+    );
+    // Inspect expected authority denials in the Effect channel: workerd logs rejected
+    // native RPC calls as uncaught exceptions even when their callers catch them.
+    const activeErasure = yield* Effect.scoped(
+      AccountDeletionAgent.authorizeErasure(
+        AgentId.make(identity.agentId),
+        UserId.make(identity.userId),
+      ).pipe(Effect.provide(Db.layer({ db: env.DB }))),
+    ).pipe(Effect.result);
+    expect(Result.isFailure(activeErasure)).toBe(true);
+    expect(activeErasure).toMatchObject({
+      failure: { _tag: "AccountDeletionUnavailable", operation: "eraseAgentStorage" },
+    });
     expect(yield* Effect.promise(() => directory.inspectAgent(identity.agentId))).not.toBeNull();
     expect(yield* Effect.promise(() => env.FILES.head(targetR2Key))).not.toBeNull();
     expect(yield* Effect.promise(() => env.FILES.head(unrelatedR2Key))).not.toBeNull();
@@ -131,6 +163,17 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
       user_exists: true,
     });
     expect(yield* Effect.promise(app.supermemory.ledger)).toEqual([]);
+    const wrongOwnerErasure = yield* Effect.scoped(
+      AccountDeletionAgent.authorizeErasure(
+        AgentId.make(identity.agentId),
+        UserId.make("unrelated-user-for-account-deletion"),
+      ).pipe(Effect.provide(Db.layer({ db: env.DB }))),
+    ).pipe(Effect.result);
+    expect(Result.isFailure(wrongOwnerErasure)).toBe(true);
+    expect(wrongOwnerErasure).toMatchObject({
+      failure: { _tag: "AccountDeletionUnavailable", operation: "eraseAgentStorage" },
+    });
+    expect(yield* Effect.promise(() => directory.inspectAgent(identity.agentId))).not.toBeNull();
     app.auth.clearCookie();
     const fencedOrdinaryEndpoint = yield* Effect.promise(() => app.billing.checkout());
     expect(fencedOrdinaryEndpoint.response.status).toBe(401);
@@ -179,6 +222,14 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
         ({ name }) => name === identity.agentId,
       ),
     ).toBe(false);
+    yield* Effect.promise(() =>
+      runInDurableObject(directory, async (owner) => {
+        // Resolve the same native storage even when the directory registration is absent.
+        const reopened = await owner.subAgent(OsfoAgent, identity.agentId);
+        expect(await reopened.inspect()).toMatchObject({ _tag: "AgentStateNotFound" });
+        expect(await reopened.getMessages()).toEqual([]);
+      }),
+    );
     expect(yield* Effect.promise(() => env.FILES.head(targetR2Key))).toBeNull();
     expect(yield* Effect.promise(() => env.FILES.head(unrelatedR2Key))).not.toBeNull();
 

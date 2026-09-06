@@ -5,7 +5,7 @@ import { vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { Effect, Result } from "effect";
-import { AccountResetStorage } from "../../src/agents/osfo/account-reset-storage";
+import { AgentStorageErasure } from "../../src/agents/osfo/agent-storage-erasure";
 import { OsfoAgent } from "../../src/agents/osfo/agent";
 import { AccountResetComposition } from "../../src/composition/account-reset";
 import { emptyLiveResourceFacts } from "../../src/services/authorization";
@@ -141,7 +141,7 @@ it.effect(
         );
         state.storage.kv.put("reset-proof", true);
         const result = await Effect.runPromise(
-          AccountResetStorage.erase(state.storage).pipe(Effect.result),
+          AgentStorageErasure.erase(state.storage).pipe(Effect.result),
         );
         expect(Result.isFailure(result)).toBe(true);
         expect(state.storage.kv.get("reset-proof")).toBe(true);
