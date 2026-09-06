@@ -104,7 +104,8 @@ export interface SandboxClient {
   readonly writeFile: (path: string, content: string) => Promise<void>;
 }
 
-const executionLeaseMs = 10 * 60_000;
+/** Durable render ownership must expire before another invocation can reclaim it. */
+export const documentExecutionLeaseMs = 10 * 60_000;
 const minimumProtectedWindowMs = 5 * 60_000;
 const defaultDeadlines = { cleanupMs: 30_000, execMs: 65_000, rpcMs: 30_000 };
 
@@ -251,7 +252,7 @@ const render = async (
       input.contentId,
       input.intentDigest,
       proposedCost,
-      currentTimeMillis() + executionLeaseMs,
+      currentTimeMillis() + documentExecutionLeaseMs,
       input.userId,
     );
     // oxlint-disable-next-line eslint/no-underscore-dangle -- Persisted outcomes use _tag.
@@ -305,7 +306,7 @@ const render = async (
       } else {
         const reclaimedEvidence = {
           ...claimed.evidence,
-          executionLeaseExpiresAt: currentTimeMillis() + executionLeaseMs,
+          executionLeaseExpiresAt: currentTimeMillis() + documentExecutionLeaseMs,
           renderedPageCount: null,
           status: "recovery" as const,
         };

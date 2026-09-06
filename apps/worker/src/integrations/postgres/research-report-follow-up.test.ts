@@ -16,6 +16,13 @@ it("cancels every nonterminal publication state at the hard deadline", () => {
   ).toBe("NotDue");
 });
 
+it("keeps source-committed recovery active at the fifteen-minute milestone", () => {
+  expect(
+    deadlineDisposition("sources_committed", new Date("2026-08-28T12:15:00.000Z"), deadline),
+  ).toBe("NotDue");
+  expect(deadlineDisposition("sources_committed", deadline, deadline)).toBe("Canceled");
+});
+
 it("never rewrites an already committed terminal outcome at the deadline", () => {
   expect(deadlineDisposition("success", deadline, deadline)).toBe("Terminal");
   expect(deadlineDisposition("failure", deadline, deadline)).toBe("Terminal");

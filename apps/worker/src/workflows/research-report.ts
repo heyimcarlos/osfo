@@ -11,6 +11,7 @@ import { ResearchReportDocument } from "../services/research-report-document";
 import { ResearchReportFollowUp } from "../services/research-report-follow-up";
 import { ResearchSynthesis } from "../services/research-synthesis";
 import { requireRetryForRecoverableResult } from "./research-report-host-outcome";
+import { recoverableResearchReportStepConfig } from "./research-report-step";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare WorkflowEntrypoint and WorkflowStep are Promise-only host APIs. */
 /* oxlint-disable eslint/no-underscore-dangle -- Option uses the standard Effect _tag discriminator. */
@@ -154,43 +155,47 @@ export class ResearchReportWorkflow extends WorkflowEntrypoint<
       );
       return collected;
     }
-    const published = await step.do("synthesize and publish cited report", async () => {
-      const payload = Schema.decodeResult(ResearchReport.WorkflowPayload)(event.payload);
-      if (Result.isFailure(payload)) return { failure: "invalidPayload" } as const;
-      const serviceEffect = Effect.gen(function* () {
-        const reports = yield* ResearchReport.Service;
-        const collector = yield* ResearchCollector.Service;
-        const documents = yield* ResearchReportDocument.Service;
-        const report = yield* reports.authorizeExecution(payload.success);
-        const collection = yield* collector.collect(report);
-        const committed = yield* reports.commitSources(
-          payload.success,
-          collection.manifestKey,
-          collection.manifestDigest,
+    const published = await step.do(
+      "synthesize and publish cited report",
+      recoverableResearchReportStepConfig,
+      async () => {
+        const payload = Schema.decodeResult(ResearchReport.WorkflowPayload)(event.payload);
+        if (Result.isFailure(payload)) return { failure: "invalidPayload" } as const;
+        const serviceEffect = Effect.gen(function* () {
+          const reports = yield* ResearchReport.Service;
+          const collector = yield* ResearchCollector.Service;
+          const documents = yield* ResearchReportDocument.Service;
+          const report = yield* reports.authorizeExecution(payload.success);
+          const collection = yield* collector.collect(report);
+          const committed = yield* reports.commitSources(
+            payload.success,
+            collection.manifestKey,
+            collection.manifestDigest,
+          );
+          const completed = yield* documents.generate(committed, collection);
+          return {
+            artifactContentId: completed.artifact.content.contentId,
+            sourceCount: collection.manifest.sources.length,
+            sourceManifestKey: completed.report.sourceManifestKey,
+            state: completed.report.state,
+            workflowId: completed.report.workflowId,
+          } as const;
+        }).pipe(
+          commitTerminalOutcome(payload.success),
+          Effect.match({
+            onFailure: (failure) => ({ failure: failureKind(failure) }) as const,
+            onSuccess: (result) => result,
+          }),
         );
-        const completed = yield* documents.generate(committed, collection);
-        return {
-          artifactContentId: completed.artifact.content.contentId,
-          sourceCount: collection.manifest.sources.length,
-          sourceManifestKey: completed.report.sourceManifestKey,
-          state: completed.report.state,
-          workflowId: completed.report.workflowId,
-        } as const;
-      }).pipe(
-        commitTerminalOutcome(payload.success),
-        Effect.match({
-          onFailure: (failure) => ({ failure: failureKind(failure) }) as const,
-          onSuccess: (result) => result,
-        }),
-      );
-      const result = await Effect.runPromise(
-        ResearchReportComposition.executionEffect(
-          ResearchReportComposition.bindingsFromEnv(this.env),
-          serviceEffect,
-        ),
-      );
-      return requireRetryForRecoverableResult(result);
-    });
+        const result = await Effect.runPromise(
+          ResearchReportComposition.executionEffect(
+            ResearchReportComposition.bindingsFromEnv(this.env),
+            serviceEffect,
+          ),
+        );
+        return requireRetryForRecoverableResult(result);
+      },
+    );
     if (!("failure" in published) && ResearchReport.terminalStates.has(published.state)) {
       await this.#claimAndSubmitTerminalFollowUp(
         step,

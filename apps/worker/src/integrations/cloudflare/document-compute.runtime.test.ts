@@ -1,15 +1,18 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, vitest/no-standalone-expect -- Promise fakes model external adapters; fixed lease time and assertions stay inside the Effect test. */
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
+import { TestClock } from "effect/testing";
 
 import { AllowancePeriodId, UserId } from "../../domain";
 import { ContentId } from "../../domain/client-content";
+import { recoverableResearchReportStepConfig } from "../../workflows/research-report-step";
 import {
   DocumentIntentDigest,
   DocumentSource,
   type CostEvidence,
 } from "../../services/document-generation";
 import {
+  documentExecutionLeaseMs,
   makeWithSandbox,
   sandboxIdFor,
   type ActiveAttemptEvidence,
@@ -176,6 +179,40 @@ it.effect("reports proven no use when authority ends before the atomic start tra
       ),
     );
 });
+
+it.effect(
+  "keeps Research retries alive through the render lease and missing-output reclaim",
+  () => {
+    const fixture = recoveryFixture(
+      attemptEvidence({ executionLeaseExpiresAt: documentExecutionLeaseMs, status: "started" }),
+    );
+    return Effect.gen(function* () {
+      const outcomes = [];
+      const policy = recoverableResearchReportStepConfig.retries;
+      expect(policy.backoff).toBe("constant");
+      let elapsed = 0;
+      for (let attempt = 0; attempt <= policy.limit; attempt += 1) {
+        yield* TestClock.setTime(elapsed);
+        const result = yield* fixture.generate();
+        outcomes.push(result);
+        expect(result.cost).toMatchObject({ providerOperationId: "provider-operation-1" });
+        if (Predicate.isTagged(result, "Completed")) break;
+        elapsed += policy.delay;
+      }
+      expect(outcomes).toContainEqual(expect.objectContaining({ _tag: "AttemptPending" }));
+      expect(outcomes).toContainEqual(expect.objectContaining({ _tag: "Interrupted" }));
+      expect(outcomes.at(-1)).toMatchObject({ _tag: "Completed" });
+      expect(elapsed).toBeGreaterThan(documentExecutionLeaseMs);
+      expect(elapsed).toBeLessThan(60 * 60_000);
+      expect(yield* fixture.generate()).toMatchObject({ _tag: "Completed" });
+      expect(fixture.execCalls()).toBe(1);
+      expect(fixture.evidence()).toMatchObject({
+        cost: { providerOperationId: "provider-operation-1", usdMicros: 50_000n },
+        status: "completed",
+      });
+    });
+  },
+);
 
 it.effect("keeps a live started lease pending without another provider execution", () => {
   const fixture = recoveryFixture(
