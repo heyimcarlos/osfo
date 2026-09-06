@@ -2,8 +2,9 @@
 /* oxlint-disable osfo/no-runtime-typeof, osfo/no-unknown-parameters -- This test-only emulator decodes raw Node HTTP representations at its boundary. */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { respond } from "../support/chat-pdf-form-model";
+import { inspectFileContent } from "../../src/domain/file-content";
 
 /** One observed Twilio Verify request. */
 export interface TwilioLedgerEntry {
@@ -282,17 +283,28 @@ const startProvider = (options: {
       ) {
         readTextBody(request)
           .then(Schema.decodeUnknownPromise(ChatPdfFormMedia))
-          .then((media) => {
+          .then((media) =>
+            Effect.runPromise(
+              Effect.forEach(
+                [
+                  ["verification-evidence", media.image, "image/jpeg"],
+                  ["verification-template", media.template, "application/pdf"],
+                ] as const,
+                ([name, encoded, mediaType]) =>
+                  Effect.gen(function* () {
+                    if (!/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded))
+                      return yield* Effect.die(new Error("Invalid synthetic media encoding"));
+                    const bytes = Buffer.from(encoded, "base64");
+                    yield* inspectFileContent({ bytes, declaredMediaType: mediaType });
+                    return [name, { bytes, mediaType }] as const;
+                  }),
+              ),
+            ),
+          )
+          .then((entries) => {
             if (chatPdfFormMedia.size !== 0)
               throw new Error("Chat PDF fixture is already registered");
-            const entries = [
-              ["verification-evidence", media.image, "image/png"],
-              ["verification-template", media.template, "application/pdf"],
-            ] as const;
-            if (entries.some(([, value]) => !/^[A-Za-z0-9+/]+={0,2}$/u.test(value)))
-              throw new Error("Invalid synthetic media encoding");
-            for (const [name, value, mediaType] of entries)
-              chatPdfFormMedia.set(name, { bytes: Buffer.from(value, "base64"), mediaType });
+            for (const [name, media] of entries) chatPdfFormMedia.set(name, media);
             respondJson(response, 201, { registered: true });
           })
           .catch((cause: unknown) => respondJson(response, 400, { error: String(cause) }));

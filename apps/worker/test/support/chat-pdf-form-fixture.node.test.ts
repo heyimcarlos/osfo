@@ -1,10 +1,12 @@
-/* oxlint-disable effecttsgo/global-fetch-in-effect -- This test owns local emulator HTTP I/O. */
+/* oxlint-disable effecttsgo/global-fetch-in-effect, effecttsgo/node-builtin-import -- This test owns local emulator HTTP I/O and reads a synthetic media fixture. */
+import { readFile } from "node:fs/promises";
+import { TelegramAdapter } from "@chat-adapter/telegram";
 import { expect, it } from "@effect/vitest";
 import { Effect, Result, Schema } from "effect";
 import { PDFDocument } from "pdf-lib";
 import { ContentId } from "../../src/domain/client-content";
 import { FileId } from "../../src/domain/file";
-import { FileDigest } from "../../src/domain/file-content";
+import { FileDigest, inspectFileContent } from "../../src/domain/file-content";
 import { fill } from "../../src/integrations/pdf/pdf-form";
 import { MessengerAttachments } from "../../src/integrations/messenger-attachments";
 import { startRunProviderEmulator } from "../emulators/provider-emulator";
@@ -56,7 +58,42 @@ it.effect("serves registered source bytes through the real Telegram media adapte
             headers: { "content-type": "application/json" },
           }),
         );
-        expect(registered.status).toBe(201);
+        expect(registered.status).toBe(400);
+        const photoBytes = yield* Effect.promise(() =>
+          readFile(new URL("../fixtures/chat-pdf-form-photo.jpg", import.meta.url)),
+        );
+        const photoBody = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
+          image: photoBytes.toString("base64"),
+          template: Buffer.from(fixture.template).toString("base64"),
+        });
+        const accepted = yield* Effect.promise(() =>
+          fetch(`${provider.origin}/_test/chat-pdf-form/media`, {
+            method: "POST",
+            body: photoBody,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+        expect(accepted.status).toBe(201);
+        const adapter = new TelegramAdapter({ botToken: "telegram-test-bot-token" });
+        const parsed = adapter.parseMessage({
+          message_id: 1,
+          date: 1,
+          chat: { id: 42, type: "private" },
+          from: { id: 42, is_bot: false, first_name: "Verification" },
+          photo: [
+            {
+              file_id: "verification-evidence",
+              file_unique_id: "verification-evidence",
+              file_size: photoBytes.byteLength,
+              width: 8,
+              height: 8,
+            },
+          ],
+        });
+        const photo = parsed.attachments[0];
+        expect(photo?.mimeType).toBe("image/jpeg");
+        if (photo?.mimeType === undefined)
+          return yield* Effect.die(new Error("Expected photo MIME metadata"));
         const media = MessengerAttachments.make({
           telegram: { token: "telegram-test-bot-token", apiBaseURL: provider.origin },
           whatsapp: { accessToken: "unused" },
@@ -70,6 +107,25 @@ it.effect("serves registered source bytes through the real Telegram media adapte
           },
         });
         expect(downloaded.bytes).toEqual(fixture.template);
+        const downloadedPhoto = yield* media.download({
+          provider: "telegram",
+          maximumBytes: 1_000_000,
+          attachment: {
+            mediaType: photo.mimeType,
+            fetchMetadata: { fileId: "verification-evidence" },
+          },
+        });
+        const inspectedPhoto = yield* inspectFileContent({
+          bytes: downloadedPhoto.bytes,
+          declaredMediaType: photo.mimeType,
+        });
+        expect(inspectedPhoto.mediaType).toBe("image/jpeg");
+        expect(inspectedPhoto.sha256).toBe(digest(photoBytes));
+        const servedPhoto = yield* Effect.promise(() =>
+          fetch(`${provider.origin}/file/bottelegram-test-bot-token/verification-evidence`),
+        );
+        expect(servedPhoto.headers.get("content-type")).toBe("image/jpeg");
+
         const modelBody = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
           messages: [
             {
@@ -108,6 +164,7 @@ it.effect("serves registered source bytes through the real Telegram media adapte
           fetch(`${provider.origin}/inbox?history=1`).then((response) => response.text()),
         );
         expect(inbox).toContain(`<a href="${downloadUrl}">Download document</a>`);
+        return undefined;
       }),
     (provider) => Effect.promise(provider.close),
   ),
