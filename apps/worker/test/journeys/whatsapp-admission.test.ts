@@ -14,6 +14,7 @@ import { expect, it } from "@effect/vitest";
 import { inject, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { Effect, Layer, Redacted, Schema } from "effect";
+import { TestClock } from "effect/testing";
 
 import { OsfoAgent, messengerSubmissionId } from "../../src/agents/osfo/agent";
 import { MessengerAcceptanceReceipt } from "../../src/agents/osfo/messenger-admission";
@@ -309,6 +310,8 @@ it.effect(
         const sameOwnerToken = yield* Schema.decodeEffect(ChannelLinks.ChannelLinkInviteToken)(
           sameOwnerInvite.verificationUrl.pathname.split("/").at(-1) ?? "",
         );
+        // Distinct link incarnations must not share the test clock's frozen creation timestamp.
+        yield* TestClock.adjust("1 millisecond");
         yield* service.accept(Redacted.make(sameOwnerToken), UserId.make(owner.userId));
         const currentLink = yield* service.resolveConversation(address);
         if (currentLink._tag !== "Linked")
@@ -397,6 +400,7 @@ it.effect(
         const replacementToken = yield* Schema.decodeEffect(ChannelLinks.ChannelLinkInviteToken)(
           replacementInvite.verificationUrl.pathname.split("/").at(-1) ?? "",
         );
+        yield* TestClock.adjust("1 millisecond");
         yield* service.accept(Redacted.make(replacementToken), UserId.make(otherOwner.userId));
         expect((yield* Effect.promise(() => send(interruptedBody))).status).toBe(503);
         yield* Effect.promise(() =>
