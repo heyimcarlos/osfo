@@ -105,4 +105,3 @@ export const harness = () => {
   };
   return { dependencies, persisted, files, events };
 };
-

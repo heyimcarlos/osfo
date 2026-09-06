@@ -1,7 +1,9 @@
+import type { MessengerContext } from "@cloudflare/think/messengers";
 import { convertToModelMessages, type ModelMessage, type UIMessage } from "ai";
 import { Effect, Schema } from "effect";
 
 import type { ManagedTurnMetadata } from "../../domain/managed-conversation";
+import type { ThinkSubmissionId } from "../../domain";
 import { MessengerFileIngress } from "./messenger-file-ingress";
 
 const retainedMessenger = Schema.Struct({
@@ -35,6 +37,19 @@ export class Unavailable extends Schema.TaggedError<Unavailable>()("MessengerFil
   cause: Schema.Defect(),
   message: Schema.String,
 }) {}
+
+/** Give legacy messenger chat the same server-owned identity as native submitted input. */
+export const messageForSubmission = (
+  userMessage: string | UIMessage,
+  context: MessengerContext,
+  submissionId: ThinkSubmissionId,
+): UIMessage => ({
+  ...(typeof userMessage === "string"
+    ? { role: "user" as const, parts: [{ type: "text" as const, text: userMessage }] }
+    : userMessage),
+  id: submissionId,
+  metadata: { messenger: context },
+});
 
 /** Replace only the admitted User message; keep Think's repaired and truncated history intact. */
 export const prepare = Effect.fn("MessengerFileTurn.prepare")(function* <

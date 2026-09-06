@@ -256,6 +256,7 @@ import type {
 } from "../../services/session-replacement";
 import { messengerAuthorId } from "./channel-address";
 import { MessengerFileTurn } from "./messenger-file-turn";
+import { MessengerFileIngress } from "./messenger-file-ingress";
 import { MessengerAttachments } from "../../integrations/messenger-attachments";
 import {
   type AgentInitializationConflict,
@@ -1666,7 +1667,7 @@ export class OsfoAgent extends Think<Env> {
         {
           authorization: currentAuthorization,
           idempotencyKey: `${provider}:${context.thread.id}:${message.providerMessageId}`,
-          message: message.text,
+          message: MessengerFileIngress.admissionText(context),
           routeId: agent.routeId,
           submissionId,
         },
@@ -1729,7 +1730,12 @@ export class OsfoAgent extends Think<Env> {
             );
             return;
           }
-          await super.chatWithMessengerContext(userMessage, callback, context, {
+          const nativeMessage = MessengerFileTurn.messageForSubmission(
+            userMessage,
+            context,
+            submissionId,
+          );
+          await super.chatWithMessengerContext(nativeMessage, callback, context, {
             metadata: admission.metadata,
             signal,
           });
@@ -8041,8 +8047,11 @@ export class OsfoAgent extends Think<Env> {
   }
 
   #prepareMessengerFiles(context: TurnContext, metadata: ManagedTurnMetadata) {
-    if (metadata.authorityIdentity._tag !== "ChannelLink" ||
-        this.messages.filter((message) => message.role === "user").at(-1)?.id !== metadata.submissionId) {
+    if (
+      metadata.authorityIdentity._tag !== "ChannelLink" ||
+      this.messages.filter((message) => message.role === "user").at(-1)?.id !==
+        metadata.submissionId
+    ) {
       return Promise.resolve(context.messages);
     }
     const config = loadConfig(this.env);
