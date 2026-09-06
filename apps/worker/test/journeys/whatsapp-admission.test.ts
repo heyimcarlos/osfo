@@ -21,6 +21,7 @@ import { MessengerAcceptanceReceipt } from "../../src/agents/osfo/messenger-admi
 import { OSFO_DIRECTORY_NAME } from "../../src/agents/osfo/identity";
 import { loadConfig } from "../../src/config";
 import { Db } from "../../src/db";
+import { IncidentControlsPostgres } from "../../src/integrations/postgres/incident-controls";
 import { UserId } from "../../src/domain";
 import { ChannelLinks } from "../../src/services/channel-links";
 import { spawnApp } from "../support/spawn-app";
@@ -48,6 +49,14 @@ it.effect(
         );
         const service = yield* ChannelLinks.Service;
         const database = yield* Db.database;
+        const controls = IncidentControlsPostgres.makeFromDatabase(database);
+        const setIngressPaused = (paused: boolean) =>
+          controls.set({
+            control: "newIngress",
+            paused,
+            actor: "messenger-test",
+            reason: "Admission recovery regression",
+          });
         const address = ChannelLinks.ChannelAddress.make({
           authorId: ChannelLinks.ChannelAuthorId.make("15555550101"),
           channelId: ChannelLinks.ChannelId.make("whatsapp"),
@@ -194,6 +203,23 @@ it.effect(
         const originalReply = yield* Schema.decodeUnknownEffect(Schema.String)(
           yield* Effect.promise(follow),
         );
+        yield* setIngressPaused(true);
+        expect(yield* Effect.promise(follow)).toBe(originalReply);
+        const retainedWhilePaused = yield* Effect.promise(() =>
+          runInDurableObject(directory, async (host) => {
+            if (!snapshot.userMessage) throw new Error("Missing accepted provider input");
+            const agent = await host.subAgent(OsfoAgent, owner.agentId);
+            return agent.acceptMessengerInput(snapshot.userMessage, messengerContext, {
+              kind: "route",
+              agentId: receipt.agentId,
+              channelLinkId: receipt.channelLinkId,
+              userId: receipt.userId,
+            });
+          }),
+        );
+        expect(retainedWhilePaused).toEqual(receipt);
+        expect(yield* readLedger).toEqual(ledger);
+        yield* setIngressPaused(false);
         yield* Effect.promise(() =>
           database.execute(
             sql`ALTER TABLE channel_links RENAME TO channel_links_temporarily_unavailable`,
@@ -299,6 +325,46 @@ it.effect(
             },
           },
         });
+        yield* setIngressPaused(true);
+        // oxlint-disable-next-line typescript/unbound-method -- The probe applies the original method to its native Agent receiver.
+        const acceptance = OsfoAgent.prototype.acceptMessengerInput;
+        const receiptCounts: Array<number> = [];
+        const admissionProbe = vi
+          .spyOn(OsfoAgent.prototype, "acceptMessengerInput")
+          .mockImplementation(async function (this: OsfoAgent, ...input) {
+            const outcome = await acceptance.apply(this, input);
+            const rows = this.sql<{
+              count: number;
+            }>`SELECT count(*) AS count FROM osfo_messenger_acceptance_receipts WHERE submission_id = ${unadmittedSubmissionId}`;
+            receiptCounts.push(rows[0]?.count ?? -1);
+            return outcome;
+          });
+        const pausedAdmission = yield* Effect.promise(() =>
+          runInDurableObject(directory, async (host) => {
+            const checkpoint = parseMessengerReplySnapshot(unadmitted?.snapshot);
+            if (!checkpoint?.userMessage) throw new Error("Missing original provider input");
+            const agent = await host.subAgent(OsfoAgent, owner.agentId);
+            const outcome = await agent.acceptMessengerInput(
+              checkpoint.userMessage,
+              messengerContextFromEvent(checkpoint.event),
+              checkpoint.acceptance,
+            );
+            return { outcome, submission: await agent.inspectSubmission(unadmittedSubmissionId) };
+          }),
+        );
+        admissionProbe.mockRestore();
+        yield* setIngressPaused(false);
+        expect(pausedAdmission).toEqual({ outcome: { kind: "unavailable" }, submission: null });
+        expect(receiptCounts).toEqual([0]);
+        expect(
+          yield* Effect.promise(() =>
+            database
+              .select()
+              .from(allowanceUsage)
+              .where(eq(allowanceUsage.source_id, "whatsapp:wamid.before-child-receipt")),
+          ),
+        ).toHaveLength(0);
+        expect(yield* readLedger).toEqual(ledger);
         expect(
           (yield* Effect.promise(() =>
             app.fetch(`/v1/channel-links/${receipt.channelLinkId}`, { method: "DELETE" }),
@@ -389,6 +455,26 @@ it.effect(
         expect(partial.reply).toMatchObject({
           snapshot: { stage: "admitting", acceptance: { kind: "route", agentId: owner.agentId } },
         });
+        yield* setIngressPaused(true);
+        const pendingRecovery = yield* Effect.promise(() =>
+          runInDurableObject(directory, async (host) => {
+            const checkpoint = parseMessengerReplySnapshot(partial.reply?.snapshot);
+            if (!checkpoint?.userMessage) throw new Error("Missing pending provider input");
+            const agent = await host.subAgent(OsfoAgent, owner.agentId);
+            return agent.acceptMessengerInput(
+              checkpoint.userMessage,
+              messengerContextFromEvent(checkpoint.event),
+              checkpoint.acceptance,
+            );
+          }),
+        );
+        yield* setIngressPaused(false);
+        expect(pendingRecovery).toMatchObject({
+          kind: "submission",
+          submissionId: interruptedSubmissionId,
+          channelLinkId: currentLink.link.channelLinkId,
+        });
+        expect(yield* readLedger).toEqual(ledger);
         expect(
           (yield* Effect.promise(() =>
             app.fetch(`/v1/channel-links/${currentLink.link.channelLinkId}`, { method: "DELETE" }),

@@ -1367,6 +1367,7 @@ export class OsfoAgent extends Think<Env> {
         return { kind: "suppressed" as const };
       const receipt = yield* Effect.gen({ self: this }, function* () {
         if (retained !== null) return retained;
+        yield* IncidentControlsPostgres.check(this.env.DB, "newIngress");
         const agent = yield* this.#store.inspect();
         const admission = yield* admitManagedConversation(
           {
