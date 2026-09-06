@@ -39,12 +39,18 @@ and appear only inside the trusted Think turn after the User replies.
    The read-only Agent RPC observation machine-checks due-to-handler commit at no more than
    60 seconds; final observation machine-checks due-to-provider acceptance at no more than
    90 seconds.
-6. Run `control-osfo whatsapp-reply "$RUN_ID" "What was my reminder?"`. Require the exact
-   private one-time Reminder body to be present before the normal Think response, with no
+6. Run `control-osfo whatsapp-reply "$RUN_ID" "What was my reminder?"`. Open its printed
+   `provider_inbox_url` in Chrome, which selects `/inbox?channel=whatsapp` on this run's
+   local provider. Refresh until the actual normal response appears as an
+   **Accepted text message**. An accepted template, typing event, or rejected request
+   cannot qualify as the normal response. Require the exact private one-time Reminder
+   body to be present before the normal Think response, with no
    new claim on continuation; every continuation must retain the same claimed snapshot. Capture
    the approved/due state as `action.png` and the normal response as `result.png`, then run
-   `control-osfo capture-reminder-think "$RUN_ID"`. The read-only Agent observation records the
-   exact occurrence's exposure and single Think submission claim without exposing its body.
+   `control-osfo capture-reminder-think "$RUN_ID"`. Wait for the response and capture it
+   before this command, because the observer restarts the Worker. The read-only Agent
+   observation records the exact occurrence's exposure and single Think submission claim
+   without exposing its body.
 7. Revoke the WhatsApp Channel Link in Chrome. Create and approve another near-term one-time
    Reminder and prove its due occurrence creates no second template. Then complete
    [account deletion](account-deletion.md).

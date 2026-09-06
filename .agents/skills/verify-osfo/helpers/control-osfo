@@ -1210,6 +1210,7 @@ whatsapp_reply() {
   curl --fail --silent --show-error --request POST \
     "$provider_origin/_test/whatsapp/allow-messages" >/dev/null
   deliver_whatsapp_message "$run_id" "$2"
+  printf 'provider_inbox_url=%s/inbox?channel=whatsapp\n' "$provider_origin"
 }
 
 record_reminder_due() {

@@ -266,6 +266,89 @@ it.effect("renders delivered Telegram replies in the run-owned provider inbox", 
   ),
 );
 
+it.effect("renders only accepted WhatsApp text and templates in the selected inbox", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const emulator = yield* Effect.acquireRelease(
+        Effect.promise(() => startRunProviderEmulator("verify-whatsapp-inbox")),
+        (provider) => Effect.promise(() => provider.close()),
+      );
+      const post = (path: string, body: Schema.Json) =>
+        Effect.gen(function* () {
+          const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Json))(body);
+          return yield* Effect.promise(() =>
+            fetch(new URL(path, emulator.origin), {
+              body: encoded,
+              headers: { "content-type": "application/json" },
+              method: "POST",
+            }),
+          );
+        });
+      const inbox = (query = "?channel=whatsapp") =>
+        Effect.promise(() =>
+          fetch(new URL(`/inbox${query}`, emulator.origin)).then((response) => response.text()),
+        );
+      expect(yield* inbox()).toContain("No accepted WhatsApp messages.");
+      yield* post("/phone/messages", {
+        messaging_product: "whatsapp",
+        to: "15550000001",
+        type: "template",
+        template: { name: "osfo_update", language: { code: "en" } },
+      });
+      const templateInbox = yield* inbox();
+      expect(templateInbox).toContain("Accepted template");
+      expect(templateInbox).toContain("osfo_update (en)");
+      expect(templateInbox).not.toContain("Accepted text message");
+      yield* post("/phone/messages", {
+        messaging_product: "whatsapp",
+        to: "15550000001",
+        type: "text",
+        text: { body: "Reminder: <script>alert('private')</script> & tea" },
+      });
+      yield* post("/_test/whatsapp/next-response?status=503", {});
+      expect(
+        (yield* post("/phone/messages", {
+          type: "text",
+          text: { body: "Rejected reply" },
+        })).status,
+      ).toBe(503);
+      expect(
+        (yield* post("/phone/messages", {
+          messaging_product: "whatsapp",
+          status: "read",
+          message_id: "wamid.inbound",
+          typing_indicator: { type: "text" },
+        })).status,
+      ).toBe(200);
+      const latest = yield* inbox();
+      expect(latest).toContain("verify-whatsapp-inbox");
+      expect(latest).toContain("Accepted text message");
+      expect(latest).toContain("&lt;script&gt;alert(&#39;private&#39;)&lt;/script&gt; &amp; tea");
+      expect(latest).not.toContain("<script>");
+      expect(latest).not.toContain("Rejected reply");
+      expect(latest).not.toContain("wamid.inbound");
+      expect(latest).not.toContain("osfo_update");
+      const history = yield* inbox("?channel=whatsapp&history=1");
+      expect(history).toContain("Accepted template");
+      expect(history).toContain("Accepted text message");
+      expect(history).not.toContain("Rejected reply");
+      expect(yield* inbox("")).toContain("No delivered Telegram messages.");
+      const ledger = yield* Effect.promise(() =>
+        fetch(new URL("/_test/whatsapp/ledger", emulator.origin)).then((response) =>
+          response.json(),
+        ),
+      );
+      expect(ledger).toHaveLength(4);
+      expect(ledger).toEqual([
+        expect.objectContaining({ accepted: true }),
+        expect.objectContaining({ accepted: true }),
+        expect.not.objectContaining({ accepted: true }),
+        expect.not.objectContaining({ accepted: true }),
+      ]);
+    }),
+  ),
+);
+
 it.effect("connects and sends through one deterministic local Gmail provider boundary", () =>
   Effect.scoped(
     Effect.gen(function* () {

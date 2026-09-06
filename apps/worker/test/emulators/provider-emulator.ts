@@ -69,6 +69,7 @@ export interface TelegramLedgerEntry {
 
 /** One observed Meta messages API request. */
 export interface WhatsAppLedgerEntry {
+  readonly accepted?: true;
   readonly body: string;
   readonly method: string;
   readonly path: string;
@@ -134,6 +135,18 @@ const TelegramRequest = Schema.Struct({
 });
 
 const TelegramRequestFromJson = Schema.fromJsonString(TelegramRequest);
+const WhatsAppInboxMessageFromJson = Schema.fromJsonString(
+  Schema.Union([
+    Schema.Struct({ type: Schema.Literal("text"), text: Schema.Struct({ body: Schema.String }) }),
+    Schema.Struct({
+      type: Schema.Literal("template"),
+      template: Schema.Struct({
+        name: Schema.String,
+        language: Schema.Struct({ code: Schema.String }),
+      }),
+    }),
+  ]),
+);
 const SupermemorySeedRequestFromJson = Schema.fromJsonString(
   Schema.Struct({ userId: Schema.String.check(Schema.isMinLength(1)) }),
 );
@@ -254,6 +267,15 @@ const startProvider = (options: {
       const url = new URL(rawUrl.startsWith("//") ? rawUrl.slice(1) : rawUrl, "http://localhost");
       const pathname = url.pathname;
       if (request.method === "GET" && pathname === "/inbox") {
+        if (url.searchParams.get("channel") === "whatsapp") {
+          renderWhatsAppInbox(
+            response,
+            options.verificationRunId ?? "standalone",
+            whatsAppLedger,
+            url.searchParams.get("history") === "1",
+          );
+          return;
+        }
         renderTelegramInbox(
           response,
           options.verificationRunId ?? "standalone",
@@ -629,12 +651,13 @@ const startProvider = (options: {
       if (request.method === "POST" && pathname.endsWith("/messages")) {
         readTextBody(request)
           .then((body) => {
-            whatsAppLedger.push({
+            const entry = {
               body,
               method: request.method ?? "POST",
               path: pathname,
               recordedAt: new Date().toISOString(),
-            });
+            };
+            const entryIndex = whatsAppLedger.push(entry) - 1;
             const decoded = Schema.decodeOption(UnknownFromJsonString)(body);
             if (
               whatsAppTemplateOnly &&
@@ -671,6 +694,7 @@ const startProvider = (options: {
               messages: [{ id: `wamid.emulated.${whatsAppLedger.length}` }],
               messaging_product: "whatsapp",
             });
+            whatsAppLedger[entryIndex] = { ...entry, accepted: true };
           })
           .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
         return;
@@ -1909,6 +1933,52 @@ const renderTelegramInbox = (
 <body><main><h1>Local Telegram inbox</h1>
 <p>Verification run: <code>${escapeHtml(verificationRunId)}</code></p>
 ${message}
+</main></body></html>`);
+};
+
+const renderWhatsAppInbox = (
+  response: ServerResponse,
+  verificationRunId: string,
+  ledger: ReadonlyArray<WhatsAppLedgerEntry>,
+  includeHistory: boolean,
+): void => {
+  const messages = ledger.flatMap((entry, index) => {
+    if (entry.accepted !== true) return [];
+    const decoded = Option.getOrUndefined(
+      Schema.decodeOption(WhatsAppInboxMessageFromJson)(entry.body),
+    );
+    if (decoded === undefined) return [];
+    return [
+      {
+        index: index + 1,
+        kind: decoded.type === "text" ? "Accepted text message" : "Accepted template",
+        text:
+          decoded.type === "text"
+            ? decoded.text.body
+            : `${decoded.template.name} (${decoded.template.language.code})`,
+      },
+    ];
+  });
+  const visibleMessages = includeHistory ? messages : messages.slice(-1);
+  const content =
+    visibleMessages
+      .map(
+        (message) => `<article>
+<h2>${message.kind} ${message.index}</h2>
+<pre>${escapeHtml(message.text)}</pre>
+</article>`,
+      )
+      .join("\n") || "<p>No accepted WhatsApp messages.</p>";
+  response.statusCode = 200;
+  response.setHeader("cache-control", "no-store");
+  response.setHeader("content-type", "text/html; charset=utf-8");
+  response.setHeader("x-content-type-options", "nosniff");
+  response.end(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Local WhatsApp inbox</title></head>
+<body><main><h1>Local WhatsApp inbox</h1>
+<p>Verification run: <code>${escapeHtml(verificationRunId)}</code></p>
+<p>Messages accepted by the local provider. Refresh to check for a reply.</p>
+${content}
 </main></body></html>`);
 };
 

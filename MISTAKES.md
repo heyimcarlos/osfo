@@ -14,6 +14,10 @@ short, specific, and actionable.
   verification run per Chrome profile; tabs and automation session names do not
   isolate authentication.
 
+- A provider request ledger includes rejected attempts and typing events. Browser
+  evidence must select the intended channel and show only accepted messages.
+  Wait for the actual reply before restarting the Worker for an observation.
+
 - Local model fixture matching must stop at the latest substantive User request.
   Searching older requests until a pattern matches can replay a completed action
   instead of selecting the current request. Skip only synthetic continuations.
