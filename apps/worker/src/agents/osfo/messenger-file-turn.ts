@@ -1,37 +1,51 @@
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import { convertToModelMessages, type ModelMessage, type UIMessage } from "ai";
-import { Array, Effect, Option, Predicate, Schema } from "effect";
+import { Array, Effect, Option, Predicate, Schema, SchemaGetter } from "effect";
 
 import type { ManagedTurnMetadata } from "../../domain/managed-conversation";
 import type { ThinkSubmissionId } from "../../domain";
 import { MessengerFileIngress } from "./messenger-file-ingress";
 
-const retainedMessenger = Schema.Struct({
-  messenger: Schema.Struct({
-    capabilities: Schema.Struct({}),
-    kind: Schema.Literals(["direct-message", "mention", "subscribed-message"]),
-    messengerId: Schema.String,
-    provider: Schema.Literals(["telegram", "whatsapp"]),
-    thread: Schema.Struct({
-      id: Schema.String,
-      providerThreadId: Schema.String,
-      isDirectMessage: Schema.Boolean,
-    }),
-    message: Schema.Struct({
-      id: Schema.String,
-      providerMessageId: Schema.String,
-      author: Schema.Struct({ userId: Schema.String }),
-      text: Schema.String,
-      attachments: Schema.Array(
-        Schema.Struct({
-          mediaType: Schema.optionalKey(Schema.String),
-          size: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
-          fetchMetadata: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
-        }),
+// Think includes optional attachment keys with undefined; retained JSON must omit them.
+const retainedOptional = <S extends Schema.Top>(schema: S) =>
+  Schema.optional(schema).pipe(
+    Schema.decodeTo(Schema.optionalKey(Schema.toType(schema)), {
+      decode: SchemaGetter.transformOptional((value) =>
+        Option.filter(value, Predicate.isNotUndefined),
       ),
+      encode: SchemaGetter.passthrough(),
+    }),
+  );
+
+const retainedMessenger = Schema.StructWithRest(
+  Schema.Struct({
+    messenger: Schema.Struct({
+      capabilities: Schema.Struct({}),
+      kind: Schema.Literals(["direct-message", "mention", "subscribed-message"]),
+      messengerId: Schema.String,
+      provider: Schema.Literals(["telegram", "whatsapp"]),
+      thread: Schema.Struct({
+        id: Schema.String,
+        providerThreadId: Schema.String,
+        isDirectMessage: Schema.Boolean,
+      }),
+      message: Schema.Struct({
+        id: Schema.String,
+        providerMessageId: Schema.String,
+        author: Schema.Struct({ userId: Schema.String }),
+        text: Schema.String,
+        attachments: Schema.Array(
+          Schema.Struct({
+            mediaType: retainedOptional(Schema.String),
+            size: retainedOptional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+            fetchMetadata: retainedOptional(Schema.Record(Schema.String, Schema.String)),
+          }),
+        ),
+      }),
     }),
   }),
-});
+  [Schema.Record(Schema.String, Schema.Unknown)],
+);
 
 export class Unavailable extends Schema.TaggedError<Unavailable>()("MessengerFileTurnUnavailable", {
   cause: Schema.Defect(),
@@ -91,29 +105,35 @@ export const prepare = Effect.fn("MessengerFileTurn.prepare")(function* <
     context.message.author.userId !== authority.address.authorId
   )
     return yield* unavailable("The retained attachment belongs to a different channel authority");
-  if (context.message.attachments.length === 0) return input.modelMessages;
+  const hasAttachments = context.message.attachments.length > 0;
   const currentUserIndex = input.modelMessages.reduce(
     (last, message, index) => (message.role === "user" ? index : last),
     -1,
   );
   if (currentUserIndex < 0) return yield* unavailable("The admitted User message is absent");
-  const prepared = yield* MessengerFileIngress.ingest(
-    {
-      context,
-      submissionId: input.metadata.submissionId,
-      userId: authority.userId,
-      // Retained provider text prevents duplicate result annotations after an interrupted turn.
-      userMessage: {
-        ...source,
-        parts: [{ type: "text", text: MessengerFileIngress.admissionText(context) }],
-      },
-    },
-    dependencies,
-  );
+  const prepared = hasAttachments
+    ? yield* MessengerFileIngress.ingest(
+        {
+          context,
+          submissionId: input.metadata.submissionId,
+          userId: authority.userId,
+          // Retained provider text prevents duplicate result annotations after an interrupted turn.
+          userMessage: {
+            ...source,
+            // Live SDK contexts contain Dates and callbacks. Retain only the decoded messenger
+            // snapshot so capability stamping can preserve it through interruptions.
+            metadata: retained,
+            parts: [{ type: "text", text: MessengerFileIngress.admissionText(context) }],
+          },
+        },
+        dependencies,
+      )
+    : { ...source, metadata: retained };
   if (Predicate.isString(prepared)) return yield* unavailable("Expected a native User message");
   if (!(yield* dependencies.authorize))
     return yield* unavailable("Current file authority was revoked");
   yield* dependencies.persist(prepared);
+  if (!hasAttachments) return input.modelMessages;
   const replacement = yield* Effect.tryPromise({
     try: () => convertToModelMessages([prepared]),
     catch: unavailable,

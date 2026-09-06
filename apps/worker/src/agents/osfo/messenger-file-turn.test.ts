@@ -1,7 +1,10 @@
 /* oxlint-disable effecttsgo/prefer-schema-over-json -- These assertions inspect serialized provider projections, not untrusted JSON decoding. */
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside Effect tests. */
 import { expect, it } from "@effect/vitest";
-import { Effect, Result } from "effect";
+import { Effect, Result, Schema } from "effect";
+import { userMessage } from "../../../test/support/conversation-usage-fixture";
+import { ManagedTurnMetadata } from "../../domain/managed-conversation";
+import { ManagedCapabilityState } from "./managed-capability-turn-state";
 import { ThinkSubmissionId } from "../../domain";
 import {
   harness,
@@ -29,7 +32,7 @@ it.effect(
       expect(JSON.stringify(messages[2])).toContain("retain unknown fields");
       expect(JSON.stringify(messages)).not.toContain("https://media.invalid");
       expect(test.persisted[0]?.id).toBe(source.id);
-      expect(test.persisted[0]?.metadata).toBe(source.metadata);
+      expect(test.persisted[0]?.metadata).toEqual(source.metadata);
     }),
 );
 
@@ -153,4 +156,65 @@ it.effect("gives captionless attachments a concrete inspection request", () =>
     );
     expect(JSON.stringify(messages)).toContain("Please inspect the attached files.");
   }),
+);
+
+it.effect("retains serializable messenger authority through capability stamping and replay", () =>
+  Effect.forEach([true, false], (hasAttachments) =>
+    Effect.gen(function* () {
+      const test = harness();
+      const envelope = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ turnMetadata: ManagedTurnMetadata }),
+      )(userMessage.metadata);
+      const turnMetadata = { ...envelope.turnMetadata, ...metadata };
+      const live = {
+        ...source,
+        parts: hasAttachments ? source.parts : [{ type: "text" as const, text: "Continue" }],
+        metadata: {
+          turnMetadata,
+          retainedMarker: "keep",
+          messenger: {
+            ...messenger,
+            action: undefined,
+            message: {
+              ...messenger.message,
+              // oxlint-disable-next-line effecttsgo/global-date, effecttsgo/global-date-in-effect -- Installed Think supplies a Date in live messenger contexts.
+              createdAt: new Date("2026-09-06T00:00:00Z"),
+              attachments: hasAttachments
+                ? messenger.message.attachments.map((attachment) => ({
+                    ...attachment,
+                    size: undefined,
+                    fetch: () => Promise.resolve(new ArrayBuffer(0)),
+                  }))
+                : [],
+            },
+          },
+        },
+      };
+      const first = yield* MessengerFileTurn.prepare(
+        { metadata, messages: [live], modelMessages: history },
+        test.dependencies,
+      );
+      const stamped = ManagedCapabilityState.stampActiveUserMessage(test.persisted, turnMetadata);
+      if (stamped === null) throw new Error("Expected stamped submission");
+      expect(stamped.metadata).toMatchObject({
+        retainedMarker: "keep",
+        messenger: {
+          ...messenger,
+          message: {
+            ...messenger.message,
+            attachments: hasAttachments ? messenger.message.attachments : [],
+          },
+        },
+      });
+      const replay = yield* MessengerFileTurn.prepare(
+        { metadata, messages: [stamped], modelMessages: first },
+        test.dependencies,
+      );
+      expect(replay).toEqual(first);
+      expect(test.events.filter((event) => event === "download")).toHaveLength(
+        hasAttachments ? 1 : 0,
+      );
+      expect(stamped.parts).toEqual(hasAttachments ? test.persisted[0]?.parts : live.parts);
+    }),
+  ),
 );

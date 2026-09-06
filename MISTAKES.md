@@ -124,3 +124,6 @@ short, specific, and actionable.
 - A base SDK transport regression must invoke the same base method as its
   production caller. Typing a Directory instance as Think still dispatches its
   invitation override; use the actual base entry point and verify model calls.
+- Live messenger metadata can contain Dates and callbacks even when its persisted
+  JSON looks safe. Retain the decoded attachment snapshot before capability
+  stamping, and test stamping followed by replay through the real metadata helper.

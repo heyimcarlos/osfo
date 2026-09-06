@@ -1,6 +1,10 @@
 /* oxlint-disable effecttsgo/async-function, vitest/no-conditional-expect -- Each parameterized provider exercises its distinct public entry point; Native Think lifecycle and model callbacks are Promise boundaries. */
 import { Think } from "@cloudflare/think";
-import { TextStreamCallback, toMessengerUserMessage } from "@cloudflare/think/messengers";
+import {
+  TextStreamCallback,
+  toMessengerAttachment,
+  toMessengerUserMessage,
+} from "@cloudflare/think/messengers";
 import { expect, it } from "@effect/vitest";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import { env } from "cloudflare:workers";
@@ -28,11 +32,12 @@ it.each(["whatsapp", "telegram"] as const)(
         message: {
           ...messenger.message,
           attachments: [
-            {
-              mediaType: "application/pdf",
+            toMessengerAttachment({
+              type: "file",
+              mimeType: "application/pdf",
               fetchMetadata: { fileId: "media-1", mediaId: "media-1" },
               url: "https://media.invalid/private",
-            },
+            }),
           ],
         },
       };
