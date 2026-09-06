@@ -98,3 +98,18 @@ starts; a restart after the streaming checkpoint retains an unknown delivery
 outcome rather than sending again. Replace the patches when upstream public APIs
 support these contracts, retaining the signed-webhook and process-restart
 regressions in issue #342.
+
+# Hosted browser continuity and files
+
+Date captured: 2026-09-06
+Horizon: browser workflow completion in issue #340
+
+Browser Run tasks currently retain authentication only within their live session.
+The ten-minute task lease does not provide a reusable website connection or
+restore an unfinished page after provider expiry. A later connection feature
+needs owner-scoped authentication storage and confirmed deletion of both saved
+state and live sessions.
+
+The fixed browser adapter currently denies downloads. Browser-generated files
+need to enter the existing Files ownership and retention flow before workflows
+can return downloaded forms or confirmation documents.

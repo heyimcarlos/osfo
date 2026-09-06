@@ -21,7 +21,18 @@ RUN_ID="verify-$(date -u +%Y%m%d-%H%M%S)-$$"
 
 `start` launches one labeled PostgreSQL container, applies the real migrations, starts local Twilio, Telegram, Stripe, and Supermemory HTTP emulators, starts the actual Worker under Wrangler with run-owned Durable Object and R2 storage, and starts the Vite web UI. It prints `ready` only after `/auth/get-session` and `/get-started` answer.
 
-The helper derives each run's Wrangler config from `apps/worker/wrangler.jsonc`. It changes only the run name, local provider and browser origins, test credentials, run-owned PostgreSQL connection, R2 bucket names, and Workflow name. It removes the inactive `ai` and `websearch` remote-provider bindings so a local journey cannot open a Cloudflare proxy session. Compatibility settings, all other bindings, migrations, containers, triggers, and observability remain canonical.
+The helper derives each run's Wrangler config from `apps/worker/wrangler.jsonc`. It changes only the run name, local provider and browser origins, test credentials, run-owned PostgreSQL connection, R2 bucket names, and Workflow name. It removes the inactive `ai` and `websearch` remote-provider bindings and keeps `BROWSER` local by default. Compatibility settings, all other bindings, migrations, containers, triggers, and observability remain canonical.
+
+For an explicitly requested hosted browser journey, enable the remote browser after `start`:
+
+```sh
+./.agents/skills/verify-osfo/helpers/control-osfo browser-bind "$RUN_ID" hosted
+```
+
+This changes only the run's `BROWSER` binding to `remote: true` and restarts its Worker.
+Hosted browser use can incur provider charges. Wrangler uses the existing infrastructure
+credentials; the helper creates no browser credentials or account-specific binding. Register
+and authenticate through Chrome as usual. Keep model credentials out of the Worker environment.
 
 The run is ready when all of these hold:
 

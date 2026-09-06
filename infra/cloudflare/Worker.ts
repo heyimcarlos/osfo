@@ -10,7 +10,7 @@ import { ResearchReportTimerWorkflow } from "./ResearchReportTimerWorkflow";
 import { ScheduledEmailWorkflow } from "./ScheduledEmailWorkflow";
 import { Files } from "./Files";
 import { Artifacts } from "./Artifacts";
-import { browserHostBindings, composioApiKeyConfig } from "./WorkerConfig";
+import { composioApiKeyConfig } from "./WorkerConfig";
 
 /** Cloudflare Worker and execution-unit bindings for one Osfo runtime stage. */
 const worker = Worker(
@@ -29,13 +29,13 @@ const worker = Worker(
         flags: ["nodejs_compat", "global_fetch_strictly_public"],
       },
       env: {
-        ...browserHostBindings(stage),
         AI: Workers.AI(),
         ARTIFACTS: Artifacts,
         BETTER_AUTH_API_KEY: Config.redacted("BETTER_AUTH_API_KEY"),
         BETTER_AUTH_BASE_URL: authBaseUrl,
         BETTER_AUTH_SECRET: Config.redacted("BETTER_AUTH_SECRET"),
         BETTER_AUTH_TRUSTED_ORIGINS: authTrustedOrigins,
+        BROWSER: Workers.Browser(),
         COMPOSIO_API_KEY: composioApiKeyConfig(stage),
         COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT: Config.string(
           "COMPANY_CONVERSATION_PUBLIC_SEARCH_DAILY_LIMIT",

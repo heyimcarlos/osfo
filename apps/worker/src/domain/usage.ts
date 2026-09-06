@@ -1,6 +1,7 @@
 import { Result, Schema } from "effect";
 
 import { managedSearchPrice } from "./web-search-price";
+import { hostedBrowserPrice } from "./browser-price";
 
 import { PlanPolicyVersion, ResourcePriceVersion } from "../domain";
 import {
@@ -334,6 +335,7 @@ const recognizedResourcePriceVersions = new Set([
   ...recognizedModelPrices.map(({ resourcePriceVersion }) => resourcePriceVersion),
   currentResourcePriceVersion,
   ResourcePriceVersion.make(managedSearchPrice.resourcePriceVersion),
+  ResourcePriceVersion.make(hostedBrowserPrice.resourcePriceVersion),
 ]);
 
 const isRecognizedModelPrice = (price: ManagedModelPrice) =>

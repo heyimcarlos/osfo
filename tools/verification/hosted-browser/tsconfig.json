@@ -1,0 +1,14 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "types": ["../../../apps/worker/node_modules/@cloudflare/workers-types"],
+    "paths": {
+      "agents/browser": ["./../../../apps/worker/node_modules/agents/dist/browser/index.d.ts"],
+      "@osfo/api/browser-host": ["../../../packages/api/src/browser-host.ts"],
+      "hosted-browser-provider-under-test": [
+        "../../../apps/worker/src/services/hosted-browser-provider.ts"
+      ]
+    }
+  },
+  "include": ["*.ts"]
+}

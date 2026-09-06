@@ -86,7 +86,9 @@ export const respondBrowserTask = (input: ResearchRequest) => {
         ? stop("The browser continuation has no task identity.")
         : select("observeBrowserTask", { taskId });
     }
-    const url = /http:\/\/127\.0\.0\.1:39271\/book\b/u.exec(instruction)?.[0];
+    const url =
+      /https:\/\/[a-z0-9.-]+\.workers\.dev\/fixture\b/u.exec(instruction)?.[0] ??
+      /http:\/\/127\.0\.0\.1:39271\/book\b/u.exec(instruction)?.[0];
     return url === undefined ? select("listBrowserTasks", {}) : select("openBrowserTask", { url });
   }
   if (last.name === "listBrowserTasks") {
@@ -139,11 +141,33 @@ export const respondBrowserTask = (input: ResearchRequest) => {
     observation === null ||
     task.lastOutcome.observation.observationId !== observation.observationId ||
     observation.taskId !== task.taskId ||
-    observation.url !== "http://127.0.0.1:39271/book"
+    (observation.url !== "http://127.0.0.1:39271/book" &&
+      !/^https:\/\/[a-z0-9.-]+\.workers\.dev\/fixture$/u.test(observation.url))
   )
     return stop("No matching owned portal observation was returned.");
-  if (inspecting || observation.text.includes("Confirmed. Receipt "))
+  if (
+    inspecting ||
+    observation.text.includes("Confirmed. Receipt ") ||
+    observation.text.includes("Test receipt recorded:")
+  )
     return stop(`Retained request: ${task.requestText}\nObserved page: ${observation.text}`);
+  if (observation.url.endsWith("/fixture")) {
+    const targetDescription = observation.text
+      .split(/\r?\n/u)
+      .find((line) => /^\d+ button Record test receipt$/u.test(line.trim()));
+    const target =
+      targetDescription === undefined ? undefined : /^\d+/u.exec(targetDescription)?.[0];
+    if (targetDescription === undefined || target === undefined)
+      return stop("No receipt button was observed in the hosted fixture.");
+    return select("executeBrowserEffect", {
+      taskId: task.taskId,
+      observationId: observation.observationId,
+      expectedUrl: observation.url,
+      targetDescription,
+      interaction: { _tag: "Click", target },
+      consequence: "Record the synthetic test receipt in this browser.",
+    });
+  }
   if (!task.requestText.includes("Prefer Tuesday morning"))
     return stop("The returned task does not establish the fixture's Tuesday preference.");
   const selected = observation.text.includes("Selected: Tuesday at 10:00 AM");

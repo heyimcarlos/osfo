@@ -58,6 +58,50 @@ const context = (
 });
 
 describe("governed Authorization", () => {
+  it("meters paid browser opening against the remaining shared budget while keeping observation free", () => {
+    const authorization = make(retainedCatalog);
+    const operation = {
+      actionId: "browser-open",
+      kind: "browser.read",
+      deadlineMilliseconds: 25_000n,
+      responseBytes: 262_144n,
+      retries: 0n,
+    } as const;
+    const bound = 30_000n;
+    expect(
+      authorization.admit({ ...context("free"), requestVendorUsdMicros: bound }, operation),
+    ).toMatchObject({
+      _tag: "Admitted",
+      allowancePeriod: { _tag: "Metered", allowancePeriodId: "shared-period" },
+    });
+    expect(
+      authorization.admit(
+        { ...context("free", 1_970_000n), requestVendorUsdMicros: bound },
+        operation,
+      ),
+    ).toMatchObject({ _tag: "Admitted" });
+    for (const used of [1_970_001n, 2_000_000n]) {
+      expect(
+        authorization.admit({ ...context("free", used), requestVendorUsdMicros: bound }, operation),
+      ).toMatchObject({ _tag: "Denied", reason: "allowanceExhausted" });
+    }
+    expect(authorization.admit(context("free", 2_000_000n), operation)).toMatchObject({
+      _tag: "Admitted",
+      allowancePeriod: { _tag: "Unmetered" },
+    });
+    expect(
+      authorization.admit(context("free", 2_000_000n), {
+        ...operation,
+        kind: "browser.inspect",
+        deadlineMilliseconds: 15_000n,
+        responseBytes: 16_384n,
+      }),
+    ).toMatchObject({
+      _tag: "Admitted",
+      allowancePeriod: { _tag: "Unmetered" },
+    });
+  });
+
   it("permits only an exact Deletion Case trigger to continue fenced account deletion", () => {
     const authorization = make(retainedCatalog);
     const operation = { actionId: "account-delete-1", kind: "account.delete" } as const;

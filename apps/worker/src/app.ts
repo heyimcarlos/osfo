@@ -128,6 +128,9 @@ const adaptBindings = (env: CloudflareEnv, config: CloudflareConfig): Bindings =
           actor,
           selection?: "immediate-gmail" | "scheduled-email" | "reminder" | "browser",
         ) => directory.listActionPresentations(agentId, actor, selection),
+        listBrowserTasks: (agentId, actor) => directory.listBrowserTasks(agentId, actor),
+        openBrowserTask: (agentId, input) => directory.openBrowserTask(agentId, input),
+        resumeBrowserTask: (agentId, input) => directory.resumeBrowserTask(agentId, input),
         decideActionApproval: (agentId, input) => directory.decideActionApproval(agentId, input),
         changePersonalSkill: (agentId, input) => directory.changePersonalSkill(agentId, input),
         presentPersonalSkillDeletion: (agentId, input) =>

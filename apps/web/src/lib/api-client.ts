@@ -12,6 +12,7 @@ import {
   type ScheduledEmailApprovalDecision,
   type ReminderApprovalDecision,
   type BrowserApprovalDecision,
+  type BrowserTaskSelection,
   type SkillChangeRequest,
   type SkillDeletionPresentation,
   skillDeletionConfirmation,
@@ -265,4 +266,21 @@ export const decideBrowserApproval = (payload: BrowserApprovalDecision) =>
   Effect.gen(function* () {
     const client = yield* apiClient;
     return yield* client.browserApprovals.decideApproval({ payload });
+  });
+
+export const inspectBrowserTasks = Effect.gen(function* () {
+  const client = yield* apiClient;
+  return yield* client.browserTasks.list();
+});
+
+export const openBrowserTask = (payload: BrowserTaskSelection) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    return yield* client.browserTasks.open({ payload });
+  });
+
+export const resumeBrowserTask = (payload: BrowserTaskSelection) =>
+  Effect.gen(function* () {
+    const client = yield* apiClient;
+    return yield* client.browserTasks.resume({ payload });
   });

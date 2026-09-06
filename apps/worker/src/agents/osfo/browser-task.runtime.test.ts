@@ -3,7 +3,7 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "@effect/vitest";
-import { Effect, Redacted } from "effect";
+import { Effect } from "effect";
 import type { BrowserOutcome, BrowserRequest } from "@osfo/api/browser-host";
 
 import { ThinkSubmissionId, UserId } from "../../domain";
@@ -26,11 +26,8 @@ it.effect(
           Effect.gen(function* () {
             const userId = UserId.make("browser-task-owner");
             const binding: Browser.Binding = {
-              endpoint: "http://127.0.0.1:39270/inventory",
               ownerUserId: userId,
-              hostSessionId: "fixture-extension",
-              token: Redacted.make("fixture-token"),
-              allowedOrigins: ["https://portal.example"],
+              hostSessionId: "hosted-fixture",
             };
             const first = {
               userId,
@@ -41,15 +38,19 @@ it.effect(
             const requests: Array<BrowserRequest> = [];
             let cleanupSucceeded = false;
             let admitted = true;
+            let now = 1;
             const options: BrowserTask.Options = {
               storage: state.storage,
-              binding,
+              binding: () => binding,
+              now: Effect.sync(() => now),
               authorize: () =>
                 admitted
                   ? Effect.void
                   : Effect.fail(new Browser.BrowserUnavailable({ message: "revoked" })),
-              revoke: () =>
-                Effect.succeed(cleanupSucceeded ? { _tag: "Closed" } : { _tag: "Unknown" }),
+              cleanup: () =>
+                cleanupSucceeded
+                  ? Effect.void
+                  : Effect.fail(new Browser.BrowserUnavailable({ message: "cleanup unconfirmed" })),
               dispatch: (request) =>
                 Effect.sync((): BrowserOutcome => {
                   requests.push(request);
@@ -68,6 +69,16 @@ it.effect(
                 }),
             };
             const tasks = BrowserTask.make(options);
+            for (const url of [
+              "https://other.example/book",
+              "http://portal.example/book",
+              "https://user:password@portal.example/book",
+            ]) {
+              expect((yield* tasks.open(first, url, requestText).pipe(Effect.flip))._tag).toBe(
+                "BrowserUnavailable",
+              );
+            }
+            expect(requests).toHaveLength(0);
             const opened = yield* tasks.open(first, "https://portal.example/book", requestText);
             expect(opened.requestText).toBe(requestText);
             const approved = {
@@ -88,6 +99,20 @@ it.effect(
                 targetDescription: "1 AXButton Read only",
               }),
             ).toBe(false);
+            now = 300_001;
+            const expired = yield* tasks.read(first.operationId, userId);
+            expect(expired.observation).toBeNull();
+            expect(matchesObservation(expired, approved)).toBe(false);
+            expect(
+              (yield* tasks
+                .run({ ...first, operationId: "expired-effect" }, first.operationId, {
+                  _tag: "Interact",
+                  observationId: first.operationId,
+                  interaction: approved.interaction,
+                })
+                .pipe(Effect.flip))._tag,
+            ).toBe("BrowserUnavailable");
+            now = 1;
             const uncertain = yield* tasks.run(
               { ...first, operationId: "approved-effect" },
               first.operationId,
@@ -138,6 +163,12 @@ it.effect(
             expect(
               yield* Effect.promise(() => state.storage.get(`browser-task:${first.operationId}`)),
             ).toBeUndefined();
+            const unbound = BrowserTask.make({ ...options, binding: () => null });
+            yield* unbound.quiesce(userId);
+            cleanupSucceeded = false;
+            expect((yield* unbound.quiesce(userId).pipe(Effect.flip))._tag).toBe(
+              "BrowserUnavailable",
+            );
           }),
         );
       });
