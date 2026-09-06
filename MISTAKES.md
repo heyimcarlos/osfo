@@ -3,6 +3,10 @@
 Record mistakes that can affect the current Osfo implementation. Keep each entry
 short, specific, and actionable.
 
+- Local model fixture matching must stop at the latest substantive User request.
+  Searching older requests until a pattern matches can replay a completed action
+  instead of selecting the current request. Skip only synthetic continuations.
+
 - When an accepted research handoff explicitly supersedes repository and issue
   state, derive the new documents and issue graph from the handoff first. Do not
   preserve stale worktree or GitHub assumptions as constraints.
