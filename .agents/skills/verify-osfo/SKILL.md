@@ -30,7 +30,7 @@ The run is ready when all of these hold:
 - PostgreSQL answers `pg_isready` inside the run-labeled container;
 - `doctor` reports the same launch commit as the current checkout.
 
-Two runs may coexist because their ports, container, Worker storage, User identity, Telegram address, and evidence directory differ. Keep each run in one Chrome session. Use the same authenticated dashboard tab for registration and channel linking. Preserve a tab when the selected feature explicitly marks it mounted. A feature may direct temporary provider or billing tabs; close or leave those tabs when directed. Never drive another run's URL in any tab.
+Multiple runs may keep their isolated processes and storage running, but authenticate only one run per Chrome profile. Different `127.0.0.1` ports share cookies; tabs and named automation sessions do not isolate them. Use separate Chrome profiles for concurrent authenticated runs. Use the same authenticated dashboard tab for registration and channel linking. Preserve a tab when the selected feature explicitly marks it mounted. A feature may direct temporary provider or billing tabs; close or leave those tabs when directed.
 
 ## Doctor
 
@@ -82,9 +82,10 @@ FEATURE=registration # registration, channel-linking, conversation-memory, resea
 ./.agents/skills/verify-osfo/helpers/control-osfo evidence "$RUN_ID" "$FEATURE" finish
 ```
 
-Immediate Gmail deliberately defers that final command: observe the Gmail result, complete and
-finish the retained account-deletion replay in the normal drive order, then finish Immediate
-Gmail with the deletion receipt. Its feature file gives the exact sequence.
+Immediate Gmail defers only `evidence finish` until retained account-deletion replay supplies
+its deletion receipt. Complete its browser Approval, result recording, and `observe` before
+starting Scheduled Email evidence, which resets the shared provider ledger. Its
+[feature file](features/immediate-gmail-send.md) gives the exact sequence.
 
 ## Evidence
 
