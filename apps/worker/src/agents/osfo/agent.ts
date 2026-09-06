@@ -932,6 +932,7 @@ export class OsfoAgent extends Think<Env> {
     discover: ResearchVerificationProvider.selectDiscovery(
       this.#researchReportProvider,
       this.env.WEBSEARCH,
+      this.env.AI,
     ),
     fetchPage: ResearchVerificationProvider.selectPageFetch(this.#researchReportProvider),
     // oxlint-disable-next-line effecttsgo/crypto-random-uuid -- Durable opaque result identities cross the Effect-free AI Tool boundary.

@@ -204,9 +204,11 @@ export const executionEffect = <Value>(
           ),
         persistence: ResearchCollectorPostgres.make(database),
         provider: {
+          managedSearch: env.researchReportProvider._tag === "ManagedWebSearch",
           discover: ResearchVerificationProvider.selectDiscovery(
             env.researchReportProvider,
             env.WEBSEARCH,
+            env.AI,
           ),
           fetchPage: ResearchVerificationProvider.selectPageFetch(env.researchReportProvider),
         },
