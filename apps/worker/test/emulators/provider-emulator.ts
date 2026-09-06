@@ -1263,7 +1263,7 @@ const handleResearch = (
         const scheduledEmailWorkflowId = /scheduled-email:[\w:-]{8,300}/iu.exec(lastMessage)?.[0];
         const scheduledEmailFixture =
           /recipient=([^;]+); subject=([^;]+); body=([^;]+); sendAt=([^;\s]+)/iu.exec(lastMessage);
-        const immediateGmailFixture = latestUserMessageMatch(
+        const immediateGmailFixture = latestUserRequestMatch(
           input,
           /send this exact Gmail message now: recipient=([^;]+); subject=([^;]+); body=([^;]+)/iu,
         );
@@ -1556,13 +1556,21 @@ const latestUserMessageContent = (input: ResearchRequest): string => {
 const latestUserInstruction = (input: ResearchRequest): string =>
   latestUserMessageContent(input).trimEnd().split(/\r?\n/u).at(-1)?.trim() ?? "";
 
-const latestUserMessageMatch = (input: ResearchRequest, pattern: RegExp): RegExpExecArray | null =>
-  input.messages?.reduceRight<RegExpExecArray | null>((found, message) => {
-    if (found !== null || message.role !== "user" || typeof message.content !== "string") {
+const latestUserRequestMatch = (input: ResearchRequest, pattern: RegExp): RegExpExecArray | null =>
+  input.messages?.reduceRight<RegExpExecArray | null | undefined>((found, message) => {
+    if (
+      found !== undefined ||
+      message.role !== "user" ||
+      (typeof message.content === "string" &&
+        message.content.startsWith(
+          "Continue your previous response from exactly where it left off.",
+        ))
+    ) {
       return found;
     }
-    return pattern.exec(message.content);
-  }, null) ?? null;
+    // Approval continuations reuse the latest request; a newer request ends the historical search.
+    return typeof message.content === "string" ? pattern.exec(message.content) : null;
+  }, undefined) ?? null;
 
 const runOwnedRecallContext = (
   input: ResearchRequest,
