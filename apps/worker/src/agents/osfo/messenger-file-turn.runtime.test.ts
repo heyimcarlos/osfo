@@ -25,6 +25,13 @@ it.each(["whatsapp", "telegram"] as const)(
         kind: "direct-message" as const,
         provider,
         messengerId: provider,
+        message: {
+          ...messenger.message,
+          attachments: messenger.message.attachments.map((attachment) => ({
+            ...attachment,
+            url: "https://media.invalid/private",
+          })),
+        },
       };
       const turnMetadata = {
         ...metadata,
@@ -38,6 +45,7 @@ it.each(["whatsapp", "telegram"] as const)(
       };
       const sdkMessage = toMessengerUserMessage(context);
       expect(sdkMessage.id).not.toBe(metadata.submissionId);
+      expect(JSON.stringify(sdkMessage.parts)).toContain("https://media.invalid/private");
       const nativeMessage = MessengerFileTurn.messageForSubmission(
         sdkMessage,
         context,
