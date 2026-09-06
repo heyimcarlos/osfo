@@ -707,33 +707,6 @@ export class OsfoAgent extends Think<Env> {
   /** Do not expose connected MCP catalogs until Osfo registers a typed tool boundary. */
   override includeMcpTools = false;
 
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    // Think installs its protocol dispatcher in super(); wrap that installed handler before persistence.
-    const handleMessage = this.onMessage.bind(this);
-    this.onMessage = async (connection, message) => {
-      const event = Predicate.isString(message) ? parseProtocolMessage(message) : null;
-      if (event?.type === "chat-request" && event.init?.method === "POST") {
-        const admission = await Effect.runPromise(
-          IncidentControlsPostgres.check(this.env.DB, "newIngress").pipe(Effect.result),
-        );
-        if (Result.isFailure(admission)) {
-          connection.send(
-            JSON.stringify({
-              type: CHAT_MESSAGE_TYPES.USE_CHAT_RESPONSE,
-              id: event.id,
-              body: "New messages are temporarily unavailable. Please try again later.",
-              done: true,
-              error: true,
-            }),
-          );
-          return;
-        }
-      }
-      await handleMessage(connection, message);
-    };
-  }
-
   /** Do not attach prompts or responses to telemetry spans. */
   override storeMessages = false;
 
@@ -3253,6 +3226,30 @@ export class OsfoAgent extends Think<Env> {
 
   /** Recover activation-safe durable work without reading unbounded Think Session history. */
   override async onStart(): Promise<void> {
+    // Think installs its protocol dispatcher immediately before calling this startup hook.
+    const handleMessage = this.onMessage.bind(this);
+    this.onMessage = async (connection, message) => {
+      const event = Predicate.isString(message) ? parseProtocolMessage(message) : null;
+      if (event?.type === "chat-request" && event.init?.method === "POST") {
+        const admission = await Effect.runPromise(
+          IncidentControlsPostgres.check(this.env.DB, "newIngress").pipe(Effect.result),
+        );
+        if (Result.isFailure(admission)) {
+          connection.send(
+            JSON.stringify({
+              type: CHAT_MESSAGE_TYPES.USE_CHAT_RESPONSE,
+              id: event.id,
+              body: "New messages are temporarily unavailable. Please try again later.",
+              done: true,
+              error: true,
+            }),
+          );
+          return;
+        }
+      }
+      await handleMessage(connection, message);
+    };
+
     await this.#migrationsReady;
     if (!(await Effect.runPromise(this.#accountResetFence.isFenced))) {
       await Effect.runPromise(this.#reminders.reconcileSchedules());

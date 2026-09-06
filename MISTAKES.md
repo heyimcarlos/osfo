@@ -107,3 +107,8 @@ short, specific, and actionable.
 - Check dispatch admission before reclaiming an expired provider attempt. A pause
   must return and retain its incurred evidence; an allowed retry must preserve
   the old immutable cost record before replacing the attempt row.
+
+- Verify framework handler installation timing through a real connected transport.
+  Think installs its chat dispatcher during asynchronous startup after the
+  constructor; a constructor wrapper can be bypassed. Install message admission
+  in the post-setup startup hook and prove pause, resume and cancellation together.
