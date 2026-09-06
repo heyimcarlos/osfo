@@ -20,6 +20,9 @@ import {
   AgentId,
   AgentInitializationId,
   AllowancePeriodId,
+  CapabilityCatalogVersion,
+  PlanPolicyVersion,
+  ModelAccessPolicyVersion,
   AssistantMessageId,
   ConversationRouteId,
   ResourcePriceVersion,
@@ -41,7 +44,26 @@ import {
 } from "./memory-provider-outbox";
 import { makeAgentStore } from "./store";
 import { makeWebState } from "./web-state";
-import type { CompletedOperation, RankedResult } from "../../../services/web";
+import {
+  settleConversationUsage,
+  conversationUsageEvent,
+  retainConversationModelStep,
+} from "../conversation-usage";
+import {
+  metadata,
+  userMessage,
+  step,
+  occurredAt,
+} from "../../../../test/support/conversation-usage-fixture";
+import { CommittedTurnTerminal, withCommittedTurnTerminal } from "../committed-turn-terminal";
+import { UsageEvent } from "../../../domain/usage-event";
+import { initialManagedSearchEvidence } from "../../../domain/web-search-evidence";
+import {
+  PaidSearchAttempt,
+  Web,
+  type CompletedOperation,
+  type RankedResult,
+} from "../../../services/web";
 import { ConversationSnapshotProjection } from "../memory-provider-projection";
 import { MemoryProvider } from "../../../services/memory-provider";
 import {
@@ -64,6 +86,17 @@ const testSessionWriteSelection = {
   selectSessionForWrites: () => Effect.void,
 };
 
+const paidAdmission = {
+  allowancePeriodId: AllowancePeriodId.make("paid-period-original"),
+  authorizedAt: "2026-08-27T12:00:00Z",
+  capabilityCatalogVersion: CapabilityCatalogVersion.make("governed-capabilities-v1"),
+  originatingAuthority: {
+    _tag: "AuthSession" as const,
+    authSessionId: AuthSessionId.make("paid-auth"),
+  },
+  planPolicyVersion: PlanPolicyVersion.make("shared-usage-v1"),
+};
+
 const now = DbTimestamp.make("2026-08-23T12:00:00.000Z");
 const past = DbTimestamp.make("1960-01-01T00:00:00.000Z");
 const liveLease = DbTimestamp.make("2026-08-23T12:01:00.000Z");
@@ -84,17 +117,264 @@ it("includes every generated Agent migration in the runtime manifest", () => {
   expect(imports.every((match) => referencedSql.has(match[1] ?? ""))).toBe(true);
 });
 
-it.effect("migrates a fresh Agent database to version 19 without the legacy table", () =>
+it.effect(
+  "withholds settlement when SQLite retained only a prefix after the final step write failed",
+  () =>
+    withDatabase(({ database }) =>
+      Effect.gen(function* () {
+        const session = Session.create(thinkSqlProvider(database)).forSession("session-1");
+        const first = yield* retainConversationModelStep(
+          [userMessage],
+          metadata.submissionId,
+          step,
+        );
+        yield* Effect.promise(() => session.appendMessage(first));
+        const second = yield* retainConversationModelStep([first], metadata.submissionId, {
+          ...step,
+          stepNumber: 2,
+        });
+        database.exec(
+          "CREATE TRIGGER fail_final_usage BEFORE UPDATE ON assistant_messages BEGIN SELECT RAISE(ABORT, 'disk write failed'); END",
+        );
+        yield* Effect.tryPromise({
+          try: () => session.updateMessage(second),
+          catch: () => "write failed",
+        }).pipe(Effect.flip);
+        database.exec("DROP TRIGGER fail_final_usage");
+        const restarted = Session.create(thinkSqlProvider(database)).forSession("session-1");
+        const retained = yield* Effect.promise(() => restarted.getMessage(userMessage.id));
+        if (retained === null) throw new Error("The first step must remain durable");
+        const failure = yield* conversationUsageEvent([retained], metadata, [], occurredAt, 2).pipe(
+          Effect.flip,
+        );
+        expect(failure).toMatchObject({
+          reason: "unreported",
+          message: "Completed conversation model evidence is incomplete",
+        });
+      }),
+    ),
+);
+
+it.effect(
+  "recovers a committed conversation through exact receipt IDs after branch switch and compaction",
+  () =>
+    withDatabase(({ database, storage }) =>
+      Effect.gen(function* () {
+        const store = makeAgentStore(makeAgentDb(asDurableObjectStorage(storage)));
+        yield* store.initialize(AgentId.make("agent-1"), {
+          agentId: AgentId.make("agent-1"),
+          initializationId: AgentInitializationId.make("init-1"),
+          initializedAt: now,
+          routeId: ConversationRouteId.make("route-1"),
+          sessionId: SessionId.make("session-1"),
+        });
+        const session = Session.create(thinkSqlProvider(database)).forSession("session-1");
+        const first = yield* retainConversationModelStep(
+          [userMessage],
+          metadata.submissionId,
+          step,
+        );
+        yield* Effect.promise(() => session.appendMessage(first));
+        const terminal = CommittedTurnTerminal.make({
+          requestId: ThinkRequestId.make("old-request"),
+          submissionId: metadata.submissionId,
+          status: "completed",
+          usageOccurredAt: occurredAt.toISOString(),
+          usageSubmissionMessageId: first.id,
+          usageExpectedModelSteps: 1,
+        });
+        const assistant = {
+          id: "old-assistant",
+          role: "assistant",
+          parts: [{ type: "text", text: "Useful original answer" }],
+          metadata: withCommittedTurnTerminal({}, terminal),
+        };
+        yield* Effect.promise(() => session.appendMessage(assistant, first.id));
+        yield* store.recordCommittedTurn({
+          assistantMessageId: AssistantMessageId.make(assistant.id),
+          sessionId: SessionId.make("session-1"),
+          source: "hook",
+          thinkRequestId: terminal.requestId,
+        });
+        yield* Effect.promise(() =>
+          session.appendMessage(
+            {
+              id: "new-branch",
+              role: "assistant",
+              parts: [{ type: "text", text: "Different branch" }],
+            },
+            first.id,
+          ),
+        );
+        database
+          .prepare(
+            "UPDATE assistant_messages SET created_at = '2099-01-01T00:00:00Z' WHERE id = 'new-branch'",
+          )
+          .run();
+        yield* Effect.promise(() =>
+          session.addCompaction("Compacted different branch", first.id, "new-branch"),
+        );
+        const active = yield* Effect.promise(() => session.getHistory());
+        expect(
+          active.some((message) => message.id === first.id || message.id === assistant.id),
+        ).toBe(false);
+        const restarted = Session.create(thinkSqlProvider(database)).forSession("session-1");
+        const receipts = yield* store.readCommittedTurns;
+        let dispatched = 0;
+        yield* Effect.forEach(
+          receipts,
+          (receipt) =>
+            settleConversationUsage({
+              read: Effect.promise(() => restarted.getMessage(receipt.assistantMessageId)).pipe(
+                Effect.flatMap(
+                  Schema.decodeUnknownEffect(
+                    Schema.Struct({
+                      metadata: Schema.Struct({ osfoCommittedTurn: CommittedTurnTerminal }),
+                    }),
+                  ),
+                ),
+                Effect.map((message) => message.metadata.osfoCommittedTurn),
+              ),
+              prepare: (retainedTerminal) =>
+                Effect.gen(function* () {
+                  const sourceId = retainedTerminal.usageSubmissionMessageId;
+                  const expectedSteps = retainedTerminal.usageExpectedModelSteps;
+                  if (sourceId === undefined || expectedSteps === undefined)
+                    throw new Error("Exact terminal completion evidence is required");
+                  const source = yield* Effect.promise(() => restarted.getMessage(sourceId));
+                  if (source === null)
+                    throw new Error("Original Submission must survive compaction");
+                  return yield* conversationUsageEvent(
+                    [source],
+                    metadata,
+                    [],
+                    occurredAt,
+                    expectedSteps,
+                  );
+                }),
+              retain: (retainedTerminal) =>
+                Effect.promise(() => {
+                  const updated = {
+                    ...assistant,
+                    metadata: withCommittedTurnTerminal({}, retainedTerminal),
+                  };
+                  return restarted.updateMessage(updated);
+                }).pipe(Effect.asVoid),
+              dispatch: (event) =>
+                Effect.sync(() => {
+                  dispatched++;
+                  expect(event.source.sourceId).toBe(metadata.submissionId);
+                  expect(event.outcome).toMatchObject({
+                    _tag: "Completed",
+                    charge: { ratedCostUsdMicros: 530n },
+                  });
+                }),
+            }),
+          { discard: true },
+        );
+        expect(dispatched).toBe(1);
+      }),
+    ),
+);
+
+it.effect(
+  "replays a frozen conversation event from Think SQLite after an acknowledgement is lost",
+  () =>
+    withDatabase(({ database }) =>
+      Effect.gen(function* () {
+        const initial = CommittedTurnTerminal.make({
+          requestId: ThinkRequestId.make("request-settle"),
+          submissionId: ThinkSubmissionId.make("submission-settle"),
+          status: "completed",
+          usageOccurredAt: "2026-09-06T12:00:00.000Z",
+        });
+        const event = UsageEvent.make({
+          allowancePeriodId: AllowancePeriodId.make("period-original"),
+          capabilityCatalogVersion: CapabilityCatalogVersion.make("governed-capabilities-v1"),
+          evidenceReferences: [
+            { kind: "operationEvidence", reference: "model-call-attempt:submission-settle:1" },
+          ],
+          manifestVersion: null,
+          modelAccessPolicyVersion: ModelAccessPolicyVersion.make("shared-usage-v1"),
+          // oxlint-disable-next-line effecttsgo/global-date-in-effect -- Fixed retained accounting timestamp for restart replay.
+          occurredAt: new Date("2026-09-06T12:00:00.000Z"),
+          outcome: {
+            _tag: "Completed",
+            charge: {
+              components: [
+                {
+                  activity: "conversationsAndMemory",
+                  ratedCostUsdMicros: 100n,
+                  resourcePriceVersion: ResourcePriceVersion.make("resource-prices-2026-08-22"),
+                },
+              ],
+              planUsageMicros: 100n,
+              ratedCostUsdMicros: 100n,
+              usagePolicyVersion: PlanPolicyVersion.make("shared-usage-v1"),
+            },
+          },
+          rootOperationId: "submission-settle",
+          source: { sourceId: "submission-settle", sourceType: "conversation" },
+          usagePolicyVersion: PlanPolicyVersion.make("shared-usage-v1"),
+        });
+        const session = Session.create(thinkSqlProvider(database)).forSession("session-settle");
+        const assistant = {
+          id: "assistant-settle",
+          role: "assistant",
+          parts: [{ type: "text", text: "Completed answer" }],
+          metadata: withCommittedTurnTerminal({}, initial),
+        };
+        yield* Effect.promise(() => session.appendMessage(assistant));
+        const decode = Schema.decodeUnknownEffect(
+          Schema.Struct({ metadata: Schema.Struct({ osfoCommittedTurn: CommittedTurnTerminal }) }),
+        );
+        let dispatches = 0;
+        const port = () => {
+          const restarted = Session.create(thinkSqlProvider(database)).forSession("session-settle");
+          return {
+            read: Effect.promise(() => restarted.getMessage("assistant-settle")).pipe(
+              Effect.flatMap(decode),
+              Effect.map((message) => message.metadata.osfoCommittedTurn),
+            ),
+            prepare: () => Effect.succeed(event),
+            retain: (terminal: CommittedTurnTerminal) =>
+              Effect.promise(() => {
+                const updated = { ...assistant, metadata: withCommittedTurnTerminal({}, terminal) };
+                return restarted.updateMessage(updated);
+              }).pipe(Effect.asVoid),
+            dispatch: (retained: UsageEvent) =>
+              Effect.gen(function* () {
+                expect(retained).toEqual(event);
+                dispatches++;
+                if (dispatches === 1) return yield* Effect.fail("lost acknowledgement");
+                return undefined;
+              }),
+          };
+        };
+        yield* settleConversationUsage(port()).pipe(Effect.flip);
+        yield* settleConversationUsage({
+          ...port(),
+          prepare: () =>
+            Effect.die(new Error("Frozen event must survive restart and period rollover")),
+        });
+        yield* settleConversationUsage(port());
+        expect(dispatches).toBe(2);
+        expect(yield* port().read).toMatchObject({ usageSettled: true });
+      }),
+    ),
+);
+
+it.effect("migrates a fresh Agent database to version 20 without the legacy table", () =>
   withEmptyDatabase(({ database, storage }) =>
     Effect.gen(function* () {
       const first = yield* applyAgentMigrations(asDurableObjectStorage(storage));
       const second = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
       expect(first).toEqual({
-        appliedVersions: Array.from({ length: 19 }, (_, index) => index + 1),
-        currentVersion: 19,
+        appliedVersions: Array.from({ length: 20 }, (_, index) => index + 1),
+        currentVersion: 20,
       });
-      expect(second).toEqual({ appliedVersions: [], currentVersion: 19 });
+      expect(second).toEqual({ appliedVersions: [], currentVersion: 20 });
       expect(
         database
           .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
@@ -121,7 +401,7 @@ it.effect("drops seeded legacy receipts while upgrading a version-18 Agent datab
       const upgraded = yield* applyAgentMigrations(durableStorage);
       yield* makePersonalSkillAuthority(storage).deleteUserData(UserId.make("user-upgrade"));
 
-      expect(upgraded).toEqual({ appliedVersions: [19], currentVersion: 19 });
+      expect(upgraded).toEqual({ appliedVersions: [19, 20], currentVersion: 20 });
       expect(
         database
           .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
@@ -205,8 +485,8 @@ it.effect("activates an Agent that slept before the conversation processing migr
       const result = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
       expect(result).toEqual({
-        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
-        currentVersion: 19,
+        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+        currentVersion: 20,
       });
       expect(
         database
@@ -365,6 +645,250 @@ it.effect("bounds retained public-web operations and result identities per User"
       ).toEqual({ count: 30 });
       expect(yield* state.readResult(ownerUserId, "web-retention-result-0")).toBeNull();
       expect(yield* state.readResult(ownerUserId, "web-retention-result-30")).not.toBeNull();
+    }),
+  ),
+);
+
+it.effect(
+  "retains the original admission across period rollover and restart after paid failure",
+  () =>
+    withDatabase(({ database, storage }) =>
+      Effect.gen(function* () {
+        const db = makeAgentDb(asDurableObjectStorage(storage));
+        let calls = 0;
+        let authorizations = 0;
+        let currentAdmission = paidAdmission;
+        const evidence = {
+          ...initialManagedSearchEvidence("provider-attempt"),
+          inputTokens: 123,
+          outputTokens: 4,
+          ratedCostUsdMicros: 143,
+          successfulSearches: 0,
+        };
+        const options = {
+          authorize: () =>
+            Effect.sync(() => {
+              authorizations += 1;
+              return currentAdmission;
+            }),
+          discover: () =>
+            Effect.sync(() => {
+              calls += 1;
+            }).pipe(Effect.andThen(Effect.fail({ managedSearch: evidence }))),
+          fetchPage: () => Effect.die(new Error("No discovery result exists")),
+          makeId: () => "provider-attempt",
+          // oxlint-disable-next-line effecttsgo/global-date-in-effect -- A fixed timestamp controls page evidence in this SQLite lifecycle test.
+          now: Effect.succeed(new Date(now)),
+          searchPolicy: { requestVendorUsdMicros: 50_000n },
+        };
+        const input = {
+          operationId: "paid-failed",
+          query: "current releases",
+          requestText: "Search current releases",
+          turnId: ThinkSubmissionId.make("paid-turn"),
+          userId: UserId.make("paid-owner"),
+        };
+        const first = Web.make({ ...options, state: makeWebState(db, () => 1_000) });
+        expect(Result.isFailure(yield* first.search(input).pipe(Effect.result))).toBe(true);
+        currentAdmission = {
+          ...paidAdmission,
+          allowancePeriodId: AllowancePeriodId.make("paid-period-next"),
+        };
+        const restarted = Web.make({ ...options, state: makeWebState(db, () => 100_000) });
+        const replay = yield* restarted.search(input).pipe(Effect.result);
+        expect(Result.isFailure(replay)).toBe(true);
+        if (Result.isFailure(replay))
+          expect(replay.failure).toMatchObject({ reason: "operationFailed" });
+        expect(calls).toBe(1);
+        expect(authorizations).toBe(1);
+        expect(
+          database
+            .prepare("SELECT paid_attempt_json FROM osfo_web_operations WHERE operation_id = ?")
+            .get(input.operationId),
+        ).toEqual({
+          paid_attempt_json: yield* Schema.encodeEffect(Schema.fromJsonString(PaidSearchAttempt))({
+            admission: paidAdmission,
+            admittedVendorUsdMicros: 50_000n,
+            evidence,
+            outcome: "failed",
+          }),
+        });
+      }),
+    ),
+);
+
+it.effect("keeps successful provider cost when page grounding exceeds the operation deadline", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const evidence = {
+        ...initialManagedSearchEvidence("grounding-attempt"),
+        inputTokens: 123,
+        outputTokens: 4,
+        ratedCostUsdMicros: 10_143,
+        successfulSearches: 1,
+      };
+      let dispatches = 0;
+      const web = Web.make({
+        authorize: () => Effect.succeed(paidAdmission),
+        discover: () =>
+          Effect.sync(() => {
+            dispatches += 1;
+            return {
+              evidence: {
+                latencyMs: 8_000,
+                requestId: "grounding-request",
+                managedSearch: evidence,
+              },
+              results: [{ title: "Public release", url: "https://example.com/release" }],
+            };
+          }).pipe(Effect.delay("8 seconds")),
+        fetchPage: () => Effect.never,
+        makeId: () => "grounding-attempt",
+        // oxlint-disable-next-line effecttsgo/global-date-in-effect -- A fixed timestamp controls page evidence in this SQLite lifecycle test.
+        now: Effect.succeed(new Date(now)),
+        searchPolicy: { requestVendorUsdMicros: 50_000n },
+        state: makeWebState(db, () => 1_000),
+      });
+      const input = {
+        operationId: "paid-grounding-timeout",
+        query: "current releases",
+        requestText: "Search current releases",
+        turnId: ThinkSubmissionId.make("grounding-turn"),
+        userId: UserId.make("grounding-owner"),
+      };
+      const pending = yield* web.search(input).pipe(Effect.forkChild);
+      yield* TestClock.adjust("16 seconds");
+      expect((yield* Fiber.await(pending))._tag).toBe("Failure");
+      expect(Result.isFailure(yield* web.search(input).pipe(Effect.result))).toBe(true);
+      expect(dispatches).toBe(1);
+      expect(
+        database
+          .prepare("SELECT paid_attempt_json FROM osfo_web_operations WHERE operation_id = ?")
+          .get(input.operationId),
+      ).toEqual({
+        paid_attempt_json: yield* Schema.encodeEffect(Schema.fromJsonString(PaidSearchAttempt))({
+          admission: paidAdmission,
+          admittedVendorUsdMicros: 50_000n,
+          evidence,
+          outcome: "succeeded",
+        }),
+      });
+    }),
+  ),
+);
+
+it.effect("keeps compact paid search identities after the ordinary operation retention limit", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      let retainedAtEpochMillis = 1_000;
+      const state = makeWebState(db, () => retainedAtEpochMillis++);
+      const userId = UserId.make("paid-retention-owner");
+      const input = {
+        fingerprint: "search:paid",
+        kind: "search" as const,
+        operationId: "paid-retained",
+        turnId: ThinkSubmissionId.make("paid-retained-turn"),
+        userId,
+      };
+      const claim = yield* state.claim(input);
+      if (claim._tag !== "Claimed") throw new Error("Expected search claim");
+      const evidence = {
+        ...initialManagedSearchEvidence("paid-retained-attempt"),
+        inputTokens: 123,
+        outputTokens: 4,
+        ratedCostUsdMicros: 10_143,
+        successfulSearches: 1,
+      };
+      yield* state.retainSearchAttempt(userId, input.operationId, claim.lease, {
+        admission: paidAdmission,
+        admittedVendorUsdMicros: 50_000n,
+        evidence,
+        outcome: "succeeded",
+      });
+      const completed: CompletedOperation = {
+        _tag: "SearchCompleted",
+        guidance: "Cite supporting pages.",
+        providerEvidence: { latencyMs: 1, requestId: "paid-request", managedSearch: evidence },
+        query: "paid",
+        resultSetId: "paid-set",
+        results: [],
+      };
+      yield* state.complete(userId, input.operationId, claim.lease, completed);
+      yield* Effect.forEach(
+        Array.from({ length: 31 }, (_, index) => index),
+        (index) =>
+          Effect.gen(function* () {
+            const ordinary = {
+              ...input,
+              operationId: `ordinary-${index}`,
+              turnId: ThinkSubmissionId.make(`ordinary-turn-${index}`),
+            };
+            const ordinaryClaim = yield* state.claim(ordinary);
+            if (ordinaryClaim._tag !== "Claimed") throw new Error("Expected ordinary claim");
+            yield* state.complete(userId, ordinary.operationId, ordinaryClaim.lease, {
+              ...completed,
+              providerEvidence: { latencyMs: 1, requestId: "local-request" },
+            });
+          }),
+      );
+      const replay = yield* makeWebState(db, () => 100_000)
+        .replay(input)
+        .pipe(Effect.result);
+      expect(Result.isFailure(replay)).toBe(true);
+      if (Result.isFailure(replay))
+        expect(replay.failure).toMatchObject({ reason: "operationResultExpired" });
+      expect(
+        database
+          .prepare("SELECT result_json FROM osfo_web_operations WHERE operation_id = ?")
+          .get(input.operationId),
+      ).toEqual({ result_json: '{"_tag":"SearchResultExpired"}' });
+    }),
+  ),
+);
+
+it.effect("never reclaims a dispatched paid search after restart or explicit failure", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const state = makeWebState(db, () => 1_000);
+      const input = {
+        fingerprint: "search:paid",
+        kind: "search" as const,
+        operationId: "paid-search",
+        turnId: ThinkSubmissionId.make("paid-turn"),
+        userId: UserId.make("paid-owner"),
+      };
+      const claim = yield* state.claim(input);
+      if (claim._tag !== "Claimed") throw new Error("Expected a search claim");
+      const evidence = initialManagedSearchEvidence("paid-attempt");
+      yield* state.retainSearchAttempt(input.userId, input.operationId, claim.lease, {
+        admission: paidAdmission,
+        admittedVendorUsdMicros: 50_000n,
+        evidence,
+        outcome: "unknown",
+      });
+      const restarted = makeWebState(db, () => 100_000);
+      const replay = yield* restarted.replay(input).pipe(Effect.result);
+      expect(Result.isFailure(replay)).toBe(true);
+      if (Result.isFailure(replay))
+        expect(replay.failure).toMatchObject({ reason: "operationOutcomeUnknown" });
+      expect(Result.isFailure(yield* restarted.claim(input).pipe(Effect.result))).toBe(true);
+      yield* restarted.fail(input.userId, input.operationId, claim.lease);
+      expect(Result.isFailure(yield* restarted.replay(input).pipe(Effect.result))).toBe(true);
+      expect(
+        database
+          .prepare("SELECT paid_attempt_json FROM osfo_web_operations WHERE operation_id = ?")
+          .get(input.operationId),
+      ).toEqual({
+        paid_attempt_json: yield* Schema.encodeEffect(Schema.fromJsonString(PaidSearchAttempt))({
+          admission: paidAdmission,
+          admittedVendorUsdMicros: 50_000n,
+          evidence,
+          outcome: "unknown",
+        }),
+      });
     }),
   ),
 );

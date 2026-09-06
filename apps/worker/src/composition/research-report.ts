@@ -1,6 +1,6 @@
 import { DocumentAuthorizationUnavailable } from "../services/document-generation";
 import { IncidentControlsPostgres } from "../integrations/postgres/incident-controls";
-import { DateTime, Effect, Layer } from "effect";
+import { DateTime, Effect, Layer, Predicate } from "effect";
 
 import type { Database } from "@osfo/db";
 import { loadConfig, type CloudflareEnv, type ResearchReportProviderConfig } from "../config";
@@ -20,6 +20,9 @@ import { ResearchReportPostgres } from "../integrations/postgres/research-report
 import { ResearchReportFollowUpPostgres } from "../integrations/postgres/research-report-follow-up";
 import { ResearchReportPublicationPostgres } from "../integrations/postgres/research-report-publication";
 import { ResearchSynthesisPostgres } from "../integrations/postgres/research-synthesis";
+import { Authorization } from "../services/authorization";
+import { ManagedWebSearch } from "../integrations/cloudflare/managed-web-search";
+import { managedSearchAdmissionUsdMicros } from "../domain/web-search-price";
 import { ResearchCollector } from "../services/research-collector";
 import type { IncidentControls } from "../services/incident-controls";
 import { Allowances } from "../services/allowances";
@@ -232,6 +235,7 @@ export const executionEffect = <Value>(
                 }),
             ),
           ),
+        admitSearch: makeSearchAdmission(database, reports),
         authorize: (report) =>
           reports.authorizeExecution(
             ResearchReport.WorkflowPayload.make({
@@ -241,9 +245,11 @@ export const executionEffect = <Value>(
           ),
         persistence: ResearchCollectorPostgres.make(database),
         provider: {
+          managedSearch: env.researchReportProvider._tag === "ManagedWebSearch",
           discover: ResearchVerificationProvider.selectDiscovery(
             env.researchReportProvider,
             env.WEBSEARCH,
+            env.AI,
           ),
           fetchPage: ResearchVerificationProvider.selectPageFetch(env.researchReportProvider),
         },
@@ -322,6 +328,73 @@ export const executionEffect = <Value>(
   }).pipe(Effect.provide(Db.layer({ db: env.DB })));
   return Effect.scoped(program);
 };
+
+/** Admit one paid search using the Research Report's existing authority owner. */
+export const makeSearchAdmission =
+  (
+    database: Database,
+    reports: Pick<ResearchReport.Interface, "artifactAuthorization">,
+  ): NonNullable<ResearchCollector.PortInterface["admitSearch"]> =>
+  (report, operation) =>
+    Effect.gen(function* () {
+      const owner = yield* reports.artifactAuthorization(
+        payloadFor(report),
+        managedSearchAdmissionUsdMicros,
+      );
+      const current = yield* ResearchReportPostgres.makeCurrentAuthorization(database)(
+        owner.report,
+      );
+      const allowance = yield* BillingDb.make(database).admit(
+        owner.report.userId,
+        current.now,
+        owner.report.allowancePeriodId,
+      );
+      const context = {
+        ...current,
+        requestVendorUsdMicros: managedSearchAdmissionUsdMicros,
+        allowance: { _tag: "Metered" as const, ...allowance },
+      };
+      const admitted = Authorization.make(retainedCatalog).admit(context, {
+        actionId: operation.operationId,
+        deadlineMilliseconds: 15_000n,
+        kind: "web.search",
+        pages: 0n,
+        redirects: 0n,
+        responseBytes: ManagedWebSearch.responseBytes,
+        results: 10n,
+        retries: 0n,
+        searches: 1n,
+      });
+      if (
+        !Predicate.isTagged(admitted, "Admitted") ||
+        admitted.allowancePeriod._tag !== "Metered"
+      ) {
+        return yield* new ResearchCollector.Unavailable({
+          cause: admitted,
+          message: "Plan Usage denied the paid research search",
+          reason: "authorizationDenied",
+        });
+      }
+      return {
+        admittedVendorUsdMicros: managedSearchAdmissionUsdMicros,
+        admission: {
+          allowancePeriodId: admitted.allowancePeriod.allowancePeriodId,
+          authorizedAt: context.now.toISOString(),
+          capabilityCatalogVersion: admitted.capabilityCatalogVersion,
+          originatingAuthority: context.originatingAuthority,
+          planPolicyVersion: context.allowance.planPolicyVersion,
+        },
+      };
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ResearchCollector.Unavailable({
+            cause,
+            message: "The paid research search could not be admitted",
+            reason: "authorizationDenied",
+          }),
+      ),
+    );
 
 /** Narrow helper for tests that already own a Drizzle database. */
 export const serviceLayerFromDatabase = (
@@ -459,11 +532,16 @@ const makeUsageRecorder =
   (database: Database): ResearchReportDocument.PortInterface["recordUsage"] =>
   (report, artifact, synthesisCost, renderCost) =>
     Effect.gen(function* () {
+      const searches = yield* ResearchCollectorPostgres.completedSearches(
+        database,
+        report.workflowId,
+      );
       const accounting = yield* ResearchReportAccounting.usefulReportAccountingFor(
         report,
         artifact,
         synthesisCost,
         renderCost,
+        searches,
       );
       const completedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
       return yield* ResearchReportPublicationPostgres.complete(database, {

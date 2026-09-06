@@ -1,5 +1,7 @@
 import { Result, Schema } from "effect";
 
+import { managedSearchPrice } from "./web-search-price";
+
 import { PlanPolicyVersion, ResourcePriceVersion } from "../domain";
 import {
   isSharedUsagePolicy,
@@ -277,7 +279,19 @@ const rateModelWork = (work: CompletedModelWork): ReadonlyArray<RatedModelCompon
   ];
 };
 
+/** Cloudflare Workers AI DeepSeek V4 Flash 0731 rates, retained on 2026-09-06.
+ * https://developers.cloudflare.com/ai/models/%40cf/deepseek-ai/deepseek-v4-flash-0731/
+ */
+export const managedConversationModelPrice = ManagedModelPrice.make({
+  cachedInputUsdMicrosPerMillionTokens: 14_000n,
+  inputUsdMicrosPerMillionTokens: 440_000n,
+  outputUsdMicrosPerMillionTokens: 1_320_000n,
+  priceEntryId: "workers-ai-deepseek-v4-flash-0731",
+  resourcePriceVersion: ResourcePriceVersion.make("workers-ai-deepseek-v4-flash-0731-2026-09-06"),
+});
+
 const recognizedModelPrices = Schema.decodeSync(Schema.Array(ManagedModelPrice))([
+  managedConversationModelPrice,
   {
     cachedInputUsdMicrosPerMillionTokens: 1_000_000n,
     inputUsdMicrosPerMillionTokens: 2_000_000n,
@@ -319,6 +333,7 @@ export const currentResourcePriceVersion = ResourcePriceVersion.make("resource-p
 const recognizedResourcePriceVersions = new Set([
   ...recognizedModelPrices.map(({ resourcePriceVersion }) => resourcePriceVersion),
   currentResourcePriceVersion,
+  ResourcePriceVersion.make(managedSearchPrice.resourcePriceVersion),
 ]);
 
 const isRecognizedModelPrice = (price: ManagedModelPrice) =>

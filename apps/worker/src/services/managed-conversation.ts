@@ -1,3 +1,4 @@
+import { managedConversationModelPrice } from "../domain/usage";
 import { Effect, Predicate, Schema } from "effect";
 
 import { ConversationRouteId, ThinkSubmissionId, type SessionId } from "../domain";
@@ -210,6 +211,7 @@ export const admitManagedConversation = (
       message: input.message,
       metadata: ManagedTurnMetadata.make({
         _tag: "OsfoManagedTurn",
+        conversationResourcePriceVersion: managedConversationModelPrice.resourcePriceVersion,
         allowancePeriodId: input.authorization.allowance.allowancePeriodId,
         authorityIdentity,
         capabilityCatalogVersion: currentCapabilityCatalog.version,

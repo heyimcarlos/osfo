@@ -24,6 +24,8 @@ import {
 } from "../domain/model-access-policy";
 import { currentResourcePriceVersion } from "../domain/usage";
 import type { UsageEvent } from "../domain/usage-event";
+import { initialManagedSearchEvidence } from "../domain/web-search-evidence";
+import { ResearchCollector } from "./research-collector";
 import { ResearchReport } from "./research-report";
 import { ResearchReportAccounting } from "./research-report-accounting";
 import { ResearchSynthesis } from "./research-synthesis";
@@ -131,6 +133,102 @@ it.effect(
     });
   },
 );
+
+it.effect("settles completed search once through the report's existing accounting owner", () =>
+  Effect.gen(function* () {
+    const artifact = yield* makeArtifact();
+    for (const policy of ["launch-v1", "shared-usage-v1"] as const) {
+      const report = makeReport(policy);
+      const search = completedSearch(report);
+      const fixture = makeFixture();
+      const accounting = ResearchReportAccounting.make(fixture.port);
+      yield* accounting.recordUsefulReport(report, artifact, cost(20_000n), render(10_000n), [
+        search,
+      ]);
+      yield* accounting.recordUsefulReport(report, artifact, cost(20_000n), render(10_000n), [
+        search,
+      ]);
+      if (policy === "launch-v1") {
+        expect(fixture.legacyFacts).toHaveLength(4);
+        expect(fixture.usageEvents).toHaveLength(0);
+      } else {
+        expect(fixture.usageEvents).toHaveLength(1);
+        const baseline = yield* ResearchReportAccounting.usefulReportAccountingFor(
+          report,
+          artifact,
+          cost(20_000n),
+          render(10_000n),
+        );
+        const event = fixture.usageEvents[0];
+        expect(baseline._tag).toBe("Shared");
+        if (
+          baseline._tag === "Shared" &&
+          baseline.event.outcome._tag === "Completed" &&
+          event?.outcome._tag === "Completed"
+        ) {
+          expect(
+            event.outcome.charge.ratedCostUsdMicros -
+              baseline.event.outcome.charge.ratedCostUsdMicros,
+          ).toBe(13_562n);
+          expect(event.evidenceReferences).toContainEqual({
+            kind: "operationEvidence",
+            reference: search.operationId,
+          });
+        }
+      }
+    }
+  }),
+);
+
+it.effect(
+  "rejects foreign, repeated or unknown-cost search evidence before report settlement",
+  () =>
+    Effect.gen(function* () {
+      const report = makeReport("shared-usage-v1");
+      const artifact = yield* makeArtifact();
+      const search = completedSearch(report);
+      const foreign = { ...search, workflowId: ResearchReport.WorkflowId.make("other-report") };
+      const unknown = {
+        ...search,
+        managedSearch: { ...search.managedSearch, ratedCostUsdMicros: null },
+      };
+      for (const searches of [[foreign], [unknown], [search, search]]) {
+        const result = yield* Effect.result(
+          ResearchReportAccounting.usefulReportAccountingFor(
+            report,
+            artifact,
+            cost(20_000n),
+            render(10_000n),
+            searches,
+          ),
+        );
+        expect(result._tag).toBe("Failure");
+      }
+    }),
+);
+
+const completedSearch = (report: ResearchReport.Record): ResearchCollector.CompletedSearch => {
+  const operationId = ResearchCollector.OperationId.make(`${report.workflowId}:provider:0`);
+  return {
+    operationId,
+    workflowId: report.workflowId,
+    managedSearch: {
+      ...initialManagedSearchEvidence(operationId),
+      ratedCostUsdMicros: 13_562,
+      successfulSearches: 1,
+    },
+    searchAdmission: {
+      admittedVendorUsdMicros: 25_000n,
+      admission: {
+        allowancePeriodId: report.allowancePeriodId,
+        authorizedAt: report.admittedAt.toISOString(),
+        capabilityCatalogVersion: report.capabilityCatalogVersion,
+        planPolicyVersion: report.planPolicyVersion,
+        originatingAuthority: report.originatingAuthority,
+      },
+    },
+  };
+};
 
 const makeFixture = () => {
   const legacy = new Map<string, string>();

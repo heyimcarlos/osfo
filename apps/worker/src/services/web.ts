@@ -1,6 +1,14 @@
-import { Duration, Effect, Schedule, Schema } from "effect";
+import { Duration, Effect, Option, Schedule, Schema } from "effect";
 
-import type { ThinkSubmissionId, UserId } from "../domain";
+import {
+  AllowancePeriodId,
+  CapabilityCatalogVersion,
+  PlanPolicyVersion,
+  type ThinkSubmissionId,
+  type UserId,
+} from "../domain";
+import { OriginatingAuthority } from "./authorization";
+import { ManagedSearchEvidence, initialManagedSearchEvidence } from "../domain/web-search-evidence";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Public-web outcomes use the canonical _tag discriminator. */
 
@@ -49,6 +57,7 @@ export interface DiscoveryResultItem {
 
 export interface DiscoveryResult {
   readonly evidence: {
+    readonly managedSearch?: ManagedSearchEvidence;
     readonly latencyMs: number;
     readonly requestId: string;
     readonly vendorCostReference?: string;
@@ -166,6 +175,7 @@ export const CompletedOperationSchema = Schema.Union([
   Schema.TaggedStruct("SearchCompleted", {
     guidance: Schema.String,
     providerEvidence: Schema.Struct({
+      managedSearch: Schema.optionalKey(ManagedSearchEvidence),
       latencyMs: Schema.Finite,
       requestId: Schema.String,
       vendorCostReference: Schema.optionalKey(Schema.String),
@@ -186,7 +196,30 @@ export interface TurnCounts {
   readonly searches: number;
 }
 
+export const WebAdmission = Schema.Struct({
+  allowancePeriodId: AllowancePeriodId,
+  authorizedAt: Schema.String,
+  capabilityCatalogVersion: CapabilityCatalogVersion,
+  originatingAuthority: OriginatingAuthority,
+  planPolicyVersion: PlanPolicyVersion,
+});
+export type WebAdmission = typeof WebAdmission.Type;
+
+export const PaidSearchAttempt = Schema.Struct({
+  admission: WebAdmission,
+  admittedVendorUsdMicros: Schema.BigIntFromString.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  evidence: ManagedSearchEvidence,
+  outcome: Schema.Literals(["unknown", "failed", "succeeded"]),
+});
+export type PaidSearchAttempt = typeof PaidSearchAttempt.Type;
+
 export interface WebState<E> {
+  readonly retainSearchAttempt: (
+    userId: UserId,
+    operationId: string,
+    lease: number,
+    attempt: PaidSearchAttempt,
+  ) => Effect.Effect<void, E>;
   readonly claim: (input: {
     readonly fingerprint: string;
     readonly kind: "page" | "search";
@@ -218,6 +251,7 @@ export interface WebState<E> {
 }
 
 export interface AuthorizationRequest {
+  readonly requestVendorUsdMicros: bigint;
   readonly operationId: string;
   readonly pages: number;
   readonly responseBytes: bigint;
@@ -233,6 +267,9 @@ export class WebUnavailable extends Schema.TaggedError<WebUnavailable>()("WebUna
     "crossUserResult",
     "operationConflict",
     "operationInProgress",
+    "operationOutcomeUnknown",
+    "operationResultExpired",
+    "operationFailed",
     "pageLimit",
     "privateQuery",
     "providerUnavailable",
@@ -242,15 +279,19 @@ export class WebUnavailable extends Schema.TaggedError<WebUnavailable>()("WebUna
 }) {}
 
 export interface MakeOptions<AuthorizationError, DiscoveryError, FetchError, StateError> {
-  readonly authorize: (request: AuthorizationRequest) => Effect.Effect<void, AuthorizationError>;
+  readonly authorize: (
+    request: AuthorizationRequest,
+  ) => Effect.Effect<WebAdmission | void, AuthorizationError>;
   readonly discover: (
     query: string,
     limit: number,
+    attempt?: ManagedSearchEvidence,
   ) => Effect.Effect<DiscoveryResult, DiscoveryError>;
   readonly fetchPage: (input: { readonly url: string }) => Effect.Effect<PageFetch, FetchError>;
   readonly makeId: () => string;
   readonly now: Effect.Effect<Date>;
   readonly state: WebState<StateError>;
+  readonly searchPolicy?: { readonly requestVendorUsdMicros: bigint } | undefined;
 }
 
 export interface Interface<Error> {
@@ -357,7 +398,8 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
         }
         return replay;
       }
-      yield* options.authorize({
+      const admission = yield* options.authorize({
+        requestVendorUsdMicros: options.searchPolicy?.requestVendorUsdMicros ?? 0n,
         operationId: input.operationId,
         pages: maximumGroundingPagesPerSearch,
         responseBytes: maximumNormalizedPageBytes * BigInt(maximumGroundingPagesPerSearch),
@@ -365,6 +407,12 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
         turnId: input.turnId,
         userId: input.userId,
       });
+      if (options.searchPolicy !== undefined && admission === undefined) {
+        return yield* unavailable(
+          "authorizationDenied",
+          "The paid search has no retained admission decision.",
+        );
+      }
       const claimed = yield* options.state.claim({
         fingerprint,
         kind: "search",
@@ -391,15 +439,69 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
         return yield* unavailable("pageLimit", "This turn reached its five-page reading limit.");
       }
 
+      const attempt: PaidSearchAttempt | undefined =
+        options.searchPolicy === undefined || admission === undefined
+          ? undefined
+          : {
+              admission,
+              admittedVendorUsdMicros: options.searchPolicy.requestVendorUsdMicros,
+              evidence: initialManagedSearchEvidence(options.makeId()),
+              outcome: "unknown",
+            };
       return yield* Effect.gen(function* () {
-        const discovered = yield* options.discover(query, maximumResultsPerSearch).pipe(
+        if (attempt !== undefined) {
+          yield* options.state.retainSearchAttempt(
+            input.userId,
+            input.operationId,
+            claimed.lease,
+            attempt,
+          );
+        }
+        const discovery = options.discover(query, maximumResultsPerSearch, attempt?.evidence).pipe(
           Effect.timeoutOrElse({
-            duration: providerAttemptDeadline,
+            duration: attempt === undefined ? providerAttemptDeadline : providerDeadline,
             orElse: () =>
               Effect.fail(unavailable("providerUnavailable", "The web search provider timed out.")),
           }),
-          Effect.retry(Schedule.recurs(1)),
         );
+        const discovered = yield* attempt === undefined
+          ? discovery.pipe(Effect.retry(Schedule.recurs(1)))
+          : discovery.pipe(
+              Effect.tapError((error) => {
+                // Provider failures can retain usage even when no useful result completed.
+                const evidence = Schema.decodeUnknownOption(
+                  Schema.Struct({ managedSearch: ManagedSearchEvidence }),
+                )(error);
+                return Option.isSome(evidence)
+                  ? options.state.retainSearchAttempt(
+                      input.userId,
+                      input.operationId,
+                      claimed.lease,
+                      {
+                        ...attempt,
+                        evidence: evidence.value.managedSearch,
+                        outcome:
+                          evidence.value.managedSearch.ratedCostUsdMicros === null
+                            ? "unknown"
+                            : "failed",
+                      },
+                    )
+                  : Effect.void;
+              }),
+            );
+        if (attempt !== undefined && discovered.evidence.managedSearch === undefined) {
+          return yield* unavailable(
+            "providerUnavailable",
+            "The paid search returned no attributable provider evidence.",
+          );
+        }
+        if (attempt !== undefined && discovered.evidence.managedSearch !== undefined) {
+          yield* options.state.retainSearchAttempt(input.userId, input.operationId, claimed.lease, {
+            ...attempt,
+            evidence: discovered.evidence.managedSearch,
+            outcome: "succeeded",
+          });
+        }
         const safe = deduplicateResults(discovered.results).slice(0, maximumResultsPerSearch);
         const resultSetId = options.makeId();
         const groundingPages = Math.min(
@@ -489,6 +591,7 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
       return replay;
     }
     yield* options.authorize({
+      requestVendorUsdMicros: 0n,
       operationId: input.operationId,
       pages: 1,
       responseBytes: maximumNormalizedPageBytes,
@@ -596,7 +699,7 @@ const normalizeOptional = (value: string | undefined): string | null => {
 
 const boundedText = (value: string, maximum: number) => value.trim().slice(0, maximum);
 
-const operationFingerprint = (kind: string, value: string) => `${kind}\0${value}`;
+const operationFingerprint = (kind: string, value: string) => JSON.stringify([kind, value]);
 
 const privateIdentifierPattern =
   /(?:\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b)|(?:\+?\d[\d .()-]{7,}\d)|(?:\b(?:api[_ -]?key|password|secret|token)\b)/giu;

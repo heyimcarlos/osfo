@@ -1,9 +1,10 @@
-import { and, desc, eq, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
-import type { UserId } from "../../../domain";
+import type { ThinkSubmissionId, UserId } from "../../../domain";
 import {
   CompletedOperationSchema,
+  PaidSearchAttempt,
   RankedResultSchema,
   WebUnavailable,
   type CompletedOperation,
@@ -19,6 +20,15 @@ const maximumRetainedResultsPerUser = 30;
 const maximumRetainedOperationsPerUser = 30;
 const pendingOperationLeaseMilliseconds = 30_000;
 const PersistedOperation = Schema.fromJsonString(CompletedOperationSchema);
+const ExpiredSearchResult = Schema.TaggedStruct("SearchResultExpired", {});
+const RetainedOperation = Schema.fromJsonString(
+  Schema.Union([CompletedOperationSchema, ExpiredSearchResult]),
+);
+const expiredSearchResultJson = Schema.encodeSync(Schema.fromJsonString(ExpiredSearchResult))({
+  _tag: "SearchResultExpired",
+});
+const PersistedPaidSearchAttempt = Schema.fromJsonString(PaidSearchAttempt);
+const encodePaidSearchAttempt = Schema.encodeSync(PersistedPaidSearchAttempt);
 const PersistedResult = Schema.fromJsonString(RankedResultSchema);
 const encodeOperation = Schema.encodeSync(PersistedOperation);
 const encodeResult = Schema.encodeSync(PersistedResult);
@@ -28,7 +38,15 @@ export class WebStateUnavailable extends Schema.TaggedError<WebStateUnavailable>
   {
     cause: Schema.Defect(),
     message: Schema.String,
-    operation: Schema.Literals(["claim", "complete", "fail", "readResult", "replay"]),
+    operation: Schema.Literals([
+      "claim",
+      "complete",
+      "fail",
+      "readResult",
+      "replay",
+      "retainSearchAttempt",
+      "readCompletedSearches",
+    ]),
   },
 ) {}
 
@@ -46,6 +64,7 @@ export const makeWebState = (
             fingerprint: webOperations.fingerprint,
             kind: webOperations.kind,
             ownerUserId: webOperations.owner_user_id,
+            paidAttemptJson: webOperations.paid_attempt_json,
             resultJson: webOperations.result_json,
             status: webOperations.status,
           })
@@ -61,6 +80,9 @@ export const makeWebState = (
             existing.fingerprint !== input.fingerprint
           ) {
             return { _tag: "Conflict" as const };
+          }
+          if (existing.status === "pending" && existing.paidAttemptJson !== null) {
+            return { _tag: "PaidAttempt" as const, attemptJson: existing.paidAttemptJson };
           }
           if (existing.status === "pending" || existing.resultJson === null) {
             if (
@@ -126,6 +148,24 @@ export const makeWebState = (
         };
       }),
     ).pipe(Effect.flatMap(decodeClaim)),
+  retainSearchAttempt: (userId, operationId, lease, attempt) =>
+    execute("retainSearchAttempt", () => {
+      const updated = db
+        .update(webOperations)
+        .set({ paid_attempt_json: encodePaidSearchAttempt(attempt) })
+        .where(
+          and(
+            eq(webOperations.operation_id, operationId),
+            eq(webOperations.owner_user_id, userId),
+            eq(webOperations.created_at_epoch_millis, lease),
+            eq(webOperations.kind, "search"),
+            eq(webOperations.status, "pending"),
+          ),
+        )
+        .returning({ operationId: webOperations.operation_id })
+        .all();
+      if (updated.length !== 1) throw new Error("The paid search claim is no longer current");
+    }),
   complete: (userId, operationId, lease, result) =>
     execute("complete", () => {
       db.transaction((transaction) => {
@@ -198,6 +238,7 @@ export const makeWebState = (
             eq(webOperations.operation_id, operationId),
             eq(webOperations.owner_user_id, userId),
             eq(webOperations.status, "pending"),
+            isNull(webOperations.paid_attempt_json),
             eq(webOperations.created_at_epoch_millis, lease),
           ),
         )
@@ -229,6 +270,7 @@ export const makeWebState = (
             fingerprint: webOperations.fingerprint,
             kind: webOperations.kind,
             ownerUserId: webOperations.owner_user_id,
+            paidAttemptJson: webOperations.paid_attempt_json,
             resultJson: webOperations.result_json,
             status: webOperations.status,
           })
@@ -246,6 +288,9 @@ export const makeWebState = (
         }
         if (existing.status === "completed" && existing.resultJson !== null) {
           return { _tag: "Existing" as const, resultJson: existing.resultJson };
+        }
+        if (existing.paidAttemptJson !== null) {
+          return { _tag: "PaidAttempt" as const, attemptJson: existing.paidAttemptJson };
         }
         if (nowEpochMillis() - existing.createdAtEpochMillis <= pendingOperationLeaseMilliseconds) {
           return { _tag: "Pending" as const };
@@ -279,6 +324,19 @@ const pruneOperations = (db: AgentDb, ownerUserId: UserId) => {
       and(
         eq(webOperations.owner_user_id, ownerUserId),
         eq(webOperations.status, "completed"),
+        isNull(webOperations.paid_attempt_json),
+        notInArray(webOperations.operation_id, retained),
+      ),
+    )
+    .run();
+  // Paid attempt identities outlive result bodies so an expired ToolCall cannot dispatch again.
+  db.update(webOperations)
+    .set({ result_json: expiredSearchResultJson })
+    .where(
+      and(
+        eq(webOperations.owner_user_id, ownerUserId),
+        eq(webOperations.status, "completed"),
+        isNotNull(webOperations.paid_attempt_json),
         notInArray(webOperations.operation_id, retained),
       ),
     )
@@ -314,13 +372,15 @@ type StoredClaim =
     }
   | { readonly _tag: "Conflict" }
   | { readonly _tag: "Existing"; readonly resultJson: string }
-  | { readonly _tag: "Pending" };
+  | { readonly _tag: "Pending" }
+  | { readonly _tag: "PaidAttempt"; readonly attemptJson: string };
 
 type StoredReplay =
   | { readonly _tag: "Conflict" }
   | { readonly _tag: "Existing"; readonly resultJson: string }
   | { readonly _tag: "Missing" }
-  | { readonly _tag: "Pending" };
+  | { readonly _tag: "Pending" }
+  | { readonly _tag: "PaidAttempt"; readonly attemptJson: string };
 
 type Claim =
   | { readonly _tag: "Claimed"; readonly counts: TurnCounts; readonly lease: number }
@@ -339,6 +399,8 @@ const decodeClaim = (
           reason: "operationConflict",
         }),
       );
+    case "PaidAttempt":
+      return failedPaidAttempt(outcome.attemptJson);
     case "Pending":
       return Effect.fail(
         new WebUnavailable({
@@ -347,9 +409,8 @@ const decodeClaim = (
         }),
       );
     case "Existing":
-      return Schema.decodeEffect(PersistedOperation)(outcome.resultJson).pipe(
+      return decodeRetainedOperation(outcome.resultJson, "claim").pipe(
         Effect.map((result) => ({ _tag: "Existing" as const, result })),
-        Effect.mapError((cause) => unavailable("claim", cause)),
       );
     default:
       return outcome satisfies never;
@@ -369,6 +430,8 @@ const decodeReplay = (
           reason: "operationConflict",
         }),
       );
+    case "PaidAttempt":
+      return failedPaidAttempt(outcome.attemptJson);
     case "Pending":
       return Effect.fail(
         new WebUnavailable({
@@ -377,13 +440,43 @@ const decodeReplay = (
         }),
       );
     case "Existing":
-      return Schema.decodeEffect(PersistedOperation)(outcome.resultJson).pipe(
-        Effect.mapError((cause) => unavailable("replay", cause)),
-      );
+      return decodeRetainedOperation(outcome.resultJson, "replay");
     default:
       return outcome satisfies never;
   }
 };
+
+const decodeRetainedOperation = (resultJson: string, operation: "claim" | "replay") =>
+  Schema.decodeEffect(RetainedOperation)(resultJson).pipe(
+    Effect.mapError((cause) => unavailable(operation, cause)),
+    Effect.flatMap((result) =>
+      result._tag === "SearchResultExpired"
+        ? Effect.fail(
+            new WebUnavailable({
+              message:
+                "This paid search completed, but its retained result expired. The same ToolCall cannot be sent again.",
+              reason: "operationResultExpired",
+            }),
+          )
+        : Effect.succeed(result),
+    ),
+  );
+
+const failedPaidAttempt = (attemptJson: string) =>
+  Schema.decodeEffect(PersistedPaidSearchAttempt)(attemptJson).pipe(
+    Effect.mapError((cause) => unavailable("replay", cause)),
+    Effect.flatMap((attempt) =>
+      Effect.fail(
+        new WebUnavailable({
+          message:
+            attempt.outcome === "unknown"
+              ? "This paid search may have been accepted. The same ToolCall cannot be sent again."
+              : "This paid search ended before its public-web result completed. The same ToolCall cannot be sent again.",
+          reason: attempt.outcome === "unknown" ? "operationOutcomeUnknown" : "operationFailed",
+        }),
+      ),
+    ),
+  );
 
 const execute = <A>(operation: WebStateUnavailable["operation"], run: () => A) =>
   Effect.try({
@@ -397,3 +490,45 @@ const unavailable = (operation: WebStateUnavailable["operation"], cause: unknown
     message: "Agent SQLite could not persist bounded public-web state.",
     operation,
   });
+
+/** Read only useful completed searches owned by the exact conversation Submission. */
+export const readCompletedConversationSearches = (
+  db: AgentDb,
+  userId: UserId,
+  submissionId: ThinkSubmissionId,
+) =>
+  execute("readCompletedSearches", () =>
+    db
+      .select({
+        operationId: webOperations.operation_id,
+        attemptJson: webOperations.paid_attempt_json,
+      })
+      .from(webOperations)
+      .where(
+        and(
+          eq(webOperations.owner_user_id, userId),
+          eq(webOperations.turn_id, submissionId),
+          eq(webOperations.status, "completed"),
+          isNotNull(webOperations.paid_attempt_json),
+        ),
+      )
+      .orderBy(webOperations.operation_id)
+      .all(),
+  ).pipe(
+    Effect.flatMap((rows) =>
+      Effect.forEach(rows, (row) =>
+        Schema.decodeUnknownEffect(PersistedPaidSearchAttempt)(row.attemptJson).pipe(
+          Effect.map((attempt) => ({ operationId: row.operationId, attempt })),
+          Effect.mapError(
+            (cause) =>
+              new WebStateUnavailable({
+                cause,
+                message: "Retained paid search evidence is invalid",
+                operation: "readCompletedSearches",
+              }),
+          ),
+        ),
+      ),
+    ),
+    Effect.map((rows) => rows.filter(({ attempt }) => attempt.outcome === "succeeded")),
+  );

@@ -29,6 +29,11 @@ export const CommittedTurnTerminal = Schema.Struct({
   requestId: ThinkRequestId,
   status: Schema.Literals(["completed", "error", "aborted"]),
   submissionId: Schema.optionalKey(ThinkSubmissionId),
+  usageEventJson: Schema.optionalKey(Schema.String),
+  usageExpectedModelSteps: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
+  usageSubmissionMessageId: Schema.optional(Schema.String.check(Schema.isMinLength(1))),
+  usageOccurredAt: Schema.optionalKey(Schema.String),
+  usageSettled: Schema.optionalKey(Schema.Boolean),
 });
 
 /** Durable Think terminal evidence used to recover capture after a Worker restart. */

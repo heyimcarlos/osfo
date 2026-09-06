@@ -7,9 +7,11 @@ import {
 } from "effect/unstable/http";
 
 import type { ResearchReportProviderConfig } from "../../config";
+import { managedSearchAdmissionUsdMicros } from "../../domain/web-search-price";
 import { ResearchSynthesis } from "../../services/research-synthesis";
 import { canonicalPublicUrl, isSafePublicUrl, type PageFetch } from "../../services/web";
 import { ResearchSynthesisProvider } from "./research-synthesis-provider";
+import { ManagedWebSearch } from "./managed-web-search";
 import {
   hasRecognizedWebSearchPrice,
   makeDiscovery,
@@ -161,7 +163,24 @@ export const make = (
 export const selectDiscovery = (
   config: ResearchReportProviderConfig,
   binding: Pick<WebSearch, "search">,
-) => (config._tag === "LocalVerification" ? make(config).discover : makeDiscovery(binding));
+  ai?: Pick<Ai, "run">,
+) => {
+  if (config._tag === "LocalVerification") return make(config).discover;
+  if (config._tag === "ManagedWebSearch") {
+    if (ai === undefined) {
+      return () =>
+        Effect.fail(
+          new WebProviderUnavailable({
+            message: "The managed search AI binding is missing.",
+            operation: "discover",
+            retry: "never",
+          }),
+        );
+    }
+    return ManagedWebSearch.makeDiscovery(ai, config.gatewayId);
+  }
+  return makeDiscovery(binding);
+};
 
 /** Select the isolated local verifier or the ordinary public-page fetch boundary. */
 export const selectPageFetch = (config: ResearchReportProviderConfig) =>
@@ -175,7 +194,15 @@ export const selectSynthesis = (config: ResearchReportProviderConfig, binding: A
 
 /** A local verifier is explicit no-cost evidence; Cloudflare stays fail-closed until priced. */
 export const isAvailable = (config: ResearchReportProviderConfig) =>
-  config._tag === "LocalVerification" || hasRecognizedWebSearchPrice;
+  config._tag === "LocalVerification" ||
+  config._tag === "ManagedWebSearch" ||
+  hasRecognizedWebSearchPrice;
+
+/** Paid dispatch retains the same conservative admission allowance used by managed work. */
+export const selectSearchPolicy = (config: ResearchReportProviderConfig) =>
+  config._tag === "ManagedWebSearch"
+    ? { requestVendorUsdMicros: managedSearchAdmissionUsdMicros }
+    : undefined;
 
 /** Supply Think's Workers AI boundary only inside the explicit local verifier. */
 export const makeAiBinding = (

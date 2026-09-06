@@ -1,0 +1,1 @@
+ALTER TABLE `osfo_web_operations` ADD `paid_attempt_json` text;
