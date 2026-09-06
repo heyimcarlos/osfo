@@ -17,10 +17,20 @@ committed cleanup remain available during an incident pause.
 
 The supported connection is a local development Worker calling
 `http://127.0.0.1:39270/inventory` and `/browser`. The Node listener binds only
-`127.0.0.1:39270` and is excluded from ordinary development startup. Preview and
-production Worker configuration disable the host. A production Worker cannot
-reach desktop loopback. Remote TLS transport and production qualification remain
-separate work; this change provisions no network access.
+`127.0.0.1:39270` and is excluded from ordinary development startup. Preview Worker configuration disables the host. Production defaults to disabled
+until all five Worker variables below are explicitly configured. Production requires
+a canonical HTTPS `/inventory` endpoint without credentials, query, fragment, or
+custom port; a nonblank owner and extension identity; a 32 to 512 character bearer
+without whitespace; and one to eight exact HTTPS allowed origins. Partial or invalid
+production configuration fails deployment and Worker configuration loading.
+
+A production Worker cannot reach desktop loopback. Provision authenticated TLS
+transport to the same host for both `/inventory` and `/browser`, preserving the
+bearer header and refusing redirects. Keep the Node listener on loopback. Match the
+owner, observed extension instance, bearer and origins on both sides. Store the
+bearer in private deployment configuration; Alchemy retains it as a redacted secret
+binding. This configuration change provisions no network access. Verify the actual
+transport and owned task lifecycle before enabling the capability for its owner.
 
 Use one explicitly provisioned owner and Chrome extension. A developer profile is
 not a shared browser runtime. Tab ownership does not isolate cookies or sessions
@@ -36,7 +46,7 @@ and connected Chrome extension. The session ID is its observed
 | `OSFO_BROWSER_HOST_SESSION_ID`      | `BROWSER_HOST_SESSION_ID`      | Provisioned Chrome extension instance                                                                                        |
 | `OSFO_BROWSER_HOST_TOKEN`           | `BROWSER_HOST_TOKEN`           | Same private bearer, 32 to 512 characters                                                                                    |
 | `OSFO_BROWSER_HOST_ALLOWED_ORIGINS` | `BROWSER_HOST_ALLOWED_ORIGINS` | JSON array of at most eight exact HTTPS origins, or loopback HTTP origins for verification; defaults to `[]`, inventory only |
-| none                                | `BROWSER_HOST_ENDPOINT`        | Exact inventory loopback URL above                                                                                           |
+| none                                | `BROWSER_HOST_ENDPOINT`        | Exact loopback inventory URL for local use; canonical HTTPS `/inventory` endpoint for production                             |
 | `OSFO_BROWSER_HOST_DATABASE_PATH`   | none                           | Absolute private SQLite path outside the checkout                                                                            |
 | `OSFO_BROWSER_HOST_CODEX_COMMAND`   | none                           | Absolute installed Codex binary path                                                                                         |
 | `OSFO_BROWSER_HOST_CODEX_HOME`      | none                           | Existing provisioned Codex configuration directory                                                                           |

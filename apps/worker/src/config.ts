@@ -1,4 +1,4 @@
-import { Option, Redacted, Schema } from "effect";
+import { Option, Redacted, Result, Schema } from "effect";
 
 import type { Browser } from "./services/browser-host";
 
@@ -247,7 +247,10 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
   if (secret.length < 32) invalid("BETTER_AUTH_SECRET must contain at least 32 characters");
 
   return {
-    browserHost: parseBrowserHost(stage, env),
+    browserHost: Result.match(browserHostConfig(stage, env), {
+      onSuccess: (binding) => binding,
+      onFailure: invalid,
+    }),
     auth: {
       baseURL: baseURL.href,
       credentialAuthentication: "enabled",
@@ -469,46 +472,95 @@ const invalid = (message: string): never => {
   });
 };
 
-/** Local opt-in only; a remote Worker has no provisioned desktop host by default. */
-const parseBrowserHost = (stage: OsfoStage, env: CloudflareEnv): Browser.Binding | null => {
-  if (stage !== "development" && stage !== "test") return null;
-  const endpoint = env.BROWSER_HOST_ENDPOINT;
-  const ownerUserId = env.BROWSER_HOST_OWNER_USER_ID;
-  const hostSessionId = env.BROWSER_HOST_SESSION_ID;
-  const token = env.BROWSER_HOST_TOKEN;
+/** Shared deployment and runtime validation; credentials never appear in failure messages. */
+export const browserHostConfig = (
+  stage: OsfoStage,
+  env: Pick<
+    CloudflareEnv,
+    | "BROWSER_HOST_ENDPOINT"
+    | "BROWSER_HOST_OWNER_USER_ID"
+    | "BROWSER_HOST_SESSION_ID"
+    | "BROWSER_HOST_TOKEN"
+    | "BROWSER_HOST_ALLOWED_ORIGINS"
+  >,
+): Result.Result<Browser.Binding | null, string> => {
+  if (stage === "preview") return Result.succeed(null);
+  const endpoint = env.BROWSER_HOST_ENDPOINT ?? "";
+  const ownerUserId = env.BROWSER_HOST_OWNER_USER_ID ?? "";
+  const hostSessionId = env.BROWSER_HOST_SESSION_ID ?? "";
+  const token = env.BROWSER_HOST_TOKEN ?? "";
+  const origins = env.BROWSER_HOST_ALLOWED_ORIGINS ?? "[]";
   if (
-    endpoint !== "http://127.0.0.1:39270/inventory" ||
-    ownerUserId === undefined ||
+    endpoint === "" &&
+    ownerUserId === "" &&
+    hostSessionId === "" &&
+    token === "" &&
+    origins === "[]"
+  )
+    return Result.succeed(null);
+  const refused = () =>
+    stage === "production"
+      ? Result.fail(
+          "BROWSER_HOST bindings require a complete owner/extension binding, a 32–512 character bearer, an HTTPS /inventory endpoint and 1–8 exact HTTPS allowed origins",
+        )
+      : Result.succeed(null);
+  const url = URL.parse(endpoint);
+  const validEndpoint =
+    stage === "production"
+      ? url !== null &&
+        url.protocol === "https:" &&
+        url.username === "" &&
+        url.password === "" &&
+        url.port === "" &&
+        url.pathname === "/inventory" &&
+        url.search === "" &&
+        url.hash === "" &&
+        !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) &&
+        endpoint === url.href
+      : endpoint === "http://127.0.0.1:39270/inventory";
+  if (
+    !validEndpoint ||
     ownerUserId.length === 0 ||
     ownerUserId.length > 200 ||
-    hostSessionId === undefined ||
     hostSessionId.length === 0 ||
     hostSessionId.length > 200 ||
-    token === undefined ||
     token.length < 32 ||
-    token.length > 512
+    token.length > 512 ||
+    (stage === "production" &&
+      (ownerUserId.trim().length === 0 ||
+        ownerUserId !== ownerUserId.trim() ||
+        hostSessionId.trim().length === 0 ||
+        hostSessionId !== hostSessionId.trim() ||
+        /\s/u.test(token)))
   )
-    return null;
+    return refused();
   const allowedOrigins = Schema.decodeOption(Schema.fromJsonString(Schema.Array(Schema.String)))(
-    env.BROWSER_HOST_ALLOWED_ORIGINS ?? "[]",
+    origins,
   );
   if (
     Option.isNone(allowedOrigins) ||
     allowedOrigins.value.length > 8 ||
-    allowedOrigins.value.some(
-      (origin) =>
-        !URL.canParse(origin) ||
-        new URL(origin).origin !== origin ||
-        (new URL(origin).protocol !== "https:" &&
-          !(new URL(origin).protocol === "http:" && new URL(origin).hostname === "127.0.0.1")),
-    )
+    (stage === "production" && allowedOrigins.value.length === 0) ||
+    allowedOrigins.value.some((origin) => {
+      const allowed = URL.parse(origin);
+      return (
+        allowed === null ||
+        allowed.origin !== origin ||
+        (allowed.protocol !== "https:" &&
+          !(
+            stage !== "production" &&
+            allowed.protocol === "http:" &&
+            allowed.hostname === "127.0.0.1"
+          ))
+      );
+    })
   )
-    return null;
-  return {
+    return refused();
+  return Result.succeed({
     endpoint,
     ownerUserId,
     hostSessionId,
     token: Redacted.make(token),
     allowedOrigins: allowedOrigins.value,
-  };
+  });
 };
