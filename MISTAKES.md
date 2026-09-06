@@ -159,3 +159,8 @@ short, specific, and actionable.
   delivery. A separate native notice is not included when that reply reads only
   the exact committed assistant message. Use committed pause parts and recheck
   the current pending ledger after the existing channel authority check.
+- Match a stateful browser connection's lifetime to its host scope. Executor's
+  five-minute idle pool eviction discards the REPL that owns tab handles, so later
+  revocation can remain unknown even after a successful Close. Keep the dedicated
+  connection scoped and test cleanup beyond the task's idle lifetime with the real
+  synthetic protocol bridge.

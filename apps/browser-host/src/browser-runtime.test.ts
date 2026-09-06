@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "@effect/vitest";
 import { Effect, Fiber } from "effect";
+import { vi } from "vitest";
 
 import { BrowserRuntime } from "./browser-runtime.ts";
 
@@ -125,3 +126,41 @@ const waitForEvent = Effect.fn(function* (directory: string, event: string) {
   }
   return yield* Effect.die(new Error("fixture event did not arrive"));
 });
+
+it.effect("reconciles closed tabs after more than an hour without browser activity", () =>
+  Effect.gen(function* () {
+    const { runtime } = yield* fixture;
+    const opened = yield* runtime.open("https://portal.example.test/appointments");
+    if (opened._tag !== "Opened") return yield* Effect.die(new Error("fixture did not open"));
+    expect(yield* runtime.close(opened.tabId)).toBe(true);
+    // oxlint-disable-next-line effecttsgo/global-date-in-effect -- The installed Executor idle pool reads Date.now directly.
+    const now = Date.now();
+    yield* Effect.acquireRelease(
+      Effect.sync(() => vi.spyOn(Date, "now").mockReturnValue(now + 3_601_000)),
+      (clock) => Effect.sync(() => clock.mockRestore()),
+    );
+    expect(yield* runtime.closeAll).toBe(true);
+    expect(yield* runtime.close(opened.tabId)).toBe(true);
+    return undefined;
+  }),
+);
+
+it.effect("closes a retained open tab after more than an hour without browser activity", () =>
+  Effect.gen(function* () {
+    const { runtime, directory } = yield* fixture;
+    const opened = yield* runtime.open("https://portal.example.test/appointments");
+    if (opened._tag !== "Opened") return yield* Effect.die(new Error("fixture did not open"));
+    // oxlint-disable-next-line effecttsgo/global-date-in-effect -- The installed Executor idle pool reads Date.now directly.
+    const now = Date.now();
+    yield* Effect.acquireRelease(
+      Effect.sync(() => vi.spyOn(Date, "now").mockReturnValue(now + 3_601_000)),
+      (clock) => Effect.sync(() => clock.mockRestore()),
+    );
+    expect(yield* runtime.closeAll).toBe(true);
+    expect(yield* runtime.close(opened.tabId)).toBe(true);
+    expect(
+      readFileSync(join(directory, "events.jsonl"), "utf8").match(/"operation":"close"/g),
+    ).toHaveLength(1);
+    return undefined;
+  }),
+);

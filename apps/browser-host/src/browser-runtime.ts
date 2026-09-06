@@ -78,7 +78,10 @@ export const make = Effect.fn("BrowserRuntime.make")(function* (options: Options
           elicited = true;
           return { action: "cancel" };
         },
-        plugins: [mcpPlugin({ dangerouslyAllowStdioMCP: true })],
+        // Tab handles must survive idle periods until this scoped Executor closes.
+        plugins: [
+          mcpPlugin({ dangerouslyAllowStdioMCP: true, preserveConnectionsUntilClose: true }),
+        ],
       }),
     ),
     (resource) => Effect.promise(() => resource.close()),

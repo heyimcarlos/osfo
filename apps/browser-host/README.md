@@ -141,3 +141,11 @@ original operation to one exact tab in the bound Chrome extension:
 Store the correlation evidence, close receipt, database repair result, and final
 revocation result in the private incident record. Never publish credentials or
 page content from the provisioned profile.
+
+The browser runtime keeps its dedicated Executor connection alive until the host
+scope closes. Executor's default five-minute idle eviction would replace the
+app-server REPL and lose owned tab handles before later cleanup. The pinned MCP
+plugin patch adds an explicit `preserveConnectionsUntilClose` option for this
+runtime; other plugin instances retain default idle eviction and connection
+failures still evict broken connections. This does not recover handles after a
+transport failure; uncertain cleanup remains unconfirmed.
