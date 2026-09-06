@@ -1,6 +1,6 @@
 import { DocumentAuthorizationUnavailable } from "../services/document-generation";
 import { IncidentControlsPostgres } from "../integrations/postgres/incident-controls";
-import { DateTime, Effect, Layer } from "effect";
+import { DateTime, Effect, Layer, Predicate } from "effect";
 
 import type { Database } from "@osfo/db";
 import { loadConfig, type CloudflareEnv, type ResearchReportProviderConfig } from "../config";
@@ -20,6 +20,8 @@ import { ResearchReportPostgres } from "../integrations/postgres/research-report
 import { ResearchReportFollowUpPostgres } from "../integrations/postgres/research-report-follow-up";
 import { ResearchReportPublicationPostgres } from "../integrations/postgres/research-report-publication";
 import { ResearchSynthesisPostgres } from "../integrations/postgres/research-synthesis";
+import { Authorization } from "../services/authorization";
+import { managedSearchAdmissionUsdMicros } from "../domain/web-search-price";
 import { ResearchCollector } from "../services/research-collector";
 import type { IncidentControls } from "../services/incident-controls";
 import { Allowances } from "../services/allowances";
@@ -228,6 +230,55 @@ export const executionEffect = <Value>(
                 new ResearchCollector.Unavailable({
                   cause,
                   message: "New provider work is temporarily unavailable",
+                  reason: "authorizationDenied",
+                }),
+            ),
+          ),
+        admitSearch: (report, operation) =>
+          Effect.gen(function* () {
+            const owner = yield* reports.artifactAuthorization(
+              payloadFor(report),
+              managedSearchAdmissionUsdMicros,
+            );
+            const context = owner.authorization;
+            const admitted = Authorization.make(retainedCatalog).admit(context, {
+              actionId: operation.operationId,
+              deadlineMilliseconds: 15_000n,
+              kind: "web.search",
+              pages: 0n,
+              redirects: 0n,
+              responseBytes: 0n,
+              results: 10n,
+              retries: 0n,
+              searches: 1n,
+            });
+            if (
+              !Predicate.isTagged(admitted, "Admitted") ||
+              admitted.allowancePeriod._tag !== "Metered" ||
+              context.allowance._tag !== "Metered"
+            ) {
+              return yield* new ResearchCollector.Unavailable({
+                cause: operation.operationId,
+                message: "Plan Usage denied the paid research search",
+                reason: "authorizationDenied",
+              });
+            }
+            return {
+              admittedVendorUsdMicros: managedSearchAdmissionUsdMicros,
+              admission: {
+                allowancePeriodId: admitted.allowancePeriod.allowancePeriodId,
+                authorizedAt: context.now.toISOString(),
+                capabilityCatalogVersion: admitted.capabilityCatalogVersion,
+                originatingAuthority: context.originatingAuthority,
+                planPolicyVersion: context.allowance.planPolicyVersion,
+              },
+            };
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ResearchCollector.Unavailable({
+                  cause,
+                  message: "The paid research search could not be admitted",
                   reason: "authorizationDenied",
                 }),
             ),
