@@ -3,6 +3,10 @@
 Record mistakes that can affect the current Osfo implementation. Keep each entry
 short, specific, and actionable.
 
+- Cold renderer image downloads can consume test and Worker readiness budgets.
+  Prepare the unchanged image in a separately bounded CI step, then reuse Docker
+  layers while keeping test execution and readiness checks bounded.
+
 - Local model fixture matching must stop at the latest substantive User request.
   Searching older requests until a pattern matches can replay a completed action
   instead of selecting the current request. Skip only synthetic continuations.
