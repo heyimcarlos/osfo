@@ -1139,6 +1139,15 @@ export class OsfoAgent extends Think<Env> {
     authorize: (request) => this.#authorizeBrowser(request),
   });
   readonly #browserTasks = BrowserTask.make({
+    readSearchResult: (userId, resultId) =>
+      this.#webState.readResult(userId, resultId).pipe(
+        Effect.mapError(
+          () =>
+            new Browser.BrowserUnavailable({
+              message: "The selected web result is unavailable.",
+            }),
+        ),
+      ),
     activeTaskIds: (userId) =>
       this.#hostedBrowser(this.#browserIdentity(userId))
         .list()
