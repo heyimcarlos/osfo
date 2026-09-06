@@ -142,3 +142,8 @@ short, specific, and actionable.
   credentials and commands cannot follow redirects. Keep local bearer bindings
   in restrictive `.dev.vars` files because ordinary Wrangler vars appear in
   retained startup logs. Test the actual startup log with a synthetic canary.
+
+- Build browser verification fixtures from actual accessibility output. Chrome
+  reports `button` roles, not the assumed `AXButton` spelling. Select the current
+  synthetic instruction after provider context so a historical URL cannot turn a
+  close request into another open request.

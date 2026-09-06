@@ -21,7 +21,7 @@ const page = {
   observationId: "actual-observation",
   url: "http://127.0.0.1:39271/book",
   observedAt: 1,
-  text: "7 AXButton Choose Tuesday at 10:00 AM\n9 AXButton Confirm synthetic appointment disabled",
+  text: "7 button Choose Tuesday at 10:00 AM\n9 button Confirm synthetic appointment disabled",
 };
 const task = {
   taskId: page.taskId,
@@ -48,7 +48,7 @@ it("chooses actual page indices and emits confirmation only from a returned rece
         arguments: {
           taskId: page.taskId,
           observationId: page.observationId,
-          targetDescription: "7 AXButton Choose Tuesday at 10:00 AM",
+          targetDescription: "7 button Choose Tuesday at 10:00 AM",
           interaction: { target: "7" },
         },
       },
@@ -57,7 +57,7 @@ it("chooses actual page indices and emits confirmation only from a returned rece
   const selected = {
     ...page,
     observationId: "selection-observation",
-    text: "5 AXStaticText Selected: Tuesday at 10:00 AM\n17 AXButton Confirm synthetic appointment",
+    text: "5 text Selected: Tuesday at 10:00 AM\n17 button Confirm synthetic appointment",
   };
   expect(
     respondBrowserTask({
@@ -82,7 +82,7 @@ it("chooses actual page indices and emits confirmation only from a returned rece
   const confirmed = {
     ...page,
     observationId: "receipt-observation",
-    text: "8 AXStaticText Confirmed. Receipt SYNTHETIC-73. Tuesday at 10:00 AM",
+    text: "8 text Confirmed. Receipt SYNTHETIC-73. Tuesday at 10:00 AM",
   };
   expect(
     respondBrowserTask({
@@ -114,4 +114,36 @@ it("rejects missing, stale, unknown, or foreign evidence instead of requesting a
   expect(() => respondBrowserTask({ messages: [user, result(task)], tools: [] })).toThrowError(
     "admitted executeBrowserEffect",
   );
+});
+
+it("uses the current instruction after historical browser requests in provider context", () => {
+  const current = {
+    role: "user",
+    content: `## Recent unindexed conversation source evidence\n\n${encode([user.content])}\n\nClose the synthetic browser task.`,
+  };
+  expect(respondBrowserTask({ messages: [current], tools })).toMatchObject({
+    tool_calls: [{ name: "listBrowserTasks", arguments: {} }],
+  });
+});
+
+it("refuses disabled or ambiguous targets in Chrome accessibility evidence", () => {
+  for (const text of [
+    "9 button (disabled) Choose Tuesday at 10:00 AM, ID: tuesday",
+    "9 button Choose Tuesday at 10:00 AM, ID: first\n10 button Choose Tuesday at 10:00 AM, ID: second",
+  ]) {
+    const observation = { ...page, text };
+    expect(
+      respondBrowserTask({
+        messages: [
+          user,
+          result({
+            ...task,
+            observation,
+            lastOutcome: { _tag: "Observed", observation },
+          }),
+        ],
+        tools,
+      }),
+    ).toMatchObject({ finish_reason: "stop" });
+  }
 });

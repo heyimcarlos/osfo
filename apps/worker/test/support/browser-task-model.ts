@@ -36,7 +36,7 @@ export const respondBrowserTask = (input: ResearchRequest) => {
         : found,
     -1,
   );
-  const instruction = text(messages[currentIndex]?.content);
+  const instruction = text(messages[currentIndex]?.content).trimEnd().split(/\r?\n/u).at(-1) ?? "";
   if (!/synthetic browser (?:appointment|task)/iu.test(instruction)) return null;
   const tools = input.tools?.flatMap((tool) => tool.function?.name ?? []) ?? [];
   const select = (name: string, arguments_: JsonObject) => {
@@ -110,7 +110,7 @@ export const respondBrowserTask = (input: ResearchRequest) => {
     .split(/\r?\n/u)
     .map((line) => line.trim())
     .filter(
-      (line) => /^\d+ AXButton\b/u.test(line) && line.includes(label) && !/disabled/iu.test(line),
+      (line) => /^\d+ button\b/u.test(line) && line.includes(label) && !/disabled/iu.test(line),
     );
   if (lines.length !== 1 || lines[0] === undefined)
     return stop("The fresh page has no single enabled target. Confirmation is not established.");
