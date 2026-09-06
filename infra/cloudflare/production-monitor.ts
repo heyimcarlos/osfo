@@ -1,6 +1,19 @@
 import { runMain } from "@effect/platform-bun/BunRuntime";
-import { Console, Data, Effect, Layer, Result, Schedule, Schema, Stream } from "effect";
+import {
+  Config,
+  Console,
+  Data,
+  Effect,
+  Layer,
+  Redacted,
+  Result,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+
+import { checkRuntimeMetrics } from "./production-runtime-metrics";
 
 class ProbeFailed extends Data.TaggedError("ProbeFailed") {}
 
@@ -19,7 +32,7 @@ const targets = [
 ] as const;
 
 export const coverageGap =
-  "Runtime error metrics: MISSING (no authorized CI analytics credential). These probes cover HTTPS availability only; database, providers and user journeys are not checked.";
+  "Runtime metrics cover delayed sampled Worker invocations only; NO_DATA is not zero errors. Database, providers and user journeys are not checked.";
 
 export const httpLayer = FetchHttpClient.layer.pipe(
   Layer.provide(
@@ -80,12 +93,29 @@ const probe = Effect.fn("ProductionMonitor.probe")(
 
 const main = Effect.gen(function* () {
   const results = yield* checkAvailability();
+  const accountId = yield* Config.string("CLOUDFLARE_ANALYTICS_ACCOUNT_ID").pipe(
+    Config.withDefault(""),
+  );
+  const token = yield* Config.redacted("CLOUDFLARE_ANALYTICS_API_TOKEN").pipe(
+    Config.withDefault(Redacted.make("")),
+  );
+  const credentials =
+    /^[a-f0-9]{32}$/.test(accountId) && Redacted.value(token).length > 0
+      ? { accountId, token }
+      : undefined;
+  const metrics = yield* checkRuntimeMetrics(credentials);
+  yield* Effect.forEach(metrics, (result) =>
+    Console.log(`${result.name} runtime errors: ${result.status}`),
+  );
   yield* Console.log(`::warning::${coverageGap}`);
   yield* Effect.forEach(results, (result) =>
     Console.log(`${result.name} HTTPS availability: ${result.available ? "PASS" : "FAIL"}`),
   );
   // Only fixed classifications reach public CI logs, never response bodies or causes.
-  if (results.some((result) => !result.available))
+  if (
+    results.some((result) => !result.available) ||
+    metrics.some((result) => result.status !== "PASS" && result.status !== "NOT_APPLICABLE")
+  )
     yield* Effect.sync(() => {
       process.exitCode = 1;
     });
