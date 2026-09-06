@@ -172,6 +172,7 @@ export const ManagedTurnMetadata = Schema.TaggedStruct("OsfoManagedTurn", {
       }),
     ),
   ),
+  conversationResourcePriceVersion: Schema.optionalKey(ResourcePriceVersion),
   conservativeVendorUsdMicros: positiveInteger,
   companyCostResourcePriceVersion: Schema.optionalKey(ResourcePriceVersion),
   coreMemoryAuthorization: CoreMemoryAuthorizationSnapshotEncoded,

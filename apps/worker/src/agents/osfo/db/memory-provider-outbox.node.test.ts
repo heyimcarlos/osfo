@@ -22,6 +22,7 @@ import {
   AllowancePeriodId,
   CapabilityCatalogVersion,
   PlanPolicyVersion,
+  ModelAccessPolicyVersion,
   AssistantMessageId,
   ConversationRouteId,
   ResourcePriceVersion,
@@ -43,6 +44,9 @@ import {
 } from "./memory-provider-outbox";
 import { makeAgentStore } from "./store";
 import { makeWebState } from "./web-state";
+import { settleConversationUsage } from "../conversation-usage";
+import { CommittedTurnTerminal, withCommittedTurnTerminal } from "../committed-turn-terminal";
+import { UsageEvent } from "../../../domain/usage-event";
 import { initialManagedSearchEvidence } from "../../../domain/web-search-evidence";
 import {
   PaidSearchAttempt,
@@ -102,6 +106,93 @@ it("includes every generated Agent migration in the runtime manifest", () => {
   expect(imports.map((match) => match[2])).toEqual(migrationFiles);
   expect(imports.every((match) => referencedSql.has(match[1] ?? ""))).toBe(true);
 });
+
+it.effect(
+  "replays a frozen conversation event from Think SQLite after an acknowledgement is lost",
+  () =>
+    withDatabase(({ database }) =>
+      Effect.gen(function* () {
+        const initial = CommittedTurnTerminal.make({
+          requestId: ThinkRequestId.make("request-settle"),
+          submissionId: ThinkSubmissionId.make("submission-settle"),
+          status: "completed",
+          usageOccurredAt: "2026-09-06T12:00:00.000Z",
+        });
+        const event = UsageEvent.make({
+          allowancePeriodId: AllowancePeriodId.make("period-original"),
+          capabilityCatalogVersion: CapabilityCatalogVersion.make("governed-capabilities-v1"),
+          evidenceReferences: [
+            { kind: "operationEvidence", reference: "model-call-attempt:submission-settle:1" },
+          ],
+          manifestVersion: null,
+          modelAccessPolicyVersion: ModelAccessPolicyVersion.make("shared-usage-v1"),
+          // oxlint-disable-next-line effecttsgo/global-date-in-effect -- Fixed retained accounting timestamp for restart replay.
+          occurredAt: new Date("2026-09-06T12:00:00.000Z"),
+          outcome: {
+            _tag: "Completed",
+            charge: {
+              components: [
+                {
+                  activity: "conversationsAndMemory",
+                  ratedCostUsdMicros: 100n,
+                  resourcePriceVersion: ResourcePriceVersion.make("resource-prices-2026-08-22"),
+                },
+              ],
+              planUsageMicros: 100n,
+              ratedCostUsdMicros: 100n,
+              usagePolicyVersion: PlanPolicyVersion.make("shared-usage-v1"),
+            },
+          },
+          rootOperationId: "submission-settle",
+          source: { sourceId: "submission-settle", sourceType: "conversation" },
+          usagePolicyVersion: PlanPolicyVersion.make("shared-usage-v1"),
+        });
+        const session = Session.create(thinkSqlProvider(database)).forSession("session-settle");
+        const assistant = {
+          id: "assistant-settle",
+          role: "assistant",
+          parts: [{ type: "text", text: "Completed answer" }],
+          metadata: withCommittedTurnTerminal({}, initial),
+        };
+        yield* Effect.promise(() => session.appendMessage(assistant));
+        const decode = Schema.decodeUnknownEffect(
+          Schema.Struct({ metadata: Schema.Struct({ osfoCommittedTurn: CommittedTurnTerminal }) }),
+        );
+        let dispatches = 0;
+        const port = () => {
+          const restarted = Session.create(thinkSqlProvider(database)).forSession("session-settle");
+          return {
+            read: Effect.promise(() => restarted.getMessage("assistant-settle")).pipe(
+              Effect.flatMap(decode),
+              Effect.map(({ metadata }) => metadata.osfoCommittedTurn),
+            ),
+            prepare: () => Effect.succeed(event),
+            retain: (terminal: CommittedTurnTerminal) =>
+              Effect.promise(() => {
+                const updated = { ...assistant, metadata: withCommittedTurnTerminal({}, terminal) };
+                return restarted.updateMessage(updated);
+              }).pipe(Effect.asVoid),
+            dispatch: (retained: UsageEvent) =>
+              Effect.gen(function* () {
+                expect(retained).toEqual(event);
+                dispatches++;
+                if (dispatches === 1) return yield* Effect.fail("lost acknowledgement");
+                return undefined;
+              }),
+          };
+        };
+        yield* settleConversationUsage(port()).pipe(Effect.flip);
+        yield* settleConversationUsage({
+          ...port(),
+          prepare: () =>
+            Effect.die(new Error("Frozen event must survive restart and period rollover")),
+        });
+        yield* settleConversationUsage(port());
+        expect(dispatches).toBe(2);
+        expect(yield* port().read).toMatchObject({ usageSettled: true });
+      }),
+    ),
+);
 
 it.effect("migrates a fresh Agent database to version 20 without the legacy table", () =>
   withEmptyDatabase(({ database, storage }) =>

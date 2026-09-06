@@ -1,7 +1,7 @@
 import { and, desc, eq, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
-import type { UserId } from "../../../domain";
+import type { ThinkSubmissionId, UserId } from "../../../domain";
 import {
   CompletedOperationSchema,
   PaidSearchAttempt,
@@ -45,6 +45,7 @@ export class WebStateUnavailable extends Schema.TaggedError<WebStateUnavailable>
       "readResult",
       "replay",
       "retainSearchAttempt",
+      "readCompletedSearches",
     ]),
   },
 ) {}
@@ -489,3 +490,45 @@ const unavailable = (operation: WebStateUnavailable["operation"], cause: unknown
     message: "Agent SQLite could not persist bounded public-web state.",
     operation,
   });
+
+/** Read only useful completed searches owned by the exact conversation Submission. */
+export const readCompletedConversationSearches = (
+  db: AgentDb,
+  userId: UserId,
+  submissionId: ThinkSubmissionId,
+) =>
+  execute("readCompletedSearches", () =>
+    db
+      .select({
+        operationId: webOperations.operation_id,
+        attemptJson: webOperations.paid_attempt_json,
+      })
+      .from(webOperations)
+      .where(
+        and(
+          eq(webOperations.owner_user_id, userId),
+          eq(webOperations.turn_id, submissionId),
+          eq(webOperations.status, "completed"),
+          isNotNull(webOperations.paid_attempt_json),
+        ),
+      )
+      .orderBy(webOperations.operation_id)
+      .all(),
+  ).pipe(
+    Effect.flatMap((rows) =>
+      Effect.forEach(rows, (row) =>
+        Schema.decodeUnknownEffect(PersistedPaidSearchAttempt)(row.attemptJson).pipe(
+          Effect.map((attempt) => ({ operationId: row.operationId, attempt })),
+          Effect.mapError(
+            (cause) =>
+              new WebStateUnavailable({
+                cause,
+                message: "Retained paid search evidence is invalid",
+                operation: "readCompletedSearches",
+              }),
+          ),
+        ),
+      ),
+    ),
+    Effect.map((rows) => rows.filter(({ attempt }) => attempt.outcome === "succeeded")),
+  );

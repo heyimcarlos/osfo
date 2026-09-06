@@ -3,7 +3,7 @@ import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { expect, it } from "@effect/vitest";
 import { and, eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
 
 import { Db } from "../../src/db";
 import { BillingDb } from "../../src/db/billing";
@@ -14,11 +14,129 @@ import {
   PlanPolicyVersion,
   ResourcePriceVersion,
   UserId,
+  ThinkRequestId,
 } from "../../src/domain";
 import { UsageEvent } from "../../src/domain/usage-event";
+import { settleConversationUsage } from "../../src/agents/osfo/conversation-usage";
+import { CommittedTurnTerminal } from "../../src/agents/osfo/committed-turn-terminal";
+import { managedConversationModelPrice, rate } from "../../src/domain/usage";
+import { retainedCatalog } from "../../src/domain/plan-policy";
+import { managedSearchPrice } from "../../src/domain/web-search-price";
 import { spawnApp } from "../support/spawn-app";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, effecttsgo/global-date, effecttsgo/global-date-in-effect, eslint/no-underscore-dangle -- This PostgreSQL contract owns its Promise transaction helper, concrete database Layer, fixed evidence times, and tagged outcomes. */
+
+it.effect(
+  "replays one completed conversation charge into its original period after a lost ledger acknowledgement",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
+          Effect.promise(client.dispose),
+        );
+        const userId = yield* registerUser(app, "+15550002524", "Conversation Settlement");
+        const database = yield* Db.database;
+        const period = yield* activateSharedUsage(database, userId, "free");
+        const billing = BillingDb.make(database);
+        const rating = rate(
+          [
+            {
+              activity: "conversationsAndMemory",
+              cachedInputTokens: 100n,
+              inputTokens: 1000n,
+              outputTokens: 100n,
+              price: managedConversationModelPrice,
+            },
+          ],
+          [
+            {
+              activity: "webAndResearch",
+              ratedCostUsdMicros: 13_562n,
+              resourcePriceVersion: ResourcePriceVersion.make(
+                managedSearchPrice.resourcePriceVersion,
+              ),
+            },
+          ],
+          retainedCatalog,
+          PlanPolicyVersion.make("shared-usage-v1"),
+        );
+        if (Result.isFailure(rating))
+          return yield* Effect.die(new Error("Recognized conversation evidence must rate"));
+        const event = UsageEvent.make({
+          ...usageEvent(
+            period.allowancePeriodId,
+            "conversation-submission",
+            "conversation-submission",
+            rating.success.planUsageMicros,
+          ),
+          outcome: { _tag: "Completed", charge: rating.success },
+          source: { sourceId: "conversation-submission", sourceType: "conversation" },
+        });
+        let terminal = CommittedTurnTerminal.make({
+          requestId: ThinkRequestId.make("conversation-request"),
+          status: "completed",
+          usageOccurredAt: event.occurredAt.toISOString(),
+        });
+        let dispatches = 0;
+        const port = {
+          read: Effect.sync(() => terminal),
+          prepare: () => Effect.succeed(event),
+          retain: (next: CommittedTurnTerminal) =>
+            Effect.sync(() => {
+              terminal = next;
+            }),
+          dispatch: (retained: UsageEvent) =>
+            billing.recordUsageEvent(retained).pipe(
+              Effect.flatMap(() => {
+                dispatches++;
+                return dispatches === 1 ? Effect.fail("lost acknowledgement") : Effect.void;
+              }),
+            ),
+        };
+        yield* settleConversationUsage(port).pipe(Effect.flip);
+        const nextStartsAt = yield* Effect.promise(async () => {
+          const [original] = await database
+            .select()
+            .from(allowancePeriods)
+            .where(eq(allowancePeriods.allowance_period_id, period.allowancePeriodId));
+          if (original === undefined) throw new Error("Original period is missing");
+          await database.insert(allowancePeriods).values({
+            ...original,
+            allowance_period_id: "conversation-next-period",
+            starts_at: original.ends_at,
+            ends_at: new Date(original.ends_at.getTime() + 30 * 24 * 60 * 60 * 1000),
+          });
+          return original.ends_at;
+        });
+        const next = yield* billing.admit(userId, new Date(nextStartsAt.getTime() + 1_000));
+        expect(next.allowancePeriodId).not.toBe(period.allowancePeriodId);
+        yield* settleConversationUsage({
+          ...port,
+          prepare: () => Effect.die(new Error("Original frozen event must replay after rollover")),
+        });
+        yield* settleConversationUsage(port);
+        const rows = yield* Effect.promise(() =>
+          database
+            .select({
+              period: allowanceUsage.allowance_period_id,
+              quantity: allowanceUsage.quantity,
+            })
+            .from(allowanceUsage)
+            .where(
+              and(
+                eq(allowanceUsage.source_type, "conversation"),
+                eq(allowanceUsage.source_id, "conversation-submission"),
+              ),
+            ),
+        );
+        expect(rows).toEqual([
+          { period: period.allowancePeriodId, quantity: rating.success.planUsageMicros },
+        ]);
+        expect(dispatches).toBe(2);
+        return undefined;
+      }).pipe(Effect.provide(Db.layer({ db: env.DB }))),
+    ),
+);
 
 it.effect("records final Usage Events idempotently without charging failed or cancelled work", () =>
   Effect.scoped(
