@@ -279,6 +279,60 @@ it.effect("stops continuation after the source authority is revoked", () => {
   }).pipe(Effect.provide(layer(fixture.port)));
 });
 
+for (const boundary of ["revoked", "deadline"] as const) {
+  it.effect(`rejects resumed source-committed execution after ${boundary}`, () => {
+    const fixture = makeFixture();
+    let current = authorization("adventurer");
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const reports = yield* ResearchReport.Service;
+      const started = yield* reports.start(startInput());
+      const payload = ResearchReport.WorkflowPayload.make({
+        inputDigest: started.report.inputDigest,
+        workflowId: started.report.workflowId,
+      });
+      yield* reports.beginExecution(payload);
+      yield* reports.commitSources(
+        payload,
+        "users/research-user/research-report/manifests/retry.json",
+        ResearchReport.InputDigest.make("d".repeat(64)),
+      );
+      current =
+        boundary === "deadline"
+          ? { ...current, now: deadline }
+          : {
+              ...current,
+              authority: {
+                _tag: "RevokedAuthSession",
+                authSessionId: AuthSessionId.make("research-auth-session"),
+                userId,
+              },
+            };
+      const result = yield* reports.authorizeExecution(payload).pipe(Effect.result);
+      expect(result).toMatchObject({
+        failure:
+          boundary === "deadline"
+            ? { _tag: "ResearchReportConflict" }
+            : { _tag: "Denied", reason: "authorityRevoked" },
+      });
+      expect(fixture.stored).toMatchObject({
+        workflowId: started.report.workflowId,
+        artifactContentId: null,
+        state: "canceled",
+        safeFailureCode: boundary === "deadline" ? "deadline-exceeded" : "authority-ended",
+      });
+      expect(fixture.instances).toHaveLength(1);
+    }).pipe(
+      Effect.provide(
+        layer({
+          ...fixture.port,
+          currentAuthorization: () => Effect.succeed(current),
+        }),
+      ),
+    );
+  });
+}
+
 it.effect("rechecks current authority before inspection or cancellation", () => {
   const fixture = makeFixture({ currentAuthorityRevoked: true });
 
