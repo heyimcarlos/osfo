@@ -10,6 +10,7 @@ import type {
 
 export const registeredToolNameValues = [
   "analyzeFile",
+  "inspectBrowserInventory",
   "calendarCreateEvent",
   "calendarDeleteEvent",
   "calendarFindAvailability",

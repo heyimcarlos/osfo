@@ -74,6 +74,7 @@ export const ManagedSkillLearningDraft = Schema.Struct({
       "session-history",
       "skill-store",
       "web-provider",
+      "browser-host",
       "workflow-store",
     ]),
   ).check(Schema.isMaxLength(10)),

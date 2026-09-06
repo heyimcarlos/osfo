@@ -14,3 +14,11 @@ repository configuration.
   serialize Chat SDK's live `_ThreadImpl` delivery surface across a facet.
   Qualify genuine messenger ingress in real Wrangler/Chrome and use the trusted
   Agent submission seam only to arrange downstream Worker journey state.
+
+- Executor 1.6.8 and its MCP plugin use Effect 4.0.0-beta.59. A separate Node host
+  can retain those peers while Worker/API code stays on the workspace version;
+  only plain transport data and synchronous codecs cross the runtime boundary.
+- Codex app-server direct MCP calls can use a real returned thread identity with
+  caller-generated turn correlation metadata. Browser calls still require the
+  provisioned desktop broker and enabled browser extension. CLI login alone does
+  not provision that connection.

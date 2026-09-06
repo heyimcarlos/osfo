@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "composite": true,
+    "types": ["node"],
+    "lib": ["ES2022", "DOM"],
+    "allowImportingTsExtensions": true,
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "allowedDuplicatedPackages": ["effect"]
+      }
+    ]
+  },
+  "include": ["src/**/*.ts"]
+}

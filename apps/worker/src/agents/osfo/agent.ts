@@ -38,6 +38,7 @@ import {
   Schema,
   Semaphore,
 } from "effect";
+import { FetchHttpClient } from "effect/unstable/http";
 
 import type { AllowanceItem, AllowanceSource } from "../../domain/allowance";
 import {
@@ -395,6 +396,8 @@ import type { Integrations } from "../../services/integrations";
 import { Web, WebUnavailable, type AuthorizationRequest } from "../../services/web";
 import { makeWebState } from "./db/web-state";
 import { makeWebTools } from "./web-tools";
+import { makeBrowserTools } from "./browser-tools";
+import { Browser } from "../../services/browser-host";
 import {
   makeReminderAuthority,
   ReminderCallbackCapability,
@@ -941,6 +944,21 @@ export class OsfoAgent extends Think<Env> {
     now: Effect.sync(() => new Date()),
     state: this.#webState,
   });
+  readonly #browserBinding = loadConfig(this.env).browserHost;
+  readonly #browser = Browser.make({
+    binding: this.#browserBinding,
+    dispatch: (request, binding) =>
+      Browser.dispatch(request, binding).pipe(
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The Agent composes the private host HTTP client at its runtime entry point.
+        Effect.provide(FetchHttpClient.layer),
+        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+      ),
+    authorize: (request) => this.#authorizeBrowser(request),
+  });
+  readonly #browserTools = makeBrowserTools({
+    browser: this.#browser,
+    readActiveTurn: () => this.#activeCapabilityMetadata,
+  });
   readonly #webTools = makeWebTools({
     readActiveTurn: () => this.#activeCapabilityMetadata,
     readRequestText: () => this.#activeRequestText,
@@ -1156,6 +1174,7 @@ export class OsfoAgent extends Think<Env> {
     ...this.#reminderTools.tools,
     ...this.#sessionRecallTools,
     ...this.#webTools,
+    ...this.#browserTools,
     cancelResearchReport: tool({
       description: "Cancel one owned nonterminal Research Report Workflow.",
       execute: (input) => this.#cancelResearchReport(input),
@@ -1648,6 +1667,9 @@ export class OsfoAgent extends Think<Env> {
     const capabilityAvailability = {
       availableIntegrationToolkits,
       availableRequirements: [
+        ...(Browser.isAvailable(this.#browserBinding, metadata.authorityIdentity.userId)
+          ? (["browser-host"] as const)
+          : []),
         ...(Option.isSome(this.#integrations) ? (["composio"] as const) : []),
         "document-renderer",
         "file-storage",
@@ -1857,6 +1879,52 @@ export class OsfoAgent extends Think<Env> {
       activeTools: [...step.activeToolNames],
       instructions: step.instructions,
     };
+  }
+
+  #authorizeBrowser(request: Browser.Inspection) {
+    const active = this.#activeCapabilityMetadata;
+    if (
+      active === undefined ||
+      active.submissionId !== request.turnId ||
+      active.authorityIdentity.userId !== request.userId
+    ) {
+      return Effect.fail(
+        new Browser.BrowserUnavailable({
+          message: "The browser inspection does not belong to the active User turn.",
+        }),
+      );
+    }
+    return this.#fileToolAuthorizationContext().pipe(
+      Effect.flatMap((context) => {
+        if (
+          context.user.userId !== request.userId ||
+          this.#activeCapabilityMetadata?.submissionId !== request.turnId
+        ) {
+          return Effect.fail(
+            new Browser.BrowserUnavailable({
+              message: "Browser inspection authority changed before dispatch.",
+            }),
+          );
+        }
+        const admitted = authorization.admit(
+          { ...context, requestVendorUsdMicros: 0n },
+          {
+            actionId: request.operationId,
+            kind: "browser.inspect",
+            deadlineMilliseconds: 15_000n,
+            responseBytes: 16_384n,
+            retries: 0n,
+          },
+        );
+        return Predicate.isTagged(admitted, "Admitted")
+          ? Effect.void
+          : Effect.fail(
+              new Browser.BrowserUnavailable({
+                message: "Browser inspection admission was denied.",
+              }),
+            );
+      }),
+    );
   }
 
   #authorizeWeb(request: AuthorizationRequest) {

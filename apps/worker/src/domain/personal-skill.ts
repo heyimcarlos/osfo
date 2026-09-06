@@ -34,6 +34,7 @@ export type SkillTaskKind = typeof SkillTaskKind.Type;
 /** Closed runtime facts a personal Skill may require before selection. */
 export const SkillAvailabilityRequirement = Schema.Literals([
   "composio",
+  "browser-host",
   "document-renderer",
   "file-storage",
   "native-memory",

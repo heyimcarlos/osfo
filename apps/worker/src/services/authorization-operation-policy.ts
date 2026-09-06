@@ -28,6 +28,7 @@ const sharedUnmeteredOperations = new Set<AuthorizationOperationName>([
   "memory.clear",
   "memory.forgetKnowledge",
   "file.read",
+  "browser.inspect",
   "file.delete",
   "skill.inspect",
   "skill.manage",
@@ -184,6 +185,7 @@ export const requiresOwnership = (operation: AuthorizationOperation) =>
   operation.kind.startsWith("skill.") ||
   operation.kind.startsWith("integration.") ||
   operation.kind.startsWith("web.") ||
+  operation.kind.startsWith("browser.") ||
   operation.kind.startsWith("artifact.") ||
   operation.kind === "support.gmSummon" ||
   operation.kind === "account.delete";

@@ -238,6 +238,15 @@ export const capabilityIntentPolicy = {
     ),
     taskKinds: ["web"],
   },
+  "browser-inventory": {
+    matches: anyIntentPhrase(
+      "browser inventory",
+      "available browsers",
+      "browser tabs",
+      "open tabs",
+    ),
+    taskKinds: ["web"],
+  },
   "page-read": {
     matches: (task) =>
       anyIntentPhrase("article", "link", "page", "url", "website")(task) ||

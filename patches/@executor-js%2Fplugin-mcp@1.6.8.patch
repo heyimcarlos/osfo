@@ -1,0 +1,30 @@
+--- a/dist/appserver-connector-E223PO3C.js
++++ b/dist/appserver-connector-E223PO3C.js
+@@ -622,6 +622,7 @@
+     this.#sendDownstream({ jsonrpc: "2.0", method: "initialized" });
+     const started = await this.#request("thread/start", {
+       sessionStartSource: "startup",
++      ...(this.#config.server === "cua_repl" ? { ephemeral: true } : {}),
+       approvalPolicy: "on-request"
+     });
+     if (!started.ok) {
+@@ -761,11 +762,18 @@
+     const program = this.#surfaceProgram(name, args);
+     if (program === "unknown-tool") return void 0;
+     if (program === void 0) {
++      if (this.#config.server === "cua_repl" && name !== "js" && name !== "js_reset") return void 0;
+       return {
+         threadId: this.#threadId,
+         server: this.#config.server,
+         tool: name,
+-        arguments: args ?? {}
++        arguments: args ?? {},
++        ...(this.#config.server === "cua_repl" ? {
++          _meta: { "x-codex-turn-metadata": {
++            session_id: this.#threadId,
++            turn_id: crypto.randomUUID()
++          } }
++        } : {})
+       };
+     }
+     return {

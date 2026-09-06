@@ -78,6 +78,21 @@
         "effecttsgo/node-builtin-import": "off",
         "eslint/no-console": "off"
       }
+    },
+    {
+      "files": ["apps/browser-host/**"],
+      "rules": {
+        "effecttsgo/duplicate-package": "off"
+      }
+    },
+    {
+      "files": [
+        "apps/browser-host/src/**/*.test.ts",
+        "apps/worker/src/services/browser-host.test.ts"
+      ],
+      "rules": {
+        "vitest/no-standalone-expect": "off"
+      }
     }
   ],
   "ignorePatterns": [
