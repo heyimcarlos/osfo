@@ -113,7 +113,10 @@ export const layer = (options: Options) => {
       const response = yield* Effect.promise(() =>
         options.env.routeOsfoAgentRequest(source, route.agentId, childPath),
       );
-      return HttpServerResponse.fromWeb(response);
+      // Preserve Cloudflare's WebSocket while allowing Effect to apply response headers.
+      return HttpServerResponse.raw(new Response(response.body, response), {
+        status: response.status,
+      });
     }).pipe(
       Effect.catchTags({
         AgentRouteNotFound: () => Effect.succeed(HttpServerResponse.empty({ status: 404 })),
