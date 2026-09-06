@@ -154,10 +154,22 @@ export const inspect = (contentId: ContentId, bytes: Uint8Array) =>
       const form = pdf.getForm();
       const fields = form.getFields();
       if (fields.length > 300) throw new Error("Template exceeds field inspection limit");
+      if (
+        fields.some(
+          (field) => field instanceof PDFTextField && (field.getText()?.length ?? 0) > 10_000,
+        )
+      )
+        throw new Error("PDF field value exceeds inspection limit");
       return {
         pageCount: pdf.getPageCount(),
         fields: fields.map((field) => ({
           name: field.getName(),
+          currentValue:
+            field instanceof PDFTextField
+              ? (field.getText() ?? null)
+              : field instanceof PDFCheckBox || field instanceof PDFRadioGroup
+                ? (field.acroField.getValue()?.decodeText() ?? null)
+                : null,
           label:
             field.acroField.dict
               .lookupMaybe(PDFName.of("TU"), PDFString, PDFHexString)

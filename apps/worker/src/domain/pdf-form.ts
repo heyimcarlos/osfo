@@ -32,3 +32,33 @@ export const PdfFormSource = Schema.Struct({
   fields: Schema.Array(PdfFormFieldValue).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
 });
 export type PdfFormSource = typeof PdfFormSource.Type;
+
+/** Parser-observed labels and widget geometry, retained with the original file digest. */
+export const PdfFormInspection = Schema.Struct({
+  encrypted: Schema.Boolean,
+  pageCount: PdfFormSource.fields.pageCount,
+  fields: Schema.Array(
+    Schema.Struct({
+      name: fieldName,
+      label: Schema.NullOr(Schema.String),
+      currentValue: Schema.NullOr(Schema.String.check(Schema.isMaxLength(10_000))),
+      kind: Schema.Literals(["text", "checkbox", "radio", "unsupported"]),
+      restriction: Schema.NullOr(Schema.Literals(["is protected", "has no established purpose"])),
+      exportValues: Schema.Array(Schema.String).check(Schema.isMaxLength(300)),
+      widgets: Schema.Array(
+        Schema.Struct({
+          page: PdfFormSource.fields.pageCount,
+          protectedRegion: Schema.NullOr(Schema.String),
+          rect: Schema.Tuple([Schema.Finite, Schema.Finite, Schema.Finite, Schema.Finite]),
+          labels: Schema.Array(
+            Schema.Struct({
+              text: Schema.String.check(Schema.isMaxLength(500)),
+              x: Schema.Finite,
+              y: Schema.Finite,
+            }),
+          ).check(Schema.isMaxLength(3)),
+        }),
+      ).check(Schema.isMaxLength(300)),
+    }),
+  ).check(Schema.isMaxLength(300)),
+});

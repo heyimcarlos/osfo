@@ -1,3 +1,4 @@
+import { PdfFormInspection } from "../../domain/pdf-form";
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -22,6 +23,7 @@ const SuccessfulTask = Schema.Struct({
   normalizedText: Schema.optional(Schema.String),
   ok: Schema.Literal(true),
   pages: Schema.optional(FilePagesEvidence),
+  pdfForm: Schema.optional(PdfFormInspection),
   parser: Schema.optional(Schema.String),
   resultText: Schema.optional(Schema.String),
 });
@@ -145,6 +147,7 @@ export const makeFileCompute = (sandboxFor: (taskId: string) => FileTaskSandbox)
           const provenance = yield* Schema.decodeEffect(FileNormalizationProvenance)({
             mediaType: input.mediaType,
             pages: result.pages,
+            pdfForm: result.pdfForm,
             parser: result.parser,
             sourceSha256: input.sha256,
           }).pipe(Effect.mapError(() => invalidTaskResult("Normalization provenance is invalid")));

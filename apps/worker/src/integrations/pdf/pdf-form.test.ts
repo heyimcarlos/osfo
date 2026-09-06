@@ -59,6 +59,7 @@ it.effect("inspects exact exports and marks opaque fields for review", () =>
     const result = yield* inspect(contentId, bytes);
     expect(result.fields).toContainEqual({
       name: "ContactPermission",
+      currentValue: "Off",
       label: null,
       kind: "checkbox",
       restriction: null,
@@ -66,6 +67,7 @@ it.effect("inspects exact exports and marks opaque fields for review", () =>
     });
     expect(result.fields).toContainEqual({
       name: "Service",
+      currentValue: "Off",
       label: null,
       kind: "radio",
       restriction: null,

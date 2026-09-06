@@ -7,11 +7,14 @@ import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 
+import { PdfFormInspection } from "../src/domain/pdf-form";
+
 const image = "osfo-file-task-vitest";
 const taskPath = join(import.meta.dirname, "../src/integrations/cloudflare/file-task.txt");
 
 const TaskResult = Schema.Union([
   Schema.Struct({
+    pdfForm: Schema.optional(PdfFormInspection),
     normalizedText: Schema.optional(Schema.String),
     ok: Schema.Literal(true),
     pages: Schema.optional(
@@ -52,6 +55,21 @@ describe("disposable Python file task", () => {
 
           createFixture(workspace, "pdf");
           expect(runTask(workspace, "application/pdf")).toMatchObject({ ok: true });
+
+          createFixture(workspace, "encrypted-form");
+          expect(runTask(workspace, "application/pdf")).toMatchObject({
+            ok: true,
+            pdfForm: {
+              encrypted: true,
+              pageCount: 1,
+              fields: [{ name: "a1", restriction: null, kind: "text", widgets: [{ page: 1 }] }],
+            },
+          });
+          createFixture(workspace, "encrypted-form-no-fill");
+          expect(runTask(workspace, "application/pdf")).toMatchObject({
+            ok: false,
+            reason: "malicious",
+          });
 
           createFixture(workspace, "docx");
           expect(
@@ -207,7 +225,21 @@ stream=DecodedStreamObject()
 stream.set_data(b'BT /F1 16 Tf 30 30 Td (Reference: NATIVE-913) Tj ET')
 page[NameObject('/Contents')]=stream`;
 
+const encryptedForm = `import io
+from reportlab.pdfgen import canvas
+from pypdf import PdfReader, PdfWriter
+from pypdf.constants import UserAccessPermissions
+b=io.BytesIO()
+c=canvas.Canvas(b)
+c.drawString(40,723,'Applicant name')
+c.acroForm.textfield(name='a1',x=40,y=700,width=220,height=20)
+c.showPage()
+c.save()
+w=PdfWriter(clone_from=PdfReader(b))`;
+
 const fixturePrograms = {
+  "encrypted-form": `${encryptedForm}\nw.encrypt('',owner_password='synthetic-owner',permissions_flag=UserAccessPermissions.FILL_FORM_FIELDS,algorithm='AES-256')\nw.write('/workspace/source.bin')`,
+  "encrypted-form-no-fill": `${encryptedForm}\nw.encrypt('',owner_password='synthetic-owner',permissions_flag=UserAccessPermissions.PRINT,algorithm='AES-256')\nw.write('/workspace/source.bin')`,
   "document-image": `${documentImage}\nim.save('/workspace/source.bin','PNG')`,
   "scanned-pdf": `${documentImage}\nim.save('/workspace/source.bin','PDF',resolution=144)`,
   "native-pdf": `${nativePdf}\nw.write('/workspace/source.bin')`,

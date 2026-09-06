@@ -217,7 +217,7 @@ const render = async (
     readonly contentId: ContentId;
     readonly format: DocumentArtifact.DocumentFormat;
     readonly intentDigest: DocumentIntentDigest;
-    readonly source: DocumentSource;
+    readonly source: Parameters<DisposableCompute["generate"]>[0]["source"];
     readonly supportingVisuals: ReadonlyArray<{
       readonly bytes: Uint8Array;
       readonly contentId: ContentId;
@@ -287,7 +287,8 @@ const render = async (
       if (cachedOutput.exists) {
         const completedEvidence = {
           ...claimed.evidence,
-          renderedPageCount: input.source.pages.length,
+          renderedPageCount:
+            "templateBytes" in input.source ? input.source.pageCount : input.source.pages.length,
           status: "completed" as const,
         };
         const completed = await withDeadline(
@@ -376,13 +377,19 @@ const render = async (
       await withDeadline(
         sandbox.writeFile(
           sourcePath,
-          Schema.encodeSync(DocumentRendererInput)({
-            pages: input.source.pages,
-            supportingVisuals: input.supportingVisuals.map(({ bytes, contentId }) => ({
-              base64: encodeBase64(bytes),
-              contentId,
-            })),
-          }),
+          "templateBytes" in input.source
+            ? JSON.stringify({
+                templateBase64: encodeBase64(input.source.templateBytes),
+                pageCount: input.source.pageCount,
+                fields: input.source.fields,
+              })
+            : Schema.encodeSync(DocumentRendererInput)({
+                pages: input.source.pages,
+                supportingVisuals: input.supportingVisuals.map(({ bytes, contentId }) => ({
+                  base64: encodeBase64(bytes),
+                  contentId,
+                })),
+              }),
         ),
         deadlines.rpcMs,
       );
