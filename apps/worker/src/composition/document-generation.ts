@@ -43,7 +43,7 @@ export const make = (
   const visualArtifacts = ArtifactStore.make(bindings.ARTIFACTS);
   return DocumentGeneration.make({
     pdfForms: {
-      fill: (contentId, source, authorization, actionId) =>
+      prepare: (contentId, source, authorization, actionId) =>
         Effect.gen(function* () {
           if (readTemplate === undefined)
             return yield* DocumentArtifact.invalid(

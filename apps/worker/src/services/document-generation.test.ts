@@ -167,7 +167,7 @@ const makeFixture = (revoked = false, sandbox = false) => {
     maximumComputeInputBytes: 5_000_000,
     visuals: { read: () => Effect.die(new Error("Form must not read visuals")) },
     pdfForms: {
-      fill: () =>
+      prepare: () =>
         Effect.sync(() => {
           fills += 1;
           return sandbox

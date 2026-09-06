@@ -297,7 +297,7 @@ export interface Allowances {
 /** Concrete dependencies for bounded document generation. */
 export interface MakeOptions {
   readonly pdfForms?: {
-    readonly fill: (
+    readonly prepare: (
       contentId: ContentId,
       source: PdfFormSource,
       authorization: AuthorizationContext,
@@ -493,13 +493,13 @@ export const make = (options: MakeOptions): Interface => ({
                 "invalidDocument",
                 "PDF form filling is unavailable",
               );
-            const filled = yield* pdfForms.fill(
+            const prepared = yield* pdfForms.prepare(
               contentId,
               request.source,
               request.authorization,
               request.actionId,
             );
-            if ("templateBytes" in filled) {
+            if ("templateBytes" in prepared) {
               cleanupRequired = true;
               return yield* options.compute.generate({
                 allowancePeriodId: admittedAllowancePeriodId,
@@ -507,12 +507,12 @@ export const make = (options: MakeOptions): Interface => ({
                 contentId,
                 format: request.format,
                 intentDigest,
-                source: { ...request.source, templateBytes: filled.templateBytes },
+                source: { ...request.source, templateBytes: prepared.templateBytes },
                 supportingVisuals: [],
                 userId,
               });
             }
-            return { ...filled, _tag: "Completed", cost: { _tag: "ProvenNoUse" } } as const;
+            return { ...prepared, _tag: "Completed", cost: { _tag: "ProvenNoUse" } } as const;
           }
           return yield* options.compute.generate({
             allowancePeriodId: admittedAllowancePeriodId,
