@@ -1,6 +1,13 @@
 import { Duration, Effect, Option, Schedule, Schema } from "effect";
 
-import type { ThinkSubmissionId, UserId } from "../domain";
+import {
+  AllowancePeriodId,
+  CapabilityCatalogVersion,
+  PlanPolicyVersion,
+  type ThinkSubmissionId,
+  type UserId,
+} from "../domain";
+import { OriginatingAuthority } from "./authorization";
 import { ManagedSearchEvidence, initialManagedSearchEvidence } from "../domain/web-search-evidence";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Public-web outcomes use the canonical _tag discriminator. */
@@ -189,7 +196,17 @@ export interface TurnCounts {
   readonly searches: number;
 }
 
+export const WebAdmission = Schema.Struct({
+  allowancePeriodId: AllowancePeriodId,
+  authorizedAt: Schema.String,
+  capabilityCatalogVersion: CapabilityCatalogVersion,
+  originatingAuthority: OriginatingAuthority,
+  planPolicyVersion: PlanPolicyVersion,
+});
+export type WebAdmission = typeof WebAdmission.Type;
+
 export const PaidSearchAttempt = Schema.Struct({
+  admission: WebAdmission,
   admittedVendorUsdMicros: Schema.BigIntFromString.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
   evidence: ManagedSearchEvidence,
   outcome: Schema.Literals(["unknown", "failed", "succeeded"]),
@@ -262,7 +279,9 @@ export class WebUnavailable extends Schema.TaggedError<WebUnavailable>()("WebUna
 }) {}
 
 export interface MakeOptions<AuthorizationError, DiscoveryError, FetchError, StateError> {
-  readonly authorize: (request: AuthorizationRequest) => Effect.Effect<void, AuthorizationError>;
+  readonly authorize: (
+    request: AuthorizationRequest,
+  ) => Effect.Effect<WebAdmission | void, AuthorizationError>;
   readonly discover: (
     query: string,
     limit: number,
@@ -379,7 +398,7 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
         }
         return replay;
       }
-      yield* options.authorize({
+      const admission = yield* options.authorize({
         requestVendorUsdMicros: options.searchPolicy?.requestVendorUsdMicros ?? 0n,
         operationId: input.operationId,
         pages: maximumGroundingPagesPerSearch,
@@ -388,6 +407,12 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
         turnId: input.turnId,
         userId: input.userId,
       });
+      if (options.searchPolicy !== undefined && admission === undefined) {
+        return yield* unavailable(
+          "authorizationDenied",
+          "The paid search has no retained admission decision.",
+        );
+      }
       const claimed = yield* options.state.claim({
         fingerprint,
         kind: "search",
@@ -414,19 +439,25 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
         return yield* unavailable("pageLimit", "This turn reached its five-page reading limit.");
       }
 
-      const attempt =
-        options.searchPolicy === undefined
+      const attempt: PaidSearchAttempt | undefined =
+        options.searchPolicy === undefined || admission === undefined
           ? undefined
-          : initialManagedSearchEvidence(options.makeId());
+          : {
+              admission,
+              admittedVendorUsdMicros: options.searchPolicy.requestVendorUsdMicros,
+              evidence: initialManagedSearchEvidence(options.makeId()),
+              outcome: "unknown",
+            };
       return yield* Effect.gen(function* () {
         if (attempt !== undefined) {
-          yield* options.state.retainSearchAttempt(input.userId, input.operationId, claimed.lease, {
-            admittedVendorUsdMicros: options.searchPolicy?.requestVendorUsdMicros ?? 0n,
-            evidence: attempt,
-            outcome: "unknown",
-          });
+          yield* options.state.retainSearchAttempt(
+            input.userId,
+            input.operationId,
+            claimed.lease,
+            attempt,
+          );
         }
-        const discovery = options.discover(query, maximumResultsPerSearch, attempt).pipe(
+        const discovery = options.discover(query, maximumResultsPerSearch, attempt?.evidence).pipe(
           Effect.timeoutOrElse({
             duration: attempt === undefined ? providerAttemptDeadline : providerDeadline,
             orElse: () =>
@@ -447,7 +478,7 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
                       input.operationId,
                       claimed.lease,
                       {
-                        admittedVendorUsdMicros: options.searchPolicy?.requestVendorUsdMicros ?? 0n,
+                        ...attempt,
                         evidence: evidence.value.managedSearch,
                         outcome:
                           evidence.value.managedSearch.ratedCostUsdMicros === null
@@ -466,7 +497,7 @@ export const make = <AuthorizationError, DiscoveryError, FetchError, StateError>
         }
         if (attempt !== undefined && discovered.evidence.managedSearch !== undefined) {
           yield* options.state.retainSearchAttempt(input.userId, input.operationId, claimed.lease, {
-            admittedVendorUsdMicros: options.searchPolicy?.requestVendorUsdMicros ?? 0n,
+            ...attempt,
             evidence: discovered.evidence.managedSearch,
             outcome: "succeeded",
           });

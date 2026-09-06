@@ -1905,14 +1905,30 @@ export class OsfoAgent extends Think<Env> {
           { ...context, requestVendorUsdMicros: request.requestVendorUsdMicros },
           operation,
         );
-        return Predicate.isTagged(admitted, "Admitted")
-          ? Effect.void
-          : Effect.fail(
-              new WebUnavailable({
-                message: "Plan Usage or public-web operation bounds denied this request.",
-                reason: "authorizationDenied",
-              }),
-            );
+        if (!Predicate.isTagged(admitted, "Admitted")) {
+          return Effect.fail(
+            new WebUnavailable({
+              message: "Plan Usage or public-web operation bounds denied this request.",
+              reason: "authorizationDenied",
+            }),
+          );
+        }
+        if (request.requestVendorUsdMicros === 0n) return Effect.void;
+        if (admitted.allowancePeriod._tag !== "Metered" || context.allowance._tag !== "Metered") {
+          return Effect.fail(
+            new WebUnavailable({
+              message: "The paid search has no admitted Plan Usage period.",
+              reason: "authorizationDenied",
+            }),
+          );
+        }
+        return Effect.succeed({
+          allowancePeriodId: admitted.allowancePeriod.allowancePeriodId,
+          authorizedAt: context.now.toISOString(),
+          capabilityCatalogVersion: admitted.capabilityCatalogVersion,
+          originatingAuthority: context.originatingAuthority,
+          planPolicyVersion: context.allowance.planPolicyVersion,
+        });
       }),
     );
   }
