@@ -41,17 +41,18 @@ export const create = async () => {
   const page = template.addPage([600, 750]);
   const font = await template.embedFont(StandardFonts.Helvetica);
   const form = template.getForm();
+  form.acroForm.dict.set(PDFName.of("DR"), template.context.obj({ Font: { Helvetica: font.ref } }));
   page.drawText("Synthetic application form", { x: 40, y: 710, size: 20, font });
-  for (const [index, name] of [
-    "ApplicantName",
-    "DocumentDateLiteral",
-    "UnknownDate",
-    "OfficeUseOnly",
-    "LockedReference",
-  ].entries()) {
-    page.drawText(name, { x: 40, y: 650 - index * 65, size: 12, font });
+  for (const [name, y] of [
+    ["ApplicantName", 650],
+    ["DocumentDateLiteral", 585],
+    ["UnknownDate", 520],
+    ["OfficeUseOnly", 160],
+    ["LockedReference", 95],
+  ] as const) {
+    page.drawText(name, { x: 40, y, size: 12, font });
     const field = form.createTextField(name);
-    field.addToPage(page, { x: 210, y: 635 - index * 65, width: 330, height: 28, font });
+    field.addToPage(page, { x: 210, y: y - 15, width: 330, height: 28, font });
     if (name === "OfficeUseOnly") field.setText("Reserved");
     if (name === "LockedReference") {
       field.setText("Retained");
@@ -59,32 +60,54 @@ export const create = async () => {
     }
   }
   const checkbox = form.createCheckBox("ContactPermission");
-  checkbox.addToPage(page, { x: 210, y: 300, width: 18, height: 18 });
-  page.drawText("Contact permission", { x: 40, y: 305, size: 12, font });
-  const normal = checkbox.acroField.getWidgets()[0]?.getAppearances()?.normal;
-  if (!(normal instanceof PDFDict)) throw new Error("Checkbox appearance is missing");
-  const on = normal.get(PDFName.of("Yes"));
-  if (on === undefined) throw new Error("Checkbox on appearance is missing");
-  normal.set(PDFName.of("Agreed"), on);
-  normal.delete(PDFName.of("Yes"));
+  checkbox.addToPage(page, { x: 210, y: 435, width: 18, height: 18 });
+  page.drawText("Contact permission", { x: 40, y: 440, size: 12, font });
+  const checkboxAppearances = checkbox.acroField.getWidgets()[0]?.getAppearances();
+  if (checkboxAppearances === undefined) throw new Error("Checkbox appearance is missing");
+  for (const appearance of Object.values(checkboxAppearances)) {
+    if (appearance === undefined) continue;
+    if (!(appearance instanceof PDFDict)) throw new Error("Checkbox states are missing");
+    const on = appearance.get(PDFName.of("Yes"));
+    if (on === undefined) throw new Error("Checkbox on appearance is missing");
+    appearance.set(PDFName.of("Agreed"), on);
+    appearance.delete(PDFName.of("Yes"));
+  }
   const radio = form.createRadioGroup("Service");
-  radio.addOptionToPage("New", page, { x: 210, y: 245, width: 18, height: 18 });
-  radio.addOptionToPage("Renewal", page, { x: 330, y: 245, width: 18, height: 18 });
-  page.drawText("Service: New / Renewal", { x: 40, y: 270, size: 12, font });
+  radio.addOptionToPage("New", page, { x: 210, y: 365, width: 18, height: 18 });
+  radio.addOptionToPage("Renewal", page, { x: 330, y: 365, width: 18, height: 18 });
+  page.drawText("Service", { x: 40, y: 370, size: 12, font });
+  page.drawText("New", { x: 235, y: 370, size: 12, font });
+  page.drawText("Renewal", { x: 355, y: 370, size: 12, font });
+  page.drawText("Office use only", { x: 40, y: 210, size: 16, font });
   const signature = template.context.register(
     template.context.obj({
       FT: "Sig",
       Type: "Annot",
       Subtype: "Widget",
       T: PDFString.of("ApplicantSignature"),
-      Rect: [210, 150, 540, 180],
+      Rect: [210, 275, 540, 305],
       P: page.ref,
     }),
   );
   form.acroForm.addField(signature);
   page.node.addAnnot(signature);
-  page.drawText("Signature: leave blank", { x: 40, y: 170, size: 12, font });
+  page.drawText("Signature: leave blank", { x: 40, y: 290, size: 12, font });
   form.updateFieldAppearances(font);
+  // pdf-lib uses numeric appearance exports by default; match the visible option labels.
+  for (const [index, widget] of radio.acroField.getWidgets().entries()) {
+    const option = radio.getOptions()[index];
+    if (option === undefined) throw new Error("Radio option is missing");
+    const appearances = widget.getAppearances();
+    if (appearances === undefined) throw new Error("Radio appearance is missing");
+    for (const appearance of Object.values(appearances)) {
+      if (appearance === undefined) continue;
+      if (!(appearance instanceof PDFDict)) throw new Error("Radio states are missing");
+      const state = appearance.get(PDFName.of(String(index)));
+      if (state === undefined) throw new Error("Radio on appearance is missing");
+      appearance.set(PDFName.of(option), state);
+      appearance.delete(PDFName.of(String(index)));
+    }
+  }
   return {
     evidence: await evidence.save(),
     template: await template.save({ updateFieldAppearances: false }),
@@ -125,10 +148,10 @@ export const inspectDownload = async (bytes: Uint8Array) => {
     checkboxStates.length !== 1 ||
     checkboxStates[0] !== "Agreed" ||
     radio.getSelected() !== "Renewal" ||
-    radio.acroField.getValue().decodeText() !== "1" ||
+    radio.acroField.getValue().decodeText() !== "Renewal" ||
     radioStates.length !== 2 ||
     radioStates[0] !== "Off" ||
-    radioStates[1] !== "1" ||
+    radioStates[1] !== "Renewal" ||
     fields
       .flatMap((field) => field.acroField.getWidgets())
       .some(

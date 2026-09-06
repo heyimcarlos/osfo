@@ -45,6 +45,17 @@ describe("disposable Python file task", () => {
             cwd: join(import.meta.dirname, "../document-sandbox"),
             stdio: "pipe",
           });
+          execFileSync(
+            "bash",
+            [
+              join(
+                import.meta.dirname,
+                "../../../.agents/skills/verify-osfo/helpers/chat-pdf-form-container.test.sh",
+              ),
+              image,
+            ],
+            { stdio: "pipe" },
+          );
           writeFileSync(join(workspace, "file-task.py"), readFileSync(taskPath));
 
           writeFileSync(join(workspace, "source.bin"), "plain text");

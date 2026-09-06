@@ -98,6 +98,28 @@ it.effect(
         }),
       };
       const messages = [...history, formMessage, inspectedMessage];
+      expect(() =>
+        respond({
+          messages: [
+            ...history,
+            formMessage,
+            {
+              ...inspectedMessage,
+              content: encode({
+                ...inspection,
+                templateFileId: "template-1",
+                templateDigest: digest(fixture.template),
+                fields: inspection.fields.map((field) =>
+                  field.name === "Service"
+                    ? Object.assign({}, field, { exportValues: ["0", "1", "Off"] })
+                    : field,
+                ),
+              }),
+            },
+          ],
+          tools,
+        }),
+      ).toThrow("does not permit the requested Service edit");
       const generated = respond({ messages, tools });
       expect(generated).toMatchObject({
         tool_calls: [

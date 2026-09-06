@@ -34,6 +34,17 @@ The fixture manifest retains source digests and expected edits. The source says
 `Applicant name: Example Applicant` and `Document date: 03/04/2026`. Date order
 is unspecified; expiry date is absent. The User's later instruction selects
 `Renewal` and permits contact. Neither choice is inferred from the document.
+The editable controls are above a separate office-only section. Each radio
+widget has its own visible label and matching canonical export (`New` or
+`Renewal`). Numeric exports with a separate `/Opt` label mapping are not covered;
+stop if inspection does not expose the requested canonical export. This fixture
+does not qualify arbitrary government forms.
+
+Before an integrated drive, run
+`bash .agents/skills/verify-osfo/helpers/chat-pdf-form-container.test.sh <built-document-sandbox-image>`.
+This uses the supplied image's production Python inspector and fill engine,
+checks protected fields and exact exports, and reopens the filled bytes through
+the verifier. It does not build an image or establish browser/OCR proof.
 
 ## Drive the conversation
 
@@ -47,13 +58,17 @@ is unspecified; expiry date is absent. The User's later instruction selects
    explain that its date order needs confirmation, and report the expiry date as
    unknown. Save the visible reply and actual tool results. A literal occurrence
    proves neither date meaning nor eligibility. Stop on a guessed interpretation.
-3. Run `control-osfo chat-pdf-form-send <run-id> template` once. Its retained
+3. Check the User's current document entitlement. The launch Free plan permits
+   File reading but has no document generation allowance. If needed, complete
+   the [test Stripe browser upgrade](billing.md) and observe the active
+   paid plan before sending the template. Do not seed a plan or change limits.
+4. Run `control-osfo chat-pdf-form-send <run-id> template` once. Its retained
    caption supplies the contact and service choices and tells the Agent to leave
    unknown, signature and office-only fields untouched. Require `inspectPdfForm`
    to read the current owned ready PDF and its actual digest and export values.
    Require `generateDocument` to use that exact template reference, page count and
    selected edits through the ordinary document lifecycle.
-4. Wait for the actual terminal reply and User-visible document link. Follow that
+5. Wait for the actual terminal reply and User-visible document link. Follow that
    link in the authenticated Chrome profile and save the resulting download.
    Require the exact server-returned `downloadUrl` in the channel reply. Its
    `/documents/download?contentId=...` page must retain the same Content ID and
@@ -61,7 +76,7 @@ is unspecified; expiry date is absent. The User's later instruction selects
    sign-in resumes this exact document path when needed. Manually constructing
    an export URL qualifies transport only; it does not prove the chat presented
    a usable link. A Document Build card belongs to a different feature and cannot substitute for this ordinary result.
-5. Save `chat-pdf-form/result.png` showing the completed result and download link.
+6. Save `chat-pdf-form/result.png` showing the completed result and download link.
    Run `control-osfo chat-pdf-form-capture <run-id>`. It saves the actual model
    and Telegram ledgers, requires one exact `generateDocument` result and its
    URL in a delivered message, then writes `generated-result.json`. Retain its

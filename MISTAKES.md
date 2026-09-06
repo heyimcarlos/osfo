@@ -131,3 +131,9 @@ short, specific, and actionable.
 - Live messenger metadata can contain Dates and callbacks even when its persisted
   JSON looks safe. Retain the decoded attachment snapshot before capability
   stamping, and test stamping followed by replay through the real metadata helper.
+
+- Qualify synthetic PDF fixtures with the actual production inspection and fill
+  engine. The local pdf-lib inspection missed an office-only region covering
+  editable controls and exposed radio option labels where production uses
+  appearance exports. Keep editable regions separate, author visible labels and
+  matching exports, and check real rendered output plus canonical field types.
