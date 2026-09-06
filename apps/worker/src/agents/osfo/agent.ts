@@ -1309,7 +1309,7 @@ export class OsfoAgent extends Think<Env> {
   }
 
   /** Accept a provider message into native Think before its webhook can succeed. */
-  async acceptMessengerInput(userMessage: string | UIMessage, context: MessengerContext) {
+  override async acceptMessengerInput(userMessage: string | UIMessage, context: MessengerContext) {
     await this.#migrationsReady;
     const authorId = messengerAuthorId(context);
     const message = context.message;
@@ -1355,7 +1355,9 @@ export class OsfoAgent extends Think<Env> {
           {
             authorization: currentAuthorization,
             idempotencyKey: `whatsapp:${context.thread.id}:${message.providerMessageId}`,
-            message: message.text,
+            message:
+              message.text.trim() ||
+              (message.attachments.length > 0 ? "Please inspect the attached files." : ""),
             routeId: agent.routeId,
             submissionId,
           },
@@ -1460,7 +1462,10 @@ export class OsfoAgent extends Think<Env> {
   }
 
   /** Recover only the exact accepted result, with fresh authority before transport delivery. */
-  async followMessengerInput(encoded: unknown, context: MessengerContext): Promise<string | null> {
+  override async followMessengerInput(
+    encoded: unknown,
+    context: MessengerContext,
+  ): Promise<string | null> {
     await this.#migrationsReady;
     const receipt = await Effect.runPromise(
       Schema.decodeUnknownEffect(MessengerAcceptanceReceipt)(encoded),

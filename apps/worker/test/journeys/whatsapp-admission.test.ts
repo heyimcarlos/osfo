@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto";
 import { BrowserCrypto } from "@effect/platform-browser";
 import { allowanceUsage } from "@osfo/db/schema/allowances";
 import { env } from "cloudflare:workers";
-import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "@effect/vitest";
 import { inject } from "vitest";
 import { eq } from "drizzle-orm";
@@ -36,13 +36,6 @@ it.effect(
           authorId: ChannelLinks.ChannelAuthorId.make("15555550101"),
           channelId: ChannelLinks.ChannelId.make("whatsapp"),
         });
-        const invite = yield* service.ensure(address);
-        if (invite._tag !== "Invited")
-          return yield* Effect.die(new Error("Expected a Channel Link Invite"));
-        const token = yield* Schema.decodeEffect(ChannelLinks.ChannelLinkInviteToken)(
-          invite.verificationUrl.pathname.split("/").at(-1) ?? "",
-        );
-        yield* service.accept(Redacted.make(token), UserId.make(owner.userId));
         const body = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
           object: "whatsapp_business_account",
           entry: [
@@ -70,17 +63,43 @@ it.effect(
             },
           ],
         });
-        const send = () =>
+        const send = (input = body) =>
           app.fetch("/webhooks/whatsapp", {
             method: "POST",
-            body,
+            body: input,
             headers: {
               "content-type": "application/json",
-              "x-hub-signature-256": `sha256=${createHmac("sha256", "test-only-whatsapp-app-secret").update(body).digest("hex")}`,
+              "x-hub-signature-256": `sha256=${createHmac("sha256", "test-only-whatsapp-app-secret").update(input).digest("hex")}`,
             },
           });
-        let directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
-        const accepted = yield* Effect.promise(send);
+        const context = inject("osfoJourney");
+        const readLedger = Effect.tryPromise(() =>
+          fetch(`${context.providerOrigin}/_test/whatsapp/ledger`).then((response) =>
+            response.json(),
+          ),
+        );
+        const invitation = yield* Effect.promise(() =>
+          send(
+            body
+              .replace("wamid.durable-acceptance", "wamid.invitation")
+              .replace("Hello, please acknowledge this message.", "I want to try Osfo"),
+          ),
+        );
+        expect(invitation.status).toBe(200);
+        const invitationLedger = yield* Schema.decodeUnknownEffect(
+          Schema.Array(Schema.Struct({ body: Schema.String })),
+        )(yield* readLedger);
+        expect(invitationLedger).toHaveLength(1);
+        expect(invitationLedger[0]?.body).toContain("/verify/");
+        const invite = yield* service.ensure(address);
+        if (invite._tag !== "Invited")
+          return yield* Effect.die(new Error("Expected a Channel Link Invite"));
+        const token = yield* Schema.decodeEffect(ChannelLinks.ChannelLinkInviteToken)(
+          invite.verificationUrl.pathname.split("/").at(-1) ?? "",
+        );
+        yield* service.accept(Redacted.make(token), UserId.make(owner.userId));
+        const directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
+        const accepted = yield* Effect.promise(() => send());
         expect(accepted.status).toBe(200);
         const submissionId = yield* Effect.promise(() =>
           messengerSubmissionId(
@@ -96,7 +115,7 @@ it.effect(
           }),
         );
         expect(inspected).toMatchObject({ submissionId });
-        const replay = yield* Effect.promise(send);
+        const replay = yield* Effect.promise(() => send());
         expect(replay.status).toBe(200);
         const recorded = yield* Effect.promise(() =>
           database
@@ -129,20 +148,20 @@ it.effect(
           status: "completed",
           snapshot: { stage: "completed", acceptance: { submissionId } },
         });
-        yield* Effect.promise(() => evictDurableObject(directory));
-        directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
-        expect((yield* Effect.promise(send)).status).toBe(200);
-        const context = inject("osfoJourney");
-        const ledger = yield* Effect.tryPromise(() =>
-          fetch(`${context.providerOrigin}/_test/whatsapp/ledger`).then((response) =>
-            response.json(),
-          ),
-        );
+        expect((yield* Effect.promise(() => send())).status).toBe(200);
+        const ledger = yield* readLedger;
         const entries = yield* Schema.decodeUnknownEffect(
           Schema.Array(Schema.Struct({ body: Schema.String })),
         )(ledger);
-        expect(entries).toHaveLength(1);
-        expect(entries[0]?.body).toContain("text");
+        expect(entries).toHaveLength(2);
+        expect(entries[1]?.body).toContain("text");
+        const afterReplay = yield* Effect.promise(() =>
+          database
+            .select()
+            .from(allowanceUsage)
+            .where(eq(allowanceUsage.source_id, "whatsapp:wamid.durable-acceptance")),
+        );
+        expect(afterReplay).toEqual(recorded);
         return undefined;
       }).pipe(
         Effect.provide(

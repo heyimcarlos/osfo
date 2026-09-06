@@ -193,6 +193,26 @@ it.effect("persists recoverable WhatsApp input before acknowledging the real sig
           )
           .one().count;
         expect((await runtime.handleRequest(request()))?.status).toBe(200);
+        expect(provider).toHaveBeenCalledTimes(1);
+        state.storage.sql.exec(
+          "INSERT INTO cf_agents_fibers (fiber_id, idempotency_key, name, status, snapshot, created_at) SELECT 'ambiguous-reply', 'ambiguous-provider-input', name, 'interrupted', json_set(snapshot, '$.stage', 'streaming'), 1 FROM cf_agents_fibers WHERE name = 'think:messenger-reply' LIMIT 1",
+        );
+        const interrupted = await directory.inspectFiber("ambiguous-reply");
+        if (interrupted === null) throw new Error("Missing interrupted native reply");
+        expect(
+          await runtime.handleFiberRecovery({
+            id: interrupted.fiberId,
+            name: interrupted.name,
+            snapshot: interrupted.snapshot,
+            createdAt: interrupted.createdAt,
+            recoveryReason: "interrupted",
+          }),
+        ).toBe(true);
+        expect(await directory.inspectFiber("ambiguous-reply")).toMatchObject({
+          status: "error",
+          error: "Accepted messenger reply delivery outcome is unknown",
+        });
+        expect(provider).toHaveBeenCalledTimes(1);
         expect(model.doStreamCalls).toHaveLength(1);
         return { completedFibers, fibers, status: response?.status, submissions };
       });

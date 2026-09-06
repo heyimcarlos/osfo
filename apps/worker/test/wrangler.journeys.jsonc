@@ -15,6 +15,7 @@
       { "name": "DOCUMENT_SANDBOX", "class_name": "Sandbox" },
       { "name": "OSFO_AGENT_JOURNEY_TEST", "class_name": "OsfoAgent" },
       { "name": "OSFO_DIRECTORY", "class_name": "OsfoDirectory" },
+      { "name": "COMPANY_AGENT_JOURNEY_TEST", "class_name": "CompanyAgent" },
       { "name": "MESSENGER_STATE_TEST", "class_name": "ThinkMessengerStateAgent" },
     ],
   },
@@ -24,6 +25,7 @@
     { "tag": "v3", "new_sqlite_classes": ["OsfoDirectory"] },
     { "tag": "v4", "deleted_classes": ["RegistrationDialogue"] },
     { "tag": "v5", "new_sqlite_classes": ["ThinkMessengerStateAgent"] },
+    { "tag": "v6", "new_sqlite_classes": ["CompanyAgent"] },
   ],
   "containers": [
     {
