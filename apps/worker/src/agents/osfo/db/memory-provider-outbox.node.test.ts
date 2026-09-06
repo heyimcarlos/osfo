@@ -41,7 +41,13 @@ import {
 } from "./memory-provider-outbox";
 import { makeAgentStore } from "./store";
 import { makeWebState } from "./web-state";
-import type { CompletedOperation, RankedResult } from "../../../services/web";
+import { initialManagedSearchEvidence } from "../../../domain/web-search-evidence";
+import {
+  PaidSearchAttempt,
+  Web,
+  type CompletedOperation,
+  type RankedResult,
+} from "../../../services/web";
 import { ConversationSnapshotProjection } from "../memory-provider-projection";
 import { MemoryProvider } from "../../../services/memory-provider";
 import {
@@ -84,17 +90,17 @@ it("includes every generated Agent migration in the runtime manifest", () => {
   expect(imports.every((match) => referencedSql.has(match[1] ?? ""))).toBe(true);
 });
 
-it.effect("migrates a fresh Agent database to version 19 without the legacy table", () =>
+it.effect("migrates a fresh Agent database to version 20 without the legacy table", () =>
   withEmptyDatabase(({ database, storage }) =>
     Effect.gen(function* () {
       const first = yield* applyAgentMigrations(asDurableObjectStorage(storage));
       const second = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
       expect(first).toEqual({
-        appliedVersions: Array.from({ length: 19 }, (_, index) => index + 1),
-        currentVersion: 19,
+        appliedVersions: Array.from({ length: 20 }, (_, index) => index + 1),
+        currentVersion: 20,
       });
-      expect(second).toEqual({ appliedVersions: [], currentVersion: 19 });
+      expect(second).toEqual({ appliedVersions: [], currentVersion: 20 });
       expect(
         database
           .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
@@ -121,7 +127,7 @@ it.effect("drops seeded legacy receipts while upgrading a version-18 Agent datab
       const upgraded = yield* applyAgentMigrations(durableStorage);
       yield* makePersonalSkillAuthority(storage).deleteUserData(UserId.make("user-upgrade"));
 
-      expect(upgraded).toEqual({ appliedVersions: [19], currentVersion: 19 });
+      expect(upgraded).toEqual({ appliedVersions: [19, 20], currentVersion: 20 });
       expect(
         database
           .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
@@ -205,8 +211,8 @@ it.effect("activates an Agent that slept before the conversation processing migr
       const result = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
       expect(result).toEqual({
-        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
-        currentVersion: 19,
+        appliedVersions: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+        currentVersion: 20,
       });
       expect(
         database
@@ -365,6 +371,234 @@ it.effect("bounds retained public-web operations and result identities per User"
       ).toEqual({ count: 30 });
       expect(yield* state.readResult(ownerUserId, "web-retention-result-0")).toBeNull();
       expect(yield* state.readResult(ownerUserId, "web-retention-result-30")).not.toBeNull();
+    }),
+  ),
+);
+
+it.effect(
+  "retains failed paid provider evidence and rejects duplicate dispatch after restart",
+  () =>
+    withDatabase(({ database, storage }) =>
+      Effect.gen(function* () {
+        const db = makeAgentDb(asDurableObjectStorage(storage));
+        let calls = 0;
+        const evidence = {
+          ...initialManagedSearchEvidence("provider-attempt"),
+          inputTokens: 123,
+          outputTokens: 4,
+          ratedCostUsdMicros: 143,
+          successfulSearches: 0,
+        };
+        const options = {
+          authorize: () => Effect.void,
+          discover: () =>
+            Effect.sync(() => {
+              calls += 1;
+            }).pipe(Effect.andThen(Effect.fail({ managedSearch: evidence }))),
+          fetchPage: () => Effect.die(new Error("No discovery result exists")),
+          makeId: () => "provider-attempt",
+          // oxlint-disable-next-line effecttsgo/global-date-in-effect -- A fixed timestamp controls page evidence in this SQLite lifecycle test.
+          now: Effect.succeed(new Date(now)),
+          searchPolicy: { requestVendorUsdMicros: 50_000n },
+        };
+        const input = {
+          operationId: "paid-failed",
+          query: "current releases",
+          requestText: "Search current releases",
+          turnId: ThinkSubmissionId.make("paid-turn"),
+          userId: UserId.make("paid-owner"),
+        };
+        const first = Web.make({ ...options, state: makeWebState(db, () => 1_000) });
+        expect(Result.isFailure(yield* first.search(input).pipe(Effect.result))).toBe(true);
+        const restarted = Web.make({ ...options, state: makeWebState(db, () => 100_000) });
+        const replay = yield* restarted.search(input).pipe(Effect.result);
+        expect(Result.isFailure(replay)).toBe(true);
+        if (Result.isFailure(replay))
+          expect(replay.failure).toMatchObject({ reason: "operationFailed" });
+        expect(calls).toBe(1);
+        expect(
+          database
+            .prepare("SELECT paid_attempt_json FROM osfo_web_operations WHERE operation_id = ?")
+            .get(input.operationId),
+        ).toEqual({
+          paid_attempt_json: yield* Schema.encodeEffect(Schema.fromJsonString(PaidSearchAttempt))({
+            admittedVendorUsdMicros: 50_000n,
+            evidence,
+            outcome: "failed",
+          }),
+        });
+      }),
+    ),
+);
+
+it.effect("keeps successful provider cost when page grounding exceeds the operation deadline", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const evidence = {
+        ...initialManagedSearchEvidence("grounding-attempt"),
+        inputTokens: 123,
+        outputTokens: 4,
+        ratedCostUsdMicros: 10_143,
+        successfulSearches: 1,
+      };
+      let dispatches = 0;
+      const web = Web.make({
+        authorize: () => Effect.void,
+        discover: () =>
+          Effect.sync(() => {
+            dispatches += 1;
+            return {
+              evidence: {
+                latencyMs: 8_000,
+                requestId: "grounding-request",
+                managedSearch: evidence,
+              },
+              results: [{ title: "Public release", url: "https://example.com/release" }],
+            };
+          }).pipe(Effect.delay("8 seconds")),
+        fetchPage: () => Effect.never,
+        makeId: () => "grounding-attempt",
+        // oxlint-disable-next-line effecttsgo/global-date-in-effect -- A fixed timestamp controls page evidence in this SQLite lifecycle test.
+        now: Effect.succeed(new Date(now)),
+        searchPolicy: { requestVendorUsdMicros: 50_000n },
+        state: makeWebState(db, () => 1_000),
+      });
+      const input = {
+        operationId: "paid-grounding-timeout",
+        query: "current releases",
+        requestText: "Search current releases",
+        turnId: ThinkSubmissionId.make("grounding-turn"),
+        userId: UserId.make("grounding-owner"),
+      };
+      const pending = yield* web.search(input).pipe(Effect.forkChild);
+      yield* TestClock.adjust("16 seconds");
+      expect((yield* Fiber.await(pending))._tag).toBe("Failure");
+      expect(Result.isFailure(yield* web.search(input).pipe(Effect.result))).toBe(true);
+      expect(dispatches).toBe(1);
+      expect(
+        database
+          .prepare("SELECT paid_attempt_json FROM osfo_web_operations WHERE operation_id = ?")
+          .get(input.operationId),
+      ).toEqual({
+        paid_attempt_json: yield* Schema.encodeEffect(Schema.fromJsonString(PaidSearchAttempt))({
+          admittedVendorUsdMicros: 50_000n,
+          evidence,
+          outcome: "succeeded",
+        }),
+      });
+    }),
+  ),
+);
+
+it.effect("keeps compact paid search identities after the ordinary operation retention limit", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      let retainedAtEpochMillis = 1_000;
+      const state = makeWebState(db, () => retainedAtEpochMillis++);
+      const userId = UserId.make("paid-retention-owner");
+      const input = {
+        fingerprint: "search:paid",
+        kind: "search" as const,
+        operationId: "paid-retained",
+        turnId: ThinkSubmissionId.make("paid-retained-turn"),
+        userId,
+      };
+      const claim = yield* state.claim(input);
+      if (claim._tag !== "Claimed") throw new Error("Expected search claim");
+      const evidence = {
+        ...initialManagedSearchEvidence("paid-retained-attempt"),
+        inputTokens: 123,
+        outputTokens: 4,
+        ratedCostUsdMicros: 10_143,
+        successfulSearches: 1,
+      };
+      yield* state.retainSearchAttempt(userId, input.operationId, claim.lease, {
+        admittedVendorUsdMicros: 50_000n,
+        evidence,
+        outcome: "succeeded",
+      });
+      const completed: CompletedOperation = {
+        _tag: "SearchCompleted",
+        guidance: "Cite supporting pages.",
+        providerEvidence: { latencyMs: 1, requestId: "paid-request", managedSearch: evidence },
+        query: "paid",
+        resultSetId: "paid-set",
+        results: [],
+      };
+      yield* state.complete(userId, input.operationId, claim.lease, completed);
+      yield* Effect.forEach(
+        Array.from({ length: 31 }, (_, index) => index),
+        (index) =>
+          Effect.gen(function* () {
+            const ordinary = {
+              ...input,
+              operationId: `ordinary-${index}`,
+              turnId: ThinkSubmissionId.make(`ordinary-turn-${index}`),
+            };
+            const ordinaryClaim = yield* state.claim(ordinary);
+            if (ordinaryClaim._tag !== "Claimed") throw new Error("Expected ordinary claim");
+            yield* state.complete(userId, ordinary.operationId, ordinaryClaim.lease, {
+              ...completed,
+              providerEvidence: { latencyMs: 1, requestId: "local-request" },
+            });
+          }),
+      );
+      const replay = yield* makeWebState(db, () => 100_000)
+        .replay(input)
+        .pipe(Effect.result);
+      expect(Result.isFailure(replay)).toBe(true);
+      if (Result.isFailure(replay))
+        expect(replay.failure).toMatchObject({ reason: "operationResultExpired" });
+      expect(
+        database
+          .prepare("SELECT result_json FROM osfo_web_operations WHERE operation_id = ?")
+          .get(input.operationId),
+      ).toEqual({ result_json: '{"_tag":"SearchResultExpired"}' });
+    }),
+  ),
+);
+
+it.effect("never reclaims a dispatched paid search after restart or explicit failure", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const state = makeWebState(db, () => 1_000);
+      const input = {
+        fingerprint: "search:paid",
+        kind: "search" as const,
+        operationId: "paid-search",
+        turnId: ThinkSubmissionId.make("paid-turn"),
+        userId: UserId.make("paid-owner"),
+      };
+      const claim = yield* state.claim(input);
+      if (claim._tag !== "Claimed") throw new Error("Expected a search claim");
+      const evidence = initialManagedSearchEvidence("paid-attempt");
+      yield* state.retainSearchAttempt(input.userId, input.operationId, claim.lease, {
+        admittedVendorUsdMicros: 50_000n,
+        evidence,
+        outcome: "unknown",
+      });
+      const restarted = makeWebState(db, () => 100_000);
+      const replay = yield* restarted.replay(input).pipe(Effect.result);
+      expect(Result.isFailure(replay)).toBe(true);
+      if (Result.isFailure(replay))
+        expect(replay.failure).toMatchObject({ reason: "operationOutcomeUnknown" });
+      expect(Result.isFailure(yield* restarted.claim(input).pipe(Effect.result))).toBe(true);
+      yield* restarted.fail(input.userId, input.operationId, claim.lease);
+      expect(Result.isFailure(yield* restarted.replay(input).pipe(Effect.result))).toBe(true);
+      expect(
+        database
+          .prepare("SELECT paid_attempt_json FROM osfo_web_operations WHERE operation_id = ?")
+          .get(input.operationId),
+      ).toEqual({
+        paid_attempt_json: yield* Schema.encodeEffect(Schema.fromJsonString(PaidSearchAttempt))({
+          admittedVendorUsdMicros: 50_000n,
+          evidence,
+          outcome: "unknown",
+        }),
+      });
     }),
   ),
 );

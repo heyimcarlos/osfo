@@ -7,6 +7,7 @@ import { CapabilityCatalogVersion, ThinkSubmissionId, UserId } from "../domain";
 import { Capabilities } from "./capabilities";
 import {
   type CompletedOperation,
+  type PaidSearchAttempt,
   make,
   type DiscoveryResult,
   type PageFetch,
@@ -21,6 +22,80 @@ const userId = UserId.make("user-1");
 const turnId = ThinkSubmissionId.make("turn-1");
 
 describe("Web", () => {
+  it.effect("admits the paid quote before claiming or dispatching a search", () =>
+    Effect.gen(function* () {
+      const state = memoryState();
+      const quotes: Array<bigint> = [];
+      let dispatched = false;
+      const web = make({
+        authorize: (request) =>
+          Effect.sync(() => {
+            quotes.push(request.requestVendorUsdMicros);
+          }).pipe(
+            Effect.andThen(
+              request.requestVendorUsdMicros > 50_000n
+                ? Effect.fail("budgetExceeded")
+                : Effect.void,
+            ),
+          ),
+        discover: () =>
+          Effect.sync(() => {
+            dispatched = true;
+            return { evidence: { latencyMs: 0, requestId: "not-dispatched" }, results: [] };
+          }),
+        fetchPage: () => Effect.die(new Error("No discovery result exists")),
+        makeId: sequenceIds("paid-attempt"),
+        now: Effect.succeed(new Date("2026-08-27T12:00:00Z")),
+        searchPolicy: { requestVendorUsdMicros: 50_001n },
+        state,
+      });
+      expect(
+        (yield* web
+          .search({
+            operationId: "paid-denied",
+            query: "current releases",
+            requestText: "Search current releases",
+            turnId,
+            userId,
+          })
+          .pipe(Effect.exit))._tag,
+      ).toBe("Failure");
+      expect(quotes).toEqual([50_001n]);
+      expect(state.claimCalls).toBe(0);
+      expect(dispatched).toBe(false);
+    }),
+  );
+
+  it.effect("does not retry paid discovery when its response times out", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const web = make({
+        authorize: () => Effect.void,
+        discover: () =>
+          Effect.sync(() => {
+            calls += 1;
+          }).pipe(Effect.andThen(Effect.never)),
+        fetchPage: () => Effect.die(new Error("No discovery result exists")),
+        makeId: sequenceIds("paid-attempt"),
+        now: Effect.succeed(new Date("2026-08-27T12:00:00Z")),
+        searchPolicy: { requestVendorUsdMicros: 50_000n },
+        state: memoryState(),
+      });
+      const search = yield* web
+        .search({
+          operationId: "paid-timeout",
+          query: "current releases",
+          requestText: "Search current releases",
+          turnId,
+          userId,
+        })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("16 seconds");
+      expect((yield* Fiber.await(search))._tag).toBe("Failure");
+      expect(calls).toBe(1);
+    }),
+  );
+
   it.effect(
     "reads a supplied public URL through the selected Tool without discovery availability",
     () =>
@@ -606,6 +681,7 @@ const memoryState = () => {
       readonly kind: "page" | "search";
       readonly lease: number;
       result: CompletedOperation | null;
+      paidAttempt?: PaidSearchAttempt;
       readonly turnKey: string;
     }
   >();
@@ -631,6 +707,13 @@ const memoryState = () => {
     readonly claimCalls: number;
     readonly pendingOperations: number;
   } = {
+    retainSearchAttempt: (ownerUserId, operationId, lease, attempt) =>
+      Effect.sync(() => {
+        const operation = operations.get(`${ownerUserId}:${operationId}`);
+        if (operation === undefined || operation.lease !== lease)
+          throw new Error("Missing search claim");
+        operation.paidAttempt = attempt;
+      }),
     claim: (input) =>
       Effect.sync(() => {
         const key = `${input.userId}:${input.operationId}`;
@@ -680,6 +763,7 @@ const memoryState = () => {
         const key = `${ownerUserId}:${operationId}`;
         const operation = operations.get(key);
         if (operation === undefined || operation.lease !== lease) return;
+        if (operation.paidAttempt !== undefined) return;
         operations.delete(key);
         const count = counts.get(operation.turnKey);
         if (count === undefined) return;
