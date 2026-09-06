@@ -43,7 +43,7 @@ it.effect(
           invite.verificationUrl.pathname.split("/").at(-1) ?? "",
         );
         yield* service.accept(Redacted.make(token), UserId.make(owner.userId));
-        const body = Schema.encodeSync(Schema.UnknownFromJsonString)({
+        const body = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
           object: "whatsapp_business_account",
           entry: [
             {

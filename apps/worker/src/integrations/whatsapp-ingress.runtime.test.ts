@@ -1,16 +1,21 @@
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect-owned native Durable Object callback. */
 /* oxlint-disable effecttsgo/async-function -- Native Durable Object and installed messenger callbacks are Promise boundaries. */
 import { createHmac } from "node:crypto";
+import type { UIMessage } from "ai";
 import type { Think } from "@cloudflare/think";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import { ThinkMessengerRuntime, type MessengerThinkHost } from "@cloudflare/think/messengers";
 import { it, expect } from "@effect/vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { Deferred, Effect } from "effect";
+import { Deferred, Effect, Predicate } from "effect";
 import { vi } from "vitest";
 
 import { makeWhatsAppChannel } from "./whatsapp";
+
+type MessengerAdmission =
+  | { readonly kind: "unavailable" }
+  | { readonly kind: "submission"; readonly submissionId: string };
 
 it.effect("persists recoverable WhatsApp input before acknowledging the real signed webhook", () =>
   Effect.promise(async () => {
@@ -52,16 +57,15 @@ it.effect("persists recoverable WhatsApp input before acknowledging the real sig
         const selected = vi.spyOn(think, "getModel").mockReturnValue(model);
         let admissionAvailable = false;
         const host = {
-          acceptMessengerInput: async (message: string | import("ai").UIMessage) => {
+          acceptMessengerInput: async (message: string | UIMessage) => {
             if (!admissionAvailable) return { kind: "unavailable" };
-            const input =
-              typeof message === "string"
-                ? {
-                    id: "durable-user",
-                    role: "user" as const,
-                    parts: [{ type: "text" as const, text: message }],
-                  }
-                : message;
+            const input = Predicate.isString(message)
+              ? {
+                  id: "durable-user",
+                  role: "user" as const,
+                  parts: [{ type: "text" as const, text: message }],
+                }
+              : message;
             const submission = await think.submitMessages([input], {
               submissionId: "durable-whatsapp",
               idempotencyKey: "exact-whatsapp-message",
@@ -100,7 +104,7 @@ it.effect("persists recoverable WhatsApp input before acknowledging the real sig
           },
           subAgent: directory.subAgent.bind(directory),
         } satisfies MessengerThinkHost & {
-          acceptMessengerInput: (message: string | import("ai").UIMessage) => Promise<unknown>;
+          acceptMessengerInput: (message: string | UIMessage) => Promise<MessengerAdmission>;
           followMessengerInput: () => Promise<string>;
         };
         const channel = makeWhatsAppChannel({
@@ -171,6 +175,7 @@ it.effect("persists recoverable WhatsApp input before acknowledging the real sig
               .one().count
           : 0;
         // Drain the real adapter's detached task before the test leaves its native object.
+        // oxlint-disable-next-line eslint/no-underscore-dangle -- Drive the installed native submission scheduler in this boundary test.
         await think._drainThinkSubmissions();
         await Effect.runPromise(Deferred.await(completed));
         selected.mockRestore();
