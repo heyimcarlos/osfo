@@ -2,13 +2,16 @@
 /* oxlint-disable vitest/no-standalone-expect -- Assertions run inside Effect tests. */
 import { expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import type { UIMessage } from "ai";
 
+import {
+  metadata,
+  userMessage,
+  step,
+  occurredAt,
+  paid,
+  completed,
+} from "../../../test/support/conversation-usage-fixture";
 import { ThinkRequestId } from "../../domain";
-import { ManagedTurnMetadata } from "../../domain/managed-conversation";
-import { managedConversationModelPrice } from "../../domain/usage";
-import { initialManagedSearchEvidence } from "../../domain/web-search-evidence";
-import { PaidSearchAttempt } from "../../services/web";
 import { CommittedTurnTerminal } from "./committed-turn-terminal";
 import {
   conversationUsageEvent,
@@ -17,70 +20,8 @@ import {
   settleConversationUsage,
   settleBeforeClearingSession,
   ConversationUsageUnavailable,
+  reconcileConversationUsages,
 } from "./conversation-usage";
-
-const metadata = Schema.decodeSync(ManagedTurnMetadata)({
-  _tag: "OsfoManagedTurn",
-  allowancePeriodId: "period-original",
-  authorityIdentity: { _tag: "AuthSession", authSessionId: "auth-1", userId: "user-1" },
-  conversationResourcePriceVersion: managedConversationModelPrice.resourcePriceVersion,
-  conservativeVendorUsdMicros: 50_000,
-  coreMemoryAuthorization: {
-    authority: {
-      _tag: "AuthSession",
-      authSessionId: "auth-1",
-      expiresAt: "2026-09-06T13:00:00Z",
-      userId: "user-1",
-    },
-    deletionAccess: { _tag: "DeletionAccessAvailable" },
-    now: "2026-09-06T12:00:00Z",
-    originatingAuthority: { _tag: "AuthSession", authSessionId: "auth-1" },
-    resourceOwnerUserId: "user-1",
-    subscription: { plan: "free", planPolicyVersion: "shared-usage-v1" },
-    user: { _tag: "ActiveUser", userId: "user-1" },
-  },
-  maxInputTokens: 32_000,
-  maxOutputTokens: 4_096,
-  maxRetries: 0,
-  maxSteps: 5,
-  originatingAuthority: { _tag: "AuthSession", authSessionId: "auth-1" },
-  plan: "free",
-  planPolicyVersion: "shared-usage-v1",
-  route: "@cf/deepseek-ai/deepseek-v4-flash-0731",
-  routeId: "route-1",
-  sessionId: "session-1",
-  submissionId: "submission-1",
-  targetInputTokens: 18_000,
-});
-const userMessage: UIMessage = {
-  id: "user-message",
-  role: "user",
-  parts: [{ type: "text", text: "Find the official page" }],
-  metadata: { turnMetadata: metadata },
-};
-const step = { cachedInputTokens: 100, inputTokens: 1_000, outputTokens: 100, stepNumber: 1 };
-const occurredAt = new Date("2026-09-06T12:00:00Z");
-const paid = Schema.decodeSync(PaidSearchAttempt)({
-  admission: {
-    allowancePeriodId: metadata.allowancePeriodId,
-    authorizedAt: occurredAt.toISOString(),
-    capabilityCatalogVersion: metadata.capabilityCatalogVersion,
-    originatingAuthority: metadata.originatingAuthority,
-    planPolicyVersion: metadata.planPolicyVersion,
-  },
-  admittedVendorUsdMicros: "50000",
-  evidence: { ...initialManagedSearchEvidence("search-1"), ratedCostUsdMicros: 13_562 },
-  outcome: "succeeded",
-});
-const completed = Effect.gen(function* () {
-  const message = yield* retainConversationModelStep([userMessage], metadata.submissionId, step);
-  return yield* conversationUsageEvent(
-    [message],
-    metadata,
-    [{ operationId: "search-1", attempt: paid }],
-    occurredAt,
-  );
-});
 
 it.effect("combines exact model tokens and provider-rated search once in the original period", () =>
   completed.pipe(
@@ -107,6 +48,7 @@ it.effect("retains unknown model usage without inventing a zero-cache charge", (
       metadata,
       [{ operationId: "search-1", attempt: paid }],
       occurredAt,
+      1,
     ).pipe(Effect.flip);
     expect(failure.message).toContain("unreported");
   }),
@@ -119,7 +61,7 @@ it.effect("refuses missing steps and conflicting duplicate evidence", () =>
       stepNumber: 2,
     });
     expect(
-      yield* conversationUsageEvent([message], metadata, [], occurredAt).pipe(Effect.flip),
+      yield* conversationUsageEvent([message], metadata, [], occurredAt, 1).pipe(Effect.flip),
     ).toMatchObject({ _tag: "ConversationUsageUnavailable" });
     const first = yield* retainConversationModelStep([userMessage], metadata.submissionId, step);
     expect(
@@ -257,7 +199,7 @@ it.effect("does not permanently block Session deletion on unreported provider us
       ...step,
       cachedInputTokens: null,
     });
-    const settlement = conversationUsageEvent([message], metadata, [], occurredAt).pipe(
+    const settlement = conversationUsageEvent([message], metadata, [], occurredAt, 1).pipe(
       Effect.asVoid,
     );
     let cleared = false;
@@ -268,5 +210,43 @@ it.effect("does not permanently block Session deletion on unreported provider us
       }),
     );
     expect(cleared).toBe(true);
+  }),
+);
+
+it.effect("continues newer settlements when an older completed turn has unreported evidence", () =>
+  Effect.gen(function* () {
+    const newer = yield* completed;
+    let terminal = CommittedTurnTerminal.make({
+      requestId: ThinkRequestId.make("newer-request"),
+      status: "completed",
+      usageOccurredAt: occurredAt.toISOString(),
+    });
+    let settled = 0;
+    const missing = Effect.fail(
+      new ConversationUsageUnavailable({
+        cause: "unreported step",
+        message: "Older usage is unavailable",
+        reason: "unreported",
+      }),
+    );
+    const ready = settleConversationUsage({
+      read: Effect.sync(() => terminal),
+      prepare: () => Effect.succeed(newer),
+      retain: (next) =>
+        Effect.sync(() => {
+          terminal = next;
+        }),
+      dispatch: () =>
+        Effect.sync(() => {
+          settled++;
+        }),
+    }).pipe(
+      Effect.mapError(
+        (cause) => new ConversationUsageUnavailable({ cause, message: "Newer settlement failed" }),
+      ),
+    );
+    yield* reconcileConversationUsages([missing, ready]).pipe(Effect.flip);
+    expect(settled).toBe(1);
+    expect(terminal.usageSettled).toBe(true);
   }),
 );

@@ -411,6 +411,8 @@ import {
   retainConversationModelStep,
   settleConversationUsage,
   settleBeforeClearingSession,
+  findConversationSubmissionMessage,
+  reconcileConversationUsages,
 } from "./conversation-usage";
 import { makeWebTools } from "./web-tools";
 import { makeBrowserTools } from "./browser-tools";
@@ -951,6 +953,7 @@ export class OsfoAgent extends Think<Env> {
     skillLearningDraft: null,
   };
   #activeCapabilityMetadata: ManagedTurnMetadata | undefined;
+  #activeConversationSubmissionMessageId: string | undefined;
   #activeRequestText = "";
   readonly #researchReportProvider = loadConfig(this.env).researchReportProvider;
   readonly #webState = makeWebState(this.#db);
@@ -1679,6 +1682,10 @@ export class OsfoAgent extends Think<Env> {
     }
     const system = await this.session.refreshSystemPrompt();
     this.#activeCapabilityMetadata = metadata;
+    this.#activeConversationSubmissionMessageId = findConversationSubmissionMessage(
+      this.messages,
+      metadata.submissionId,
+    )?.id;
     const firstInitialization = !metadata.capabilityTurnState.initialized;
     const capabilityTurnState = ManagedCapabilityState.initialize(this.messages, metadata);
     const availableIntegrationToolkits = await this.#availableIntegrationToolkits(
@@ -2078,13 +2085,18 @@ export class OsfoAgent extends Think<Env> {
                 ...readConversationModelUsage(context.usage),
                 stepNumber,
               });
+              const submissionMessageId = this.#activeConversationSubmissionMessageId;
+              const retainedMessage =
+                submissionMessageId === undefined
+                  ? null
+                  : yield* Effect.promise(() => this.session.getMessage(submissionMessageId));
               const message = yield* retainConversationModelStep(
-                this.messages,
+                retainedMessage === null ? [] : [retainedMessage],
                 metadata.submissionId,
                 step,
               );
               yield* Effect.tryPromise({
-                try: () => this.updateMessageInHistory(message),
+                try: () => this.session.updateMessage(message),
                 catch: (cause) =>
                   new ConversationUsageUnavailable({
                     cause,
@@ -2997,21 +3009,14 @@ export class OsfoAgent extends Think<Env> {
                   ),
                 ),
             clearMessages: (sessionId) =>
-              readThinkHistory(Session.create(this), sessionId).pipe(
-                Effect.flatMap((messages) =>
+              this.#store.readCommittedTurns.pipe(
+                Effect.flatMap((receipts) =>
                   settleBeforeClearingSession(
-                    projectTerminalMarkedCommittedTurns(messages, sessionId).flatMap(
-                      ({ assistantMessageId, projection }) =>
-                        projection === undefined
-                          ? []
-                          : [
-                              this.#settleCommittedConversation(
-                                messages,
-                                assistantMessageId,
-                                sessionId,
-                              ),
-                            ],
-                    ),
+                    receipts
+                      .filter((receipt) => receipt.sessionId === sessionId)
+                      .map((receipt) =>
+                        this.#settleCommittedConversation(receipt.assistantMessageId, sessionId),
+                      ),
                     Effect.tryPromise({
                       try: () => Session.create(this).forSession(sessionId).clearMessages(),
                       catch: sessionDeletionFailure("Think Session history could not be deleted"),
@@ -7539,14 +7544,43 @@ export class OsfoAgent extends Think<Env> {
           status: result.status,
           submissionId: activeTurn.value.submissionId,
         });
+    const submissionMessageId = this.#activeConversationSubmissionMessageId;
+    const originalSubmission =
+      submissionMessageId === undefined
+        ? Option.none<SessionHistoryMessage>()
+        : Schema.decodeUnknownOption(SessionHistoryMessage)(
+            await this.session.getMessage(submissionMessageId),
+          );
+    const useful =
+      Option.isSome(activeTurn) &&
+      Option.isSome(originalSubmission) &&
+      Option.isSome(
+        projectCommittedConversationSnapshot(
+          [
+            originalSubmission.value,
+            {
+              ...result.message,
+              metadata: withCommittedTurnTerminal(result.message.metadata, captured),
+            },
+          ],
+          assistantMessageId,
+          activeTurn.value.sessionId,
+        ),
+      );
     const completed =
+      useful &&
       Option.isSome(activeTurn) &&
       result.status === "completed" &&
       activeTurn.value.planPolicyVersion === "shared-usage-v1" &&
       activeTurn.value.conversationResourcePriceVersion !== undefined &&
       activeTurn.value.executionMode !== "companyContinuity" &&
       activeTurn.value.executionMode !== "exhaustedConversation"
-        ? { ...captured, usageOccurredAt: new Date().toISOString() }
+        ? {
+            ...captured,
+            usageOccurredAt: new Date().toISOString(),
+            usageExpectedModelSteps: this.#activeModelStepNumber,
+            usageSubmissionMessageId: this.#activeConversationSubmissionMessageId,
+          }
         : captured;
     const terminal =
       Option.isSome(priorTerminal) && priorTerminal.value.requestId === thinkRequestId
@@ -7957,8 +7991,24 @@ export class OsfoAgent extends Think<Env> {
 
   async #reconcileModelCallUsageOrSchedule(): Promise<void> {
     await Effect.runPromise(
-      this.#modelCallUsage.reconcile.pipe(
-        Effect.andThen(this.#reconcileCommittedTurns()),
+      Effect.all(
+        {
+          model: Effect.result(this.#modelCallUsage.reconcile),
+          conversation: Effect.result(
+            this.#reconcileCommittedTurns().pipe(
+              Effect.andThen(this.#reconcileConversationUsage()),
+            ),
+          ),
+        },
+        { concurrency: 1 },
+      ).pipe(
+        Effect.flatMap((results) =>
+          Effect.gen(function* () {
+            if (Result.isFailure(results.conversation)) return yield* results.conversation.failure;
+            if (Result.isFailure(results.model)) return yield* results.model.failure;
+            return undefined;
+          }),
+        ),
         Effect.catch(() =>
           Effect.promise(() => this.#scheduleModelCallUsageReconciliation()).pipe(
             Effect.andThen(
@@ -8229,11 +8279,7 @@ export class OsfoAgent extends Think<Env> {
     });
   }
 
-  #settleCommittedConversation(
-    messages: ReadonlyArray<SessionHistoryMessage>,
-    assistantMessageId: AssistantMessageId,
-    sessionId: SessionId,
-  ) {
+  #settleCommittedConversation(assistantMessageId: AssistantMessageId, sessionId: SessionId) {
     const session = Session.create(this).forSession(sessionId);
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined)
@@ -8268,17 +8314,33 @@ export class OsfoAgent extends Think<Env> {
               ),
               prepare: (terminal) =>
                 Effect.gen({ self: this }, function* () {
-                  const submission = messages.find((candidate) =>
-                    Option.exists(
-                      Schema.decodeUnknownOption(
-                        Schema.Struct({ turnMetadata: ManagedTurnMetadata }),
-                      )(candidate.metadata),
-                      ({ turnMetadata }) => turnMetadata.submissionId === terminal.submissionId,
-                    ),
-                  );
+                  if (
+                    terminal.usageSubmissionMessageId === undefined ||
+                    terminal.usageExpectedModelSteps === undefined
+                  ) {
+                    return yield* new ConversationUsageUnavailable({
+                      cause: "missing terminal evidence",
+                      message: "The committed turn has no exact model completion boundary",
+                      reason: "unreported",
+                    });
+                  }
+                  const originalMessageId = terminal.usageSubmissionMessageId;
+                  const submission = yield* Effect.tryPromise({
+                    try: () => session.getMessage(originalMessageId),
+                    catch: (cause) =>
+                      new ConversationUsageUnavailable({
+                        cause,
+                        message: "Original Submission evidence could not be read",
+                      }),
+                  }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(SessionHistoryMessage)));
                   const { turnMetadata } = yield* Schema.decodeUnknownEffect(
                     Schema.Struct({ turnMetadata: ManagedTurnMetadata }),
-                  )(submission?.metadata);
+                  )(submission.metadata);
+                  if (turnMetadata.submissionId !== terminal.submissionId)
+                    return yield* new ConversationUsageUnavailable({
+                      cause: "submission identity mismatch",
+                      message: "Original Submission identity does not match the terminal receipt",
+                    });
                   const occurredAt = yield* Schema.decodeUnknownEffect(Schema.DateFromString)(
                     terminal.usageOccurredAt,
                   );
@@ -8288,10 +8350,11 @@ export class OsfoAgent extends Think<Env> {
                     turnMetadata.submissionId,
                   );
                   return yield* conversationUsageEvent(
-                    messages,
+                    [submission],
                     turnMetadata,
                     searches,
                     occurredAt,
+                    terminal.usageExpectedModelSteps,
                   );
                 }),
               retain: (terminal) =>
@@ -8353,6 +8416,18 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  #reconcileConversationUsage() {
+    return this.#store.readCommittedTurns.pipe(
+      Effect.flatMap((receipts) =>
+        reconcileConversationUsages(
+          receipts.map((receipt) =>
+            this.#settleCommittedConversation(receipt.assistantMessageId, receipt.sessionId),
+          ),
+        ),
+      ),
+    );
+  }
+
   #reconcileCommittedTurns(): Effect.Effect<
     void,
     | AgentStoreRecordInvalid
@@ -8360,7 +8435,6 @@ export class OsfoAgent extends Think<Env> {
     | CommittedTurnConflict
     | ThinkSessionReadUnavailable
     | ThinkSessionRecordInvalid
-    | ConversationUsageUnavailable
   > {
     return this.#store.readSessionIds.pipe(
       Effect.flatMap((sessionIds) =>
@@ -8372,27 +8446,15 @@ export class OsfoAgent extends Think<Env> {
                 Effect.forEach(
                   projectTerminalMarkedCommittedTurns(messages, sessionId),
                   ({ assistantMessageId, projection, terminal }) =>
-                    this.#store
-                      .recordCommittedTurn(
-                        {
-                          assistantMessageId,
-                          sessionId,
-                          source: "reconciliation",
-                          thinkRequestId: terminal.requestId,
-                        },
-                        projection,
-                      )
-                      .pipe(
-                        Effect.andThen(
-                          projection === undefined
-                            ? Effect.void
-                            : this.#settleCommittedConversation(
-                                messages,
-                                assistantMessageId,
-                                sessionId,
-                              ),
-                        ),
-                      ),
+                    this.#store.recordCommittedTurn(
+                      {
+                        assistantMessageId,
+                        sessionId,
+                        source: "reconciliation",
+                        thinkRequestId: terminal.requestId,
+                      },
+                      projection,
+                    ),
                   { concurrency: 1, discard: true },
                 ),
               ),

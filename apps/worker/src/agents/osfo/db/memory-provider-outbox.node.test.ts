@@ -44,7 +44,17 @@ import {
 } from "./memory-provider-outbox";
 import { makeAgentStore } from "./store";
 import { makeWebState } from "./web-state";
-import { settleConversationUsage } from "../conversation-usage";
+import {
+  settleConversationUsage,
+  conversationUsageEvent,
+  retainConversationModelStep,
+} from "../conversation-usage";
+import {
+  metadata,
+  userMessage,
+  step,
+  occurredAt,
+} from "../../../../test/support/conversation-usage-fixture";
 import { CommittedTurnTerminal, withCommittedTurnTerminal } from "../committed-turn-terminal";
 import { UsageEvent } from "../../../domain/usage-event";
 import { initialManagedSearchEvidence } from "../../../domain/web-search-evidence";
@@ -108,6 +118,166 @@ it("includes every generated Agent migration in the runtime manifest", () => {
 });
 
 it.effect(
+  "withholds settlement when SQLite retained only a prefix after the final step write failed",
+  () =>
+    withDatabase(({ database }) =>
+      Effect.gen(function* () {
+        const session = Session.create(thinkSqlProvider(database)).forSession("session-1");
+        const first = yield* retainConversationModelStep(
+          [userMessage],
+          metadata.submissionId,
+          step,
+        );
+        yield* Effect.promise(() => session.appendMessage(first));
+        const second = yield* retainConversationModelStep([first], metadata.submissionId, {
+          ...step,
+          stepNumber: 2,
+        });
+        database.exec(
+          "CREATE TRIGGER fail_final_usage BEFORE UPDATE ON assistant_messages BEGIN SELECT RAISE(ABORT, 'disk write failed'); END",
+        );
+        yield* Effect.tryPromise({
+          try: () => session.updateMessage(second),
+          catch: () => "write failed",
+        }).pipe(Effect.flip);
+        database.exec("DROP TRIGGER fail_final_usage");
+        const restarted = Session.create(thinkSqlProvider(database)).forSession("session-1");
+        const retained = yield* Effect.promise(() => restarted.getMessage(userMessage.id));
+        if (retained === null) throw new Error("The first step must remain durable");
+        const failure = yield* conversationUsageEvent([retained], metadata, [], occurredAt, 2).pipe(
+          Effect.flip,
+        );
+        expect(failure).toMatchObject({
+          reason: "unreported",
+          message: "Completed conversation model evidence is incomplete",
+        });
+      }),
+    ),
+);
+
+it.effect(
+  "recovers a committed conversation through exact receipt IDs after branch switch and compaction",
+  () =>
+    withDatabase(({ database, storage }) =>
+      Effect.gen(function* () {
+        const store = makeAgentStore(makeAgentDb(asDurableObjectStorage(storage)));
+        yield* store.initialize(AgentId.make("agent-1"), {
+          agentId: AgentId.make("agent-1"),
+          initializationId: AgentInitializationId.make("init-1"),
+          initializedAt: now,
+          routeId: ConversationRouteId.make("route-1"),
+          sessionId: SessionId.make("session-1"),
+        });
+        const session = Session.create(thinkSqlProvider(database)).forSession("session-1");
+        const first = yield* retainConversationModelStep(
+          [userMessage],
+          metadata.submissionId,
+          step,
+        );
+        yield* Effect.promise(() => session.appendMessage(first));
+        const terminal = CommittedTurnTerminal.make({
+          requestId: ThinkRequestId.make("old-request"),
+          submissionId: metadata.submissionId,
+          status: "completed",
+          usageOccurredAt: occurredAt.toISOString(),
+          usageSubmissionMessageId: first.id,
+          usageExpectedModelSteps: 1,
+        });
+        const assistant = {
+          id: "old-assistant",
+          role: "assistant",
+          parts: [{ type: "text", text: "Useful original answer" }],
+          metadata: withCommittedTurnTerminal({}, terminal),
+        };
+        yield* Effect.promise(() => session.appendMessage(assistant, first.id));
+        yield* store.recordCommittedTurn({
+          assistantMessageId: AssistantMessageId.make(assistant.id),
+          sessionId: SessionId.make("session-1"),
+          source: "hook",
+          thinkRequestId: terminal.requestId,
+        });
+        yield* Effect.promise(() =>
+          session.appendMessage(
+            {
+              id: "new-branch",
+              role: "assistant",
+              parts: [{ type: "text", text: "Different branch" }],
+            },
+            first.id,
+          ),
+        );
+        database
+          .prepare(
+            "UPDATE assistant_messages SET created_at = '2099-01-01T00:00:00Z' WHERE id = 'new-branch'",
+          )
+          .run();
+        yield* Effect.promise(() =>
+          session.addCompaction("Compacted different branch", first.id, "new-branch"),
+        );
+        const active = yield* Effect.promise(() => session.getHistory());
+        expect(
+          active.some((message) => message.id === first.id || message.id === assistant.id),
+        ).toBe(false);
+        const restarted = Session.create(thinkSqlProvider(database)).forSession("session-1");
+        const receipts = yield* store.readCommittedTurns;
+        let dispatched = 0;
+        yield* Effect.forEach(
+          receipts,
+          (receipt) =>
+            settleConversationUsage({
+              read: Effect.promise(() => restarted.getMessage(receipt.assistantMessageId)).pipe(
+                Effect.flatMap(
+                  Schema.decodeUnknownEffect(
+                    Schema.Struct({
+                      metadata: Schema.Struct({ osfoCommittedTurn: CommittedTurnTerminal }),
+                    }),
+                  ),
+                ),
+                Effect.map((message) => message.metadata.osfoCommittedTurn),
+              ),
+              prepare: (retainedTerminal) =>
+                Effect.gen(function* () {
+                  const sourceId = retainedTerminal.usageSubmissionMessageId;
+                  const expectedSteps = retainedTerminal.usageExpectedModelSteps;
+                  if (sourceId === undefined || expectedSteps === undefined)
+                    throw new Error("Exact terminal completion evidence is required");
+                  const source = yield* Effect.promise(() => restarted.getMessage(sourceId));
+                  if (source === null)
+                    throw new Error("Original Submission must survive compaction");
+                  return yield* conversationUsageEvent(
+                    [source],
+                    metadata,
+                    [],
+                    occurredAt,
+                    expectedSteps,
+                  );
+                }),
+              retain: (retainedTerminal) =>
+                Effect.promise(() => {
+                  const updated = {
+                    ...assistant,
+                    metadata: withCommittedTurnTerminal({}, retainedTerminal),
+                  };
+                  return restarted.updateMessage(updated);
+                }).pipe(Effect.asVoid),
+              dispatch: (event) =>
+                Effect.sync(() => {
+                  dispatched++;
+                  expect(event.source.sourceId).toBe(metadata.submissionId);
+                  expect(event.outcome).toMatchObject({
+                    _tag: "Completed",
+                    charge: { ratedCostUsdMicros: 530n },
+                  });
+                }),
+            }),
+          { discard: true },
+        );
+        expect(dispatched).toBe(1);
+      }),
+    ),
+);
+
+it.effect(
   "replays a frozen conversation event from Think SQLite after an acknowledgement is lost",
   () =>
     withDatabase(({ database }) =>
@@ -164,7 +334,7 @@ it.effect(
           return {
             read: Effect.promise(() => restarted.getMessage("assistant-settle")).pipe(
               Effect.flatMap(decode),
-              Effect.map(({ metadata }) => metadata.osfoCommittedTurn),
+              Effect.map((message) => message.metadata.osfoCommittedTurn),
             ),
             prepare: () => Effect.succeed(event),
             retain: (terminal: CommittedTurnTerminal) =>

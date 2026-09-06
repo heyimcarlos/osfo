@@ -1,4 +1,3 @@
-import type { UIMessage } from "ai";
 import type { CommittedTurnTerminal } from "./committed-turn-terminal";
 import { Effect, Option, Result, Schema } from "effect";
 
@@ -54,13 +53,15 @@ export class ConversationUsageUnavailable extends Schema.TaggedError<Conversatio
 ) {}
 
 /** Keep exact token evidence on the existing Submission message before recording gateway cost. */
-export const retainConversationModelStep = (
-  messages: ReadonlyArray<UIMessage>,
+export const retainConversationModelStep = <
+  Message extends { readonly id: string; readonly role: string; readonly metadata?: unknown },
+>(
+  messages: ReadonlyArray<Message>,
   submissionId: ThinkSubmissionId,
   step: ConversationModelStep,
-): Effect.Effect<UIMessage, ConversationUsageUnavailable> =>
+) =>
   Effect.gen(function* () {
-    const message = submissionMessage(messages, submissionId);
+    const message = findConversationSubmissionMessage(messages, submissionId);
     if (message === undefined)
       return yield* unavailable("The model step has no retained Submission");
     const metadata = yield* Schema.decodeUnknownEffect(Schema.JsonObject)(message.metadata).pipe(
@@ -101,9 +102,10 @@ export const conversationUsageEvent = (
   metadata: ManagedTurnMetadata,
   searches: ReadonlyArray<CompletedConversationSearch>,
   occurredAt: Date,
+  expectedModelSteps: number,
 ): Effect.Effect<UsageEvent, ConversationUsageUnavailable> =>
   Effect.gen(function* () {
-    const message = submissionMessage(messages, metadata.submissionId);
+    const message = findConversationSubmissionMessage(messages, metadata.submissionId);
     const retained = yield* Schema.decodeUnknownEffect(ModelSteps)(message?.metadata).pipe(
       Effect.mapError((cause) =>
         unreported("Completed conversation has no exact model usage", cause),
@@ -113,7 +115,11 @@ export const conversationUsageEvent = (
     const steps = [...retained.osfoConversationModelSteps].sort(
       (a, b) => a.stepNumber - b.stepNumber,
     );
-    if (steps.length === 0 || steps.some((step, index) => step.stepNumber !== index + 1)) {
+    if (
+      steps.length !== expectedModelSteps ||
+      steps.length === 0 ||
+      steps.some((step, index) => step.stepNumber !== index + 1)
+    ) {
       return yield* unreported("Completed conversation model evidence is incomplete");
     }
     if (
@@ -195,7 +201,7 @@ export const conversationUsageEvent = (
     };
   });
 
-const submissionMessage = <
+export const findConversationSubmissionMessage = <
   Message extends { readonly id: string; readonly role: string; readonly metadata?: unknown },
 >(
   messages: ReadonlyArray<Message>,
@@ -248,7 +254,7 @@ export const settleConversationUsage = <
 const unreported = (message: string, cause: unknown = new Error(message)) =>
   new ConversationUsageUnavailable({ cause, message, reason: "unreported" });
 
-/** A Session may discard unknown Company Cost evidence, but never an unacknowledged User charge. */
+/** Drain known User charges before clearing a Session; unreported model usage stays uncharged. */
 export const settleBeforeClearingSession = <E>(
   settlements: ReadonlyArray<Effect.Effect<void, ConversationUsageUnavailable>>,
   clear: Effect.Effect<void, E>,
@@ -267,3 +273,14 @@ export const settleBeforeClearingSession = <E>(
       ),
     { concurrency: 1, discard: true },
   ).pipe(Effect.andThen(clear));
+
+/** Reconcile independent receipts even when an older operation still lacks usable evidence. */
+export const reconcileConversationUsages = (
+  settlements: ReadonlyArray<Effect.Effect<void, ConversationUsageUnavailable>>,
+) =>
+  Effect.forEach(settlements, (settlement) => Effect.result(settlement), { concurrency: 1 }).pipe(
+    Effect.flatMap((results) => {
+      const failure = results.find(Result.isFailure);
+      return failure === undefined ? Effect.void : Effect.fail(failure.failure);
+    }),
+  );
