@@ -167,7 +167,7 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
         maximumPixelsPerEdge: null,
         maximumSlides: null,
       },
-      toolRequirements: ["readFile"],
+      toolRequirements: ["readFile", "validateFileFields"],
     }),
     entry("file-analysis", "Analyze one bounded owned file.", "file.analyze", {
       availabilityRequirements: ["file-storage"],

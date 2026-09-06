@@ -2,10 +2,16 @@
 import csv
 import io
 import json
+import math
+import os
+import resource
+import signal
+import subprocess
 import sys
+import tempfile
 import zipfile
 
-from PIL import Image
+from PIL import Image, ImageOps
 from docx import Document
 from pypdf import PdfReader
 
@@ -25,10 +31,69 @@ def bounded_text(text, limit):
     return text
 
 
+def ocr_image(image, limits):
+    if image.width * image.height > limits["maximumImagePixels"]:
+        raise ContentLimit("image pixel count exceeds its limit")
+    image = ImageOps.exif_transpose(image).convert("RGB")
+    scale = min(1, math.sqrt(limits["maximumOcrImagePixels"] / (image.width * image.height)))
+    if scale < 1:
+        image = image.resize((max(1, int(image.width * scale)), max(1, int(image.height * scale))))
+    with tempfile.TemporaryDirectory(dir="/workspace") as directory:
+        path = os.path.join(directory, "page.png")
+        image.save(path)
+        output = os.path.join(directory, "recognized")
+        subprocess.run(
+            ["tesseract", path, output, "-l", "eng+fra", "--oem", "1", "quiet"],
+            check=True, timeout=8, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env={**os.environ, "OMP_THREAD_LIMIT": "1"},
+        )
+        with open(output + ".txt", encoding="utf-8") as source:
+            return bounded_text(source.read().strip(), limits["maximumNormalizedTextBytes"])
+
+
+def pdf_pages(source_path, limits):
+    reader = PdfReader(source_path, strict=True)
+    if reader.is_encrypted:
+        raise MaliciousContent("encrypted PDFs are not accepted")
+    if len(reader.pages) > limits["maximumPdfPages"]:
+        raise ContentLimit("PDF page count exceeds its limit")
+    pages = []
+    ocr_count = 0
+    text_bytes = 0
+    for number, page in enumerate(reader.pages, start=1):
+        native = (page.extract_text() or "").strip()
+        text = native
+        method = "native_text"
+        # Image-bearing pages can mix printed labels with scanned field values.
+        if not native or page.images.keys():
+            ocr_count += 1
+            if ocr_count > limits["maximumOcrPages"]:
+                raise ContentLimit("PDF requires more OCR pages than the task permits")
+            with tempfile.TemporaryDirectory(dir="/workspace") as directory:
+                prefix = os.path.join(directory, "page")
+                # Bound the raster before allocating it, independent of PDF page dimensions.
+                edge = math.isqrt(limits["maximumOcrImagePixels"])
+                subprocess.run(
+                    ["pdftoppm", "-f", str(number), "-l", str(number), "-singlefile",
+                     "-scale-to", str(edge), "-png", source_path, prefix],
+                    check=True, timeout=8, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                with Image.open(prefix + ".png") as image:
+                    recognized = ocr_image(image, limits)
+            text = native + "\n[OCR text]\n" + recognized if native else recognized
+            method = "native_text_and_ocr" if native else "ocr"
+        text_bytes += len(text.encode("utf-8"))
+        if text_bytes > limits["maximumNormalizedTextBytes"]:
+            raise ContentLimit("normalized text exceeds its byte limit")
+        pages.append({"page": number, "method": method, "text": text})
+    return pages
+
+
 def normalize(config):
     media_type = config["mediaType"]
     limits = config["limits"]
     source_path = "/workspace/source.bin"
+    pages = None
 
     if media_type in ("text/plain", "text/csv"):
         with open(source_path, "r", encoding="utf-8", errors="strict", newline="") as source:
@@ -39,13 +104,9 @@ def normalize(config):
                 raise ContentLimit("CSV row count exceeds its limit")
         parser = "python-stdlib-v1"
     elif media_type == "application/pdf":
-        reader = PdfReader(source_path, strict=True)
-        if reader.is_encrypted:
-            raise MaliciousContent("encrypted PDFs are not accepted")
-        if len(reader.pages) > limits["maximumPdfPages"]:
-            raise ContentLimit("PDF page count exceeds its limit")
-        text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
-        parser = "pypdf-5.9.0"
+        pages = pdf_pages(source_path, limits)
+        text = "\n\n".join(f"[Page {page['page']} — {page['method']}]\n{page['text']}" for page in pages)
+        parser = "pypdf-6.1.1/poppler-22.02.0/tesseract-4.1.1-eng-fra"
     elif media_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
         with zipfile.ZipFile(source_path) as archive:
             entries = archive.infolist()
@@ -67,14 +128,17 @@ def normalize(config):
         with Image.open(source_path) as image:
             image.verify()
         with Image.open(source_path) as image:
-            if image.width * image.height > limits["maximumImagePixels"]:
-                raise ContentLimit("image pixel count exceeds its limit")
-            text = f"Image: format={image.format}; width={image.width}; height={image.height}; mode={image.mode}"
-        parser = "pillow-12.3.0"
+            if getattr(image, "n_frames", 1) != 1:
+                raise ContentLimit("multi-frame images must be supplied as individual images")
+            recognized = ocr_image(image, limits)
+        pages = [{"page": 1, "method": "ocr", "text": recognized}]
+        text = "[Page 1 — ocr]\n" + recognized
+        parser = "pillow-12.3.0/tesseract-4.1.1-eng-fra"
 
     return {
         "normalizedText": bounded_text(text, limits["maximumNormalizedTextBytes"]),
         "parser": parser,
+        **({"pages": pages} if pages is not None else {}),
     }
 
 
@@ -88,6 +152,11 @@ def analyze(config):
 
 
 def main():
+    # Limits apply to native parsers and their child raster/OCR processes alike.
+    resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024 * 1024, 1024 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (16 * 1024 * 1024, 16 * 1024 * 1024))
+    signal.signal(signal.SIGALRM, lambda *_: deadline())
+    signal.alarm(25)
     with open("/workspace/input.json", "r", encoding="utf-8") as source:
         config = json.load(source)
     operation = config["operation"]
@@ -97,9 +166,13 @@ def main():
         json.dump(output, target, ensure_ascii=False)
 
 
+def deadline():
+    raise ContentLimit("file processing exceeded its time limit")
+
+
 try:
     main()
-except ContentLimit as error:
+except (ContentLimit, subprocess.TimeoutExpired) as error:
     with open("/workspace/result.json", "w", encoding="utf-8") as target:
         json.dump({"ok": False, "reason": "content_limit", "message": str(error)}, target)
 except (Image.DecompressionBombError, MaliciousContent) as error:

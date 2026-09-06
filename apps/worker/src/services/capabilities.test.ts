@@ -29,6 +29,7 @@ const baseInput = {
     "osfoDeleteSession",
     "osfoForgetKnowledge",
     "readFile",
+    "validateFileFields",
     "sessionRecall",
     "set_context",
   ],
@@ -619,7 +620,7 @@ it.effect("adds Research Report start only with every production provider requir
   }),
 );
 
-it.effect("publishes only the exact existing file Tool required by the task", () =>
+it.effect("publishes the file Tools required by the task", () =>
   Effect.gen(function* () {
     const capabilities = Capabilities.make();
     const analysisIndex = yield* capabilities.eligibleIndex({
@@ -646,7 +647,7 @@ it.effect("publishes only the exact existing file Tool required by the task", ()
       index: readIndex,
       loadedSkills: [],
     });
-    expect(readBundle.activeToolNames).toEqual(["readFile"]);
+    expect(readBundle.activeToolNames).toEqual(["readFile", "validateFileFields"]);
 
     const unavailable = capabilities.explainUnavailable({
       availableIntegrationToolkits: [],

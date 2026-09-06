@@ -83,6 +83,67 @@ it.effect("rejects normalized text that still exceeds the two MB compute limit",
   }),
 );
 
+it.effect.each([
+  { pages: undefined, reason: "parser_failure" },
+  { pages: [{ page: 1, method: "ocr", text: "x".repeat(2_000_001) }], reason: "content_limit" },
+])("rejects missing or oversized PDF page evidence: $reason", ({ pages, reason }) =>
+  Effect.gen(function* () {
+    const compute = makeFileCompute(() => ({
+      destroy: async () => undefined,
+      exec: async () => ({ success: true }),
+      writeFile: async () => undefined,
+      readFile: async () => ({
+        content: JSON.stringify({ ok: true, normalizedText: "short text", parser: "pdf", pages }),
+      }),
+    }));
+    const result = yield* compute
+      .normalize({
+        bytes: new TextEncoder().encode("%PDF-synthetic"),
+        conservativeVendorUsdMicros: 0n,
+        limits: launchFileComputeLimits,
+        mediaType: "application/pdf",
+        sha256: FileDigest.make(`sha256:${"a".repeat(64)}`),
+        taskScope: "page-evidence-limits",
+      })
+      .pipe(Effect.result);
+    expect(result).toMatchObject({ failure: { reason } });
+  }),
+);
+
+it.effect("retains page evidence with the original source digest", () =>
+  Effect.gen(function* () {
+    const pages = [{ page: 1, method: "ocr", text: "Reference: SAMPLE-4821" }];
+    const compute = makeFileCompute(() => ({
+      destroy: async () => undefined,
+      exec: async () => ({ success: true }),
+      writeFile: async () => undefined,
+      readFile: async () => ({
+        content: JSON.stringify({
+          ok: true,
+          normalizedText: "Reference: SAMPLE-4821",
+          parser: "pdf",
+          pages,
+        }),
+      }),
+    }));
+    const sha256 = FileDigest.make(`sha256:${"a".repeat(64)}`);
+    const result = yield* compute.normalize({
+      bytes: new TextEncoder().encode("%PDF-synthetic"),
+      conservativeVendorUsdMicros: 0n,
+      limits: launchFileComputeLimits,
+      mediaType: "application/pdf",
+      sha256,
+      taskScope: "retained-page-evidence",
+    });
+    expect(result.provenance).toEqual({
+      mediaType: "application/pdf",
+      parser: "pdf",
+      sourceSha256: sha256,
+      pages,
+    });
+  }),
+);
+
 it.effect(
   "classifies a Sandbox startup or write outage as retryable dependency unavailability",
   () =>

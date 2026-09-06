@@ -34,6 +34,19 @@ RUN printf '%s\n' \
     && rm /tmp/poppler-utils_22.02.0-2ubuntu0.13_amd64.deb \
     && rm -rf /var/lib/apt/lists/*
 
+RUN apt-get update \
+    && cd /tmp \
+    && apt-get download \
+      'tesseract-ocr=4.1.1-2.1build1' \
+      'tesseract-ocr-eng=1:4.00~git30-7274cfa-1.1' \
+      'tesseract-ocr-fra=1:4.00~git30-7274cfa-1.1' \
+    && echo '5d33a2cc1484aa5032d07f51a4375d414d6868347691239874f0cfc03280a18f  tesseract-ocr_4.1.1-2.1build1_amd64.deb' | sha256sum --check \
+    && echo 'a4709bd43f71c83f9171071dddaf87a125f467d5258bd323048d49b054ef5eb8  tesseract-ocr-eng_1%3a4.00~git30-7274cfa-1.1_all.deb' | sha256sum --check \
+    && echo '8e2a338a7100cac2989670310954087ee88d2c5ec8eaa168b38c64612dd70d4d  tesseract-ocr-fra_1%3a4.00~git30-7274cfa-1.1_all.deb' | sha256sum --check \
+    && apt-get install --no-install-recommends --yes ./tesseract-*.deb \
+    && rm /tmp/tesseract-*.deb \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt /tmp/osfo-requirements.txt
 RUN python3 -m pip install --no-cache-dir --require-hashes -r /tmp/osfo-requirements.txt
 COPY render_document.py /opt/osfo/render_document.py

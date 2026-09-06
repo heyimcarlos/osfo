@@ -134,20 +134,39 @@ export const capabilityIntentPolicy = {
     taskKinds: ["memory"],
   },
   "file-read": {
-    matches: excludingIntentPhrases(
-      anyIntentPhrase("attachment", "open", "read"),
-      "calendar",
-      "document",
-      "docx",
-      "drive",
-      "email",
-      "gmail",
-      "link",
-      "page",
-      "pdf",
-      "url",
-      "website",
-    ),
+    matches: (task) =>
+      anyIntentPhrase("owned file", "retained file")(task) ||
+      excludingIntentPhrases(
+        anyIntentPhrase(
+          "attachment",
+          "attachments",
+          "attached",
+          "uploaded file",
+          "uploaded pdf",
+          "uploaded document",
+        ),
+        "calendar",
+        "drive",
+        "email",
+        "gmail",
+        "link",
+        "url",
+        "website",
+      )(task) ||
+      excludingIntentPhrases(
+        anyIntentPhrase("open", "read"),
+        "calendar",
+        "document",
+        "docx",
+        "drive",
+        "email",
+        "gmail",
+        "link",
+        "page",
+        "pdf",
+        "url",
+        "website",
+      )(task),
     taskKinds: ["file"],
   },
   "file-analysis": {

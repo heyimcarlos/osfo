@@ -3,6 +3,7 @@ import { DateTime, Effect, Predicate, Schema } from "effect";
 import type { AllowancePeriodId, UserId } from "../domain";
 import type { AllowanceItem, AllowanceSource } from "../domain/allowance";
 import { FileDigest, FileMediaType, inspectFileContent } from "../domain/file-content";
+import { FilePagesEvidence } from "../domain/file-evidence";
 import type {
   FileAnalysisId,
   FileAnalysisRecord,
@@ -23,6 +24,8 @@ export const launchFileComputeLimits = {
   maximumImagePixels: 40_000_000,
   maximumNormalizedTextBytes: 2_000_000,
   maximumOfficeEntries: 10_000,
+  maximumOcrPages: 10,
+  maximumOcrImagePixels: 8_000_000,
   maximumPdfPages: 500,
 } as const;
 
@@ -35,6 +38,7 @@ export interface FileVendorCost {
 /** Provenance retained with normalized file content. */
 export const FileNormalizationProvenance = Schema.Struct({
   mediaType: FileMediaType,
+  pages: Schema.optional(FilePagesEvidence),
   parser: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(160)),
   sourceSha256: FileDigest,
 });
@@ -543,7 +547,8 @@ export const makeFiles = <AllowanceError, ContextError, ObjectError, Persistence
         { actionId: input.actionId, kind: "file.read" },
       );
       if (Predicate.isTagged(recheck, "Denied")) return recheck;
-      if (file.state !== "ready" && file.state !== "stored") {
+      // Retained source bytes also recover an interrupted normalization without provider re-download.
+      if (file.state !== "ready" && file.state !== "stored" && file.state !== "normalizing") {
         return yield* new FileContentUnavailable({
           fileId: file.fileId,
           message: "The file is not readable in its current state",

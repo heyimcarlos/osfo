@@ -179,6 +179,15 @@ it.effect("routes document, integration, and recall paraphrases without collisio
         taskDescription: "Reconcile analysis analysis-call-1",
       },
       { expected: ["file-read"], taskDescription: "Read this retained file" },
+      { expected: ["file-read", "document-read"], taskDescription: "Read the attached PDF" },
+      { expected: ["file-read", "document-read"], taskDescription: "Open my uploaded document" },
+      { expected: ["file-read"], taskDescription: "Please inspect the attached files." },
+      {
+        expected: ["file-read", "page-read"],
+        taskDescription: "Extract the fee from page 2 of the attached PDF",
+      },
+      { expected: ["page-read"], taskDescription: "Read the attachment link on this website" },
+      { expected: ["document-read"], taskDescription: "Read the PDF attachment in Google Drive" },
       {
         expected: ["web-search", "page-read"],
         taskDescription: "Search the web for release notes",
@@ -242,6 +251,7 @@ it.effect("routes document, integration, and recall paraphrases without collisio
           "inspectScheduledEmail",
           "loadSkill",
           "readFile",
+          "validateFileFields",
           "readWebPage",
           "sessionRecall",
           "scheduleEmail",
@@ -261,6 +271,48 @@ it.effect("routes document, integration, and recall paraphrases without collisio
       expect(index.selectedCapabilityIds).toEqual(testCase.expected);
     }
   }),
+);
+
+it.effect(
+  "exposes file evidence Tools for the owned attachment reference in the current user message",
+  () =>
+    Effect.gen(function* () {
+      const projection = CapabilityContext.projectTurn([
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "What dates, email addresses, and website links does this PDF contain?",
+            },
+            {
+              type: "text",
+              text: "Osfo attachment ingestion results:\nAttachment 1: owned File messenger-file-123 is ready. Read it with readFile. For requested fields use validateFileFields and retain unknowns or conflicts with page evidence.",
+            },
+          ],
+        },
+      ]);
+      const capabilities = Capabilities.make();
+      const availableToolNames = ["readFile", "validateFileFields"];
+      const index = yield* capabilities.eligibleIndex({
+        availableIntegrationToolkits: [],
+        availableRequirements: ["file-storage", "personal-agent"],
+        availableToolNames,
+        catalogVersion: CapabilityCatalogVersion.make("governed-capabilities-v1"),
+        declaredRequirements: [],
+        origin: "channelLink",
+        personalSkills: [],
+        plan: "free",
+        taskDescription: projection.taskDescription,
+        taskKinds: projection.taskKinds,
+        userId: UserId.make("attachment-reader"),
+      });
+      expect(index.selectedCapabilityIds).toContain("file-read");
+      expect(
+        capabilities.assembleToolBundle({ availableToolNames, index, loadedSkills: [] })
+          .activeToolNames,
+      ).toEqual(["readFile", "validateFileFields"]);
+    }),
 );
 
 it("rejects hostile reserved client and provider schemas before accounting", () => {
